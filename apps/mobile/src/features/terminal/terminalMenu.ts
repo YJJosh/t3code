@@ -1,6 +1,8 @@
 import type { KnownTerminalSession } from "@t3tools/client-runtime";
 import { DEFAULT_TERMINAL_ID, type ProjectScript } from "@t3tools/contracts";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
+import * as Arr from "effect/Array";
+import * as Order from "effect/Order";
 
 export {
   getTerminalLabel,
@@ -17,6 +19,14 @@ export interface TerminalMenuSession {
   readonly displayLabel: string;
   readonly updatedAt: string | null;
 }
+
+const terminalMenuSessionOrder = Order.make<TerminalMenuSession>((left, right) => {
+  const comparison = left.terminalId.localeCompare(right.terminalId, undefined, { numeric: true });
+  if (comparison === 0) {
+    return 0;
+  }
+  return comparison < 0 ? -1 : 1;
+});
 
 export function basename(input: string | null): string | null {
   if (!input) {
@@ -101,9 +111,7 @@ export function buildTerminalMenuSessions(input: {
     sessionsById.set(input.currentSession.terminalId, input.currentSession);
   }
 
-  return Array.from(sessionsById.values()).sort((left, right) =>
-    left.terminalId.localeCompare(right.terminalId, undefined, { numeric: true }),
-  );
+  return Arr.sort(sessionsById.values(), terminalMenuSessionOrder);
 }
 
 export function resolveProjectScriptTerminalId(input: {

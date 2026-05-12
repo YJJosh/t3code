@@ -11,23 +11,33 @@ import {
 } from "@t3tools/client-runtime";
 
 import { ConnectedEnvironmentSummary } from "./remote-runtime-types";
+import type { SavedRemoteConnection } from "../lib/connection";
 import { useShellSnapshotStates } from "./use-shell-snapshot";
 import {
   useRemoteConnectionStatus,
   useRemoteEnvironmentState,
 } from "./use-remote-environment-registry";
 
-const projectsSortOrder = Order.make<EnvironmentScopedProjectShell>(
-  (left, right) =>
-    (left.title.localeCompare(right.title) as -1 | 0 | 1) ||
-    (left.environmentId.localeCompare(right.environmentId) as -1 | 0 | 1),
+const projectsSortOrder = Order.mapInput(
+  Order.Struct({
+    title: Order.String,
+    environmentId: Order.String,
+  }),
+  (project: EnvironmentScopedProjectShell) => ({
+    title: project.title,
+    environmentId: project.environmentId,
+  }),
 );
 
-const threadsSortOrder = Order.make<EnvironmentScopedThreadShell>(
-  (left, right) =>
-    ((new Date(right.updatedAt ?? right.createdAt).getTime() -
-      new Date(left.updatedAt ?? left.createdAt).getTime()) as -1 | 0 | 1) ||
-    (left.environmentId.localeCompare(right.environmentId) as -1 | 0 | 1),
+const threadsSortOrder = Order.mapInput(
+  Order.Struct({
+    activityAt: Order.flip(Order.Number),
+    environmentId: Order.String,
+  }),
+  (thread: EnvironmentScopedThreadShell) => ({
+    activityAt: new Date(thread.updatedAt ?? thread.createdAt).getTime(),
+    environmentId: thread.environmentId,
+  }),
 );
 
 function deriveOverallConnectionState(
@@ -48,38 +58,44 @@ function deriveOverallConnectionState(
   return "disconnected";
 }
 
+function listRemoteCatalogEnvironmentIds(
+  savedConnectionsById: Readonly<Record<string, SavedRemoteConnection>>,
+): ReadonlyArray<SavedRemoteConnection["environmentId"]> {
+  const environmentIds: SavedRemoteConnection["environmentId"][] = [];
+  for (const connection of Object.values(savedConnectionsById)) {
+    environmentIds.push(connection.environmentId);
+  }
+  return environmentIds;
+}
+
 export function useRemoteCatalog() {
   const { connectedEnvironments, connectionState } = useRemoteConnectionStatus();
   const { environmentStateById, savedConnectionsById } = useRemoteEnvironmentState();
   const shellSnapshotStates = useShellSnapshotStates(
-    Object.values(savedConnectionsById).map((connection) => connection.environmentId),
+    listRemoteCatalogEnvironmentIds(savedConnectionsById),
   );
 
-  const projects = useMemo(
-    () =>
-      Arr.sort(
-        Object.values(savedConnectionsById).flatMap((connection) =>
-          (shellSnapshotStates[connection.environmentId]?.data?.projects ?? []).map((project) =>
-            scopeProjectShell(connection.environmentId, project),
-          ),
-        ),
-        projectsSortOrder,
-      ),
-    [savedConnectionsById, shellSnapshotStates],
-  );
+  const projects = useMemo(() => {
+    const scopedProjects: EnvironmentScopedProjectShell[] = [];
+    for (const connection of Object.values(savedConnectionsById)) {
+      const projects = shellSnapshotStates[connection.environmentId]?.data?.projects ?? [];
+      for (const project of projects) {
+        scopedProjects.push(scopeProjectShell(connection.environmentId, project));
+      }
+    }
+    return Arr.sort(scopedProjects, projectsSortOrder);
+  }, [savedConnectionsById, shellSnapshotStates]);
 
-  const threads = useMemo(
-    () =>
-      Arr.sort(
-        Object.values(savedConnectionsById).flatMap((connection) =>
-          (shellSnapshotStates[connection.environmentId]?.data?.threads ?? []).map((thread) =>
-            scopeThreadShell(connection.environmentId, thread),
-          ),
-        ),
-        threadsSortOrder,
-      ),
-    [savedConnectionsById, shellSnapshotStates],
-  );
+  const threads = useMemo(() => {
+    const scopedThreads: EnvironmentScopedThreadShell[] = [];
+    for (const connection of Object.values(savedConnectionsById)) {
+      const threads = shellSnapshotStates[connection.environmentId]?.data?.threads ?? [];
+      for (const thread of threads) {
+        scopedThreads.push(scopeThreadShell(connection.environmentId, thread));
+      }
+    }
+    return Arr.sort(scopedThreads, threadsSortOrder);
+  }, [savedConnectionsById, shellSnapshotStates]);
 
   const serverConfigByEnvironmentId = useMemo(
     () =>

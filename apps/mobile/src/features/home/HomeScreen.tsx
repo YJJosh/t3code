@@ -6,6 +6,8 @@ import type {
 import { SymbolView } from "expo-symbols";
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
+import * as Arr from "effect/Array";
+import * as Order from "effect/Order";
 import { useThemeColor } from "../../lib/useThemeColor";
 
 import { AppText as Text } from "../../components/AppText";
@@ -32,6 +34,15 @@ interface ProjectGroup {
   readonly project: EnvironmentScopedProjectShell;
   readonly threads: ReadonlyArray<EnvironmentScopedThreadShell>;
 }
+
+const projectGroupActivityOrder = Order.mapInput(
+  Order.Struct({
+    activityAt: Order.flip(Order.Number),
+  }),
+  (group: ProjectGroup) => ({
+    activityAt: new Date(group.threads[0]!.updatedAt ?? group.threads[0]!.createdAt).getTime(),
+  }),
+);
 
 /* ─── Status indicator colors ────────────────────────────────────────── */
 
@@ -271,13 +282,7 @@ export function HomeScreen(props: HomeScreenProps) {
       }
     }
 
-    groups.sort((a, b) => {
-      const aTime = new Date(a.threads[0]!.updatedAt ?? a.threads[0]!.createdAt).getTime();
-      const bTime = new Date(b.threads[0]!.updatedAt ?? b.threads[0]!.createdAt).getTime();
-      return bTime - aTime;
-    });
-
-    return groups;
+    return Arr.sort(groups, projectGroupActivityOrder);
   }, [props.projects, filteredThreads]);
 
   /* Empty states */

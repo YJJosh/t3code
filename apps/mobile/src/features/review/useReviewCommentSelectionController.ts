@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { NativeSyntheticEvent } from "react-native";
 import { useRouter } from "expo-router";
+import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
+import * as Result from "effect/Result";
 
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
@@ -53,10 +56,13 @@ export function useReviewCommentSelectionController(input: {
       activeCommentTarget.sectionTitle === selectedSection?.title &&
       activeCommentTarget.startIndex !== activeCommentTarget.endIndex
     ) {
-      return getSelectedReviewCommentLines(activeCommentTarget).flatMap((line) => {
-        const rowId = nativeReviewDiffData.rowIdByCommentLineId.get(line.id);
-        return rowId ? [rowId] : [];
-      });
+      return pipe(
+        getSelectedReviewCommentLines(activeCommentTarget),
+        Arr.filterMap((line) => {
+          const rowId = nativeReviewDiffData.rowIdByCommentLineId.get(line.id);
+          return rowId ? Result.succeed(rowId) : Result.failVoid;
+        }),
+      );
     }
 
     return pendingNativeCommentSelection ? [pendingNativeCommentSelection.rowId] : [];

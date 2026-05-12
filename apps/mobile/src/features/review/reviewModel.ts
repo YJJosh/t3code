@@ -2,6 +2,7 @@ import type { ChangeTypes, FileDiffMetadata } from "@pierre/diffs/types";
 import { parsePatchFiles } from "@pierre/diffs/utils/parsePatchFiles";
 import type { OrchestrationCheckpointSummary, ReviewDiffPreviewSource } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
 import * as Order from "effect/Order";
 
 export type ReviewSectionKind = "turn" | "working-tree" | "branch-range";
@@ -513,9 +514,10 @@ export function getReviewSectionIdForCheckpoint(
 export function getReadyReviewCheckpoints(
   checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>,
 ): ReadonlyArray<OrchestrationCheckpointSummary> {
-  return Arr.sort(
-    checkpoints.filter((checkpoint) => checkpoint.status === "ready"),
-    readyCheckpointOrder,
+  return pipe(
+    checkpoints,
+    Arr.filter((checkpoint) => checkpoint.status === "ready"),
+    Arr.sort(readyCheckpointOrder),
   );
 }
 
@@ -579,7 +581,11 @@ export function buildReviewParsedDiff(
     const parsedPatches = runDiffParserSilently(() =>
       parsePatchFiles(text, buildPatchCacheKey(text, cacheScope)),
     );
-    const files = parsedPatches.flatMap((patch) => patch.files).map(mapRenderableFile);
+    const files = pipe(
+      parsedPatches,
+      Arr.flatMap((patch) => patch.files),
+      Arr.map(mapRenderableFile),
+    );
 
     if (files.length === 0) {
       return {

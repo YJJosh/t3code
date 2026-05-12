@@ -274,8 +274,13 @@ export async function connectSavedEnvironment(
   }
 }
 
-const environmentsSortOrder = Order.make<ConnectedEnvironmentSummary>(
-  (left, right) => left.environmentLabel.localeCompare(right.environmentLabel) as -1 | 0 | 1,
+const environmentsSortOrder = Order.mapInput(
+  Order.Struct({
+    environmentLabel: Order.String,
+  }),
+  (environment: ConnectedEnvironmentSummary) => ({
+    environmentLabel: environment.environmentLabel,
+  }),
 );
 
 function deriveConnectedEnvironments(

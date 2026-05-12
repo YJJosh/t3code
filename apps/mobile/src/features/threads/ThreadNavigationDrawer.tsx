@@ -1,6 +1,8 @@
 import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, useWindowDimensions, View } from "react-native";
+import * as Arr from "effect/Array";
+import * as Order from "effect/Order";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
@@ -22,15 +24,16 @@ import {
   EnvironmentScopedThreadShell,
 } from "@t3tools/client-runtime";
 
-function compareThreadActivity(
-  left: EnvironmentScopedThreadShell,
-  right: EnvironmentScopedThreadShell,
-): number {
-  return (
-    new Date(right.updatedAt ?? right.createdAt).getTime() -
-      new Date(left.updatedAt ?? left.createdAt).getTime() || left.title.localeCompare(right.title)
-  );
-}
+const threadActivityOrder = Order.mapInput(
+  Order.Struct({
+    activityAt: Order.flip(Order.Number),
+    title: Order.String,
+  }),
+  (thread: EnvironmentScopedThreadShell) => ({
+    activityAt: new Date(thread.updatedAt ?? thread.createdAt).getTime(),
+    title: thread.title,
+  }),
+);
 
 export function ThreadNavigationDrawer(props: {
   readonly visible: boolean;
@@ -60,13 +63,17 @@ export function ThreadNavigationDrawer(props: {
   );
   const groupedThreads = useMemo(
     () =>
-      repositoryGroups.map((group) => ({
-        key: group.key,
-        title: group.projects[0]?.project.title ?? group.title,
-        threads: group.projects
-          .flatMap((projectGroup) => projectGroup.threads)
-          .sort(compareThreadActivity),
-      })),
+      repositoryGroups.map((group) => {
+        const threads: EnvironmentScopedThreadShell[] = [];
+        for (const projectGroup of group.projects) {
+          threads.push(...projectGroup.threads);
+        }
+        return {
+          key: group.key,
+          title: group.projects[0]?.project.title ?? group.title,
+          threads: Arr.sort(threads, threadActivityOrder),
+        };
+      }),
     [repositoryGroups],
   );
 
