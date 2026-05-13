@@ -255,7 +255,7 @@ function createOutdatedProvider(driver: string): ServerProvider {
       latestVersion: "1.1.0",
       message: "Update available.",
       checkedAt: "2026-05-04T10:00:00.000Z",
-      updateCommand: "npm install -g openai/codex@latest",
+      updateCommand: "npm install -g @openai/codex@latest",
       canUpdate: true,
     },
   };
@@ -1153,6 +1153,63 @@ describe("GeneralSettingsPanel observability", () => {
     expect(updateProvider).toHaveBeenCalledWith({
       provider: ProviderDriverKind.make("codex"),
       instanceId: ProviderInstanceId.make("codex"),
+    });
+  });
+
+  it("runs targeted compatibility updates from the provider card", async () => {
+    const updateProvider = vi.fn<LocalApi["server"]["updateProvider"]>().mockResolvedValue({
+      providers: [],
+    });
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: {
+        updateProvider,
+      },
+    } as unknown as LocalApi;
+    const incompatibleProvider: ServerProvider = {
+      ...createOutdatedProvider("codex"),
+      version: "0.128.0",
+      status: "error",
+      message:
+        "This provider harness version 0.128.0 is known to be incompatible with this T3 Code release. Use 0.129.0.",
+      compatibilityAdvisory: {
+        status: "broken",
+        severity: "error",
+        currentVersion: "0.128.0",
+        message:
+          "This provider harness version 0.128.0 is known to be incompatible with this T3 Code release. Use 0.129.0.",
+        recommendedRange: ">=0.129.0",
+        recommendedVersion: "0.129.0",
+        ranges: [{ status: "broken", range: "<0.129.0" }],
+      },
+    };
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [incompatibleProvider],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page
+      .getByRole("button", { name: "Incompatible provider version — view details" })
+      .click();
+    await expect
+      .element(page.getByText("npm install -g @openai/codex@0.129.0"))
+      .toBeInTheDocument();
+    await page.getByRole("button", { name: "Update now" }).click();
+
+    expect(updateProvider).toHaveBeenCalledWith({
+      provider: ProviderDriverKind.make("codex"),
+      instanceId: ProviderInstanceId.make("codex"),
+      targetVersion: "0.129.0",
     });
   });
 });

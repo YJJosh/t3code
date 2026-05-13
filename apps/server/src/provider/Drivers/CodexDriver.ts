@@ -174,7 +174,12 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         checkProvider,
         enrichSnapshot: ({ snapshot, publishSnapshot }) =>
           enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities).pipe(
-            Effect.flatMap(ProviderCompatibility.enrichProviderSnapshotWithCompatibilityAdvisory),
+            Effect.flatMap((snapshot) =>
+              ProviderCompatibility.enrichProviderSnapshotWithTargetedCompatibilityAdvisory(
+                snapshot,
+                maintenanceCapabilities,
+              ),
+            ),
             Effect.provideService(HttpClient.HttpClient, httpClient),
             Effect.provideService(
               ProviderCompatibility.ProviderCompatibilityService,

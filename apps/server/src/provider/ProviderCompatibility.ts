@@ -17,6 +17,10 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 
 import bundledCompatibilityDocumentJson from "../../../../provider-compatibility.v1.json" with { type: "json" };
 import packageJson from "../../package.json" with { type: "json" };
+import {
+  makeTargetedProviderUpdateAction,
+  type ProviderMaintenanceCapabilities,
+} from "./providerMaintenance.ts";
 
 const T3_CODE_VERSION = packageJson.version;
 const REMOTE_COMPATIBILITY_CACHE_TTL = Duration.minutes(15);
@@ -145,6 +149,7 @@ function createProviderCompatibilityAdvisoryFromDocument(input: {
   readonly document: typeof RemoteCompatibilityDocument.Type;
   readonly driver: ProviderDriverKind;
   readonly currentVersion: string | null;
+  readonly maintenanceCapabilities?: ProviderMaintenanceCapabilities | undefined;
   readonly t3CodeVersion?: string;
 }): ServerProviderCompatibilityAdvisory | undefined {
   const policy = compatibilityPolicyForDriver({
@@ -163,6 +168,9 @@ function createProviderCompatibilityAdvisoryFromDocument(input: {
       : policy.ranges.find((range) => satisfiesSemverRange(currentVersion, range.range));
   const status = matchedRange?.status ?? (currentVersion === null ? "unknown" : "unsupported");
   const recommendedVersion = policy.recommendedVersion ?? null;
+  const targetedUpdateAction = input.maintenanceCapabilities
+    ? makeTargetedProviderUpdateAction(input.maintenanceCapabilities, recommendedVersion)
+    : null;
 
   return {
     status,
@@ -176,20 +184,31 @@ function createProviderCompatibilityAdvisoryFromDocument(input: {
     }),
     recommendedRange: policy.recommendedRange,
     recommendedVersion,
+    updateCommand: targetedUpdateAction?.command ?? null,
+    canUpdate: targetedUpdateAction !== null,
     ranges: [...policy.ranges],
   };
+}
+
+function shouldSkipCompatibilityAdvisory(input: {
+  readonly snapshot: ProviderCompatibilitySnapshot;
+  readonly currentVersion: string | null;
+}): boolean {
+  return !input.snapshot.enabled && input.currentVersion === null;
 }
 
 export function createProviderCompatibilityAdvisory(input: {
   readonly driver: ProviderDriverKind;
   readonly currentVersion: string | null;
   readonly document?: typeof RemoteCompatibilityDocument.Type;
+  readonly maintenanceCapabilities?: ProviderMaintenanceCapabilities | undefined;
   readonly t3CodeVersion?: string;
 }): ServerProviderCompatibilityAdvisory | undefined {
   return createProviderCompatibilityAdvisoryFromDocument({
     document: input.document ?? bundledProviderCompatibilityDocument,
     driver: input.driver,
     currentVersion: input.currentVersion,
+    maintenanceCapabilities: input.maintenanceCapabilities,
     ...(input.t3CodeVersion ? { t3CodeVersion: input.t3CodeVersion } : {}),
   });
 }
@@ -300,12 +319,23 @@ export function applyBundledProviderCompatibilityAdvisory<
   readonly snapshot: Snapshot;
   readonly driver: ProviderDriverKind;
   readonly currentVersion: string | null;
+  readonly maintenanceCapabilities?: ProviderMaintenanceCapabilities | undefined;
 }): Snapshot {
+  if (
+    shouldSkipCompatibilityAdvisory({
+      snapshot: input.snapshot,
+      currentVersion: input.currentVersion,
+    })
+  ) {
+    return removeExistingCompatibilityAdvisory(input.snapshot);
+  }
+
   return applyCompatibilityAdvisory(
     input.snapshot,
     createProviderCompatibilityAdvisory({
       driver: input.driver,
       currentVersion: input.currentVersion,
+      maintenanceCapabilities: input.maintenanceCapabilities,
     }),
   );
 }
@@ -317,9 +347,19 @@ export const enrichProviderSnapshotWithCompatibilityAdvisory = Effect.fn(
   return yield* compatibility.enrichSnapshot(snapshot);
 });
 
+export const enrichProviderSnapshotWithTargetedCompatibilityAdvisory = Effect.fn(
+  "enrichProviderSnapshotWithTargetedCompatibilityAdvisory",
+)(function* (snapshot: ServerProvider, maintenanceCapabilities: ProviderMaintenanceCapabilities) {
+  const compatibility = yield* ProviderCompatibilityService;
+  return yield* compatibility.enrichSnapshot(snapshot, maintenanceCapabilities);
+});
+
 export interface ProviderCompatibilityServiceShape {
   readonly resolveRemoteDocument: Effect.Effect<typeof RemoteCompatibilityDocument.Type | null>;
-  readonly enrichSnapshot: (snapshot: ServerProvider) => Effect.Effect<ServerProvider>;
+  readonly enrichSnapshot: (
+    snapshot: ServerProvider,
+    maintenanceCapabilities?: ProviderMaintenanceCapabilities | undefined,
+  ) => Effect.Effect<ServerProvider>;
 }
 
 export class ProviderCompatibilityService extends Context.Service<
@@ -347,17 +387,23 @@ export const makeProviderCompatibilityService = Effect.fn("makeProviderCompatibi
 
     return {
       resolveRemoteDocument,
-      enrichSnapshot: (snapshot) =>
+      enrichSnapshot: (snapshot, maintenanceCapabilities) =>
         resolveRemoteDocument.pipe(
           Effect.map((remoteDocument) =>
-            applyCompatibilityAdvisory(
+            shouldSkipCompatibilityAdvisory({
               snapshot,
-              createProviderCompatibilityAdvisory({
-                driver: snapshot.driver,
-                currentVersion: snapshot.version,
-                ...(remoteDocument ? { document: remoteDocument } : {}),
-              }),
-            ),
+              currentVersion: snapshot.version,
+            })
+              ? removeExistingCompatibilityAdvisory(snapshot)
+              : applyCompatibilityAdvisory(
+                  snapshot,
+                  createProviderCompatibilityAdvisory({
+                    driver: snapshot.driver,
+                    currentVersion: snapshot.version,
+                    maintenanceCapabilities,
+                    ...(remoteDocument ? { document: remoteDocument } : {}),
+                  }),
+                ),
           ),
         ),
     } satisfies ProviderCompatibilityServiceShape;

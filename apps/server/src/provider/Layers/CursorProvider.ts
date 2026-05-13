@@ -1247,7 +1247,12 @@ export const enrichCursorSnapshot = (input: {
     snapshot,
     input.maintenanceCapabilities,
   ).pipe(
-    Effect.flatMap(ProviderCompatibility.enrichProviderSnapshotWithCompatibilityAdvisory),
+    Effect.flatMap((enrichedSnapshot) =>
+      ProviderCompatibility.enrichProviderSnapshotWithTargetedCompatibilityAdvisory(
+        enrichedSnapshot,
+        input.maintenanceCapabilities,
+      ),
+    ),
     Effect.provideService(HttpClient.HttpClient, input.httpClient),
     Effect.flatMap((enrichedSnapshot) =>
       publishSnapshot(stampIdentity(enrichedSnapshot)).pipe(Effect.as(enrichedSnapshot)),

@@ -120,11 +120,65 @@ export function getProviderVersionAdvisoryPresentation(
   };
 }
 
+function makeTargetedUpdateCommand(input: {
+  readonly updateCommand: string | null | undefined;
+  readonly recommendedVersion: string | null | undefined;
+}): string | null {
+  if (!input.updateCommand || !input.recommendedVersion) {
+    return null;
+  }
+  if (!input.updateCommand.includes("@latest")) {
+    const packageNameMatch = input.updateCommand.match(
+      /(?:^|\s)(@[^\s]+\/[^\s@]+|[^\s@]+)(?=\s*$)/,
+    );
+    if (!packageNameMatch?.[1]) {
+      return null;
+    }
+    return input.updateCommand.replace(
+      packageNameMatch[1],
+      `${packageNameMatch[1]}@${input.recommendedVersion}`,
+    );
+  }
+  return input.updateCommand.replace("@latest", `@${input.recommendedVersion}`);
+}
+
+export function getProviderCompatibilityUpdateCommand(
+  provider: Pick<ServerProvider, "compatibilityAdvisory" | "versionAdvisory"> | null | undefined,
+): string | null {
+  const compatibilityAdvisory = provider?.compatibilityAdvisory;
+  if (!compatibilityAdvisory || compatibilityAdvisory.status === "supported") {
+    return null;
+  }
+  return (
+    compatibilityAdvisory.updateCommand ??
+    makeTargetedUpdateCommand({
+      updateCommand: provider.versionAdvisory?.updateCommand,
+      recommendedVersion: compatibilityAdvisory.recommendedVersion,
+    })
+  );
+}
+
+export function canRunProviderCompatibilityUpdate(
+  provider: Pick<ServerProvider, "compatibilityAdvisory" | "versionAdvisory"> | null | undefined,
+): boolean {
+  const compatibilityAdvisory = provider?.compatibilityAdvisory;
+  if (!compatibilityAdvisory || compatibilityAdvisory.status === "supported") {
+    return false;
+  }
+  return (
+    compatibilityAdvisory.canUpdate === true ||
+    (provider?.versionAdvisory?.canUpdate === true &&
+      getProviderCompatibilityUpdateCommand(provider) !== null)
+  );
+}
+
 export function getProviderCompatibilityAdvisoryPresentation(
   advisory: ServerProviderCompatibilityAdvisory | undefined,
 ): {
   readonly title: string;
   readonly detail: string;
+  readonly updateCommand: string | null;
+  readonly canUpdate: boolean;
   readonly emphasis: "normal" | "strong";
 } | null {
   if (!advisory || advisory.status === "supported") {
@@ -142,6 +196,8 @@ export function getProviderCompatibilityAdvisoryPresentation(
     title:
       advisory.status === "broken" ? "Incompatible provider version" : "Provider version warning",
     detail: advisory.message ?? fallback,
+    updateCommand: advisory.updateCommand ?? null,
+    canUpdate: advisory.canUpdate === true,
     emphasis: advisory.severity === "error" ? "strong" : "normal",
   };
 }

@@ -2,7 +2,7 @@
   "version": 1,
   "policies": [
     {
-      "t3CodeRange": ">=0.0.24",
+      "t3CodeRange": ">=0.0.0",
       "driver": "codex",
       "recommendedRange": ">=0.129.0",
       "recommendedVersion": "0.129.0",
@@ -20,7 +20,7 @@
       ]
     },
     {
-      "t3CodeRange": ">=0.0.24",
+      "t3CodeRange": ">=0.0.0",
       "driver": "claudeAgent",
       "recommendedRange": ">=0.2.111",
       "recommendedVersion": "0.2.111",
@@ -33,7 +33,7 @@
       ]
     },
     {
-      "t3CodeRange": ">=0.0.24",
+      "t3CodeRange": ">=0.0.0",
       "driver": "opencode",
       "recommendedRange": ">=1.14.19",
       "recommendedVersion": "1.14.19",
@@ -51,7 +51,7 @@
       ]
     },
     {
-      "t3CodeRange": ">=0.0.24",
+      "t3CodeRange": ">=0.0.0",
       "driver": "cursor",
       "recommendedRange": ">=2026.05.09",
       "recommendedVersion": "2026.05.09",

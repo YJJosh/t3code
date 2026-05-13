@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import * as ProviderCompatibility from "./ProviderCompatibility.ts";
+import { makeProviderMaintenanceCapabilities } from "./providerMaintenance.ts";
 
 const codexDriver = ProviderDriverKind.make("codex");
 const claudeDriver = ProviderDriverKind.make("claudeAgent");
@@ -25,6 +26,14 @@ const baseProvider: ServerProvider = {
   slashCommands: [],
   skills: [],
 };
+
+const codexNpmUpdateCapabilities = makeProviderMaintenanceCapabilities({
+  provider: codexDriver,
+  packageName: "@openai/codex",
+  updateExecutable: "npm",
+  updateArgs: ["install", "-g", "@openai/codex@latest"],
+  updateLockKey: "npm-global",
+});
 
 function jsonHttpClient(
   responseForUrl: (url: string) => { readonly payload: unknown; readonly status?: number },
@@ -87,12 +96,57 @@ describe("provider compatibility", () => {
     });
   });
 
-  it("classifies the initial hosted compatibility policies for T3 Code 0.0.24+", () => {
+  it("adds a targeted compatibility update command when a recommended version is available", () => {
     const document: ProviderCompatibility.ProviderCompatibilityDocument = {
       version: 1,
       policies: [
         {
-          t3CodeRange: ">=0.0.24",
+          t3CodeRange: ">=0.0.0",
+          driver: codexDriver,
+          recommendedRange: ">=0.129.0",
+          recommendedVersion: "0.129.0",
+          ranges: [{ status: "broken", range: "<0.129.0" }],
+        },
+      ],
+    };
+
+    expect(
+      ProviderCompatibility.createProviderCompatibilityAdvisory({
+        driver: codexDriver,
+        currentVersion: "0.128.0",
+        document,
+        maintenanceCapabilities: codexNpmUpdateCapabilities,
+      }),
+    ).toMatchObject({
+      status: "broken",
+      canUpdate: true,
+      updateCommand: "npm install -g @openai/codex@0.129.0",
+    });
+  });
+
+  it("does not warn on disabled providers before their version has been probed", () => {
+    const enriched = ProviderCompatibility.applyBundledProviderCompatibilityAdvisory({
+      snapshot: {
+        ...baseProvider,
+        driver: cursorDriver,
+        enabled: false,
+        version: null,
+        status: "disabled",
+      },
+      driver: cursorDriver,
+      currentVersion: null,
+    });
+
+    expect(enriched.compatibilityAdvisory).toBeUndefined();
+    expect(enriched.status).toBe("disabled");
+  });
+
+  it("classifies the bundled compatibility policies for current T3 Code builds", () => {
+    const document: ProviderCompatibility.ProviderCompatibilityDocument = {
+      version: 1,
+      policies: [
+        {
+          t3CodeRange: ">=0.0.0",
           driver: codexDriver,
           recommendedRange: ">=0.129.0",
           recommendedVersion: "0.129.0",
@@ -102,14 +156,14 @@ describe("provider compatibility", () => {
           ],
         },
         {
-          t3CodeRange: ">=0.0.24",
+          t3CodeRange: ">=0.0.0",
           driver: claudeDriver,
           recommendedRange: ">=0.2.111",
           recommendedVersion: "0.2.111",
           ranges: [{ status: "supported", range: ">=0.2.111" }],
         },
         {
-          t3CodeRange: ">=0.0.24",
+          t3CodeRange: ">=0.0.0",
           driver: opencodeDriver,
           recommendedRange: ">=1.14.19",
           recommendedVersion: "1.14.19",
@@ -119,7 +173,7 @@ describe("provider compatibility", () => {
           ],
         },
         {
-          t3CodeRange: ">=0.0.24",
+          t3CodeRange: ">=0.0.0",
           driver: cursorDriver,
           recommendedRange: ">=2026.05.09",
           recommendedVersion: "2026.05.09",
@@ -136,7 +190,7 @@ describe("provider compatibility", () => {
         driver,
         currentVersion,
         document,
-        t3CodeVersion: "0.0.24",
+        t3CodeVersion: "0.0.22",
       })?.status;
 
     expect(classify(codexDriver, "0.129.0")).toBe("supported");
@@ -188,14 +242,18 @@ describe("provider compatibility", () => {
     };
 
     return Effect.gen(function* () {
-      const enriched = yield* ProviderCompatibility.enrichProviderSnapshotWithCompatibilityAdvisory(
-        baseProvider,
-      ).pipe(provideCompatibility(() => ({ payload: remoteDocument })));
+      const enriched =
+        yield* ProviderCompatibility.enrichProviderSnapshotWithTargetedCompatibilityAdvisory(
+          baseProvider,
+          codexNpmUpdateCapabilities,
+        ).pipe(provideCompatibility(() => ({ payload: remoteDocument })));
 
       expect(enriched.status).toBe("error");
       expect(enriched.compatibilityAdvisory).toMatchObject({
         status: "broken",
         recommendedVersion: "0.129.0",
+        canUpdate: true,
+        updateCommand: "npm install -g @openai/codex@0.129.0",
       });
     });
   });
@@ -355,8 +413,8 @@ describe("provider compatibility", () => {
         },
       ).pipe(provideCompatibility(() => ({ payload: {}, status: 404 })));
 
-      expect(enriched.status).toBe("ready");
-      expect(enriched.compatibilityAdvisory).toBeUndefined();
+      expect(enriched.status).toBe("error");
+      expect(enriched.compatibilityAdvisory).toMatchObject({ status: "broken" });
     }),
   );
 });

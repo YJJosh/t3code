@@ -10,6 +10,7 @@ import {
   type ProviderInstanceConfig,
   type ProviderInstanceId,
   type ScopedThreadRef,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
@@ -63,6 +64,10 @@ import {
   type ProviderUpdateCandidate,
 } from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import {
+  canRunProviderCompatibilityUpdate,
+  getProviderCompatibilityUpdateCommand,
+} from "./providerStatus";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
   buildProviderInstanceUpdatePatch,
@@ -1010,6 +1015,55 @@ export function ProviderSettingsPanel() {
     }
   }, []);
 
+  const runProviderCompatibilityUpdate = useCallback(async (provider: ServerProvider) => {
+    const targetVersion = provider.compatibilityAdvisory?.recommendedVersion ?? null;
+    if (!targetVersion) {
+      return;
+    }
+
+    let started = false;
+    setUpdatingProviderDrivers((previous) => {
+      if (previous.has(provider.driver)) {
+        return previous;
+      }
+      started = true;
+      const next = new Set(previous);
+      next.add(provider.driver);
+      return next;
+    });
+    if (!started) {
+      return;
+    }
+
+    try {
+      await ensureLocalApi().server.updateProvider({
+        provider: provider.driver,
+        instanceId: provider.instanceId,
+        targetVersion,
+      });
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: `Could not update ${PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver}`,
+          description:
+            error instanceof Error
+              ? error.message
+              : "The provider update command could not be started.",
+        }),
+      );
+    } finally {
+      setUpdatingProviderDrivers((previous) => {
+        if (!previous.has(provider.driver)) {
+          return previous;
+        }
+        const next = new Set(previous);
+        next.delete(provider.driver);
+        return next;
+      });
+    }
+  }, []);
+
   interface InstanceRow {
     readonly instanceId: ProviderInstanceId;
     readonly instance: ProviderInstanceConfig;
@@ -1245,6 +1299,22 @@ export function ProviderSettingsPanel() {
             updateCandidate !== undefined &&
             canOneClickUpdateProviderCandidate(updateCandidate, serverProviders) &&
             !updatingProviderDrivers.has(updateCandidate.driver);
+          const compatibilityUpdateCommand = getProviderCompatibilityUpdateCommand(liveProvider);
+          const showInlineCompatibilityUpdateButton =
+            canRunProviderCompatibilityUpdate(liveProvider) &&
+            compatibilityUpdateCommand !== null &&
+            Boolean(liveProvider?.compatibilityAdvisory?.recommendedVersion);
+          const isCompatibilityUpdateRunning =
+            liveProvider !== undefined &&
+            (updatingProviderDrivers.has(liveProvider.driver) ||
+              serverProviders.some(
+                (provider) =>
+                  provider.driver === liveProvider.driver && isProviderUpdateActive(provider),
+              ));
+          const canRunInlineCompatibilityUpdate =
+            showInlineCompatibilityUpdateButton &&
+            liveProvider !== undefined &&
+            !updatingProviderDrivers.has(liveProvider.driver);
           const modelPreferences = settings.providerModelPreferences?.[row.instanceId] ?? {
             hiddenModels: [],
             modelOrder: [],
@@ -1318,6 +1388,19 @@ export function ProviderSettingsPanel() {
                   : undefined
               }
               isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
+              onRunCompatibilityUpdate={
+                showInlineCompatibilityUpdateButton && liveProvider
+                  ? () => {
+                      if (!canRunInlineCompatibilityUpdate) {
+                        return;
+                      }
+                      void runProviderCompatibilityUpdate(liveProvider);
+                    }
+                  : undefined
+              }
+              isCompatibilityUpdating={
+                showInlineCompatibilityUpdateButton ? isCompatibilityUpdateRunning : undefined
+              }
             />
           );
         })}

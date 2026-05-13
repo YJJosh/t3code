@@ -302,6 +302,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   isSendBusy: boolean;
   isConnecting: boolean;
   isEnvironmentUnavailable: boolean;
+  isProviderUnavailable: boolean;
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
@@ -323,6 +324,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         isSendBusy={props.isSendBusy}
         isConnecting={props.isConnecting}
         isEnvironmentUnavailable={props.isEnvironmentUnavailable}
+        isProviderUnavailable={props.isProviderUnavailable}
         isPreparingWorktree={props.isPreparingWorktree}
         hasSendableContent={props.hasSendableContent}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
@@ -716,6 +718,11 @@ export const ChatComposer = memo(
       () => selectedProviderEntry?.snapshot ?? null,
       [selectedProviderEntry],
     );
+    const selectedProviderUnavailableMessage =
+      selectedProviderStatus?.status === "error"
+        ? (selectedProviderStatus.message ?? "Selected provider is unavailable.")
+        : null;
+    const isSelectedProviderUnavailable = selectedProviderUnavailableMessage !== null;
     const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
       () => selectedProviderEntry?.models ?? [],
       [selectedProviderEntry],
@@ -1053,7 +1060,11 @@ export const ChatComposer = memo(
       [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
     );
     const collapsedComposerPrimaryActionDisabled =
-      phase === "running" || isSendBusy || isConnecting || !composerSendState.hasSendableContent;
+      phase === "running" ||
+      isSendBusy ||
+      isConnecting ||
+      isSelectedProviderUnavailable ||
+      !composerSendState.hasSendableContent;
     const collapsedComposerPrimaryActionLabel = "Send message";
     const showMobilePendingAnswerActions =
       isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
@@ -1619,12 +1630,21 @@ export const ChatComposer = memo(
 
     const submitComposer = useCallback(
       (event?: { preventDefault: () => void }) => {
+        if (isSelectedProviderUnavailable) {
+          event?.preventDefault();
+          return;
+        }
         onSend(event);
         if (shouldBlurMobileComposerOnSubmit()) {
           blurMobileComposerAfterSend();
         }
       },
-      [blurMobileComposerAfterSend, onSend, shouldBlurMobileComposerOnSubmit],
+      [
+        blurMobileComposerAfterSend,
+        isSelectedProviderUnavailable,
+        onSend,
+        shouldBlurMobileComposerOnSubmit,
+      ],
     );
     const expandMobileComposer = useCallback(() => {
       if (composerBlurFrameRef.current !== null) {
@@ -2079,6 +2099,7 @@ export const ChatComposer = memo(
                         isSendBusy={isSendBusy}
                         isConnecting={isConnecting}
                         isEnvironmentUnavailable={environmentUnavailable !== null}
+                        isProviderUnavailable={isSelectedProviderUnavailable}
                         isPreparingWorktree={false}
                         hasSendableContent={false}
                         preserveComposerFocusOnPointerDown
@@ -2265,12 +2286,15 @@ export const ChatComposer = memo(
                                   ? "connecting"
                                   : "disconnected"
                               }`
-                            : phase === "disconnected"
-                              ? "Ask for follow-up changes or attach images"
-                              : "Ask anything, @tag files/folders, $use skills, or / for commands"
+                            : selectedProviderUnavailableMessage
+                              ? selectedProviderUnavailableMessage
+                              : phase === "disconnected"
+                                ? "Ask for follow-up changes or attach images"
+                                : "Ask anything, @tag files/folders, $use skills, or / for commands"
                   }
                   disabled={
                     isConnecting ||
+                    isSelectedProviderUnavailable ||
                     isComposerApprovalState ||
                     (environmentUnavailable !== null && activePendingProgress === null)
                   }
@@ -2289,6 +2313,7 @@ export const ChatComposer = memo(
                       isSendBusy={isSendBusy}
                       isConnecting={isConnecting}
                       isEnvironmentUnavailable={environmentUnavailable !== null}
+                      isProviderUnavailable={isSelectedProviderUnavailable}
                       isPreparingWorktree={false}
                       hasSendableContent={false}
                       preserveComposerFocusOnPointerDown
@@ -2405,6 +2430,7 @@ export const ChatComposer = memo(
                     isSendBusy={isSendBusy}
                     isConnecting={isConnecting}
                     isEnvironmentUnavailable={environmentUnavailable !== null}
+                    isProviderUnavailable={isSelectedProviderUnavailable}
                     isPreparingWorktree={isPreparingWorktree}
                     hasSendableContent={composerSendState.hasSendableContent}
                     preserveComposerFocusOnPointerDown={isMobileViewport}

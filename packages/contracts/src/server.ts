@@ -160,6 +160,8 @@ export const ServerProviderCompatibilityAdvisory = Schema.Struct({
   message: Schema.NullOr(TrimmedNonEmptyString),
   recommendedRange: Schema.NullOr(TrimmedNonEmptyString),
   recommendedVersion: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
+  updateCommand: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
+  canUpdate: Schema.optionalKey(Schema.Boolean),
   ranges: Schema.Array(ServerProviderCompatibilityRange).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -523,6 +525,7 @@ export type ServerProviderUpdatedPayload = typeof ServerProviderUpdatedPayload.T
 export const ServerProviderUpdateInput = Schema.Struct({
   provider: ProviderDriverKind,
   instanceId: Schema.optionalKey(ProviderInstanceId),
+  targetVersion: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
 
