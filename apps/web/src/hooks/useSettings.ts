@@ -218,7 +218,6 @@ export function useUpdateSettings() {
           });
         }
       }
-
       if (Object.keys(clientPatch).length > 0) {
         persistClientSettings({
           ...getClientSettingsSnapshot(),
