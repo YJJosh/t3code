@@ -687,23 +687,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             ) : null}
             <span className={threadMetaClassName}>
               <span className="inline-flex items-center gap-1">
-                {isRemoteThread && (
+                {isRemoteThread && !isDesktopLocalThread && (
                   <Tooltip>
                     <TooltipTrigger
                       render={
                         <span
-                          aria-label={
-                            threadEnvironmentLabel ?? (isDesktopLocalThread ? "Local" : "Remote")
-                          }
+                          aria-label={threadEnvironmentLabel ?? "Remote"}
                           className="inline-flex h-5 items-center justify-center"
                         />
                       }
                     >
-                      {isDesktopLocalThread ? (
-                        <ContainerIcon className="block size-3 text-muted-foreground/60" />
-                      ) : (
-                        <CloudIcon className="block size-3 text-muted-foreground/60" />
-                      )}
+                      <CloudIcon className="block size-3 text-muted-foreground/60" />
                     </TooltipTrigger>
                     <TooltipPopup side="top">{threadEnvironmentLabel}</TooltipPopup>
                   </Tooltip>
