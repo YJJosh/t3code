@@ -280,4 +280,43 @@ describe("DesktopBackendConfiguration", () => {
       }
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  it.effect(
+    "resolvePrimary falls back to the Windows primary when wsl-only but WSL is unavailable",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-desktop-backend-config-test-",
+        });
+
+        yield* Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+          const config = yield* configuration.resolvePrimary;
+
+          // wsl-only is persisted but WSL is unavailable, so the primary must
+          // not spawn wsl.exe (which would loop on preflight failures while the
+          // Connections backend control is hidden). Resolve the Windows primary.
+          assert.equal(config.executablePath, process.execPath);
+          assert.equal(config.bootstrap.t3Home, environment.baseDir);
+          assert.isTrue(Option.isNone(config.preflightFailure));
+        }).pipe(
+          Effect.provide(
+            DesktopBackendConfiguration.layer.pipe(
+              Layer.provideMerge(serverExposureLayer),
+              Layer.provideMerge(
+                DesktopAppSettings.layerTest({
+                  ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+                  wslBackendEnabled: true,
+                  wslOnly: true,
+                }),
+              ),
+              Layer.provideMerge(DesktopWslEnvironment.layerTest({ isAvailable: false })),
+              Layer.provideMerge(makeEnvironmentLayer(baseDir, { platform: "win32" })),
+            ),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

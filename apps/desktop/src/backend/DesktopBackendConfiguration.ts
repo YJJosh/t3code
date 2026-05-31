@@ -501,7 +501,19 @@ export const layer = Layer.effect(
         // configResolve fires each time the backend (re)starts.
         const persistedSettings = yield* settings.get;
         if (persistedSettings.wslOnly && persistedSettings.wslBackendEnabled) {
-          return yield* buildWslPrimaryConfig;
+          // Only honor wsl-only when WSL is actually usable. If the user
+          // persisted wsl-only but WSL has since become unavailable (wsl.exe
+          // removed, no distro), fall back to the Windows primary instead of
+          // looping forever on preflight failures: the Connections backend
+          // control is hidden while WSL is unavailable, so a stuck WSL
+          // primary would otherwise leave no in-app way back to Windows.
+          const wslAvailable = yield* wslEnvironment.isAvailable;
+          if (wslAvailable) {
+            return yield* buildWslPrimaryConfig;
+          }
+          yield* Effect.logWarning(
+            "WSL-only backend requested but WSL is unavailable; starting the Windows primary instead.",
+          );
         }
         return yield* buildWindowsPrimaryConfig;
       }).pipe(Effect.withSpan("desktop.backendConfiguration.resolvePrimary")),
