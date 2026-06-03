@@ -285,7 +285,7 @@ export function listManagedCloudEnvironments(input: {
     const configuredRelayUrl = relayUrl();
     if (!configuredRelayUrl) {
       return yield* new CloudEnvironmentLinkError({
-        message: "T3_RELAY_URL is not configured.",
+        message: "T3CODE_RELAY_URL is not configured.",
       });
     }
     const relayClient = yield* ManagedRelayClient;
@@ -315,7 +315,7 @@ export function listCloudDevices(input: {
   return Effect.gen(function* () {
     if (!relayUrl()) {
       return yield* new CloudEnvironmentLinkError({
-        message: "T3_RELAY_URL is not configured.",
+        message: "T3CODE_RELAY_URL is not configured.",
       });
     }
     const relayClient = yield* ManagedRelayClient;
@@ -344,7 +344,7 @@ export function connectManagedCloudEnvironment(input: {
     const configuredRelayUrl = relayUrl();
     if (!configuredRelayUrl) {
       return yield* new CloudEnvironmentLinkError({
-        message: "T3_RELAY_URL is not configured.",
+        message: "T3CODE_RELAY_URL is not configured.",
       });
     }
     const persistedRelayUrl = normalizeRelayBaseUrl(input.relayUrl);
@@ -519,7 +519,7 @@ export function linkEnvironmentToCloud(input: {
     const configuredRelayUrl = relayUrl();
     if (!configuredRelayUrl) {
       return yield* new CloudEnvironmentLinkError({
-        message: "T3_RELAY_URL is not configured.",
+        message: "T3CODE_RELAY_URL is not configured.",
       });
     }
     const relayClient = yield* ManagedRelayClient;
@@ -614,7 +614,7 @@ export function linkPrimaryEnvironmentToCloud(input: {
     const configuredRelayUrl = relayUrl();
     if (!configuredRelayUrl) {
       return yield* new CloudEnvironmentLinkError({
-        message: "T3_RELAY_URL is not configured.",
+        message: "T3CODE_RELAY_URL is not configured.",
       });
     }
     const relayClient = yield* ManagedRelayClient;

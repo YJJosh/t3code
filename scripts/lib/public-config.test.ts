@@ -21,27 +21,29 @@ describe("loadRepoEnv", () => {
     expect(env.T3CODE_CLERK_PUBLISHABLE_KEY).toBeUndefined();
     expect(env.VITE_CLERK_PUBLISHABLE_KEY).toBeUndefined();
     expect(env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY).toBeUndefined();
-    expect(env.T3_RELAY_URL).toBeUndefined();
-    expect(env.VITE_T3_RELAY_URL).toBeUndefined();
+    expect(env.T3CODE_RELAY_URL).toBeUndefined();
+    expect(env.VITE_T3CODE_RELAY_URL).toBeUndefined();
   });
 
   it("applies process, root local, and root precedence in that order", () => {
     const repoRoot = makeTemporaryDirectory();
     writeFileSync(
       join(repoRoot, ".env"),
-      "T3CODE_CLERK_PUBLISHABLE_KEY=pk_root\nT3_RELAY_URL=https://root.example.test\n",
+      "T3CODE_CLERK_PUBLISHABLE_KEY=pk_root\nT3CODE_RELAY_URL=https://root.example.test\n",
     );
     writeFileSync(
       join(repoRoot, ".env.local"),
-      "T3CODE_CLERK_PUBLISHABLE_KEY=pk_local\nT3_RELAY_URL=https://local.example.test\n",
+      "T3CODE_CLERK_PUBLISHABLE_KEY=pk_local\nT3CODE_RELAY_URL=https://local.example.test\n",
     );
 
-    expect(loadRepoEnv({ baseEnv: {}, repoRoot }).T3_RELAY_URL).toBe("https://local.example.test");
+    expect(loadRepoEnv({ baseEnv: {}, repoRoot }).T3CODE_RELAY_URL).toBe(
+      "https://local.example.test",
+    );
     expect(
       loadRepoEnv({
         baseEnv: {
           T3CODE_CLERK_PUBLISHABLE_KEY: "pk_ci",
-          T3_RELAY_URL: "https://ci.example.test",
+          T3CODE_RELAY_URL: "https://ci.example.test",
         },
         repoRoot,
       }),
@@ -49,8 +51,8 @@ describe("loadRepoEnv", () => {
       T3CODE_CLERK_PUBLISHABLE_KEY: "pk_ci",
       VITE_CLERK_PUBLISHABLE_KEY: "pk_ci",
       EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_ci",
-      T3_RELAY_URL: "https://ci.example.test",
-      VITE_T3_RELAY_URL: "https://ci.example.test",
+      T3CODE_RELAY_URL: "https://ci.example.test",
+      VITE_T3CODE_RELAY_URL: "https://ci.example.test",
     });
   });
 
@@ -58,7 +60,7 @@ describe("loadRepoEnv", () => {
     expect(
       resolvePublicConfig({
         VITE_CLERK_PUBLISHABLE_KEY: "pk_legacy",
-        VITE_T3_RELAY_URL: "https://legacy.example.test",
+        VITE_T3CODE_RELAY_URL: "https://legacy.example.test",
       }),
     ).toEqual({
       clerkPublishableKey: "pk_legacy",
@@ -70,13 +72,13 @@ describe("loadRepoEnv", () => {
     expect(
       loadRepoEnv({
         baseEnv: {
-          T3_RELAY_URL: "https://relay.example.test",
+          T3CODE_RELAY_URL: "https://relay.example.test",
         },
         repoRoot: makeTemporaryDirectory(),
       }),
     ).toEqual({
-      T3_RELAY_URL: "https://relay.example.test",
-      VITE_T3_RELAY_URL: "https://relay.example.test",
+      T3CODE_RELAY_URL: "https://relay.example.test",
+      VITE_T3CODE_RELAY_URL: "https://relay.example.test",
     });
   });
 });

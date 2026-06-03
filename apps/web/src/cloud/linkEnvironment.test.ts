@@ -108,7 +108,7 @@ describe("web cloud link environment client", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     createProofMock.mockClear();
-    vi.stubEnv("VITE_T3_RELAY_URL", "https://relay.example.test");
+    vi.stubEnv("VITE_T3CODE_RELAY_URL", "https://relay.example.test");
     getSavedEnvironmentSecretMock.mockResolvedValue("local-bearer");
     vi.mocked(readPrimaryEnvironmentDescriptor).mockReturnValue(null);
     vi.mocked(readPrimaryEnvironmentTarget).mockReturnValue(null);

@@ -13,8 +13,10 @@ export function resolveCloudPublicConfig(): CloudPublicConfig {
       import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined,
     ),
     relayUrl:
-      trimNonEmpty(import.meta.env.VITE_T3_RELAY_URL as string | undefined)?.replace(/\/+$/u, "") ??
-      null,
+      trimNonEmpty(import.meta.env.VITE_T3CODE_RELAY_URL as string | undefined)?.replace(
+        /\/+$/u,
+        "",
+      ) ?? null,
   };
 }
 

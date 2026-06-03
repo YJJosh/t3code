@@ -39,8 +39,8 @@ export function loadRepoEnv({
       : {}),
     ...(config.relayUrl
       ? {
-          T3_RELAY_URL: config.relayUrl,
-          VITE_T3_RELAY_URL: config.relayUrl,
+          T3CODE_RELAY_URL: config.relayUrl,
+          VITE_T3CODE_RELAY_URL: config.relayUrl,
         }
       : {}),
   };
@@ -54,7 +54,7 @@ export function resolvePublicConfig(...sources: readonly Environment[]): T3CodeP
       "VITE_CLERK_PUBLISHABLE_KEY",
       "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY",
     ),
-    relayUrl: firstNonEmpty(sources, "T3_RELAY_URL", "VITE_T3_RELAY_URL"),
+    relayUrl: firstNonEmpty(sources, "T3CODE_RELAY_URL", "VITE_T3CODE_RELAY_URL"),
   };
 }
 

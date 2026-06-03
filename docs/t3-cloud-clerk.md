@@ -11,11 +11,11 @@ or `.env.local` file:
 
 ```dotenv
 T3CODE_CLERK_PUBLISHABLE_KEY=<publishable key>
-T3_RELAY_URL=https://relay.example.com
+T3CODE_RELAY_URL=https://relay.example.com
 ```
 
 The shared client loader projects these canonical values into the framework-specific
-`VITE_CLERK_PUBLISHABLE_KEY`, `VITE_T3_RELAY_URL`, and
+`VITE_CLERK_PUBLISHABLE_KEY`, `VITE_T3CODE_RELAY_URL`, and
 `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` aliases. Existing aliases remain accepted as overrides for
 compatibility, but new client configuration should use the canonical names.
 
@@ -28,17 +28,17 @@ Configuration precedence is:
 The Clerk publishable key and relay URL are public identifiers, not secrets. Web, desktop, and
 mobile builds statically inject them during their build step. A built artifact does not need an
 environment file at runtime. CI release builds should set `T3CODE_CLERK_PUBLISHABLE_KEY` and
-`T3_RELAY_URL` before building. EAS preview and production builds should define the same
+`T3CODE_RELAY_URL` before building. EAS preview and production builds should define the same
 client-facing values in their EAS environment.
 
 When either public value is absent, cloud UI is omitted.
 
 For a hosted relay deployment, copy `infra/relay/.env.example` to `infra/relay/.env`. The relay
-deployment reads `T3_RELAY_DOMAIN`, `T3_RELAY_ZONE_NAME`, and
+deployment reads `T3CODE_RELAY_DOMAIN`, `T3CODE_RELAY_ZONE_NAME`, and
 `T3CODE_CLERK_PUBLISHABLE_KEY` through Effect `Config`. There are no checked-in deployment defaults.
 `bun --cwd infra/relay run deploy` invokes Alchemy from the relay directory, so Alchemy loads
 `infra/relay/.env`. After a successful deployment, the wrapper updates the repository-root `.env`
-with the HTTPS relay URL derived from `T3_RELAY_DOMAIN`. The relay still requires
+with the HTTPS relay URL derived from `T3CODE_RELAY_DOMAIN`. The relay still requires
 `CLERK_SECRET_KEY` as an Alchemy secret. Never put `CLERK_SECRET_KEY` in a client application
 environment or commit it to the repository.
 
@@ -56,7 +56,7 @@ In **Clerk Dashboard > JWT templates**, create a template with:
 | Claims  | `{ "aud": "https://relay.example.com" }` |
 
 The `aud` value must be the deployed relay public URL, with no trailing slash. It must match the
-client-facing `T3_RELAY_URL` and the HTTPS URL derived from the deployment's `T3_RELAY_DOMAIN`. If
+client-facing `T3CODE_RELAY_URL` and the HTTPS URL derived from the deployment's `T3CODE_RELAY_DOMAIN`. If
 the relay domain changes, update both values and the JWT template.
 
 ## Desktop OAuth Redirect Allowlist
