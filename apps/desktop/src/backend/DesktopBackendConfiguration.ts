@@ -164,6 +164,11 @@ interface WslPreflightOutcome {
 interface WslPreflightFailure {
   readonly _tag: "Failed";
   readonly reason: string;
+  // Fatal: the WSL distro is misconfigured (no node, wrong version, missing
+  // build tools) and retrying won't help — surface it and (wsl-only) fall back
+  // to Windows. Non-fatal: transient (WSL not ready yet, wslpath while it
+  // boots) so the manager keeps retrying until it self-heals.
+  readonly fatal: boolean;
 }
 
 const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(function* (input: {
@@ -181,7 +186,11 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
 
   const wslAvailable = yield* wslEnv.isAvailable;
   if (!wslAvailable) {
-    return { _tag: "Failed", reason: "WSL is not available on this system" } as const;
+    return {
+      _tag: "Failed",
+      reason: "WSL is not available on this system",
+      fatal: false,
+    } as const;
   }
 
   const entryExists = yield* fileSystem
@@ -191,6 +200,7 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
     return {
       _tag: "Failed",
       reason: `missing server entry at ${input.windowsEntryPath}`,
+      fatal: false,
     } as const;
   }
 
@@ -199,6 +209,7 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
     return {
       _tag: "Failed",
       reason: `wslpath conversion failed for ${input.windowsEntryPath}`,
+      fatal: false,
     } as const;
   }
 
@@ -210,6 +221,7 @@ const runWslPreflight = Effect.fn("desktop.backendConfiguration.wslPreflight")(f
     return {
       _tag: "Failed",
       reason: `WSL node-pty unavailable: ${nodePtyResult.reason}`,
+      fatal: true,
     } as const;
   }
 
@@ -427,7 +439,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
     return {
       ...baseConfig,
       args: [...distroArgs, "--", "node", "--version"],
-      preflightFailure: Option.some(preflight.reason),
+      preflightFailure: Option.some({ reason: preflight.reason, fatal: preflight.fatal }),
     } satisfies DesktopBackendManager.DesktopBackendStartConfig;
   }
 

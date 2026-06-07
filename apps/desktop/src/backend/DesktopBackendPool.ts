@@ -95,7 +95,9 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
+import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
+import * as ElectronDialog from "../electron/ElectronDialog.ts";
 
 const { logWarning: logBackendPoolWarning } =
   DesktopObservability.makeComponentLogger("desktop-backend-pool");
@@ -188,6 +190,8 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
     const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    const electronDialog = yield* ElectronDialog.ElectronDialog;
+    const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
     // Anchor the pool's lifetime to its layer scope so registered
     // instance scopes can be forked off it. Without this, instance
     // scopes are orphaned: they only close via explicit unregister()
@@ -202,6 +206,34 @@ export const layer = Layer.effect(
     // the same FileSystem, spawner, HTTP client and log factory the
     // primary instance uses.
     const factoryContext = yield* Effect.context<BackendInstanceFactoryRequirements>();
+
+    // A fatal WSL preflight failure on the *primary* only happens in wsl-only
+    // mode (the primary is Windows otherwise, and Windows has no preflight).
+    // Surface the reason and fall back to the Windows backend so a window can
+    // still open instead of the app sitting invisible, retrying a node setup
+    // that won't fix itself. The user re-enables "Run in WSL only" from Settings
+    // once the distro is fixed.
+    const handlePrimaryPreflightFailure = Effect.fn(
+      "desktop.backendPool.primaryPreflightFailed",
+    )(function* (reason: string) {
+      yield* logBackendPoolWarning("primary WSL preflight failed; falling back to Windows", {
+        reason,
+      });
+      yield* electronDialog.showErrorBox(
+        "WSL backend couldn't start",
+        `${reason}\n\nFalling back to the Windows backend so T3 Code can open. Re-enable "Run in WSL only" from Settings > Connections once the WSL distro is fixed.`,
+      );
+      // Persist Windows mode so the manager's next restart re-resolves the
+      // primary as Windows (describePrimary reads wslOnly) and a window opens.
+      // Swallow a write failure — we still logged and surfaced the reason.
+      yield* appSettings.setWslOnly(false).pipe(
+        Effect.catch((error) =>
+          logBackendPoolWarning("failed to persist Windows fallback after WSL preflight failure", {
+            error: error.message,
+          }),
+        ),
+      );
+    });
 
     const primary = yield* DesktopBackendManager.makeBackendInstance({
       id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
@@ -226,6 +258,7 @@ export const layer = Layer.effect(
           ),
         ),
       onShutdown: () => desktopWindow.handleBackendNotReady,
+      onPreflightFailed: handlePrimaryPreflightFailure,
     });
 
     const instancesRef = yield* SynchronizedRef.make<

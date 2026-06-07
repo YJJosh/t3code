@@ -53,6 +53,10 @@ import * as DesktopObservability from "../app/DesktopObservability.ts";
 
 const INITIAL_RESTART_DELAY = Duration.millis(500);
 const MAX_RESTART_DELAY = Duration.seconds(10);
+// After this many consecutive *fatal* preflight failures, stop the silent
+// restart loop and surface the reason via onPreflightFailed. Transient
+// failures are not counted, so they keep retrying and can still self-heal.
+const MAX_PREFLIGHT_FAILURE_ATTEMPTS = 5;
 const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
 const DEFAULT_BACKEND_READINESS_INTERVAL = Duration.millis(100);
 const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
@@ -81,7 +85,17 @@ export interface DesktopBackendStartConfig {
   readonly bootstrapDelivery: DesktopBackendBootstrapDelivery;
   readonly httpBaseUrl: URL;
   readonly captureOutput: boolean;
-  readonly preflightFailure: Option.Option<string>;
+  readonly preflightFailure: Option.Option<PreflightFailure>;
+}
+
+// A preflight failure records whether it is fatal. Transient failures (WSL
+// cold-starting, wslpath while the VM boots) keep retrying so the backend can
+// self-heal; fatal ones (no node, wrong version, missing build tools) are
+// surfaced via onPreflightFailed and stop the restart loop after
+// MAX_PREFLIGHT_FAILURE_ATTEMPTS.
+export interface PreflightFailure {
+  readonly reason: string;
+  readonly fatal: boolean;
 }
 
 interface BackendProcessExit {
@@ -186,6 +200,11 @@ export interface BackendInstanceSpec {
   // between "fired onReady" and "currentConfig already advanced".
   readonly onReady?: (httpBaseUrl: URL) => Effect.Effect<void>;
   readonly onShutdown?: () => Effect.Effect<void>;
+  // Fired once when a fatal preflight failure has exhausted its retries. The
+  // pool wires this on the primary to surface the reason and, in wsl-only mode,
+  // fall back to the Windows backend so a window can still open instead of the
+  // app silently retrying forever with no window.
+  readonly onPreflightFailed?: (reason: string) => Effect.Effect<void>;
 }
 
 interface ActiveBackendRun {
@@ -201,6 +220,9 @@ interface BackendManagerState {
   readonly config: Option.Option<DesktopBackendStartConfig>;
   readonly active: Option.Option<ActiveBackendRun>;
   readonly restartAttempt: number;
+  // Consecutive fatal preflight failures, reset on a clean preflight. Drives
+  // the MAX_PREFLIGHT_FAILURE_ATTEMPTS cap; restartAttempt counts all restarts.
+  readonly preflightFailureAttempt: number;
   readonly restartFiber: Option.Option<Fiber.Fiber<void, never>>;
   readonly nextRunId: number;
 }
@@ -211,6 +233,7 @@ const initialState: BackendManagerState = {
   config: Option.none(),
   active: Option.none(),
   restartAttempt: 0,
+  preflightFailureAttempt: 0,
   restartFiber: Option.none(),
   nextRunId: 1,
 };
@@ -434,10 +457,53 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           config: Option.some(config.value),
         }));
 
-        if (Option.isSome(config.value.preflightFailure)) {
-          yield* scheduleRestart(config.value.preflightFailure.value);
+        const preflightFailure = config.value.preflightFailure;
+        if (Option.isSome(preflightFailure)) {
+          const { reason, fatal } = preflightFailure.value;
+          if (!fatal) {
+            // Transient (WSL cold-starting, wslpath while the VM boots). Keep
+            // retrying so the backend self-heals once WSL is ready; don't count
+            // it toward the fatal cap.
+            yield* scheduleRestart(reason);
+            return;
+          }
+          const attempt = yield* Ref.modify(state, (latest) => {
+            const next = latest.preflightFailureAttempt + 1;
+            return [next, { ...latest, preflightFailureAttempt: next }] as const;
+          });
+          if (attempt > MAX_PREFLIGHT_FAILURE_ATTEMPTS) {
+            // We already surfaced and asked for the Windows fallback, yet we're
+            // still resolving the WSL primary — the fallback didn't take (e.g.
+            // the settings write failed). Stop rather than loop forever.
+            yield* logInstanceError("backend preflight still failing after fallback; stopping", {
+              reason,
+              attempt,
+            });
+            return;
+          }
+          if (attempt === MAX_PREFLIGHT_FAILURE_ATTEMPTS) {
+            // Fatal and out of retries. Surface the reason (onPreflightFailed,
+            // on the primary, shows a dialog and persists Windows mode), then
+            // schedule one more restart so the next resolve picks up the Windows
+            // primary and a window can open.
+            yield* logInstanceError(
+              "backend preflight failed repeatedly; surfacing and falling back",
+              { reason, attempt },
+            );
+            yield* spec.onPreflightFailed?.(reason) ?? Effect.void;
+            yield* scheduleRestart(reason);
+            return;
+          }
+          yield* scheduleRestart(reason);
           return;
         }
+        // Clean preflight — reset the fatal counter so a later failure gets a
+        // fresh allowance.
+        yield* Ref.update(state, (latest) =>
+          latest.preflightFailureAttempt === 0
+            ? latest
+            : { ...latest, preflightFailureAttempt: 0 },
+        );
 
         if (!entryExists) {
           yield* scheduleRestart(`missing server entry at ${config.value.entryPath}`);

@@ -108,6 +108,7 @@ interface MakeInstanceInput {
   readonly backendOutputLog?: Partial<DesktopObservability.DesktopBackendOutputLogShape>;
   readonly onReady?: Effect.Effect<void>;
   readonly onShutdown?: Effect.Effect<void>;
+  readonly onPreflightFailed?: (reason: string) => Effect.Effect<void>;
   readonly config?: DesktopBackendManager.DesktopBackendStartConfig;
 }
 
@@ -139,6 +140,7 @@ function makeTestInstance(input: MakeInstanceInput) {
     configResolve: Effect.succeed(input.config ?? baseConfig),
     ...(input.onReady ? { onReady: () => input.onReady! } : {}),
     ...(input.onShutdown ? { onShutdown: () => input.onShutdown! } : {}),
+    ...(input.onPreflightFailed ? { onPreflightFailed: input.onPreflightFailed } : {}),
   });
 
   return instance.pipe(Effect.provide(servicesLayer));
@@ -430,7 +432,7 @@ describe("DesktopBackendManager", () => {
           spawnerLayer,
           config: {
             ...baseConfig,
-            preflightFailure: Option.some("preflight failed"),
+            preflightFailure: Option.some({ reason: "preflight failed", fatal: false }),
           },
           onShutdown: Effect.sync(() => {
             shutdownCount += 1;
@@ -442,6 +444,76 @@ describe("DesktopBackendManager", () => {
 
         yield* TestClock.adjust(Duration.millis(500));
         assert.equal(shutdownCount, 0);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("surfaces a fatal preflight failure once and stops looping after the cap", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const failures: string[] = [];
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.die("unexpected backend spawn")),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          config: {
+            ...baseConfig,
+            preflightFailure: Option.some({ reason: "Node.js not found", fatal: true }),
+          },
+          onPreflightFailed: (reason) =>
+            Effect.sync(() => {
+              failures.push(reason);
+            }),
+        });
+
+        yield* instance.start;
+        assert.deepEqual(failures, []);
+
+        // Five fatal attempts with exponential backoff (500ms, 1s, 2s, 4s) reach
+        // the cap, at which point the failure is surfaced exactly once.
+        yield* TestClock.adjust(Duration.millis(500));
+        yield* TestClock.adjust(Duration.seconds(1));
+        yield* TestClock.adjust(Duration.seconds(2));
+        yield* TestClock.adjust(Duration.seconds(4));
+        assert.deepEqual(failures, ["Node.js not found"]);
+
+        // Past the cap the loop stops and nothing else is surfaced.
+        yield* TestClock.adjust(Duration.seconds(8));
+        yield* TestClock.adjust(Duration.seconds(30));
+        assert.deepEqual(failures, ["Node.js not found"]);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("keeps retrying a transient (non-fatal) preflight failure without surfacing", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const failures: string[] = [];
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.die("unexpected backend spawn")),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          config: {
+            ...baseConfig,
+            preflightFailure: Option.some({ reason: "wslpath conversion failed", fatal: false }),
+          },
+          onPreflightFailed: (reason) =>
+            Effect.sync(() => {
+              failures.push(reason);
+            }),
+        });
+
+        yield* instance.start;
+        // Well beyond the fatal cap's worth of time: a transient failure must
+        // keep retrying (self-heal) and never surface.
+        yield* TestClock.adjust(Duration.minutes(2));
+        assert.deepEqual(failures, []);
       }).pipe(Effect.provide(TestClock.layer())),
     ),
   );
