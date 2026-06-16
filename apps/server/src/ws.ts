@@ -1669,6 +1669,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const request = yield* HttpServerRequest.HttpServerRequest;
         const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
         const sessions = yield* SessionStore.SessionStore;
+        const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request).pipe(
           Effect.catchTags({
             ServerAuthInvalidCredentialError: (error) => failEnvironmentAuthInvalid(error.reason),
@@ -1710,7 +1711,11 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
           () => rpcWebSocketHttpEffect,
-          () => sessions.markDisconnected(session.sessionId),
+          () =>
+            Effect.all([
+              sessions.markDisconnected(session.sessionId),
+              backgroundPolicy.removeSession(session.sessionId),
+            ]).pipe(Effect.asVoid),
         );
       }).pipe(
         Effect.catchTags({

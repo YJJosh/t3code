@@ -258,6 +258,7 @@ export const layer = Layer.effect(
 
     const makeRemoteRefreshLoop = (
       cwd: string,
+      scopeCwd: string,
       automaticRemoteRefreshInterval: Effect.Effect<Duration.Duration, never>,
       refreshImmediately: boolean,
     ) => {
@@ -274,7 +275,7 @@ export const layer = Layer.effect(
 
           const shouldRun = yield* backgroundPolicy.shouldRunScopeWork({
             type: "vcs-status",
-            cwd,
+            cwd: scopeCwd,
           });
           if (!shouldRun) {
             return activeInterval;
@@ -322,6 +323,7 @@ export const layer = Layer.effect(
 
     const retainRemotePoller = Effect.fn("VcsStatusBroadcaster.retainRemotePoller")(function* (
       cwd: string,
+      scopeCwd: string,
       automaticRemoteRefreshInterval: Effect.Effect<Duration.Duration, never>,
       refreshImmediately: boolean,
     ) {
@@ -336,7 +338,12 @@ export const layer = Layer.effect(
           return Effect.succeed([undefined, nextPollers] as const);
         }
 
-        return makeRemoteRefreshLoop(cwd, automaticRemoteRefreshInterval, refreshImmediately).pipe(
+        return makeRemoteRefreshLoop(
+          cwd,
+          scopeCwd,
+          automaticRemoteRefreshInterval,
+          refreshImmediately,
+        ).pipe(
           Effect.forkIn(broadcasterScope),
           Effect.map((fiber) => {
             const nextPollers = new Map(activePollers);
@@ -388,6 +395,7 @@ export const layer = Layer.effect(
           const initialRemote = cachedStatus?.remote?.value ?? null;
           yield* retainRemotePoller(
             cwd,
+            input.cwd,
             options?.automaticRemoteRefreshInterval ??
               Effect.succeed(DEFAULT_VCS_STATUS_REFRESH_INTERVAL),
             cachedStatus?.remote === null || cachedStatus?.remote === undefined,

@@ -680,7 +680,14 @@ function BackgroundActivityAdvancedDialog({
                     value === "performance" ||
                     value === "battery-saver"
                   ) {
-                    updateSettings(backgroundActivityProfileSettings(value));
+                    updateSettings({
+                      backgroundActivity: {
+                        schemaVersion: 1 as const,
+                        profile: "custom" as const,
+                        baseProfile: value,
+                        overrides: settings.backgroundActivity.overrides,
+                      },
+                    });
                   }
                 }}
               >

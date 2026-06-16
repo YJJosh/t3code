@@ -64,6 +64,7 @@ const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 const BackgroundPolicyAlwaysRunLayer = Layer.mock(BackgroundPolicy.BackgroundPolicy)({
   reportClientActivity: () => Effect.void,
   removeRpcClient: () => Effect.void,
+  removeSession: () => Effect.void,
   reportHostPowerState: () => Effect.void,
   snapshot: Effect.succeed({
     hostPower: {

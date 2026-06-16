@@ -30,6 +30,7 @@ export interface BackgroundPolicyShape {
     input: ClientActivityReportInput,
   ) => Effect.Effect<void>;
   readonly removeRpcClient: (rpcClientId: RpcClientId) => Effect.Effect<void>;
+  readonly removeSession: (sessionId: AuthSessionId) => Effect.Effect<void>;
   readonly reportHostPowerState: (snapshot: HostPowerSnapshot) => Effect.Effect<void>;
   readonly snapshot: Effect.Effect<BackgroundPolicySnapshot>;
   readonly streamChanges: Stream.Stream<BackgroundPolicySnapshot>;
@@ -218,6 +219,17 @@ export const make = Effect.fn("background.policy.make")(function* () {
       return next;
     }).pipe(Effect.andThen(publishSnapshot), Effect.asVoid);
 
+  const removeSession: BackgroundPolicyShape["removeSession"] = (sessionId) =>
+    Ref.update(leasesRef, (leases) => {
+      const next = new Map(leases);
+      for (const [key, lease] of next) {
+        if (lease.sessionId === sessionId) {
+          next.delete(key);
+        }
+      }
+      return next;
+    }).pipe(Effect.andThen(publishSnapshot), Effect.asVoid);
+
   const hasDemand: BackgroundPolicyShape["hasDemand"] = (scope) =>
     Effect.map(snapshot, (current) => current.activeScopeKeys.includes(scopeKey(scope)));
 
@@ -264,6 +276,7 @@ export const make = Effect.fn("background.policy.make")(function* () {
   return BackgroundPolicy.of({
     reportClientActivity,
     removeRpcClient,
+    removeSession,
     reportHostPowerState: hostPowerMonitor.report,
     snapshot,
     streamChanges: Stream.fromPubSub(changes),
