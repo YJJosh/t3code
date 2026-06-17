@@ -1,7 +1,8 @@
 import "../index.css";
 
+import { AsyncResult } from "effect/unstable/reactivity";
 import { page } from "vite-plus/test/browser";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
 
 const {
@@ -12,9 +13,9 @@ const {
   readLocalApiMock,
 } = vi.hoisted(() => ({
   contextMenuShowMock: vi.fn(),
-  openFileInPreviewMock: vi.fn(async () => undefined),
-  openInPreferredEditorMock: vi.fn(async () => "vscode"),
-  openUrlInPreviewMock: vi.fn(async () => undefined),
+  openFileInPreviewMock: vi.fn(),
+  openInPreferredEditorMock: vi.fn(),
+  openUrlInPreviewMock: vi.fn(),
   readLocalApiMock: vi.fn(() => ({
     contextMenu: { show: contextMenuShowMock },
     server: { getConfig: vi.fn(async () => ({ availableEditors: ["vscode"] })) },
@@ -66,6 +67,12 @@ const threadRef = {
 };
 
 describe("ChatMarkdown", () => {
+  beforeEach(() => {
+    openInPreferredEditorMock.mockResolvedValue(AsyncResult.success("vscode"));
+    openFileInPreviewMock.mockResolvedValue(AsyncResult.success(undefined));
+    openUrlInPreviewMock.mockResolvedValue(AsyncResult.success(undefined));
+  });
+
   afterEach(() => {
     openInPreferredEditorMock.mockClear();
     openFileInPreviewMock.mockClear();
