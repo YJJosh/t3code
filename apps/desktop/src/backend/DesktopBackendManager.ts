@@ -330,6 +330,10 @@ const runBackendProcess = Effect.fn("runBackendProcess")(function* (
     concurrency: "unbounded",
     discard: true,
   }).pipe(Effect.timeout(DEFAULT_BACKEND_OUTPUT_DRAIN_TIMEOUT), Effect.ignore);
+  yield* Effect.forEach(outputFibers, Fiber.interrupt, {
+    concurrency: "unbounded",
+    discard: true,
+  }).pipe(Effect.ignore);
   return exit;
 });
 
