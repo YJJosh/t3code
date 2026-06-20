@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
@@ -42,7 +43,11 @@ import { ProviderInstanceRegistryHydrationLive } from "./Layers/ProviderInstance
 import * as ProviderRegistry from "./ProviderRegistry.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
-import { readProviderStatusCache, resolveProviderStatusCachePath } from "./providerStatusCache.ts";
+import {
+  readProviderStatusCache,
+  resolveProviderStatusCachePath,
+  writeProviderStatusCache,
+} from "./providerStatusCache.ts";
 import type { ProviderInstance } from "./ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./providerMaintenance.ts";
@@ -846,6 +851,98 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               models: [...initialProvider.models],
             });
           }).pipe(Effect.provide(runtimeServices));
+        }),
+      );
+
+      it.effect("keeps hydrated cache state while the boot snapshot is still pending", () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const codexDriver = ProviderDriverKind.make("codex");
+          const codexInstanceId = ProviderInstanceId.make("codex");
+          const fallbackProvider = {
+            instanceId: codexInstanceId,
+            driver: codexDriver,
+            status: "warning",
+            enabled: true,
+            installed: false,
+            auth: { status: "unknown" },
+            checkedAt: "2026-04-29T10:01:00.000Z",
+            version: null,
+            models: [],
+            slashCommands: [],
+            skills: [],
+            message: "Codex provider status has not been checked in this session yet.",
+          } as const satisfies ServerProvider;
+          const cachedProvider = {
+            ...fallbackProvider,
+            status: "ready",
+            installed: true,
+            auth: { status: "authenticated" },
+            checkedAt: "2026-04-29T10:00:00.000Z",
+            version: "1.0.0",
+            message: "Loaded from the provider status cache.",
+          } as const satisfies ServerProvider;
+          const instance = {
+            instanceId: codexInstanceId,
+            driverKind: codexDriver,
+            continuationIdentity: {
+              driverKind: codexDriver,
+              continuationKey: "codex:instance:codex",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
+                provider: codexDriver,
+                packageName: null,
+              }),
+              getSnapshot: Effect.succeed(fallbackProvider),
+              refresh: Effect.succeed(fallbackProvider),
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          } satisfies ProviderInstance;
+          const instanceRegistryLayer = Layer.succeed(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            {
+              getInstance: (instanceId) =>
+                Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
+              listInstances: Effect.succeed([instance]),
+              listUnavailable: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
+                PubSub.subscribe(pubsub),
+              ),
+            },
+          );
+          const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-provider-registry-cache-hydration-",
+          });
+          const configLayer = ServerConfig.layerTest(process.cwd(), baseDir);
+          const config = yield* ServerConfig.ServerConfig.pipe(Effect.provide(configLayer));
+          const filePath = yield* resolveProviderStatusCachePath({
+            cacheDir: config.providerStatusCacheDir,
+            instanceId: codexInstanceId,
+          });
+          yield* writeProviderStatusCache({ filePath, provider: cachedProvider });
+
+          const scope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+          const runtimeServices = yield* Layer.build(
+            ProviderRegistry.layer.pipe(
+              Layer.provideMerge(instanceRegistryLayer),
+              Layer.provideMerge(configLayer),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ).pipe(Scope.provide(scope));
+
+          const providers = yield* ProviderRegistry.ProviderRegistry.pipe(
+            Effect.flatMap((registry) => registry.getProviders),
+            Effect.provide(runtimeServices),
+          );
+
+          assert.deepStrictEqual(providers, [cachedProvider]);
         }),
       );
 

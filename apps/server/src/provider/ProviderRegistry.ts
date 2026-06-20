@@ -341,6 +341,10 @@ export const make = Effect.gen(function* () {
       ),
     ),
   );
+  const cachedInstanceIds = new Set(cachedProviders.map(snapshotInstanceKey));
+  const bootInstancesById = new Map(
+    bootInstances.map((instance) => [instance.instanceId, instance] as const),
+  );
   const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
   const maintenanceActionStatesRef = yield* Ref.make<
     ReadonlyMap<ProviderInstanceId, { readonly update?: ServerProviderUpdateState | undefined }>
@@ -628,10 +632,22 @@ export const make = Effect.gen(function* () {
       // or HTTP server construction path.
       yield* Effect.forEach(
         newlyAdded,
-        ([, instance]) =>
+        ([instanceId, instance]) =>
           Effect.gen(function* () {
             const source = buildSnapshotSource(instance);
             const provider = yield* source.getSnapshot;
+            const bootFallback = fallbackByInstance.get(instanceId);
+            // Keep hydrated cache state when this is still the exact pending
+            // snapshot read during boot. A probe that completed before the
+            // subscription was attached differs here and is applied instead.
+            if (
+              cachedInstanceIds.has(instanceId) &&
+              bootInstancesById.get(instanceId) === instance &&
+              bootFallback !== undefined &&
+              Equal.equals(provider, bootFallback)
+            ) {
+              return;
+            }
             yield* correlateSnapshotWithSource(source, provider).pipe(Effect.flatMap(syncProvider));
           }).pipe(Effect.ignoreCause({ log: true })),
         { concurrency: "unbounded", discard: true },
@@ -685,13 +701,13 @@ export const make = Effect.gen(function* () {
     }),
   );
 
-  // Seed `providersRef` with the boot-time fallback snapshots so
-  // consumers calling `getProviders` immediately after layer build see
-  // a populated list — even before the first `syncLiveSources` refresh
-  // resolves. Cached snapshots (already in `providersRef`) merge with
-  // these via `upsertProviders` so on-disk state wins where present
-  // and pending fallbacks fill the gaps.
-  yield* upsertProviders(fallbackProviders, { publish: false });
+  // Cached snapshots are already in `providersRef`; only seed instances
+  // without cache entries so pending fallbacks cannot overwrite hydrated
+  // status while the managed provider's first probe is still running.
+  yield* upsertProviders(
+    fallbackProviders.filter((provider) => !cachedInstanceIds.has(snapshotInstanceKey(provider))),
+    { publish: false },
+  );
   // Subscribe to registry mutations BEFORE running the initial sync.
   // `subscribeChanges` acquires the `PubSub.Subscription` synchronously
   // in this fibre; the subscription is registered with the PubSub the
