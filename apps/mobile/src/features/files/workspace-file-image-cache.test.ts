@@ -53,7 +53,27 @@ describe("workspaceFileImageAtom", () => {
     registry.dispose();
   });
 
-  it("exposes prefetch failures", async () => {
+  it("exposes a false native prefetch result", async () => {
+    const imageAtom = createWorkspaceFileImageAtomFamily({ prefetch: async () => false });
+    const registry = AtomRegistry.make();
+    const atom = imageAtom("https://example.test/missing.png");
+    const unmount = registry.mount(atom);
+
+    await vi.waitFor(() => expect(AsyncResult.isFailure(registry.get(atom))).toBe(true));
+    const result = registry.get(atom);
+    const error = AsyncResult.isFailure(result)
+      ? Option.getOrUndefined(Cause.findErrorOption(result.cause))
+      : undefined;
+
+    expect(isWorkspaceImagePrefetchError(error)).toBe(true);
+    expect(error).toMatchObject({ uri: "https://example.test/missing.png" });
+    expect(error).not.toHaveProperty("cause");
+
+    unmount();
+    registry.dispose();
+  });
+
+  it("preserves thrown prefetch causes", async () => {
     const cause = new Error("native image prefetch failed");
     const imageAtom = createWorkspaceFileImageAtomFamily({
       prefetch: async () => {
