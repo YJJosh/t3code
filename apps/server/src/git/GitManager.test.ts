@@ -638,6 +638,7 @@ function makeManager(input?: {
   ghScenario?: FakeGhScenario;
   textGeneration?: Partial<FakeGitTextGeneration>;
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
+  vcsDriverLayer?: Layer.Layer<GitVcsDriver.GitVcsDriver>;
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
@@ -647,11 +648,13 @@ function makeManager(input?: {
 
   const serverSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
 
-  const vcsDriverLayer = GitVcsDriver.layer.pipe(
-    Layer.provideMerge(VcsProcess.layer),
-    Layer.provideMerge(NodeServices.layer),
-    Layer.provideMerge(serverConfigLayer),
-  );
+  const vcsDriverLayer =
+    input?.vcsDriverLayer ??
+    GitVcsDriver.layer.pipe(
+      Layer.provideMerge(VcsProcess.layer),
+      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(serverConfigLayer),
+    );
   const sourceControlRegistryLayer = Layer.effect(
     SourceControlProviderRegistry.SourceControlProviderRegistry,
     GitHubSourceControlProvider.make.pipe(
@@ -931,6 +934,30 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         aheadOfDefaultCount: 0,
         pr: null,
       });
+    }),
+  );
+
+  it.effect("does not classify Git command failures from message text", () =>
+    Effect.gen(function* () {
+      const cwd = "/workspace";
+      const cause = new Error("spawn failed");
+      const commandError = new GitCommandError({
+        operation: "GitVcsDriver.statusDetails.status",
+        command: "git",
+        cwd,
+        detail: "not a git repository",
+        cause,
+      });
+      const { manager } = yield* makeManager({
+        vcsDriverLayer: Layer.mock(GitVcsDriver.GitVcsDriver)({
+          statusDetailsLocal: () => Effect.fail(commandError),
+        }),
+      });
+
+      const error = yield* manager.localStatus({ cwd }).pipe(Effect.flip);
+
+      expect(error).toBe(commandError);
+      expect(error.cause).toBe(cause);
     }),
   );
 
