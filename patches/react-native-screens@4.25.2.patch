@@ -11,6 +11,69 @@ index ea5325e..acd2fd7 100644
 +                   imageLoader:(RCTImageLoader *)imageLoader;
 +
  @end
+diff --git a/ios/RNSBarButtonItem.mm b/ios/RNSBarButtonItem.mm
+index 0eb1f09..73298f1 100644
+--- a/ios/RNSBarButtonItem.mm
++++ b/ios/RNSBarButtonItem.mm
+@@ -110,6 +110,58 @@ static UIMenuOptions RNSMakeUIMenuOptionsFromConfig(NSDictionary *config);
+   if (dict[@"accessibilityHint"]) {
+     self.accessibilityHint = dict[@"accessibilityHint"];
+   }
++#if !TARGET_OS_TV && RNS_IPHONE_OS_VERSION_AVAILABLE(26_0)
++  NSNumber *glassEffectNum = dict[@"glassEffect"];
++  if (@available(iOS 26.0, *)) {
++    if ([glassEffectNum boolValue]) {
++      UIButtonConfiguration *configuration = [UIButtonConfiguration glassButtonConfiguration];
++      configuration.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
++      UIBackgroundConfiguration *background = configuration.background;
++      background.strokeWidth = 0.0;
++      background.strokeColor = UIColor.clearColor;
++      configuration.background = background;
++      configuration.contentInsets = NSDirectionalEdgeInsetsZero;
++      if (title != nil) {
++        configuration.title = title;
++      }
++
++      UIButton *button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
++      button.translatesAutoresizingMaskIntoConstraints = NO;
++      button.enabled = self.enabled;
++      button.accessibilityLabel = self.accessibilityLabel;
++      button.accessibilityHint = self.accessibilityHint;
++
++      CGFloat resolvedWidth = width != nil ? width.doubleValue : 56.0;
++      [button.widthAnchor constraintEqualToConstant:resolvedWidth].active = YES;
++      [button.heightAnchor constraintEqualToConstant:50.0].active = YES;
++
++      [[self class] resolveImageFromConfig:dict
++                               imageLoader:imageLoader
++                           completionBlock:^(UIImage *img) {
++                             UIButtonConfiguration *updatedConfiguration = button.configuration;
++                             updatedConfiguration.image = img;
++                             button.configuration = updatedConfiguration;
++                           }];
++
++      NSDictionary *menu = dict[@"menu"];
++      if (menu) {
++        button.menu = [[self class] initUIMenuWithDict:menu menuAction:menuAction imageLoader:imageLoader];
++        button.showsMenuAsPrimaryAction = YES;
++      } else {
++        NSString *buttonId = dict[@"buttonId"];
++        if (buttonId && action) {
++          UIAction *pressAction = [UIAction actionWithHandler:^(__kindof UIAction *_Nonnull sender) {
++            action(buttonId);
++          }];
++          [button addAction:pressAction forControlEvents:UIControlEventTouchUpInside];
++        }
++      }
++
++      self.customView = button;
++      return self;
++    }
++  }
++#endif
+ 
+ #if !TARGET_OS_TV || __TV_OS_VERSION_MAX_ALLOWED >= 170000
+   if (@available(tvOS 17.0, *)) {
 diff --git a/ios/RNSScreen.mm b/ios/RNSScreen.mm
 index 69d4d9a..6192c4a 100644
 --- a/ios/RNSScreen.mm
@@ -1137,7 +1200,7 @@ index 8e4480f..883c5f2 100644
  //# sourceMappingURL=index.d.ts.map
 \ No newline at end of file
 diff --git a/lib/typescript/types.d.ts b/lib/typescript/types.d.ts
-index 3b384e0..a77ef61 100644
+index 3b384e0..1e3a966 100644
 --- a/lib/typescript/types.d.ts
 +++ b/lib/typescript/types.d.ts
 @@ -10,6 +10,7 @@ export type SearchBarCommands = {
@@ -1211,7 +1274,19 @@ index 3b384e0..a77ef61 100644
      /**
       * Allows for setting text color of the title.
       */
-@@ -1145,8 +1188,37 @@ export interface HeaderBarButtonItemWithMenu extends SharedHeaderBarButtonItem {
+@@ -1001,6 +1044,11 @@ interface SharedHeaderBarButtonItem {
+      * Read more: https://developer.apple.com/documentation/uikit/uibarbuttonitem/style-swift.property
+      */
+     variant?: 'plain' | 'done' | 'prominent' | undefined;
++    /**
++     * Render the item with UIButtonConfiguration.glassButtonConfiguration.
++     * Only available from iOS 26.0 and later.
++     */
++    glassEffect?: boolean | undefined;
+     /**
+      * The tint color to apply to the item.
+      *
+@@ -1145,8 +1193,37 @@ export interface HeaderBarButtonItemWithMenu extends SharedHeaderBarButtonItem {
  export interface HeaderBarButtonItemSpacing {
      type: 'spacing';
      spacing: number;
@@ -1250,6 +1325,13 @@ index 3b384e0..a77ef61 100644
  /**
   * Custom Screen Transition
   */
+@@ -1192,4 +1269,4 @@ export interface GestureProviderProps extends GestureProps {
+     gestureDetectorBridge: React.MutableRefObject<GestureDetectorBridge>;
+ }
+ export {};
+-//# sourceMappingURL=types.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=types.d.ts.map
 diff --git a/src/components/ScreenStackHeaderConfig.tsx b/src/components/ScreenStackHeaderConfig.tsx
 index 421b3c2..0ca6f1d 100644
 --- a/src/components/ScreenStackHeaderConfig.tsx
@@ -1475,7 +1557,7 @@ index a405aec..cd649bd 100644
 +export * from './components/gamma/scroll-view-marker';
  export type * from './components/shared/types';
 diff --git a/src/types.tsx b/src/types.tsx
-index 76a83f3..bb7abb6 100644
+index 76a83f3..9e4499f 100644
 --- a/src/types.tsx
 +++ b/src/types.tsx
 @@ -26,6 +26,7 @@ export type SearchBarCommands = {
@@ -1549,7 +1631,19 @@ index 76a83f3..bb7abb6 100644
    /**
     * Allows for setting text color of the title.
     */
-@@ -1279,11 +1322,46 @@ export interface HeaderBarButtonItemWithMenu extends SharedHeaderBarButtonItem {
+@@ -1125,6 +1168,11 @@ interface SharedHeaderBarButtonItem {
+    * Read more: https://developer.apple.com/documentation/uikit/uibarbuttonitem/style-swift.property
+    */
+   variant?: 'plain' | 'done' | 'prominent' | undefined;
++  /**
++   * Render the item with UIButtonConfiguration.glassButtonConfiguration.
++   * Only available from iOS 26.0 and later.
++   */
++  glassEffect?: boolean | undefined;
+   /**
+    * The tint color to apply to the item.
+    *
+@@ -1279,11 +1327,46 @@ export interface HeaderBarButtonItemWithMenu extends SharedHeaderBarButtonItem {
  export interface HeaderBarButtonItemSpacing {
    type: 'spacing';
    spacing: number;

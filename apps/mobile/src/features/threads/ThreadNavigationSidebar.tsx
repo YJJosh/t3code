@@ -35,6 +35,7 @@ import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { useThreadListActions } from "../home/useThreadListActions";
 import { WorkspaceConnectionStatus } from "../home/WorkspaceConnectionStatus";
 import { shouldShowWorkspaceConnectionStatus } from "../home/workspace-connection-status";
+import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { SidebarHeaderActions } from "./sidebar-header-actions";
 import { SidebarFilterButton } from "./sidebar-filter-button";
 import { threadStatusTone } from "./threadPresentation";
@@ -564,20 +565,17 @@ export function ThreadNavigationSidebar(props: {
     const { Screen, ScreenStack, ScreenStackHeaderConfig } =
       require("react-native-screens") as typeof import("react-native-screens");
     const nativeHeaderRightBarButtonItems = [
-      {
+      withNativeGlassHeaderItem({
         accessibilityLabel: "Open settings",
-        icon: { name: "ellipsis", type: "sfSymbol" },
+        icon: { name: "ellipsis", type: "sfSymbol" } as const,
         identifier: "thread-sidebar-settings",
         onPress: props.onOpenSettings,
-        sharesBackground: true,
         tintColor: foregroundColor,
         type: "button",
-        variant: "prominent",
-        width: 58,
-      },
-      {
+      }),
+      withNativeGlassHeaderItem({
         accessibilityLabel: "Filter and sort threads",
-        icon: { name: filterIcon, type: "sfSymbol" },
+        icon: { name: filterIcon, type: "sfSymbol" } as const,
         identifier: "thread-sidebar-filter",
         menu: {
           title: "Thread list options",
@@ -640,12 +638,9 @@ export function ThreadNavigationSidebar(props: {
             },
           ],
         },
-        sharesBackground: true,
         tintColor: foregroundColor,
         type: "menu",
-        variant: "prominent",
-        width: 58,
-      },
+      }),
     ] as ComponentProps<typeof ScreenStackHeaderConfig>["headerRightBarButtonItems"];
 
     return (

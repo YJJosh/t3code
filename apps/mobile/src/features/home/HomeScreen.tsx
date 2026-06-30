@@ -435,6 +435,16 @@ export function HomeScreen(props: HomeScreenProps) {
     <>
       {Platform.OS === "ios" ? null : <HomeTopContentSpacer topInset={insets.top} />}
 
+      {shouldShowConnectionStatus && Platform.OS === "ios" ? (
+        <View style={{ paddingBottom: 16 }}>
+          <WorkspaceConnectionStatus
+            state={props.catalogState}
+            onPress={props.onOpenEnvironments}
+            variant="sidebar"
+          />
+        </View>
+      ) : null}
+
       {!hasAnyThreads ? (
         <View>
           <EmptyState
@@ -543,14 +553,15 @@ export function HomeScreen(props: HomeScreenProps) {
     </ScrollView>
   );
 
-  const connectionStatus = shouldShowConnectionStatus ? (
-    <View
-      className="absolute left-0 right-0 items-center"
-      style={{ bottom: Math.max(insets.bottom, 18) + 76 }}
-    >
-      <WorkspaceConnectionStatus state={props.catalogState} onPress={props.onOpenEnvironments} />
-    </View>
-  ) : null;
+  const connectionStatus =
+    shouldShowConnectionStatus && Platform.OS !== "ios" ? (
+      <View
+        className="absolute left-0 right-0 items-center"
+        style={{ bottom: Math.max(insets.bottom, 18) + 76 }}
+      >
+        <WorkspaceConnectionStatus state={props.catalogState} onPress={props.onOpenEnvironments} />
+      </View>
+    ) : null;
 
   return (
     <>

@@ -60,6 +60,7 @@ import {
   useAdaptiveWorkspaceLayout,
   useAdaptiveWorkspacePaneRole,
 } from "../layout/AdaptiveWorkspaceLayout";
+import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { ThreadFileNavigatorPane } from "../files/thread-file-navigator-pane";
 import {
   ThreadInspectorContentStack,
@@ -640,7 +641,7 @@ function ThreadRouteContent(
       },
       ...(props.onReturnToThread
         ? [
-            {
+            withNativeGlassHeaderItem({
               accessibilityLabel: "Return to chat",
               icon: { name: "chevron.left", type: "sfSymbol" as const },
               identifier: "thread-left-return",
@@ -648,10 +649,10 @@ function ThreadRouteContent(
               sharesBackground: false,
               type: "button" as const,
               width: 58,
-            },
+            }),
           ]
         : []),
-      {
+      withNativeGlassHeaderItem({
         accessibilityLabel: panes.primarySidebarVisible
           ? "Maximize content"
           : "Show thread sidebar",
@@ -664,8 +665,8 @@ function ThreadRouteContent(
         sharesBackground: false,
         type: "button" as const,
         width: 58,
-      },
-      {
+      }),
+      withNativeGlassHeaderItem({
         accessibilityLabel: "New task",
         icon: { name: "square.and.pencil", type: "sfSymbol" as const },
         identifier: "thread-left-new-task",
@@ -673,7 +674,7 @@ function ThreadRouteContent(
         sharesBackground: false,
         type: "button" as const,
         width: 58,
-      },
+      }),
     ],
     [panes.primarySidebarVisible, props.onReturnToThread, router, togglePrimarySidebar],
   );
