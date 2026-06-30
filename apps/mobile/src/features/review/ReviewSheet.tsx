@@ -603,20 +603,21 @@ export function ReviewSheet() {
         }}
       />
 
-      {layout.usesSplitView || showSectionToolbar || panes.supportsAuxiliaryPane ? (
+      {layout.usesSplitView ? (
+        <Stack.Toolbar placement="left">
+          <Stack.Toolbar.Button
+            accessibilityLabel={panes.primarySidebarVisible ? "Maximize review" : "Show threads"}
+            icon={
+              panes.primarySidebarVisible ? "arrow.up.left.and.arrow.down.right" : "sidebar.left"
+            }
+            onPress={togglePrimarySidebar}
+            separateBackground
+          />
+        </Stack.Toolbar>
+      ) : null}
+
+      {showSectionToolbar || panes.supportsAuxiliaryPane ? (
         <Stack.Toolbar placement="right">
-          {layout.usesSplitView ? (
-            <Stack.Toolbar.Button
-              accessibilityLabel={
-                panes.primarySidebarVisible ? "Maximize review" : "Show thread sidebar"
-              }
-              icon={
-                panes.primarySidebarVisible ? "arrow.up.left.and.arrow.down.right" : "sidebar.left"
-              }
-              onPress={togglePrimarySidebar}
-              separateBackground
-            />
-          ) : null}
           {panes.supportsAuxiliaryPane ? (
             <Stack.Toolbar.Button
               accessibilityLabel={

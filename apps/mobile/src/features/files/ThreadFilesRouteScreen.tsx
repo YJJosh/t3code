@@ -620,27 +620,25 @@ export function ThreadFilesTreeScreen() {
               },
         }}
       />
-      {layout.usesSplitView || !usesCompactMailToolbar ? (
+      {layout.usesSplitView ? (
+        <Stack.Toolbar placement="left">
+          <Stack.Toolbar.Button
+            accessibilityLabel={panes.primarySidebarVisible ? "Maximize files" : "Show threads"}
+            icon={
+              panes.primarySidebarVisible ? "arrow.up.left.and.arrow.down.right" : "sidebar.left"
+            }
+            onPress={togglePrimarySidebar}
+            separateBackground
+          />
+        </Stack.Toolbar>
+      ) : null}
+      {!usesCompactMailToolbar ? (
         <Stack.Toolbar placement="right">
-          {layout.usesSplitView ? (
-            <Stack.Toolbar.Button
-              accessibilityLabel={
-                panes.primarySidebarVisible ? "Maximize files" : "Show thread sidebar"
-              }
-              icon={
-                panes.primarySidebarVisible ? "arrow.up.left.and.arrow.down.right" : "sidebar.left"
-              }
-              onPress={togglePrimarySidebar}
-              separateBackground
-            />
-          ) : null}
-          {!usesCompactMailToolbar ? (
-            <Stack.Toolbar.Button
-              accessibilityLabel="Refresh files"
-              icon="arrow.clockwise"
-              onPress={entriesQuery.refresh}
-            />
-          ) : null}
+          <Stack.Toolbar.Button
+            accessibilityLabel="Refresh files"
+            icon="arrow.clockwise"
+            onPress={entriesQuery.refresh}
+          />
         </Stack.Toolbar>
       ) : null}
       {usesCompactMailToolbar ? null : (

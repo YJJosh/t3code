@@ -1,5 +1,5 @@
 diff --git a/ios/RNSBarButtonItem.h b/ios/RNSBarButtonItem.h
-index ea5325ea8d17b1ddfa790ff8dab48ce83142d4d3..acd2fd7ceb7162ed300abc4d3c9f0c24f4d63898 100644
+index ea5325e..acd2fd7 100644
 --- a/ios/RNSBarButtonItem.h
 +++ b/ios/RNSBarButtonItem.h
 @@ -13,4 +13,8 @@ typedef void (^RNSBarButtonMenuItemAction)(NSString *menuId);
@@ -12,7 +12,7 @@ index ea5325ea8d17b1ddfa790ff8dab48ce83142d4d3..acd2fd7ceb7162ed300abc4d3c9f0c24
 +
  @end
 diff --git a/ios/RNSScreen.mm b/ios/RNSScreen.mm
-index 69d4d9a4704a7bef3fa207de2dbb2d5119846ccb..6192c4a23b1ce08cc2a085c5e7fb0f4a8c33deea 100644
+index 69d4d9a..6192c4a 100644
 --- a/ios/RNSScreen.mm
 +++ b/ios/RNSScreen.mm
 @@ -26,8 +26,10 @@
@@ -61,7 +61,7 @@ index 69d4d9a4704a7bef3fa207de2dbb2d5119846ccb..6192c4a23b1ce08cc2a085c5e7fb0f4a
  
  - (UIEdgeInsets)providerSafeAreaInsets
 diff --git a/ios/RNSScreenStackHeaderConfig.h b/ios/RNSScreenStackHeaderConfig.h
-index 919b984edc9f91ee9ac26faf257d8a721e26457c..5bb0cd6736ed6bc51db57e2a9326f758f22c51d8 100644
+index 919b984..5bb0cd6 100644
 --- a/ios/RNSScreenStackHeaderConfig.h
 +++ b/ios/RNSScreenStackHeaderConfig.h
 @@ -21,6 +21,8 @@
@@ -87,7 +87,7 @@ index 919b984edc9f91ee9ac26faf257d8a721e26457c..5bb0cd6736ed6bc51db57e2a9326f758
  
  NS_ASSUME_NONNULL_END
 diff --git a/ios/RNSScreenStackHeaderConfig.mm b/ios/RNSScreenStackHeaderConfig.mm
-index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f4f19bdb2 100644
+index 5970e3e..0849992 100644
 --- a/ios/RNSScreenStackHeaderConfig.mm
 +++ b/ios/RNSScreenStackHeaderConfig.mm
 @@ -30,6 +30,20 @@ namespace react = facebook::react;
@@ -160,7 +160,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f
  
  // appearance does not apply to the tvOS so we need to use lagacy customization
  #if TARGET_OS_TV
-@@ -637,10 +667,235 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -637,10 +667,245 @@ RNS_IGNORE_SUPER_CALL_END
    // This assignment should be done after `navitem.titleView = ...` assignment (iOS 16.0 bug).
    // See: https://github.com/software-mansion/react-native-screens/issues/1570 (comments)
    navitem.title = config.title;
@@ -410,7 +410,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f
  
    // Setting navigation bar visibility is split to mitigate iOS 26 bug with bar button items
    // (setting nav bar visibility should be done after `navitem.*BarButtonItems`).
-@@ -773,6 +1028,7 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -773,6 +1038,7 @@ RNS_IGNORE_SUPER_CALL_END
  
  - (NSArray<UIBarButtonItem *> *)barButtonItemsFromConfigs:(NSArray<NSDictionary<NSString *, id> *> *)dicts
                                           withCurrentItems:(NSArray<UIBarButtonItem *> *)currentItems
@@ -418,7 +418,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f
  {
    if (dicts.count == 0) {
      return currentItems;
-@@ -781,7 +1037,190 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -781,7 +1047,197 @@ RNS_IGNORE_SUPER_CALL_END
    [items addObjectsFromArray:currentItems];
    for (NSUInteger i = 0; i < dicts.count; i++) {
      NSDictionary *dict = dicts[i];
@@ -617,7 +617,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f
        RNSBarButtonItem *item = [[RNSBarButtonItem alloc] initWithConfig:dict
            action:^(NSString *buttonId) {
              auto eventEmitter = std::static_pointer_cast<const facebook::react::RNSScreenStackHeaderConfigEventEmitter>(
-@@ -809,11 +1248,15 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -809,11 +1265,15 @@ RNS_IGNORE_SUPER_CALL_END
          [items addObject:item];
        }
      } else if (dict[@"spacing"]) {
@@ -637,7 +637,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f
        NSNumber *index = dict[@"index"];
        if (index.integerValue < items.count) {
          [items insertObject:item atIndex:index.integerValue];
-@@ -825,6 +1268,47 @@ RNS_IGNORE_SUPER_CALL_END
+@@ -825,6 +1285,47 @@ RNS_IGNORE_SUPER_CALL_END
    return items;
  }
  
@@ -685,7 +685,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f
  RNS_IGNORE_SUPER_CALL_BEGIN
  - (void)insertReactSubview:(RNSScreenStackHeaderSubview *)subview atIndex:(NSInteger)atIndex
  {
-@@ -1013,6 +1497,8 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
+@@ -1013,6 +1514,8 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
    }
  
    _title = RCTNSStringFromStringNilIfEmpty(newScreenProps.title);
@@ -694,7 +694,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f
    if (newScreenProps.titleFontFamily != oldScreenProps.titleFontFamily) {
      _titleFontFamily = RCTNSStringFromStringNilIfEmpty(newScreenProps.titleFontFamily);
    }
-@@ -1038,6 +1524,7 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
+@@ -1038,6 +1541,7 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
    _disableBackButtonMenu = newScreenProps.disableBackButtonMenu;
    _backButtonDisplayMode =
        [RNSConvert UINavigationItemBackButtonDisplayModeFromCppEquivalent:newScreenProps.backButtonDisplayMode];
@@ -702,7 +702,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f
  
    if (newScreenProps.userInterfaceStyle != oldScreenProps.userInterfaceStyle) {
      _userInterfaceStyle = [RNSConvert UIUserInterfaceStyleFromCppEquivalent:newScreenProps.userInterfaceStyle];
-@@ -1084,6 +1571,30 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
+@@ -1084,6 +1588,30 @@ static RCTResizeMode resizeModeFromCppEquiv(react::ImageResizeMode resizeMode)
      _headerRightBarButtonItems = array;
    }
  
@@ -734,7 +734,7 @@ index 5970e3e3a624b9498b8dedfc16831df03a274d0c..99a8bce383d46e0452eea857e84c7a2f
  
    if (needsNavigationControllerLayout) {
 diff --git a/ios/gamma/scroll-view-marker/RNSScrollViewMarkerComponentView.h b/ios/gamma/scroll-view-marker/RNSScrollViewMarkerComponentView.h
-index 4badf565055086e814808b7ef3bcefc5f89e8af4..7703df97d1a4572e301acf50ca8cba6d29ff5666 100644
+index 4badf56..7703df9 100644
 --- a/ios/gamma/scroll-view-marker/RNSScrollViewMarkerComponentView.h
 +++ b/ios/gamma/scroll-view-marker/RNSScrollViewMarkerComponentView.h
 @@ -1,10 +1,11 @@
@@ -751,7 +751,7 @@ index 4badf565055086e814808b7ef3bcefc5f89e8af4..7703df97d1a4572e301acf50ca8cba6d
  @end
  
 diff --git a/ios/gamma/scroll-view-marker/RNSScrollViewMarkerComponentView.mm b/ios/gamma/scroll-view-marker/RNSScrollViewMarkerComponentView.mm
-index 52c61c863c53c289569a741445ed08c0355d95ba..cb4d6be752f98e06dfd3b40453c2bd881886ad88 100644
+index 52c61c8..cb4d6be 100644
 --- a/ios/gamma/scroll-view-marker/RNSScrollViewMarkerComponentView.mm
 +++ b/ios/gamma/scroll-view-marker/RNSScrollViewMarkerComponentView.mm
 @@ -2,6 +2,7 @@
@@ -806,7 +806,7 @@ index 52c61c863c53c289569a741445ed08c0355d95ba..cb4d6be752f98e06dfd3b40453c2bd88
  
  #pragma mark - Override
 diff --git a/lib/commonjs/components/ScreenStackHeaderConfig.js b/lib/commonjs/components/ScreenStackHeaderConfig.js
-index 16b979bb3dfb41ff247403f1632c300a9a60d549..ad1fdb273e09b344184a7013f4f1b038e84ed19d 100644
+index 16b979b..01415d4 100644
 --- a/lib/commonjs/components/ScreenStackHeaderConfig.js
 +++ b/lib/commonjs/components/ScreenStackHeaderConfig.js
 @@ -23,18 +23,42 @@ const ScreenStackHeaderConfig = exports.ScreenStackHeaderConfig = /*#__PURE__*/_
@@ -890,7 +890,7 @@ index 16b979bb3dfb41ff247403f1632c300a9a60d549..ad1fdb273e09b344184a7013f4f1b038
      onPressHeaderBarButtonMenuItem: onPressHeaderBarButtonMenuItem,
      ref: ref,
 diff --git a/lib/commonjs/components/helpers/prepareHeaderBarButtonItems.js b/lib/commonjs/components/helpers/prepareHeaderBarButtonItems.js
-index ab93f62e4a7049d63c6681cecbd6cf8b1d07ce10..b5ea122473b023f84eabdb1914aef09a28c6d525 100644
+index ab93f62..b5ea122 100644
 --- a/lib/commonjs/components/helpers/prepareHeaderBarButtonItems.js
 +++ b/lib/commonjs/components/helpers/prepareHeaderBarButtonItems.js
 @@ -41,10 +41,31 @@ const prepareMenu = (menu, index, side, path = '') => {
@@ -927,7 +927,7 @@ index ab93f62e4a7049d63c6681cecbd6cf8b1d07ce10..b5ea122473b023f84eabdb1914aef09a
      if (item.icon?.type === 'imageSource') {
        imageSource = _reactNative.Image.resolveAssetSource(item.icon.imageSource);
 diff --git a/lib/commonjs/index.js b/lib/commonjs/index.js
-index de25040bfec8587ca311f5a42661240640989419..bf73f41744e08bc60ffac09029419d19a94425ee 100644
+index de25040..bf73f41 100644
 --- a/lib/commonjs/index.js
 +++ b/lib/commonjs/index.js
 @@ -202,6 +202,7 @@ var _utils = require("./utils");
@@ -957,7 +957,7 @@ index de25040bfec8587ca311f5a42661240640989419..bf73f41744e08bc60ffac09029419d19
  function _getRequireWildcardCache(e) { if ("function" != typeof WeakMap) return null; var r = new WeakMap(), t = new WeakMap(); return (_getRequireWildcardCache = function (e) { return e ? t : r; })(e); }
  function _interopRequireWildcard(e, r) { if (!r && e && e.__esModule) return e; if (null === e || "object" != typeof e && "function" != typeof e) return { default: e }; var t = _getRequireWildcardCache(r); if (t && t.has(e)) return t.get(e); var n = { __proto__: null }, a = Object.defineProperty && Object.getOwnPropertyDescriptor; for (var u in e) if ("default" !== u && {}.hasOwnProperty.call(e, u)) { var i = a ? Object.getOwnPropertyDescriptor(e, u) : null; i && (i.get || i.set) ? Object.defineProperty(n, u, i) : n[u] = e[u]; } return n.default = e, t && t.set(e, n), n; }
 diff --git a/lib/module/components/ScreenStackHeaderConfig.js b/lib/module/components/ScreenStackHeaderConfig.js
-index cf15f36f25e51d95c896fbc3a31ccba90156a5b6..3d995490fac910dfcc21e81ae965e31f24717c51 100644
+index cf15f36..dd66167 100644
 --- a/lib/module/components/ScreenStackHeaderConfig.js
 +++ b/lib/module/components/ScreenStackHeaderConfig.js
 @@ -19,18 +19,42 @@ export const ScreenStackHeaderConfig = /*#__PURE__*/React.forwardRef((props, ref
@@ -1041,7 +1041,7 @@ index cf15f36f25e51d95c896fbc3a31ccba90156a5b6..3d995490fac910dfcc21e81ae965e31f
      onPressHeaderBarButtonMenuItem: onPressHeaderBarButtonMenuItem,
      ref: ref,
 diff --git a/lib/module/components/helpers/prepareHeaderBarButtonItems.js b/lib/module/components/helpers/prepareHeaderBarButtonItems.js
-index 8a70ffd78617147418d628c03c580bb7ff9a8a72..8dbd0ba2ee61ee54d44cdf286a720ce26af01f26 100644
+index 8a70ffd..8dbd0ba 100644
 --- a/lib/module/components/helpers/prepareHeaderBarButtonItems.js
 +++ b/lib/module/components/helpers/prepareHeaderBarButtonItems.js
 @@ -35,10 +35,31 @@ const prepareMenu = (menu, index, side, path = '') => {
@@ -1078,7 +1078,7 @@ index 8a70ffd78617147418d628c03c580bb7ff9a8a72..8dbd0ba2ee61ee54d44cdf286a720ce2
      if (item.icon?.type === 'imageSource') {
        imageSource = Image.resolveAssetSource(item.icon.imageSource);
 diff --git a/lib/module/index.js b/lib/module/index.js
-index 07caaf7f04c1d6484727b43b694ccf76b1988984..07fd7a57687797c5ae8f685ea70ccf983e262f63 100644
+index 07caaf7..07fd7a5 100644
 --- a/lib/module/index.js
 +++ b/lib/module/index.js
 @@ -43,4 +43,5 @@ export { default as useTransitionProgress } from './useTransitionProgress';
@@ -1089,7 +1089,7 @@ index 07caaf7f04c1d6484727b43b694ccf76b1988984..07fd7a57687797c5ae8f685ea70ccf98
  //# sourceMappingURL=index.js.map
 \ No newline at end of file
 diff --git a/lib/typescript/fabric/ScreenStackHeaderConfigNativeComponent.d.ts b/lib/typescript/fabric/ScreenStackHeaderConfigNativeComponent.d.ts
-index b7568ecfebd4f4420f2a8d3fec5184d7fc728dd1..9e3d310dea3a36d79ae7f5078ccc792ab9ff9979 100644
+index b7568ec..41ca1f2 100644
 --- a/lib/typescript/fabric/ScreenStackHeaderConfigNativeComponent.d.ts
 +++ b/lib/typescript/fabric/ScreenStackHeaderConfigNativeComponent.d.ts
 @@ -9,6 +9,7 @@ type OnPressHeaderBarButtonMenuItemEvent = Readonly<{
@@ -1125,7 +1125,7 @@ index b7568ecfebd4f4420f2a8d3fec5184d7fc728dd1..9e3d310dea3a36d79ae7f5078ccc792a
      onPressHeaderBarButtonMenuItem?: CT.DirectEventHandler<OnPressHeaderBarButtonMenuItemEvent> | undefined;
      synchronousShadowStateUpdatesEnabled?: CT.WithDefault<boolean, false>;
 diff --git a/lib/typescript/index.d.ts b/lib/typescript/index.d.ts
-index 8e4480f901d5d557244643a32341d46e9a497e68..883c5f264301058cbcd9090bee2702ee02346161 100644
+index 8e4480f..883c5f2 100644
 --- a/lib/typescript/index.d.ts
 +++ b/lib/typescript/index.d.ts
 @@ -32,5 +32,6 @@ export { default as useTransitionProgress } from './useTransitionProgress';
@@ -1137,7 +1137,7 @@ index 8e4480f901d5d557244643a32341d46e9a497e68..883c5f264301058cbcd9090bee2702ee
  //# sourceMappingURL=index.d.ts.map
 \ No newline at end of file
 diff --git a/lib/typescript/types.d.ts b/lib/typescript/types.d.ts
-index 3b384e03891e38e936f370372a682d73440e7ec2..66fe089401975016d2fb91b13e135940adf516cb 100644
+index 3b384e0..a77ef61 100644
 --- a/lib/typescript/types.d.ts
 +++ b/lib/typescript/types.d.ts
 @@ -10,6 +10,7 @@ export type SearchBarCommands = {
@@ -1251,7 +1251,7 @@ index 3b384e03891e38e936f370372a682d73440e7ec2..66fe089401975016d2fb91b13e135940
   * Custom Screen Transition
   */
 diff --git a/src/components/ScreenStackHeaderConfig.tsx b/src/components/ScreenStackHeaderConfig.tsx
-index 421b3c2545426ae957271bd6515bcf827437541c..0ca6f1d7f324eaf257891a3bbb0aab210aa30f6f 100644
+index 421b3c2..0ca6f1d 100644
 --- a/src/components/ScreenStackHeaderConfig.tsx
 +++ b/src/components/ScreenStackHeaderConfig.tsx
 @@ -39,7 +39,12 @@ export const ScreenStackHeaderConfig = React.forwardRef<
@@ -1378,7 +1378,7 @@ index 421b3c2545426ae957271bd6515bcf827437541c..0ca6f1d7f324eaf257891a3bbb0aab21
        onPressHeaderBarButtonMenuItem={onPressHeaderBarButtonMenuItem}
        ref={ref}
 diff --git a/src/components/helpers/prepareHeaderBarButtonItems.ts b/src/components/helpers/prepareHeaderBarButtonItems.ts
-index be2c24dfee77f5883b5ab1d7473be80933b5dc6f..0b038d2005b2d51bbb2ab1d7dba7eaccda83d42f 100644
+index be2c24d..0b038d2 100644
 --- a/src/components/helpers/prepareHeaderBarButtonItems.ts
 +++ b/src/components/helpers/prepareHeaderBarButtonItems.ts
 @@ -50,13 +50,43 @@ const prepareMenu = (
@@ -1428,7 +1428,7 @@ index be2c24dfee77f5883b5ab1d7473be80933b5dc6f..0b038d2005b2d51bbb2ab1d7dba7eacc
      if (item.icon?.type === 'imageSource') {
        imageSource = Image.resolveAssetSource(item.icon.imageSource);
 diff --git a/src/fabric/ScreenStackHeaderConfigNativeComponent.ts b/src/fabric/ScreenStackHeaderConfigNativeComponent.ts
-index ba2479de0f49c112470f78c5084059ddd9e2f3e8..8677583a8f8daa4839340467466bfab8d73111ab 100644
+index ba2479d..8677583 100644
 --- a/src/fabric/ScreenStackHeaderConfigNativeComponent.ts
 +++ b/src/fabric/ScreenStackHeaderConfigNativeComponent.ts
 @@ -14,6 +14,7 @@ type OnPressHeaderBarButtonItemEvent = Readonly<{ buttonId: string }>;
@@ -1465,7 +1465,7 @@ index ba2479de0f49c112470f78c5084059ddd9e2f3e8..8677583a8f8daa4839340467466bfab8
      | CT.DirectEventHandler<OnPressHeaderBarButtonItemEvent>
      | undefined;
 diff --git a/src/index.tsx b/src/index.tsx
-index a405aec437bd879d8be7a706d29e965d77658899..cd649bd7ab7de7b7131302e8be682ec6d0081a9e 100644
+index a405aec..cd649bd 100644
 --- a/src/index.tsx
 +++ b/src/index.tsx
 @@ -66,4 +66,5 @@ export { default as useTransitionProgress } from './useTransitionProgress';
@@ -1475,7 +1475,7 @@ index a405aec437bd879d8be7a706d29e965d77658899..cd649bd7ab7de7b7131302e8be682ec6
 +export * from './components/gamma/scroll-view-marker';
  export type * from './components/shared/types';
 diff --git a/src/types.tsx b/src/types.tsx
-index 76a83f3acb6fd3f0af7f027798848b7124100286..bb7abb6e4705b8423b2bf89989fe4a8b38d751f7 100644
+index 76a83f3..bb7abb6 100644
 --- a/src/types.tsx
 +++ b/src/types.tsx
 @@ -26,6 +26,7 @@ export type SearchBarCommands = {
