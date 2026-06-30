@@ -76,11 +76,13 @@ export function HomeHeader(props: {
               ? () => [
                   withNativeGlassHeaderItem({
                     accessibilityLabel: "Open settings",
+                    glassEffect: false,
                     icon: { name: "ellipsis", type: "sfSymbol" } as const,
                     identifier: "home-settings",
                     label: "",
                     onPress: props.onOpenSettings,
                     type: "button",
+                    variant: "plain",
                   }),
                 ]
               : undefined,

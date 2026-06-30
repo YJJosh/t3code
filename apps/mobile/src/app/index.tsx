@@ -70,7 +70,6 @@ export default function HomeRouteScreen() {
               accessibilityLabel="Start new task"
               icon="square.and.pencil"
               onPress={() => router.push("/new")}
-              separateBackground
             />
           }
         />

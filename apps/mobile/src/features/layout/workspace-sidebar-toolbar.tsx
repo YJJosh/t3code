@@ -24,7 +24,6 @@ export function WorkspaceSidebarToolbar(
         }
         icon={panes.primarySidebarVisible ? "arrow.up.left.and.arrow.down.right" : "sidebar.left"}
         onPress={togglePrimarySidebar}
-        separateBackground
       />
       {props.afterSidebarButton}
     </Stack.Toolbar>
