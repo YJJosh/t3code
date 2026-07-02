@@ -813,6 +813,15 @@ function normalizeWorkflowAgentEntry(
     ...(workflowClippedString(entry.error, MAX_WORKFLOW_PREVIEW_CHARS) !== undefined
       ? { error: workflowClippedString(entry.error, MAX_WORKFLOW_PREVIEW_CHARS) }
       : {}),
+    ...(workflowFiniteNumber(entry.tokens) !== undefined
+      ? { tokens: workflowFiniteNumber(entry.tokens) }
+      : {}),
+    ...(workflowFiniteNumber(entry.toolCalls) !== undefined
+      ? { toolCalls: workflowFiniteNumber(entry.toolCalls) }
+      : {}),
+    ...(workflowFiniteNumber(entry.durationMs) !== undefined
+      ? { durationMs: workflowFiniteNumber(entry.durationMs) }
+      : {}),
   };
 }
 

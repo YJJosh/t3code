@@ -38,6 +38,9 @@ export interface WorkflowRunAgent {
   promptPreview?: string | undefined;
   resultPreview?: string | undefined;
   error?: string | undefined;
+  tokens?: number | undefined;
+  toolCalls?: number | undefined;
+  durationMs?: number | undefined;
 }
 
 export interface WorkflowRunPhase {
@@ -161,6 +164,9 @@ function parseAgentEntry(entry: Record<string, unknown>): WorkflowRunAgent | und
       ? { resultPreview: asString(entry.resultPreview) }
       : {}),
     ...(asString(entry.error) !== undefined ? { error: asString(entry.error) } : {}),
+    ...(asNumber(entry.tokens) !== undefined ? { tokens: asNumber(entry.tokens) } : {}),
+    ...(asNumber(entry.toolCalls) !== undefined ? { toolCalls: asNumber(entry.toolCalls) } : {}),
+    ...(asNumber(entry.durationMs) !== undefined ? { durationMs: asNumber(entry.durationMs) } : {}),
   };
 }
 

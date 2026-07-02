@@ -234,6 +234,26 @@ describe("deriveWorkflowRuns", () => {
     expect(runs[0]?.agentCounts.done).toBe(1);
   });
 
+  it("parses per-agent tokens, tool calls, and duration from the snapshot", () => {
+    const runs = deriveWorkflowRuns([
+      workflowStartedActivity("task-1"),
+      workflowUpdatedActivity("task-1", [
+        {
+          type: "workflow_agent",
+          index: 0,
+          state: "done",
+          tokens: 94_200,
+          toolCalls: 47,
+          durationMs: 423_000,
+        },
+      ]),
+    ]);
+    const agent = runs[0]?.phases.flatMap((phase) => phase.agents)[0];
+    expect(agent?.tokens).toBe(94_200);
+    expect(agent?.toolCalls).toBe(47);
+    expect(agent?.durationMs).toBe(423_000);
+  });
+
   it("parses snake_case usage from the updated snapshot", () => {
     const runs = deriveWorkflowRuns([
       workflowStartedActivity("task-1"),

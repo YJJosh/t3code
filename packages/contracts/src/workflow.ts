@@ -47,6 +47,11 @@ export const WorkflowAgentProgressEntry = Schema.Struct({
   promptPreview: Schema.optional(Schema.String),
   resultPreview: Schema.optional(Schema.String),
   error: Schema.optional(Schema.String),
+  /** Cumulative output tokens, tool calls, and wall-clock duration for this
+   * agent, as reported by the SDK snapshot. */
+  tokens: Schema.optional(Schema.Number),
+  toolCalls: Schema.optional(Schema.Number),
+  durationMs: Schema.optional(Schema.Number),
 });
 export type WorkflowAgentProgressEntry = typeof WorkflowAgentProgressEntry.Type;
 

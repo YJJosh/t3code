@@ -1,12 +1,14 @@
 import type { ReactElement, ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
-import type {
-  WorkflowAgentStatus,
-  WorkflowRun,
-  WorkflowRunAgent,
-  WorkflowRunPhase,
-  WorkflowRunStatus,
+import {
+  formatWorkflowDuration,
+  formatWorkflowTokens,
+  type WorkflowAgentStatus,
+  type WorkflowRun,
+  type WorkflowRunAgent,
+  type WorkflowRunPhase,
+  type WorkflowRunStatus,
 } from "~/workflow-logic";
 
 // ---------------------------------------------------------------------------
@@ -124,7 +126,28 @@ function AgentMetaBadges({ agent }: { agent: WorkflowRunAgent }): ReactElement |
   );
 }
 
-/** The shared inner content of an agent row: dot, label, badges, dimmed preview. */
+/** "94.2k tok · 47 tools · 7m 03s" — cumulative per-agent stats from the
+ * SDK snapshot; duration is shown once the agent settles. */
+export function agentStatsLabel(agent: WorkflowRunAgent): string | undefined {
+  const parts: string[] = [];
+  if (agent.tokens !== undefined && agent.tokens > 0) {
+    parts.push(`${formatWorkflowTokens(agent.tokens)} tok`);
+  }
+  if (agent.toolCalls !== undefined && agent.toolCalls > 0) {
+    parts.push(`${agent.toolCalls} ${agent.toolCalls === 1 ? "tool" : "tools"}`);
+  }
+  if (
+    agent.durationMs !== undefined &&
+    agent.durationMs > 0 &&
+    (agent.status === "done" || agent.status === "error")
+  ) {
+    parts.push(formatWorkflowDuration(agent.durationMs));
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+/** The shared inner content of an agent row: dot, label, badges, dimmed
+ * preview, right-aligned model + stats. */
 export function AgentRowContent({
   agent,
   leading,
@@ -133,6 +156,7 @@ export function AgentRowContent({
   leading?: ReactNode;
 }): ReactElement {
   const preview = agentPreviewText(agent);
+  const stats = agentStatsLabel(agent);
   return (
     <div className="flex min-w-0 items-center gap-1.5 text-[12px] leading-5">
       {leading}
@@ -148,6 +172,15 @@ export function AgentRowContent({
       <AgentMetaBadges agent={agent} />
       {preview !== undefined && (
         <span className="min-w-0 flex-1 truncate text-muted-foreground/70">{preview}</span>
+      )}
+      {preview === undefined && <span className="min-w-0 flex-1" />}
+      {agent.model !== undefined && (
+        <span className="hidden shrink-0 text-[11px] text-muted-foreground/55 sm:inline">
+          {agent.model}
+        </span>
+      )}
+      {stats !== undefined && (
+        <span className="shrink-0 text-[11px] text-muted-foreground/70 tabular-nums">{stats}</span>
       )}
     </div>
   );

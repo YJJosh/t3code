@@ -313,55 +313,86 @@ function ExpandableAgentRow({
 // Transcript view (cursor-paged, polled while running)
 // ---------------------------------------------------------------------------
 
-function extractAssistantText(parsed: unknown): string | null {
+interface TranscriptEntry {
+  kind: "text" | "tool";
+  text: string;
+}
+
+const TRANSCRIPT_MAX_RETAINED_LINES = 600;
+const TRANSCRIPT_TEXT_MAX_CHARS = 600;
+const TRANSCRIPT_TOOL_PREVIEW_CHARS = 120;
+
+function clipTranscriptText(text: string, limit: number): string {
+  const trimmed = text.trim();
+  return trimmed.length > limit ? `${trimmed.slice(0, limit)}\u2026` : trimmed;
+}
+
+function toolInputPreview(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null) {
+    return undefined;
+  }
+  const record = input as Record<string, unknown>;
+  // The most informative single field per common tool, else the first string.
+  const preferred = record.command ?? record.file_path ?? record.pattern ?? record.prompt;
+  const value =
+    typeof preferred === "string"
+      ? preferred
+      : Object.values(record).find((entry): entry is string => typeof entry === "string");
+  return value !== undefined ? clipTranscriptText(value, TRANSCRIPT_TOOL_PREVIEW_CHARS) : undefined;
+}
+
+/**
+ * Distill one transcript JSONL line into displayable entries. Only assistant
+ * text and tool calls render; user turns, tool results, attachments, thinking,
+ * and harness metadata are skipped — they dominate line counts on long runs
+ * and read as noise ("user", "attachment", ...) when printed raw.
+ */
+function parseTranscriptEntries(raw: string): TranscriptEntry[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
   if (typeof parsed !== "object" || parsed === null) {
-    return null;
+    return [];
   }
   const record = parsed as Record<string, unknown>;
+  if (record.type !== "assistant") {
+    return [];
+  }
   const message =
     typeof record.message === "object" && record.message !== null
       ? (record.message as Record<string, unknown>)
       : record;
-  const role = record.type ?? message.role;
-  if (role !== "assistant") {
-    return null;
-  }
   const content = message.content;
   if (typeof content === "string") {
-    return content;
+    const text = clipTranscriptText(content, TRANSCRIPT_TEXT_MAX_CHARS);
+    return text.length > 0 ? [{ kind: "text", text }] : [];
   }
-  if (Array.isArray(content)) {
-    const parts: string[] = [];
-    for (const block of content) {
-      if (typeof block === "object" && block !== null) {
-        const record2 = block as Record<string, unknown>;
-        if (record2.type === "text" && typeof record2.text === "string") {
-          parts.push(record2.text);
-        }
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const entries: TranscriptEntry[] = [];
+  for (const block of content) {
+    if (typeof block !== "object" || block === null) {
+      continue;
+    }
+    const blockRecord = block as Record<string, unknown>;
+    if (blockRecord.type === "text" && typeof blockRecord.text === "string") {
+      const text = clipTranscriptText(blockRecord.text, TRANSCRIPT_TEXT_MAX_CHARS);
+      if (text.length > 0) {
+        entries.push({ kind: "text", text });
       }
-    }
-    if (parts.length > 0) {
-      return parts.join("\n");
+    } else if (blockRecord.type === "tool_use" && typeof blockRecord.name === "string") {
+      const preview = toolInputPreview(blockRecord.input);
+      entries.push({
+        kind: "tool",
+        text: preview !== undefined ? `${blockRecord.name} ${preview}` : blockRecord.name,
+      });
     }
   }
-  return null;
-}
-
-function renderTranscriptLine(raw: string): { text: string; dim: boolean } {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    const text = extractAssistantText(parsed);
-    if (text !== null && text.trim().length > 0) {
-      return { text, dim: false };
-    }
-    const type =
-      typeof parsed === "object" && parsed !== null && "type" in parsed
-        ? String((parsed as { type: unknown }).type)
-        : "event";
-    return { text: type, dim: true };
-  } catch {
-    return { text: raw, dim: true };
-  }
+  return entries;
 }
 
 function AgentTranscriptView({
@@ -380,8 +411,10 @@ function AgentTranscriptView({
     "workflow read transcript",
   );
   const [lines, setLines] = useState<string[]>([]);
+  const [trimmed, setTrimmed] = useState(false);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const transcriptEntries = useMemo(() => lines.flatMap(parseTranscriptEntries), [lines]);
   const nextLineRef = useRef(0);
   const completeRef = useRef(false);
   const loadingRef = useRef(false);
@@ -408,7 +441,17 @@ function AgentTranscriptView({
     nextLineRef.current = result.value.nextLine;
     completeRef.current = result.value.complete;
     if (result.value.lines.length > 0) {
-      setLines((prev) => [...prev, ...result.value.lines]);
+      // Long-running agents can produce transcripts far larger than a view
+      // needs — retain a bounded tail so memory stays flat on million-token
+      // threads.
+      setLines((prev) => {
+        const merged = [...prev, ...result.value.lines];
+        if (merged.length > TRANSCRIPT_MAX_RETAINED_LINES) {
+          setTrimmed(true);
+          return merged.slice(-TRANSCRIPT_MAX_RETAINED_LINES);
+        }
+        return merged;
+      });
     }
   }, [agentId, environmentId, runTranscript, transcriptDir]);
 
@@ -449,31 +492,35 @@ function AgentTranscriptView({
       className="mt-1 ml-4 max-h-72 overflow-y-auto rounded-md border border-border/60 bg-muted/30 p-1.5 font-mono text-[11px] leading-4"
       onClick={stopPropagation}
     >
-      {lines.length === 0 ? (
+      {transcriptEntries.length === 0 ? (
         failed ? (
           <p className="text-destructive/80">Failed to load transcript.</p>
         ) : loading ? (
           <p className="text-muted-foreground/60">Loading transcript…</p>
         ) : (
-          <p className="text-muted-foreground/60">No transcript output.</p>
+          <p className="text-muted-foreground/60">No assistant output yet.</p>
         )
       ) : (
-        lines.map((line, index) => {
-          const parsed = renderTranscriptLine(line);
-          return (
+        <>
+          {trimmed && (
+            <p className="text-muted-foreground/50">
+              Earlier activity trimmed — showing the latest entries.
+            </p>
+          )}
+          {transcriptEntries.map((entry, index) => (
             <div
-              // Lines are append-only and never reordered, so the index is stable.
+              // Entries are append-only and never reordered, so the index is stable.
               // oxlint-disable-next-line no-array-index-key
-              key={`${index}:${line.length}`}
+              key={`${index}:${entry.text.length}`}
               className={cn(
                 "whitespace-pre-wrap break-words",
-                parsed.dim && "text-muted-foreground/55",
+                entry.kind === "tool" && "text-muted-foreground/60",
               )}
             >
-              {parsed.text}
+              {entry.kind === "tool" ? `→ ${entry.text}` : entry.text}
             </div>
-          );
-        })
+          ))}
+        </>
       )}
       {failed && lines.length > 0 && (
         <p className="text-destructive/70">Failed to load more transcript.</p>
