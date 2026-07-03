@@ -80,6 +80,26 @@ const writeTextFile = Effect.fn("writeTextFile")(function* (
   yield* fileSystem.writeFileString(absolutePath, contents).pipe(Effect.orDie);
 });
 
+it.effect("WorkspaceFileSystem.readFile opens files through the injected FileSystem service", () =>
+  Effect.gen(function* () {
+    const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+    const cwd = yield* makeTempDir;
+    yield* writeTextFile(cwd, "src/index.ts", "export const answer = 42;\n");
+    const fileSystem = yield* FileSystem.FileSystem;
+    const resolvedPath = yield* fileSystem.realPath(`${cwd}/src/index.ts`);
+
+    const error = yield* workspaceFileSystem
+      .readFile({ cwd, relativePath: "src/index.ts" })
+      .pipe(Effect.flip);
+
+    assert.instanceOf(error, WorkspaceFileSystem.WorkspaceFileSystemOperationError);
+    assert.equal(error.operation, "open");
+    assert.equal(error.operationPath, resolvedPath);
+    assert.instanceOf(error.cause, PlatformError.PlatformError);
+    assert.equal((error.cause as PlatformError.PlatformError).reason._tag, "PermissionDenied");
+  }).pipe(Effect.provide(WorkspaceFileSystemOpenFailureLayer)),
+);
+
 it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (it) => {
   describe("readFile", () => {
     it.effect("reads UTF-8 files relative to the workspace root", () =>
@@ -217,26 +237,6 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
         expect(error.cause).toBeInstanceOf(PlatformError.PlatformError);
         expect((error.cause as PlatformError.PlatformError).reason._tag).toBe("NotFound");
       }),
-    );
-
-    it.effect("opens files through the injected FileSystem service", () =>
-      Effect.gen(function* () {
-        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
-        const cwd = yield* makeTempDir;
-        yield* writeTextFile(cwd, "src/index.ts", "export const answer = 42;\n");
-        const fileSystem = yield* FileSystem.FileSystem;
-        const resolvedPath = yield* fileSystem.realPath(`${cwd}/src/index.ts`);
-
-        const error = yield* workspaceFileSystem
-          .readFile({ cwd, relativePath: "src/index.ts" })
-          .pipe(Effect.flip);
-
-        assert.instanceOf(error, WorkspaceFileSystem.WorkspaceFileSystemOperationError);
-        assert.equal(error.operation, "open");
-        assert.equal(error.operationPath, resolvedPath);
-        assert.instanceOf(error.cause, PlatformError.PlatformError);
-        assert.equal((error.cause as PlatformError.PlatformError).reason._tag, "PermissionDenied");
-      }).pipe(Effect.provide(WorkspaceFileSystemOpenFailureLayer)),
     );
   });
 
