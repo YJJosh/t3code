@@ -56,7 +56,7 @@ const WorkspaceFileSystemOpenFailureLayer = WorkspaceFileSystem.layer.pipe(
   Layer.provide(WorkspacePaths.layer),
   Layer.provide(Layer.mock(WorkspaceEntries.WorkspaceEntries)({})),
   Layer.provideMerge(OpenFailureFileSystemLayer),
-  Layer.provide(Path.layer),
+  Layer.provideMerge(Path.layer),
 );
 
 const makeTempDir = Effect.gen(function* () {
