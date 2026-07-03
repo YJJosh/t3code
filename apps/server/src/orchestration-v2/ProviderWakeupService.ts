@@ -213,7 +213,17 @@ export const runWakeupDispatcher: Effect.Effect<
         }).pipe(
           Effect.flatMap((claimed) =>
             claimed
-              ? drainThread(input).pipe(Effect.forkScoped, Effect.asVoid)
+              ? drainThread(input).pipe(
+                  Effect.onInterrupt(() =>
+                    Ref.update(threadStates, (current) => {
+                      const next = new Map(current);
+                      next.delete(input.threadId);
+                      return next;
+                    }),
+                  ),
+                  Effect.forkScoped,
+                  Effect.asVoid,
+                )
               : Effect.logInfo("orchestration-v2.provider-wakeup.follow-up-parked", {
                   threadId: input.threadId,
                   providerThreadId: input.providerThreadId,
