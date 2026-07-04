@@ -52,13 +52,16 @@ export function buildModelPickerSearchText(model: ModelPickerSearchableModel): s
   );
 }
 
+export function normalizeModelPickerSearchQuery(query: string): string {
+  return normalizeSearchQuery(query).replace(/\s+/gu, " ");
+}
+
 export function scoreModelPickerSearch(
   model: ModelPickerSearchableModel,
   query: string,
 ): number | null {
-  const tokens = normalizeSearchQuery(query)
-    .split(/\s+/u)
-    .filter((token) => token.length > 0);
+  const normalizedQuery = normalizeModelPickerSearchQuery(query);
+  const tokens = normalizedQuery.length > 0 ? normalizedQuery.split(" ") : [];
 
   if (tokens.length === 0) {
     return 0;

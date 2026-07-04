@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildModelPickerSearchText, scoreModelPickerSearch } from "./modelPickerSearch";
+import {
+  buildModelPickerSearchText,
+  normalizeModelPickerSearchQuery,
+  scoreModelPickerSearch,
+} from "./modelPickerSearch";
 
 describe("buildModelPickerSearchText", () => {
   it("builds provider-agnostic search text from generic fields", () => {
@@ -12,6 +16,13 @@ describe("buildModelPickerSearchText", () => {
         subProvider: "GitHub Copilot",
       }),
     ).toBe("claude opus 4.7 github copilot opencode opencode");
+  });
+});
+
+describe("normalizeModelPickerSearchQuery", () => {
+  it("collapses whitespace-only changes to the same semantic query", () => {
+    expect(normalizeModelPickerSearchQuery("   ")).toBe("");
+    expect(normalizeModelPickerSearchQuery("  Claude   Opus  ")).toBe("claude opus");
   });
 });
 
