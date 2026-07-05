@@ -190,6 +190,7 @@ const config: ExpoConfig = {
     ...(!isIosPersonalTeamBuild ? [widgetsPlugin] : []),
     "./plugins/withIosSceneLifecycle.cjs",
     "./plugins/withAndroidCleartextTraffic.cjs",
+    "./plugins/withAndroidGradleHeap.cjs",
     ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
   ],
   extra: {
