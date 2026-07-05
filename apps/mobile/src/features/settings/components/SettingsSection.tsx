@@ -7,7 +7,8 @@ export function SettingsSection(props: { readonly title: string; readonly childr
   return (
     <View className="gap-2">
       <Text className="px-2 text-sm font-t3-medium text-foreground-muted">{props.title}</Text>
-      <View className="overflow-hidden rounded-[28px] border-continuous bg-card">
+      {/* Android lists options flat on the screen; iOS keeps the grouped card. */}
+      <View className="overflow-hidden rounded-[28px] border-continuous bg-card android:bg-transparent">
         {props.children}
       </View>
     </View>
