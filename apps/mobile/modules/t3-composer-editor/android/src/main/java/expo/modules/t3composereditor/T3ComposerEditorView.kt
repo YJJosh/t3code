@@ -190,6 +190,14 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     applyLineHeight()
   }
 
+  fun setSingleLineCentered(centered: Boolean) {
+    editor.gravity = if (centered) {
+      Gravity.CENTER_VERTICAL or Gravity.START
+    } else {
+      Gravity.TOP or Gravity.START
+    }
+  }
+
   fun setContentInsetVertical(contentInsetVertical: Int) {
     this.contentInsetVertical =
       max(0, (contentInsetVertical * resources.displayMetrics.density).toInt())

@@ -29,6 +29,10 @@ class T3ComposerEditorModule : Module() {
       Prop("contentInsetVertical") { view: T3ComposerEditorView, contentInsetVertical: Double ->
         view.setContentInsetVertical(contentInsetVertical.toInt())
       }
+
+      Prop("singleLineCentered") { view: T3ComposerEditorView, singleLineCentered: Boolean ->
+        view.setSingleLineCentered(singleLineCentered)
+      }
       Prop("editable") { view: T3ComposerEditorView, editable: Boolean ->
         view.setEditable(editable)
       }

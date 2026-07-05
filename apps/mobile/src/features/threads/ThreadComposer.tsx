@@ -37,6 +37,7 @@ import {
   type ComposerEditorSelection,
 } from "../../components/ComposerEditor";
 import {
+  COMPOSER_TOOLBAR_CONTROL_HEIGHT,
   ComposerToolbarButton,
   ComposerToolbarRow,
   ComposerToolbarScroller,
@@ -754,7 +755,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               onBlur={handleBlur}
               onSubmit={handleSend}
               scrollEnabled={isExpanded}
-              contentInsetVertical={isExpanded ? 0 : 6}
+              // Android: collapsed single line centers natively (gravity) in
+              // a pill-height box matching the send button; iOS keeps insets.
+              singleLineCentered={!isExpanded}
+              contentInsetVertical={isExpanded || Platform.OS === "android" ? 0 : 6}
               style={
                 isExpanded
                   ? {
@@ -764,7 +768,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       paddingVertical: 4,
                     }
                   : {
-                      height: 36,
+                      height: Platform.OS === "android" ? COMPOSER_TOOLBAR_CONTROL_HEIGHT : 36,
                     }
               }
               textStyle={{
@@ -822,7 +826,44 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           ) : null}
         </ComposerSurface>
 
-        {isExpanded || Platform.OS === "android" ? (
+        {Platform.OS === "android" && !isExpanded ? (
+          // Collapsed Android toolbar shows exactly three controls, so skip
+          // the scroller and let the two selector pills flex to fill the row.
+          <ComposerToolbarRow paddingBottom={8} paddingHorizontal={0} paddingTop={8}>
+            <ComposerToolbarButton
+              accessibilityLabel="Add attachment"
+              icon="plus"
+              onPress={() => void props.onPickDraftImages()}
+              showChevron={false}
+            />
+            <ControlPillMenu
+              style={{ flex: 1, minWidth: 0 }}
+              actions={modelMenuActions}
+              onPressAction={({ nativeEvent }) => handleModelMenuAction(nativeEvent.event)}
+            >
+              <ComposerToolbarTrigger
+                accessibilityLabel="Model"
+                iconNode={<ProviderIcon provider={currentModelOption?.providerDriver} size={16} />}
+                label={currentModelOption?.label ?? currentModelSelection.model}
+                style={{ maxWidth: "100%", width: "100%" }}
+              />
+            </ControlPillMenu>
+            <ControlPillMenu
+              // The reasoning/config label runs longer than most model names,
+              // so it gets a larger share of the row.
+              style={{ flex: 1.4, minWidth: 0 }}
+              actions={optionsMenuActions}
+              onPressAction={({ nativeEvent }) => handleOptionsMenuAction(nativeEvent.event)}
+            >
+              <ComposerToolbarTrigger
+                accessibilityLabel="Configuration"
+                icon="slider.horizontal.3"
+                label={configurationLabel}
+                style={{ maxWidth: "100%", width: "100%" }}
+              />
+            </ControlPillMenu>
+          </ComposerToolbarRow>
+        ) : isExpanded ? (
           <ComposerToolbarRow paddingBottom={8} paddingHorizontal={0} paddingTop={8}>
             <ComposerToolbarScroller
               fadeOpaque={toolbarFadeOpaque}
@@ -856,7 +897,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   label={configurationLabel}
                 />
               </ControlPillMenu>
-              {isExpanded && showStopAction ? (
+              {showStopAction ? (
                 <ComposerToolbarButton
                   accessibilityLabel="Stop"
                   icon="stop.fill"
@@ -866,16 +907,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 />
               ) : null}
             </ComposerToolbarScroller>
-            {isExpanded ? (
-              <ComposerToolbarButton
-                accessibilityLabel={sendLabel}
-                icon="arrow.up"
-                variant="primary"
-                disabled={!canSend}
-                onPress={handleSend}
-                showChevron={false}
-              />
-            ) : null}
+            <ComposerToolbarButton
+              accessibilityLabel={sendLabel}
+              icon="arrow.up"
+              variant="primary"
+              disabled={!canSend}
+              onPress={handleSend}
+              showChevron={false}
+            />
           </ComposerToolbarRow>
         ) : null}
 

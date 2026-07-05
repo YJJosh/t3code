@@ -14,6 +14,7 @@ import {
 
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
 import {
+  COMPOSER_TOOLBAR_CONTROL_HEIGHT,
   ComposerToolbarButton,
   ComposerToolbarRow,
   ComposerToolbarScroller,
@@ -479,12 +480,15 @@ export function NewTaskDraftScreen(props: {
       onBlur={() => setIsComposerFocused(false)}
       onPasteImages={(uris) => void handleNativePasteImages(uris)}
       placeholder={`Describe a coding task in ${selectedProject.title}`}
-      contentInsetVertical={isAndroid ? (isExpanded ? 0 : 6) : undefined}
+      // Same collapsed centering as ThreadComposer: native vertical gravity
+      // in a pill-height box.
+      singleLineCentered={!isExpanded}
+      contentInsetVertical={isAndroid ? 0 : undefined}
       style={
         isAndroid
           ? isExpanded
             ? { minHeight: 80, maxHeight: 160, paddingHorizontal: 4, paddingVertical: 4 }
-            : { height: 36 }
+            : { height: COMPOSER_TOOLBAR_CONTROL_HEIGHT }
           : { flex: 1, minHeight: 0 }
       }
       textStyle={

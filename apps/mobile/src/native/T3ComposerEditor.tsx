@@ -15,6 +15,7 @@ export function ComposerEditor({
   style,
   textStyle,
   contentInsetVertical = 0,
+  singleLineCentered: _singleLineCentered,
   ...props
 }: ComposerEditorProps) {
   const inputRef = useRef<RNTextInput>(null);

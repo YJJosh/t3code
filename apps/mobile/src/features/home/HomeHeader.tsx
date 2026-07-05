@@ -240,7 +240,7 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
                       ? "line.3.horizontal.decrease.circle.fill"
                       : "line.3.horizontal.decrease.circle"
                   }
-                  size={18}
+                  size={16}
                   tintColor={iconColor}
                   type="monochrome"
                 />
