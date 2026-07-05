@@ -1,5 +1,6 @@
 import {
   IconAdjustmentsHorizontal,
+  IconAlertCircle,
   IconAlertTriangle,
   IconArchive,
   IconArrowBackUp,
@@ -12,6 +13,7 @@ import {
   IconCamera,
   IconCheck,
   IconChevronDown,
+  IconCode,
   IconChevronLeft,
   IconChevronRight,
   IconChevronUp,
@@ -27,13 +29,20 @@ import {
   IconFileText,
   IconFilter,
   IconFolder,
+  IconFolderOpen,
   IconFolderPlus,
   IconGitBranch,
+  IconHammer,
   IconGitMerge,
   IconInfoCircle,
+  IconKeyboard,
+  IconKeyboardHide,
   IconLayoutColumns,
+  IconLayoutSidebar,
+  IconLetterSpacing,
   IconLink,
   IconMessage,
+  IconMinus,
   IconNetwork,
   IconPalette,
   IconPlayerPlay,
@@ -44,12 +53,17 @@ import {
   IconSearch,
   IconServer,
   IconSettings,
+  IconSparkles,
   IconLayoutSidebarRight,
   IconTerminal2,
+  IconTextDecrease,
+  IconTextIncrease,
+  IconTool,
   IconTrash,
   IconTypography,
   IconUserCircle,
   IconWifiOff,
+  IconWorld,
   IconX,
   type Icon,
 } from "@tabler/icons-react-native";
@@ -65,6 +79,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "arrow.turn.left.up": IconArrowBackUp,
   "arrow.up": IconArrowUp,
   "arrow.up.right": IconArrowUpRight,
+  "arrow.uturn.backward": IconArrowBackUp,
   archivebox: IconArchive,
   "archivebox.fill": IconArchive,
   "bell.badge": IconBellRinging,
@@ -75,6 +90,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "checkmark.circle": IconCircleCheck,
   "chevron.down": IconChevronDown,
   "chevron.left": IconChevronLeft,
+  "chevron.left.forwardslash.chevron.right": IconCode,
   "chevron.right": IconChevronRight,
   "chevron.up": IconChevronUp,
   desktopcomputer: IconDeviceDesktop,
@@ -102,6 +118,7 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "point.topleft.down.curvedto.point.bottomright.up": IconGitMerge,
   safari: IconExternalLink,
   "server.rack": IconServer,
+  "sidebar.left": IconLayoutSidebar,
   "sidebar.right": IconLayoutSidebarRight,
   "slider.horizontal.3": IconAdjustmentsHorizontal,
   "square.and.pencil": IconEdit,
@@ -109,11 +126,41 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "stop.fill": IconPlayerStopFilled,
   terminal: IconTerminal2,
   "text.bubble": IconMessage,
+  "text.word.spacing": IconLetterSpacing,
   "textformat.size": IconTypography,
+  "textformat.size.larger": IconTextIncrease,
+  "textformat.size.smaller": IconTextDecrease,
   trash: IconTrash,
   "wifi.slash": IconWifiOff,
   xmark: IconX,
   "xmark.circle.fill": IconCircleXFilled,
+};
+
+// Callers can pass `{ ios, android }` names where `android` is a Material
+// icon name (the raw expo-symbols contract). Resolve those here too so the
+// android key keeps working through this wrapper — it wins over the SF map
+// when both match (e.g. folder vs folder_open for expanded project groups).
+const ANDROID_ICON_BY_MATERIAL_NAME: Record<string, Icon> = {
+  auto_awesome: IconSparkles,
+  bolt: IconBolt,
+  build: IconTool,
+  chat_bubble: IconMessage,
+  check: IconCheck,
+  close: IconX,
+  construction: IconHammer,
+  content_copy: IconCopy,
+  edit: IconEdit,
+  error: IconAlertCircle,
+  folder: IconFolder,
+  folder_open: IconFolderOpen,
+  keyboard: IconKeyboard,
+  keyboard_arrow_down: IconChevronDown,
+  keyboard_arrow_up: IconChevronUp,
+  keyboard_hide: IconKeyboardHide,
+  public: IconWorld,
+  remove: IconMinus,
+  terminal: IconTerminal2,
+  visibility: IconEye,
 };
 
 export type { SFSymbol } from "expo-symbols";
@@ -124,8 +171,11 @@ export function SymbolView(props: SymbolViewProps) {
     return <ExpoSymbolView {...props} />;
   }
 
+  const materialName = typeof props.name === "string" ? undefined : props.name.android;
   const sfSymbol = typeof props.name === "string" ? props.name : props.name.ios;
-  const AndroidIcon = sfSymbol ? ANDROID_ICON_BY_SF_SYMBOL[sfSymbol] : undefined;
+  const AndroidIcon =
+    (materialName ? ANDROID_ICON_BY_MATERIAL_NAME[materialName] : undefined) ??
+    (sfSymbol ? ANDROID_ICON_BY_SF_SYMBOL[sfSymbol] : undefined);
 
   if (!AndroidIcon) {
     return props.fallback ?? null;
