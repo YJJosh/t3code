@@ -38,20 +38,6 @@ export interface ArchivedThreadsHeaderEnvironment {
   readonly label: string;
 }
 
-const THREAD_ACTIONS: MenuAction[] = [
-  {
-    id: "unarchive",
-    title: "Unarchive",
-    image: "arrow.uturn.backward",
-  },
-  {
-    id: "delete",
-    title: "Delete",
-    image: "trash",
-    attributes: { destructive: true },
-  },
-];
-
 type ArchivedThreadListItem =
   | {
       readonly kind: "project";
@@ -448,17 +434,6 @@ function ArchivedThreadRow(props: {
   const subtitle = [props.environmentLabel, props.thread.branch].filter((part): part is string =>
     Boolean(part),
   );
-  const handleMenuAction = useCallback(
-    (event: { nativeEvent: { event: string } }) => {
-      if (event.nativeEvent.event === "unarchive") {
-        props.onUnarchive();
-      } else if (event.nativeEvent.event === "delete") {
-        props.onDelete();
-      }
-    },
-    [props.onDelete, props.onUnarchive],
-  );
-
   return (
     <ThreadSwipeable
       backgroundColor={cardColor}
@@ -525,17 +500,6 @@ function ArchivedThreadRow(props: {
               </View>
             ) : null}
           </View>
-
-          <ControlPillMenu actions={THREAD_ACTIONS} onPressAction={handleMenuAction}>
-            <Pressable
-              accessibilityLabel={`Actions for ${props.thread.title}`}
-              accessibilityRole="button"
-              className="h-8 w-8 items-center justify-center rounded-full active:bg-subtle"
-              hitSlop={6}
-            >
-              <SymbolView name="ellipsis" size={16} tintColor={iconColor} type="monochrome" />
-            </Pressable>
-          </ControlPillMenu>
         </View>
       )}
     </ThreadSwipeable>
