@@ -4,9 +4,8 @@ import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useMemo } from "react";
-import { Platform, View } from "react-native";
+import { View } from "react-native";
 
-import { AndroidScreenHeader } from "../../../components/AndroidScreenHeader";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText as Text } from "../../../components/AppText";
@@ -103,11 +102,7 @@ export function GitConfirmSheet(props: GitConfirmSheetProps) {
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
-      {Platform.OS === "android" ? (
-        <AndroidScreenHeader title="Confirm Action" onBack={() => navigation.goBack()} />
-      ) : (
-        <View className="min-h-4 pt-2" />
-      )}
+      <View className="min-h-4 pt-2" />
 
       <View className="items-center gap-1 px-5 pb-3 pt-4">
         <Text className="text-xs font-t3-bold tracking-[1px] uppercase text-foreground-muted">

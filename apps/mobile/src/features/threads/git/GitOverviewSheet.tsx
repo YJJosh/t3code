@@ -10,7 +10,6 @@ import { SymbolView } from "../../../components/AppSymbol";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, Platform, Pressable, RefreshControl, ScrollView, View } from "react-native";
 
-import { AndroidScreenHeader } from "../../../components/AndroidScreenHeader";
 import { Screen, ScreenStack, ScreenStackHeaderConfig } from "react-native-screens";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "../../../lib/useThemeColor";
@@ -349,16 +348,12 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
       collapsable={false}
       className={isInspector ? "flex-1 border-l border-border bg-sheet" : "flex-1 bg-sheet"}
     >
-      {Platform.OS === "android" && !isInspector ? (
-        <AndroidScreenHeader title="Git Controls" onBack={() => navigation.goBack()} />
-      ) : (
-        <View
-          style={{
-            minHeight: isInspector ? (props.headerInset ?? 0) : 16,
-            paddingTop: isInspector ? (props.headerInset ?? 0) : 8,
-          }}
-        />
-      )}
+      <View
+        style={{
+          minHeight: isInspector ? (props.headerInset ?? 0) : 16,
+          paddingTop: isInspector ? (props.headerInset ?? 0) : 8,
+        }}
+      />
 
       <View
         className={
@@ -367,23 +362,25 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
             : "items-center gap-1 px-5 pb-3 pt-4"
         }
       >
-        <Pressable
-          className={
-            busy
-              ? "absolute right-3 top-4 z-[1] h-9 w-9 items-center justify-center rounded-full bg-subtle opacity-[0.45]"
-              : "absolute right-3 top-4 z-[1] h-9 w-9 items-center justify-center rounded-full bg-subtle"
-          }
-          disabled={busy}
-          onPress={() => void gitActions.refreshSelectedThreadGitStatus()}
-        >
-          <SymbolView
-            name="arrow.clockwise"
-            size={16}
-            tintColor={iconColor}
-            type="monochrome"
-            weight="medium"
-          />
-        </Pressable>
+        {Platform.OS === "android" && !isInspector ? null : (
+          <Pressable
+            className={
+              busy
+                ? "absolute right-3 top-4 z-[1] h-9 w-9 items-center justify-center rounded-full bg-subtle opacity-[0.45]"
+                : "absolute right-3 top-4 z-[1] h-9 w-9 items-center justify-center rounded-full bg-subtle"
+            }
+            disabled={busy}
+            onPress={() => void gitActions.refreshSelectedThreadGitStatus()}
+          >
+            <SymbolView
+              name="arrow.clockwise"
+              size={16}
+              tintColor={iconColor}
+              type="monochrome"
+              weight="medium"
+            />
+          </Pressable>
+        )}
         <Text className="text-xs font-t3-bold tracking-[1px] uppercase text-foreground-muted">
           {isInspector ? "Repository" : "Branch"}
         </Text>
