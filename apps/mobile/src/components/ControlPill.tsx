@@ -1,9 +1,10 @@
 import { MenuView } from "@react-native-menu/menu";
 import type { ComponentProps, ReactNode } from "react";
-import { Pressable, useColorScheme, View } from "react-native";
+import { Platform, Pressable, useColorScheme, View } from "react-native";
 import { useThemeColor } from "../lib/useThemeColor";
 
 import { cn } from "../lib/cn";
+import { AndroidAnchoredMenu } from "./AndroidAnchoredMenu";
 import { SymbolView } from "./AppSymbol";
 import { AppText as Text } from "./AppText";
 
@@ -74,15 +75,29 @@ export function ControlPill(props: {
   );
 }
 
-// Checked options render natively: `state: "on"` marks the row checkable and
-// the Android theme (withAndroidModernPopupMenu) draws a right-aligned check
-// glyph for it; iOS shows its standard menu checkmark.
+// iOS renders the native UIMenu (standard checkmark for `state: "on"`);
+// Android renders the token-styled AndroidAnchoredMenu, since the native
+// AppCompat popup can't be themed past its stock animation, metrics, and
+// submenu chrome.
 export function ControlPillMenu(
   props: Omit<ComponentProps<typeof MenuView>, "children" | "themeVariant"> & {
     readonly children: ReactNode;
   },
 ) {
   const isDarkMode = useColorScheme() === "dark";
+
+  if (Platform.OS === "android") {
+    return (
+      <AndroidAnchoredMenu
+        actions={props.actions}
+        title={props.title}
+        style={props.style}
+        onPressAction={props.onPressAction}
+      >
+        {props.children}
+      </AndroidAnchoredMenu>
+    );
+  }
 
   return (
     <MenuView {...props} themeVariant={isDarkMode ? "dark" : "light"}>
