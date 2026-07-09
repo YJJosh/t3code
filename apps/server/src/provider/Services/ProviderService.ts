@@ -14,6 +14,7 @@
 import type {
   ProviderInterruptTurnInput,
   ProviderInstanceId,
+  PiSubagentControlInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
@@ -29,7 +30,7 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
+import type { ProviderAdapterCapabilities, ProviderSubagentEvent } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -104,6 +105,14 @@ export interface ProviderServiceShape {
     readonly threadId: ThreadId;
     readonly numTurns: number;
   }) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Route an immediate control to the child-agent integration for a thread. */
+  readonly controlSubagent: (
+    input: PiSubagentControlInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Live structured child-agent events, correlated with their T3 thread. */
+  readonly streamSubagentEvents: Stream.Stream<ProviderSubagentEvent>;
 
   /**
    * Canonical provider runtime event stream.

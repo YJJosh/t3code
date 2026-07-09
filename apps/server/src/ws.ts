@@ -46,6 +46,7 @@ import {
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   OrchestrationReplayEventsError,
+  PiSubagentControlError,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
   AssetWorkspaceContextNotFoundError,
@@ -76,6 +77,7 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -320,6 +322,8 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.vcsCreateRef, AuthOrchestrationOperateScope],
   [WS_METHODS.vcsSwitchRef, AuthOrchestrationOperateScope],
   [WS_METHODS.vcsInit, AuthOrchestrationOperateScope],
+  [WS_METHODS.subagentsControl, AuthOrchestrationOperateScope],
+  [WS_METHODS.subscribeSubagentEvents, AuthOrchestrationReadScope],
   [WS_METHODS.reviewGetDiffPreview, AuthReviewWriteScope],
   [WS_METHODS.terminalOpen, AuthTerminalOperateScope],
   [WS_METHODS.terminalAttach, AuthTerminalOperateScope],
@@ -408,6 +412,7 @@ const makeWsRpcLayer = (
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const providerService = yield* ProviderService.ProviderService;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
@@ -1623,6 +1628,29 @@ const makeWsRpcLayer = (
               .initRepository(input)
               .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.subagentsControl]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.subagentsControl,
+            providerService.controlSubagent(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PiSubagentControlError({
+                    message:
+                      cause instanceof Error ? cause.message : "Failed to control subagent run.",
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "subagents" },
+          ),
+        [WS_METHODS.subscribeSubagentEvents]: (input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeSubagentEvents,
+            providerService.streamSubagentEvents.pipe(
+              Stream.filter((entry) => entry.threadId === input.threadId),
+              Stream.map((entry) => entry.event),
+            ),
+            { "rpc.aggregate": "subagents" },
           ),
         [WS_METHODS.reviewGetDiffPreview]: (input) =>
           observeRpcEffect(WS_METHODS.reviewGetDiffPreview, review.getDiffPreview(input), {

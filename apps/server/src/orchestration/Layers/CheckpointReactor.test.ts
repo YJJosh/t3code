@@ -123,6 +123,8 @@ function createProviderServiceHarness(
         },
       }),
     rollbackConversation,
+    controlSubagent: () => unsupported(),
+    streamSubagentEvents: Stream.empty,
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
     },

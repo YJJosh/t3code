@@ -172,6 +172,8 @@ describe("ProviderSessionReaper", () => {
         });
       },
       rollbackConversation: () => unsupported(),
+      controlSubagent: () => unsupported(),
+      streamSubagentEvents: Stream.empty,
       streamEvents: Stream.empty,
     };
 

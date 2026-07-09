@@ -11,9 +11,10 @@ Methods mirror the `NativeApi` interface defined in `@t3tools/contracts`:
 
 - `providers.startSession`, `providers.sendTurn`, `providers.interruptTurn`
 - `providers.respondToRequest`, `providers.stopSession`
+- `subagents.control`, `subscribeSubagentEvents` for adapters with child-agent support
 - `shell.openInEditor`, `server.getConfig`
 
-Codex is the only implemented provider. `claudeCode` is reserved in contracts/UI.
+Built-in adapters include Codex, Claude, OpenCode, Cursor, Grok, and Pi. Pi runs one long-lived `pi --mode rpc` subprocess per thread, preserves normal global/project resource discovery, and optionally exposes structured subagent events and controls when the session loads a compatible extension.
 
 ## Client transport
 

@@ -239,6 +239,7 @@ import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { RightPanelSheet } from "./RightPanelSheet";
+import { SubagentRuns } from "./subagents/SubagentRuns";
 import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "./ui/button";
@@ -256,6 +257,7 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const PI_SUBAGENT_DRIVER_KIND = ProviderDriverKind.make("pi");
 const PreviewPanel = lazy(() =>
   import("./preview/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
 );
@@ -2144,6 +2146,12 @@ function ChatViewContent(props: ChatViewProps) {
     const defaultInstanceId = defaultInstanceIdForDriver(selectedProvider);
     return providerStatuses.find((status) => status.instanceId === defaultInstanceId) ?? null;
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
+  // Pi is the only built-in driver that exposes structured subagent controls.
+  // Gate the subagent surface on a running server-backed Pi session so an
+  // unsupported provider never subscribes or renders controls.
+  const subagentsEnabled =
+    isServerThread && activeProviderStatus?.driver === PI_SUBAGENT_DRIVER_KIND;
+  const subagentEnvironmentId = activeThread?.environmentId ?? null;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
@@ -5140,6 +5148,11 @@ function ChatViewContent(props: ChatViewProps) {
               <div className="chat-composer-horizontal-inset">
                 <div className="pointer-events-auto relative z-10 isolate">
                   <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
+                  <SubagentRuns
+                    environmentId={subagentEnvironmentId}
+                    threadId={activeThreadId}
+                    enabled={subagentsEnabled}
+                  />
                   <div className="relative z-10">
                     <ChatComposer
                       composerRef={composerRef}
