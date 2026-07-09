@@ -43,15 +43,15 @@ export function resolveEnvironmentOptionLabel(input: {
 }
 
 export function resolveEnvModeLabel(mode: EnvMode): string {
-  return mode === "worktree" ? "New worktree" : "Current checkout";
+  return mode === "worktree" ? "New workspace" : "Current checkout";
 }
 
 export function resolveCurrentWorkspaceLabel(activeWorktreePath: string | null): string {
-  return activeWorktreePath ? "Current worktree" : resolveEnvModeLabel("local");
+  return activeWorktreePath ? "Current workspace" : resolveEnvModeLabel("local");
 }
 
 export function resolveLockedWorkspaceLabel(activeWorktreePath: string | null): string {
-  return activeWorktreePath ? "Worktree" : "Local checkout";
+  return activeWorktreePath ? "Workspace" : "Local checkout";
 }
 
 export function resolveEffectiveEnvMode(input: {

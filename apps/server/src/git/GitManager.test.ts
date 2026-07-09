@@ -24,6 +24,8 @@ import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as WorklerWorkspaceService from "../vcs/WorklerWorkspaceService.ts";
+import { makeFakeWorklerLibrary } from "../vcs/testing/FakeWorklerLibrary.ts";
 import * as GitHubSourceControlProvider from "../sourceControl/GitHubSourceControlProvider.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as ServerConfig from "../config.ts";
@@ -647,7 +649,9 @@ function makeManager(input?: {
 
   const serverSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
 
-  const vcsDriverLayer = GitVcsDriver.layer.pipe(
+  const vcsDriverLayer = GitVcsDriver.layerWithWorkler(
+    WorklerWorkspaceService.layerFromLibrary(makeFakeWorklerLibrary()),
+  ).pipe(
     Layer.provideMerge(VcsProcess.layer),
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(serverConfigLayer),
@@ -687,7 +691,9 @@ function makeManager(input?: {
 
 const asThreadId = (threadId: string) => threadId as ThreadId;
 
-const GitManagerTestLayer = GitVcsDriver.layer.pipe(
+const GitManagerTestLayer = GitVcsDriver.layerWithWorkler(
+  WorklerWorkspaceService.layerFromLibrary(makeFakeWorklerLibrary()),
+).pipe(
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-git-manager-test-" })),
   Layer.provideMerge(VcsProcess.layer),
   Layer.provideMerge(NodeServices.layer),
@@ -2897,13 +2903,16 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         "--abbrev-ref",
         "@{upstream}",
       ])).stdout.trim();
-      expect(upstreamRef).toBe("fork-seed/feature/pr-fork");
+      // The Workler workspace is an independent clone that does not inherit
+      // the main repository's extra remotes, so the fork remote is recreated
+      // there under the fork owner's name.
+      expect(upstreamRef).toBe("octocat/feature/pr-fork");
       expect(upstreamRef.startsWith("origin/")).toBe(false);
       expect(
         (yield* runGit(result.worktreePath as string, [
           "config",
           "--get",
-          "remote.fork-seed.url",
+          "remote.octocat.url",
         ])).stdout.trim(),
       ).toBe(forkDir);
     }),
@@ -3181,13 +3190,15 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
 
         expect(result.branch).toBe("t3code/pr-92/main");
         expect((yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim()).toBe(localMainBefore);
+        // The independent workspace clone recreates the fork remote under the
+        // fork owner's name instead of inheriting `fork-seed`.
         expect(
           (yield* runGit(result.worktreePath as string, [
             "rev-parse",
             "--abbrev-ref",
             "@{upstream}",
           ])).stdout.trim(),
-        ).toBe("fork-seed/main");
+        ).toBe("octocat/main");
       }),
   );
 
