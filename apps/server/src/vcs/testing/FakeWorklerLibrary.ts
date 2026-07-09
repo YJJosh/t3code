@@ -157,6 +157,7 @@ export function makeFakeWorklerLibrary(): WorklerLibrary {
         ? { head: gitMaybe(target, ["rev-parse", "HEAD"]) as string }
         : {}),
       detached,
+      rules: { ruleCount: 0, results: [], conflicts: 0 },
     };
   };
 

@@ -57,6 +57,7 @@ function makeStubLibrary(input?: {
         branch: options.branch ?? options.name,
         head: "0000000000000000000000000000000000000000",
         detached: false,
+        rules: { ruleCount: 0, results: [], conflicts: 0 },
       };
     },
     listWorkspaces: (root) => {

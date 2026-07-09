@@ -15,11 +15,6 @@ T3 Code creates isolated thread workspaces with Workler (the `workler` npm packa
 
 The server talks to Workler exclusively through its programmatic library API (no CLI output parsing), wrapped in `apps/server/src/vcs/WorklerWorkspaceService.ts` — an Effect service with typed `WorklerWorkspaceError`s and an injectable library seam for tests (`apps/server/src/vcs/testing/FakeWorklerLibrary.ts`).
 
-## Dependency status
+## Dependency
 
-The `workler` package on npm does not yet publish the programmatic API (`initProject`, `createWorkspace`, `listWorkspaces`, `removeWorkspace`, …). Until a release ships it:
-
-- the server resolves `workler` lazily from the runtime module graph (`import("workler")`) and fails workspace operations with a typed `LIBRARY_UNAVAILABLE` error when it is absent;
-- the ambient type declarations live in `apps/server/src/vcs/workler.d.ts`.
-
-**Follow-up once the API is published:** add `workler` to `apps/server/package.json` dependencies (regenerating the lockfile) and delete `apps/server/src/vcs/workler.d.ts` in favor of the package's own types. During development, `npm link`/`pnpm link` the local Workler checkout into the server package instead of referencing local paths in manifests.
+The server depends on `workler` 0.1.3 or newer, which publishes the typed programmatic API (`initProject`, `createWorkspace`, `listWorkspaces`, `removeWorkspace`, …). The adapter resolves the package lazily on first use and reports a typed `LIBRARY_UNAVAILABLE` error if an installation is missing or corrupt.
