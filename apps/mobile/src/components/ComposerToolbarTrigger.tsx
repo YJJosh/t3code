@@ -182,7 +182,11 @@ export function ComposerToolbarButton(props: {
       disabled={props.disabled}
       onPress={props.onPress}
       className={cn(
-        "h-11 flex-row items-center justify-center rounded-full active:opacity-70",
+        // Default width cap lives in the class chain (not the inline style)
+        // so callers can lift it with max-w-full — flex-filling pills in the
+        // thread composer stretch to the row's edge. The numeric maxWidth
+        // prop still wins via the inline style below.
+        "h-11 max-w-[172px] flex-row items-center justify-center rounded-full active:opacity-70",
         isCircle ? "w-11" : "gap-2 px-3.5",
         variant === "primary"
           ? props.disabled
@@ -204,7 +208,7 @@ export function ComposerToolbarButton(props: {
                 : defaultBorderColor
               : filledBorderColor,
           borderWidth: 1,
-          maxWidth: props.maxWidth ?? 172,
+          maxWidth: props.maxWidth,
           minWidth: props.minWidth,
           opacity: props.disabled ? 0.55 : pressed ? 0.72 : 1,
           shadowColor: "#000",
