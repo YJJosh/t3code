@@ -24,7 +24,7 @@ Extension confirmation prompts are approved automatically for the full-access ru
 
 ## Subagent activity
 
-When the Pi session has a compatible `pi-subagents` extension, T3 displays compact child-run rows below the composer. Selecting a row opens a responsive detail drawer with status, usage, activity, results, and steer/reply/stop controls. The event stream uses durable snapshots and replay after reconnects.
+When the Pi session has a compatible `pi-subagents` extension, T3 displays compact child-run rows below the composer. On desktop and responsive web, selecting a row opens a detail drawer with status, usage, activity, results, and steer/reply/stop controls. Native mobile shows the same live run state and transcript in a read-only detail sheet. The event stream uses durable snapshots and replay after reconnects.
 
 Subagent integration is optional. T3 checks that the private `subagents-rpc` extension command is registered before sending a control, so a Pi setup without that extension does not receive an accidental slash-command prompt.
 

@@ -8,7 +8,7 @@ import {
   type SubagentRunEntry,
 } from "@t3tools/client-runtime/state/subagents";
 import type { EnvironmentId, PiSubagentControlInput, ThreadId } from "@t3tools/contracts";
-import { useCallback, useId, useState } from "react";
+import { useCallback, useId, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
@@ -36,6 +36,7 @@ export function SubagentRunControls({ environmentId, threadId, run }: SubagentRu
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const messageFieldId = useId();
+  const requestSequenceRef = useRef(0);
 
   const runId = run.view.runId;
   const isActive = isSubagentRunActive(run.view.state);
@@ -51,7 +52,8 @@ export function SubagentRunControls({ environmentId, threadId, run }: SubagentRu
       try {
         const correlatedInput = {
           ...input,
-          requestId: input.requestId ?? globalThis.crypto.randomUUID(),
+          requestId:
+            input.requestId ?? `${runId}:${messageFieldId}:${++requestSequenceRef.current}`,
         } satisfies PiSubagentControlInput;
         const result = await runControl({ environmentId, input: correlatedInput });
         if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -65,7 +67,7 @@ export function SubagentRunControls({ environmentId, threadId, run }: SubagentRu
         setPendingAction(null);
       }
     },
-    [environmentId, runControl],
+    [environmentId, messageFieldId, runControl, runId],
   );
 
   const trimmedMessage = message.trim();

@@ -30,6 +30,7 @@ import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
 import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
 import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
+import { SubagentRunDetailSheet } from "./features/threads/subagents/SubagentRunDetailSheet";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
 import { HomeRouteScreen } from "./features/home/HomeRouteScreen";
@@ -239,6 +240,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "GitOverview",
   "NewTaskSheet",
   "SettingsSheet",
+  "SubagentRun",
   "ThreadReviewComment",
 ]);
 
@@ -359,6 +361,17 @@ export const RootStack = createNativeStackNavigator({
         presentation: "formSheet",
         sheetAllowedDetents: [0.55, 0.92],
         sheetGrabberVisible: true,
+      },
+    }),
+    SubagentRun: createNativeStackScreen({
+      screen: SubagentRunDetailSheet,
+      linking: `${THREAD_LINKING_PREFIX}/subagents/:runId`,
+      options: {
+        ...SHEET_SOLID_HEADER_OPTIONS,
+        presentation: "formSheet",
+        sheetAllowedDetents: [0.72, 0.95],
+        sheetGrabberVisible: true,
+        title: "Child run",
       },
     }),
     ThreadFiles: createNativeStackScreen({
