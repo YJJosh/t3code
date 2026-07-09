@@ -89,7 +89,7 @@ function withAlertDialogStyles(config) {
           // Theme-level fontFamily is the lowest-priority fallback in attribute
           // resolution, so it reaches every text view in the dialog that does
           // not carry its own fontFamily (the message body in particular).
-          { _: "@font/xml_dm_sans", $: { name: "android:fontFamily" } },
+          { _: "@font/xml_dm_sans_regular", $: { name: "android:fontFamily" } },
           // AppCompat's alert title view styles itself from the framework
           // attr (?android:attr/windowTitleStyle); there is no unprefixed
           // AppCompat equivalent.
