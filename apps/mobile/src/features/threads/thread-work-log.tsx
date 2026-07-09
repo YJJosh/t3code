@@ -1,6 +1,5 @@
 import * as Haptics from "expo-haptics";
-import type { SymbolViewProps } from "expo-symbols";
-import { SymbolView } from "../../components/AppSymbol";
+import { type AppSymbolName, SymbolView } from "../../components/AppSymbol";
 import { LayoutAnimation, Pressable, ScrollView, useColorScheme, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
@@ -41,7 +40,7 @@ function compactActivityDetail(detail: string | null): string | null {
   return cleaned.length > 0 ? cleaned : null;
 }
 
-function workRowSymbolName(icon: ThreadFeedActivity["icon"]): SymbolViewProps["name"] {
+function workRowSymbolName(icon: ThreadFeedActivity["icon"]): AppSymbolName {
   switch (icon) {
     case "agent":
       return { ios: "sparkles", android: "auto_awesome" };
