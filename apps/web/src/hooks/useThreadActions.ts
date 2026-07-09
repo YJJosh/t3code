@@ -197,10 +197,10 @@ export function useThreadActions() {
         const confirmationResult = await settlePromise(() =>
           localApi.dialogs.confirm(
             [
-              "This thread is the only one linked to this worktree:",
+              "This thread is the only one linked to this workspace:",
               displayWorktreePath ?? orphanedWorktreePath,
               "",
-              "Delete the worktree too?",
+              "Delete the workspace too?",
             ].join("\n"),
           ),
         );
@@ -311,7 +311,8 @@ export function useThreadActions() {
             : null;
       if (cleanupFailure) {
         const error = squashAtomCommandFailure(cleanupFailure);
-        const message = error instanceof Error ? error.message : "Unknown error removing worktree.";
+        const message =
+          error instanceof Error ? error.message : "Unknown error removing workspace.";
         console.error("Failed to remove orphaned worktree after thread deletion", {
           threadId: threadRef.threadId,
           projectCwd: threadProject.workspaceRoot,
@@ -321,7 +322,7 @@ export function useThreadActions() {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Thread deleted, but worktree removal failed",
+            title: "Thread deleted, but workspace removal failed",
             description: `Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`,
           }),
         );
