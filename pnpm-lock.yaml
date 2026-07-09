@@ -457,6 +457,9 @@ importers:
       node-pty:
         specifier: ^1.1.0
         version: 1.1.0
+      workler:
+        specifier: ^0.1.3
+        version: 0.1.3
     devDependencies:
       '@effect/vitest':
         specifier: 4.0.0-beta.78
@@ -10487,6 +10490,11 @@ packages:
   workerd@1.20260526.1:
     resolution: {integrity: sha512-IHzymht98p10JH1zzwdCpbViAqw97HrwKl7+KfZeASFMsYSrIsAULWdPn0LRC5FTUzBpamLNyKCCKxbgXHgRHQ==}
     engines: {node: '>=16'}
+    hasBin: true
+
+  workler@0.1.3:
+    resolution: {integrity: sha512-ypj/7vcR+QVvg3t4FgFFn+Soju8cPlK6337Op5S/cFOJN8Tvm69I26UYusu/vtzVVh6OAKL4aL9UDEbQZxX7wQ==}
+    engines: {node: '>=18'}
     hasBin: true
 
   wrap-ansi@6.2.0:
@@ -21991,6 +21999,8 @@ snapshots:
       '@cloudflare/workerd-linux-64': 1.20260526.1
       '@cloudflare/workerd-linux-arm64': 1.20260526.1
       '@cloudflare/workerd-windows-64': 1.20260526.1
+
+  workler@0.1.3: {}
 
   wrap-ansi@6.2.0:
     dependencies:

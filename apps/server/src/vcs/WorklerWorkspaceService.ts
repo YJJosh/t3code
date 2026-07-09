@@ -12,9 +12,8 @@ import * as Layer from "effect/Layer";
  * `git worktree add` for new isolated thread workspaces; pre-existing Git
  * worktrees keep working through the Git driver.
  *
- * The library is loaded lazily so that servers without the package installed
- * only fail when a Workler operation is actually attempted (with a typed
- * error), not at layer construction.
+ * The library is loaded lazily so layer construction stays side-effect free;
+ * the published package is a regular server dependency.
  */
 
 export type WorklerLibrary = Pick<
@@ -195,9 +194,8 @@ export const makeFromLibrary = (
 };
 
 export const make = Effect.gen(function* () {
-  // The workspace API of `workler` is not published yet, so the module cannot
-  // be a regular manifest dependency; resolve it from the runtime module graph
-  // on first use and fail each operation with a typed error when absent.
+  // Resolve on first use. A missing/corrupt production installation still
+  // becomes a typed operation failure rather than a layer-construction defect.
   const library = yield* Effect.cached(
     Effect.tryPromise({
       try: () => import(/* @vite-ignore */ "workler") as Promise<WorklerLibrary>,
