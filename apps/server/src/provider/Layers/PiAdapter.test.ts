@@ -48,6 +48,7 @@ interface FakePi {
 
 const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
   readonly subagentsCommand?: boolean;
+  readonly fastCommand?: boolean;
 }) {
   const stdoutQueue = yield* Queue.unbounded<Uint8Array>();
   const stdinQueue = yield* Queue.unbounded<Record<string, unknown>>();
@@ -95,10 +96,14 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
                     : command.type === "get_commands"
                       ? {
                           data: {
-                            commands:
-                              input?.subagentsCommand === false
+                            commands: [
+                              ...(input?.subagentsCommand === false
                                 ? []
-                                : [{ name: "subagents-rpc", source: "extension" }],
+                                : [{ name: "subagents-rpc", source: "extension" }]),
+                              ...(input?.fastCommand === true
+                                ? [{ name: "fast", source: "extension" }]
+                                : []),
+                            ],
                           },
                         }
                       : {}),
@@ -205,6 +210,13 @@ describe("makePiAdapter", () => {
       expect(fake.captured.env?.HOME).toBe("/tmp/home");
       expect(fake.captured.env?.PI_CODING_AGENT_DIR).toBeUndefined();
       expect(fake.captured.env?.PI_SUBAGENTS_RPC_BRIDGE).toBe("1");
+      expect(fake.written).toContainEqual(
+        expect.objectContaining({
+          type: "set_model",
+          provider: "anthropic",
+          modelId: "claude-sonnet-5",
+        }),
+      );
 
       expect((yield* Queue.take(events)).type).toBe("session.started");
       expect((yield* Queue.take(events)).type).toBe("session.state.changed");
@@ -235,6 +247,126 @@ describe("makePiAdapter", () => {
       const completed = yield* takeEventOfType(events, "turn.completed");
       expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");
       expect(completed.turnId).toBe(turn.turnId);
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("synchronizes Codex Fast service before the user prompt", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ fastCommand: true });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const threadId = ThreadId.make("88888888-8888-4888-8888-888888888888");
+      const fastSelection: ModelSelection = {
+        instanceId: INSTANCE,
+        model: "openai-codex/gpt-5.5",
+        options: [
+          { id: "reasoning", value: "off" },
+          { id: "serviceTier", value: "priority" },
+        ],
+      };
+
+      yield* adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: fastSelection,
+      });
+      const enabled = yield* fake.takeStdinUntil(
+        (command) => command.type === "prompt" && command.message === "/fast on",
+      );
+      expect(enabled.message).toBe("/fast on");
+      const modelIndex = fake.written.findIndex((command) => command.type === "set_model");
+      const thinkingIndex = fake.written.findIndex(
+        (command) => command.type === "set_thinking_level" && command.level === "off",
+      );
+      const fastIndex = fake.written.findIndex(
+        (command) => command.type === "prompt" && command.message === "/fast on",
+      );
+      expect(modelIndex).toBeGreaterThanOrEqual(0);
+      expect(thinkingIndex).toBeGreaterThan(modelIndex);
+      expect(fastIndex).toBeGreaterThan(thinkingIndex);
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Use the standard tier now",
+        modelSelection: {
+          ...fastSelection,
+          options: [
+            { id: "reasoning", value: "off" },
+            { id: "serviceTier", value: "default" },
+          ],
+        },
+      });
+      const disabled = yield* fake.takeStdinUntil(
+        (command) => command.type === "prompt" && command.message === "/fast off",
+      );
+      expect(disabled.message).toBe("/fast off");
+      const userPrompt = yield* fake.takeStdinUntil(
+        (command) => command.type === "prompt" && command.message === "Use the standard tier now",
+      );
+      expect(userPrompt.message).toBe("Use the standard tier now");
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("keeps opposite Fast tiers atomic with concurrent sends", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ fastCommand: true });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const threadId = ThreadId.make("99999999-9999-4999-8999-999999999999");
+      yield* adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: {
+          instanceId: INSTANCE,
+          model: "openai-codex/gpt-5.6-sol",
+          options: [{ id: "reasoning", value: "high" }],
+        },
+      });
+
+      const selection = (serviceTier: "priority" | "default"): ModelSelection => ({
+        instanceId: INSTANCE,
+        model: "openai-codex/gpt-5.5",
+        options: [
+          { id: "reasoning", value: "high" },
+          { id: "serviceTier", value: serviceTier },
+        ],
+      });
+      yield* Effect.all(
+        [
+          adapter.sendTurn({
+            threadId,
+            input: "first-fast-prompt",
+            modelSelection: selection("priority"),
+          }),
+          adapter.sendTurn({
+            threadId,
+            input: "second-standard-steer",
+            modelSelection: selection("default"),
+          }),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      const fastOnIndex = fake.written.findIndex(
+        (command) => command.type === "prompt" && command.message === "/fast on",
+      );
+      const firstPromptIndex = fake.written.findIndex(
+        (command) => command.type === "prompt" && command.message === "first-fast-prompt",
+      );
+      const fastOffIndex = fake.written.findIndex(
+        (command) => command.type === "prompt" && command.message === "/fast off",
+      );
+      const secondPromptIndex = fake.written.findIndex(
+        (command) => command.type === "steer" && command.message === "second-standard-steer",
+      );
+      expect(fastOnIndex).toBeGreaterThanOrEqual(0);
+      expect(firstPromptIndex).toBeGreaterThan(fastOnIndex);
+      expect(fastOffIndex).toBeGreaterThan(firstPromptIndex);
+      expect(secondPromptIndex).toBeGreaterThan(fastOffIndex);
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 

@@ -39,6 +39,7 @@ import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -54,10 +55,14 @@ import {
   buildPiRpcArgs,
   buildPiRpcEnv,
   extractPiAssistantText,
+  parsePiFastServiceEnabled,
   parsePiSubagentNotification,
   parsePiThinkingLevel,
+  PI_CODEX_FAST_COMMAND,
+  PI_SERVICE_TIER_OPTION_ID,
   PI_THINKING_OPTION_ID,
   resolvePiBinary,
+  supportsPiCodexFastService,
   type PiExtensionUiRequest,
 } from "../pi/piRpcProtocol.ts";
 import {
@@ -88,6 +93,11 @@ interface PiSessionContext {
   assistantItemId: ProviderItemId | undefined;
   assistantText: string;
   reasoningText: string;
+  /** Cached `/fast` command availability and synchronized session state. */
+  fastCommandAvailable: boolean | undefined;
+  fastServiceEnabled: boolean | undefined;
+  /** Keeps model/thinking/service-tier synchronization atomic with its prompt. */
+  sendSemaphore: Semaphore.Semaphore;
   stopped: boolean;
 }
 
@@ -218,6 +228,53 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               ),
         ),
       );
+
+    const selectPiModel = (
+      ctx: PiSessionContext,
+      model: string,
+      operation: "startSession" | "sendTurn",
+    ) =>
+      Effect.gen(function* () {
+        const split = splitPiModelSlug(model);
+        if (!split) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation,
+            issue: `Pi model '${model}' must use a provider/model slug.`,
+          });
+        }
+        yield* request(ctx, {
+          type: "set_model",
+          provider: split.provider,
+          modelId: split.modelId,
+        });
+      });
+
+    const syncFastService = (ctx: PiSessionContext, enabled: boolean | undefined) =>
+      Effect.gen(function* () {
+        if (enabled === undefined || enabled === ctx.fastServiceEnabled) return;
+        if (ctx.fastCommandAvailable === undefined) {
+          const commands = yield* request(ctx, { type: "get_commands" });
+          ctx.fastCommandAvailable = piRpcAdvertisesCommand(commands, PI_CODEX_FAST_COMMAND);
+        }
+        if (!ctx.fastCommandAvailable) {
+          if (!enabled) {
+            ctx.fastServiceEnabled = false;
+            return;
+          }
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: PI_CODEX_FAST_COMMAND,
+            detail:
+              "Pi does not advertise the /fast command required for Codex priority service. Enable the effort-commands extension in the selected Pi profile.",
+          });
+        }
+        yield* request(ctx, {
+          type: "prompt",
+          message: `/${PI_CODEX_FAST_COMMAND} ${enabled ? "on" : "off"}`,
+        });
+        ctx.fastServiceEnabled = enabled;
+      });
 
     const requireSession = (
       threadId: ThreadId,
@@ -517,7 +574,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       const thinkingLevel = parsePiThinkingLevel(
         getModelSelectionStringOptionValue(selection, PI_THINKING_OPTION_ID),
       );
-      return { model, thinkingLevel };
+      const fastServiceEnabled = supportsPiCodexFastService(model)
+        ? (parsePiFastServiceEnabled(
+            getModelSelectionStringOptionValue(selection, PI_SERVICE_TIER_OPTION_ID),
+          ) ?? false)
+        : undefined;
+      return { model, thinkingLevel, fastServiceEnabled };
     };
 
     const startSession: PiAdapterShape["startSession"] = (input) =>
@@ -542,7 +604,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           yield* stopSessionInternal(existing);
         }
 
-        const { model, thinkingLevel } = resolveModelSelection(input.modelSelection);
+        const { model, thinkingLevel, fastServiceEnabled } = resolveModelSelection(
+          input.modelSelection,
+        );
         const resumeSessionId =
           isRecord(input.resumeCursor) && typeof input.resumeCursor.piSessionId === "string"
             ? input.resumeCursor.piSessionId
@@ -554,6 +618,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           scopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
         );
 
+        const sendSemaphore = yield* Semaphore.make(1);
         const ctx: PiSessionContext = {
           threadId: input.threadId,
           connection: undefined as unknown as PiRpcConnection,
@@ -565,6 +630,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           assistantItemId: undefined,
           assistantText: "",
           reasoningText: "",
+          fastCommandAvailable: undefined,
+          fastServiceEnabled: undefined,
+          sendSemaphore,
           stopped: false,
         };
 
@@ -603,6 +671,15 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           });
         }
         ctx.piSessionId = activePiSessionId;
+        // Profiles can intentionally choose their own default during
+        // session_start, overriding Pi's CLI --model argument. Reassert T3's
+        // selected model over RPC before configuring model-specific options.
+        if (model) {
+          yield* selectPiModel(ctx, model, "startSession");
+        }
+        if (thinkingLevel) {
+          yield* request(ctx, { type: "set_thinking_level", level: thinkingLevel });
+        }
 
         const now = yield* nowIso;
         const session: ProviderSession = {
@@ -618,6 +695,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           updatedAt: now,
         };
         (ctx as { session: ProviderSession }).session = session;
+        yield* syncFastService(ctx, fastServiceEnabled);
 
         sessions.set(input.threadId, ctx);
         scopeTransferred = true;
@@ -648,112 +726,106 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       }).pipe(Effect.scoped);
 
     const sendTurn: PiAdapterShape["sendTurn"] = (input) =>
-      Effect.gen(function* () {
-        const ctx = yield* requireSession(input.threadId);
-        const { model, thinkingLevel } = resolveModelSelection(input.modelSelection);
-
-        // In-session model / thinking switch.
-        if (model && model !== ctx.session.model) {
-          const split = splitPiModelSlug(model);
-          if (!split) {
-            return yield* new ProviderAdapterValidationError({
-              provider: PROVIDER,
-              operation: "sendTurn",
-              issue: `Pi model '${model}' must use a provider/model slug.`,
-            });
-          }
-          yield* request(ctx, {
-            type: "set_model",
-            provider: split.provider,
-            modelId: split.modelId,
-          });
-          ctx.session = { ...ctx.session, model };
-        }
-        if (thinkingLevel) {
-          yield* request(ctx, { type: "set_thinking_level", level: thinkingLevel });
-        }
-
-        const text = input.input?.trim();
-        const images = yield* Effect.forEach(input.attachments ?? [], (attachment) =>
+      Effect.flatMap(requireSession(input.threadId), (ctx) =>
+        ctx.sendSemaphore.withPermit(
           Effect.gen(function* () {
-            const attachmentPath = resolveAttachmentPath({
-              attachmentsDir: serverConfig.attachmentsDir,
-              attachment,
-            });
-            if (!attachmentPath) {
-              return yield* new ProviderAdapterRequestError({
-                provider: PROVIDER,
-                method: "prompt",
-                detail: `Invalid attachment id '${attachment.id}'.`,
-              });
+            const { model, thinkingLevel, fastServiceEnabled } = resolveModelSelection(
+              input.modelSelection,
+            );
+
+            // In-session model / thinking switch.
+            if (model && model !== ctx.session.model) {
+              yield* selectPiModel(ctx, model, "sendTurn");
+              ctx.session = { ...ctx.session, model };
             }
-            const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterRequestError({
+            if (thinkingLevel) {
+              yield* request(ctx, { type: "set_thinking_level", level: thinkingLevel });
+            }
+            yield* syncFastService(ctx, fastServiceEnabled);
+
+            const text = input.input?.trim();
+            const images = yield* Effect.forEach(input.attachments ?? [], (attachment) =>
+              Effect.gen(function* () {
+                const attachmentPath = resolveAttachmentPath({
+                  attachmentsDir: serverConfig.attachmentsDir,
+                  attachment,
+                });
+                if (!attachmentPath) {
+                  return yield* new ProviderAdapterRequestError({
                     provider: PROVIDER,
                     method: "prompt",
-                    detail: cause.message,
-                    cause,
-                  }),
+                    detail: `Invalid attachment id '${attachment.id}'.`,
+                  });
+                }
+                const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterRequestError({
+                        provider: PROVIDER,
+                        method: "prompt",
+                        detail: cause.message,
+                        cause,
+                      }),
+                  ),
+                );
+                return {
+                  type: "image" as const,
+                  data: Buffer.from(bytes).toString("base64"),
+                  mimeType: attachment.mimeType,
+                };
+              }),
+            );
+
+            if (!text && images.length === 0) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "sendTurn",
+                issue: "Turn requires non-empty text or attachments.",
+              });
+            }
+
+            // A sendTurn while a turn is in flight is a steer that folds into the
+            // active turn; otherwise it opens a new turn.
+            const steering = ctx.activeTurnId !== undefined;
+            const turnId = ctx.activeTurnId ?? TurnId.make(yield* randomUUIDv4);
+            ctx.activeTurnId = turnId;
+            ctx.session = {
+              ...ctx.session,
+              status: "running",
+              activeTurnId: turnId,
+              updatedAt: yield* nowIso,
+            };
+
+            if (!steering) {
+              yield* emit({
+                type: "turn.started",
+                ...(yield* makeStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId,
+                payload: ctx.session.model ? { model: ctx.session.model } : {},
+              });
+            }
+
+            yield* request(
+              ctx,
+              steering
+                ? { type: "steer", message: text ?? "", ...(images.length > 0 ? { images } : {}) }
+                : { type: "prompt", message: text ?? "", ...(images.length > 0 ? { images } : {}) },
+            ).pipe(
+              Effect.tapError(() =>
+                completeTurn(ctx, "failed", { errorMessage: "Failed to send prompt to Pi." }),
               ),
             );
-            return {
-              type: "image" as const,
-              data: Buffer.from(bytes).toString("base64"),
-              mimeType: attachment.mimeType,
-            };
+
+            ctx.turns = [
+              ...ctx.turns,
+              { id: turnId, items: [{ prompt: text ?? "", images: images.length }] },
+            ];
+            return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
           }),
-        );
-
-        if (!text && images.length === 0) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "sendTurn",
-            issue: "Turn requires non-empty text or attachments.",
-          });
-        }
-
-        // A sendTurn while a turn is in flight is a steer that folds into the
-        // active turn; otherwise it opens a new turn.
-        const steering = ctx.activeTurnId !== undefined;
-        const turnId = ctx.activeTurnId ?? TurnId.make(yield* randomUUIDv4);
-        ctx.activeTurnId = turnId;
-        ctx.session = {
-          ...ctx.session,
-          status: "running",
-          activeTurnId: turnId,
-          updatedAt: yield* nowIso,
-        };
-
-        if (!steering) {
-          yield* emit({
-            type: "turn.started",
-            ...(yield* makeStamp()),
-            provider: PROVIDER,
-            threadId: input.threadId,
-            turnId,
-            payload: ctx.session.model ? { model: ctx.session.model } : {},
-          });
-        }
-
-        yield* request(
-          ctx,
-          steering
-            ? { type: "steer", message: text ?? "", ...(images.length > 0 ? { images } : {}) }
-            : { type: "prompt", message: text ?? "", ...(images.length > 0 ? { images } : {}) },
-        ).pipe(
-          Effect.tapError(() =>
-            completeTurn(ctx, "failed", { errorMessage: "Failed to send prompt to Pi." }),
-          ),
-        );
-
-        ctx.turns = [
-          ...ctx.turns,
-          { id: turnId, items: [{ prompt: text ?? "", images: images.length }] },
-        ];
-        return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
-      });
+        ),
+      );
 
     const interruptTurn: PiAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.gen(function* () {

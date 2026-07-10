@@ -5,9 +5,11 @@ import {
   type SubagentRunEntry,
 } from "@t3tools/client-runtime/state/subagents";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { ChevronRightIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "~/components/ui/badge";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "~/components/ui/collapsible";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Sheet, SheetPopup, SheetTitle } from "~/components/ui/sheet";
 import { cn } from "~/lib/utils";
@@ -20,6 +22,9 @@ import {
   formatSubagentActiveMs,
   formatSubagentCost,
   formatSubagentTokens,
+  groupSubagentRunsForRoster,
+  subagentRosterSummaryLabel,
+  subagentRunAccessibleStatus,
   subagentRunTitle,
   subagentStatusLabel,
   subagentStatusTone,
@@ -40,14 +45,6 @@ const TONE_DOT_CLASS = {
   error: "bg-destructive",
 } as const;
 
-function runAccessibleStatus(run: SubagentRunEntry): string {
-  const status = subagentStatusLabel(run.view.state);
-  if (subagentRunNeedsInput(run.view.state)) {
-    return `${status} — needs your input`;
-  }
-  return status;
-}
-
 function SubagentStatusBadge({ run }: { run: SubagentRunEntry }) {
   const tone = subagentStatusTone(run.view.state);
   return (
@@ -60,23 +57,27 @@ function SubagentStatusBadge({ run }: { run: SubagentRunEntry }) {
 interface SubagentRunRowProps {
   run: SubagentRunEntry;
   selected: boolean;
+  /** Finished runs render muted, since they're tucked behind the summary toggle. */
+  quiet: boolean;
   onSelect: (runId: string) => void;
 }
 
-function SubagentRunRow({ run, selected, onSelect }: SubagentRunRowProps) {
+function SubagentRunRow({ run, selected, quiet, onSelect }: SubagentRunRowProps) {
   const tone = subagentStatusTone(run.view.state);
   const title = subagentRunTitle(run.view.task, run.view.runId);
   const active = isSubagentRunActive(run.view.state);
+  const needsInput = subagentRunNeedsInput(run.view.state);
   return (
     <button
       type="button"
       onClick={() => onSelect(run.view.runId)}
       aria-expanded={selected}
       aria-haspopup="dialog"
-      aria-label={`Subagent run: ${title}. Status: ${runAccessibleStatus(run)}`}
+      aria-label={`Subagent run: ${title}. Status: ${subagentRunAccessibleStatus(run.view.state)}`}
       className={cn(
-        "group flex min-w-0 max-w-[16rem] items-center gap-1.5 rounded-md border border-border/70 bg-background/80 px-2 py-1 text-left text-xs transition-colors hover:bg-accent",
-        selected && "border-border bg-accent",
+        "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent",
+        selected && "bg-accent",
+        needsInput && !selected && "bg-warning/8",
       )}
     >
       <span
@@ -87,7 +88,24 @@ function SubagentRunRow({ run, selected, onSelect }: SubagentRunRowProps) {
           active && "animate-pulse",
         )}
       />
-      <span className="min-w-0 flex-1 truncate font-medium text-foreground">{title}</span>
+      <span
+        className={cn(
+          "hidden shrink-0 max-w-24 truncate font-mono text-[10px] text-muted-foreground/80 sm:inline",
+        )}
+      >
+        {run.view.model}
+      </span>
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate",
+          quiet ? "text-muted-foreground" : "font-medium text-foreground",
+        )}
+      >
+        {title}
+      </span>
+      <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+        {formatSubagentActiveMs(run.view.activeMs)}
+      </span>
       <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
         {subagentStatusLabel(run.view.state)}
       </span>
@@ -269,17 +287,27 @@ export interface SubagentRunsProps {
 }
 
 /**
- * Compact live rows for a thread's Pi subagent runs, rendered directly below
- * the composer, plus an overlay drawer (desktop) / near-full-screen sheet
- * (compact) with per-run metadata, transcript, usage, status, and controls.
+ * Compact roster panel for a thread's Pi subagent runs, rendered directly
+ * above the composer: active/waiting/failed runs stay always visible, and
+ * finished runs collapse behind a summary toggle so they don't permanently
+ * eat composer space. Selecting a row opens an overlay drawer (desktop) /
+ * near-full-screen sheet (compact) with per-run metadata, transcript, usage,
+ * status, and controls.
  *
  * Renders nothing when there are no runs so an idle/empty stream is invisible.
  */
 export function SubagentRuns({ environmentId, threadId, enabled }: SubagentRunsProps) {
   const { state } = useSubagentRuntime({ environmentId, threadId, enabled });
   const runs = useMemo(() => selectSubagentRuns(state), [state]);
+  const { attention, quiet } = useMemo(() => groupSubagentRunsForRoster(runs), [runs]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [quietExpanded, setQuietExpanded] = useState(false);
   const useSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+
+  useEffect(() => {
+    setSelectedRunId(null);
+    setQuietExpanded(false);
+  }, [environmentId, threadId]);
 
   const selectedRun = selectedRunId === null ? null : (state.runs.get(selectedRunId) ?? null);
   const close = useCallback(() => setSelectedRunId(null), []);
@@ -290,20 +318,50 @@ export function SubagentRuns({ environmentId, threadId, enabled }: SubagentRunsP
 
   return (
     <>
-      <div
-        className="pointer-events-auto flex flex-wrap items-center gap-1.5 pb-1"
-        role="list"
-        aria-label="Subagent runs"
-      >
-        {runs.map((run) => (
-          <div role="listitem" key={run.view.runId}>
-            <SubagentRunRow
-              run={run}
-              selected={run.view.runId === selectedRunId}
-              onSelect={setSelectedRunId}
-            />
+      <div className="pointer-events-auto mb-1.5 max-h-48 overflow-y-auto rounded-lg border border-border/70 bg-card/85 p-1 shadow-sm backdrop-blur-sm sm:max-h-56">
+        {attention.length > 0 && (
+          <div role="list" aria-label="Subagent runs needing attention">
+            {attention.map((run) => (
+              <div role="listitem" key={run.view.runId}>
+                <SubagentRunRow
+                  run={run}
+                  selected={run.view.runId === selectedRunId}
+                  quiet={false}
+                  onSelect={setSelectedRunId}
+                />
+              </div>
+            ))}
           </div>
-        ))}
+        )}
+
+        {quiet.length > 0 && (
+          <Collapsible open={quietExpanded} onOpenChange={setQuietExpanded}>
+            <CollapsibleTrigger
+              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-accent/60 data-panel-open:[&_svg]:rotate-90"
+              aria-label={`${subagentRosterSummaryLabel(quiet.length)}, ${quietExpanded ? "expanded" : "collapsed"}`}
+            >
+              <ChevronRightIcon
+                className="size-3 shrink-0 transition-transform"
+                aria-hidden="true"
+              />
+              {subagentRosterSummaryLabel(quiet.length)}
+            </CollapsibleTrigger>
+            <CollapsiblePanel>
+              <div role="list" aria-label="Finished subagent runs">
+                {quiet.map((run) => (
+                  <div role="listitem" key={run.view.runId}>
+                    <SubagentRunRow
+                      run={run}
+                      selected={run.view.runId === selectedRunId}
+                      quiet
+                      onSelect={setSelectedRunId}
+                    />
+                  </div>
+                ))}
+              </div>
+            </CollapsiblePanel>
+          </Collapsible>
+        )}
       </div>
 
       <Sheet

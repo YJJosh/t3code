@@ -52,6 +52,23 @@ export type PiThinkingLevel = (typeof PI_THINKING_LEVELS)[number];
  */
 export const PI_THINKING_OPTION_ID = "reasoning";
 
+/** Pi model option + extension command used for OpenAI Codex priority service. */
+export const PI_SERVICE_TIER_OPTION_ID = "serviceTier";
+export const PI_STANDARD_SERVICE_TIER = "default";
+export const PI_FAST_SERVICE_TIER = "priority";
+export const PI_CODEX_FAST_COMMAND = "fast";
+const PI_CODEX_FAST_MODEL_SLUGS = new Set(["openai-codex/gpt-5.4", "openai-codex/gpt-5.5"]);
+
+export function supportsPiCodexFastService(modelSlug: string | undefined): boolean {
+  return modelSlug !== undefined && PI_CODEX_FAST_MODEL_SLUGS.has(modelSlug);
+}
+
+export function parsePiFastServiceEnabled(value: unknown): boolean | undefined {
+  if (value === PI_FAST_SERVICE_TIER) return true;
+  if (value === PI_STANDARD_SERVICE_TIER) return false;
+  return undefined;
+}
+
 export function parsePiThinkingLevel(value: unknown): PiThinkingLevel | undefined {
   return typeof value === "string" && (PI_THINKING_LEVELS as ReadonlyArray<string>).includes(value)
     ? (value as PiThinkingLevel)

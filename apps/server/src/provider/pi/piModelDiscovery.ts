@@ -23,7 +23,15 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 
 import { buildSelectOptionDescriptor } from "../providerSnapshot.ts";
-import { PI_THINKING_LEVELS, PI_THINKING_OPTION_ID } from "./piRpcProtocol.ts";
+import {
+  PI_CODEX_FAST_COMMAND,
+  PI_FAST_SERVICE_TIER,
+  PI_SERVICE_TIER_OPTION_ID,
+  PI_STANDARD_SERVICE_TIER,
+  PI_THINKING_LEVELS,
+  PI_THINKING_OPTION_ID,
+  supportsPiCodexFastService,
+} from "./piRpcProtocol.ts";
 
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({ optionDescriptors: [] });
 
@@ -56,6 +64,15 @@ interface PiSdkModelRegistry {
 
 interface PiSdkRuntimeServices {
   readonly modelRegistry: PiSdkModelRegistry;
+  readonly resourceLoader?:
+    | {
+        readonly getExtensions: () => {
+          readonly extensions: ReadonlyArray<{
+            readonly commands: ReadonlyMap<string, unknown>;
+          }>;
+        };
+      }
+    | undefined;
   readonly diagnostics: ReadonlyArray<{
     readonly type: "info" | "warning" | "error";
     readonly message: string;
@@ -87,38 +104,68 @@ function piModelSlug(model: PiSdkModel): string {
  * allowlist. Normal levels are supported unless explicitly mapped to `null`;
  * extended `xhigh` and `max` levels require explicit map entries.
  */
-export function piModelCapabilities(model: PiSdkModel): ModelCapabilities {
-  if (model.reasoning !== true) {
-    return EMPTY_CAPABILITIES;
-  }
-  const levels = PI_THINKING_LEVELS.filter((level) => {
-    const mapped = model.thinkingLevelMap?.[level];
-    if (mapped === null) return false;
-    if (level === "xhigh" || level === "max") return mapped !== undefined;
-    return true;
-  });
-  if (levels.length === 0) {
-    return EMPTY_CAPABILITIES;
-  }
-  return createModelCapabilities({
-    optionDescriptors: [
-      buildSelectOptionDescriptor({
-        id: PI_THINKING_OPTION_ID,
-        label: "Thinking",
-        options: levels.map((level) => ({ value: level, label: level })),
-      }),
-    ],
-  });
+export interface PiModelCapabilityOptions {
+  readonly codexFastCommandAvailable?: boolean | undefined;
 }
 
-export function toServerProviderModel(model: PiSdkModel): ServerProviderModel {
+export function piModelCapabilities(
+  model: PiSdkModel,
+  options: PiModelCapabilityOptions = {},
+): ModelCapabilities {
+  const optionDescriptors = [];
+
+  if (model.reasoning === true) {
+    const levels = PI_THINKING_LEVELS.filter((level) => {
+      const mapped = model.thinkingLevelMap?.[level];
+      if (mapped === null) return false;
+      if (level === "xhigh" || level === "max") return mapped !== undefined;
+      return true;
+    });
+    if (levels.length > 0) {
+      optionDescriptors.push(
+        buildSelectOptionDescriptor({
+          id: PI_THINKING_OPTION_ID,
+          label: "Thinking",
+          options: levels.map((level) => ({ value: level, label: level })),
+        }),
+      );
+    }
+  }
+
+  if (
+    options.codexFastCommandAvailable === true &&
+    supportsPiCodexFastService(piModelSlug(model))
+  ) {
+    optionDescriptors.push(
+      buildSelectOptionDescriptor({
+        id: PI_SERVICE_TIER_OPTION_ID,
+        label: "Service Tier",
+        description:
+          "Fast uses OpenAI Codex priority processing for lower latency and higher usage.",
+        options: [
+          { value: PI_STANDARD_SERVICE_TIER, label: "Standard", isDefault: true },
+          { value: PI_FAST_SERVICE_TIER, label: "Fast" },
+        ],
+      }),
+    );
+  }
+
+  return optionDescriptors.length > 0
+    ? createModelCapabilities({ optionDescriptors })
+    : EMPTY_CAPABILITIES;
+}
+
+export function toServerProviderModel(
+  model: PiSdkModel,
+  options: PiModelCapabilityOptions = {},
+): ServerProviderModel {
   const slug = piModelSlug(model);
   return {
     slug,
     name: model.name?.trim() || slug,
     subProvider: model.provider,
     isCustom: false,
-    capabilities: piModelCapabilities(model),
+    capabilities: piModelCapabilities(model, options),
   };
 }
 
@@ -144,7 +191,13 @@ export async function discoverPiModelsWithSdk(
     },
   });
   const available = services.modelRegistry.getAvailable();
-  const models = available.map(toServerProviderModel);
+  const codexFastCommandAvailable =
+    services.resourceLoader
+      ?.getExtensions()
+      .extensions.some((extension) => extension.commands.has(PI_CODEX_FAST_COMMAND)) ?? false;
+  const models = available.map((model) =>
+    toServerProviderModel(model, { codexFastCommandAvailable }),
+  );
   const errors = [
     services.modelRegistry.getError(),
     ...services.diagnostics
