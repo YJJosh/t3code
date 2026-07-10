@@ -35,7 +35,15 @@ const decodePiSubagentEventJson = Schema.decodeUnknownOption(
 );
 
 /** Pi's `ThinkingLevel` union, mirrored so we can validate without importing runtime code. */
-export const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const PI_THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
 export type PiThinkingLevel = (typeof PI_THINKING_LEVELS)[number];
 
 /**

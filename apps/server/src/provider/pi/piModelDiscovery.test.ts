@@ -13,27 +13,37 @@ describe("piModelCapabilities", () => {
     });
   });
 
-  it("annotates a thinking-level select for reasoning models using thinkingLevelMap", () => {
+  it("treats thinkingLevelMap as partial overrides instead of a complete allowlist", () => {
     const capabilities = piModelCapabilities({
-      id: "claude-sonnet-5",
-      provider: "anthropic",
+      id: "claude-fable-5",
+      provider: "claude-agent-sdk",
       reasoning: true,
-      thinkingLevelMap: { low: "1024", high: "8192", off: null },
+      thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" },
     });
     const descriptor = capabilities.optionDescriptors?.[0];
     expect(descriptor?.id).toBe("reasoning");
     expect(descriptor?.type).toBe("select");
-    // `off` maps to null (unsupported) and is dropped.
     const optionIds = descriptor?.type === "select" ? descriptor.options.map((o) => o.id) : [];
-    expect(optionIds).toEqual(["low", "high"]);
+    expect(optionIds).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
-  it("falls back to the full thinking-level set when no map is present", () => {
+  it("excludes normal levels explicitly mapped to null", () => {
+    const capabilities = piModelCapabilities({
+      id: "kimi-k2.7-code",
+      provider: "opencode-go",
+      reasoning: true,
+      thinkingLevelMap: { minimal: null, low: null, medium: null },
+    });
+    const descriptor = capabilities.optionDescriptors?.[0];
+    const optionIds = descriptor?.type === "select" ? descriptor.options.map((o) => o.id) : [];
+    expect(optionIds).toEqual(["off", "high"]);
+  });
+
+  it("does not advertise extended thinking levels without explicit mappings", () => {
     const capabilities = piModelCapabilities({ id: "o1", provider: "openai", reasoning: true });
     const descriptor = capabilities.optionDescriptors?.[0];
     const optionIds = descriptor?.type === "select" ? descriptor.options.map((o) => o.id) : [];
-    expect(optionIds).toContain("high");
-    expect(optionIds).toContain("xhigh");
+    expect(optionIds).toEqual(["off", "minimal", "low", "medium", "high"]);
   });
 });
 

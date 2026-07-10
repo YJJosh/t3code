@@ -82,22 +82,21 @@ function piModelSlug(model: PiSdkModel): string {
 
 /**
  * Build capabilities for a Pi model, annotating a `reasoning` (thinking-level)
- * select for reasoning-capable models. Levels are taken from the model's
- * `thinkingLevelMap` (dropping `null`/unsupported entries) and fall back to the
- * full Pi thinking-level set.
+ * select for reasoning-capable models. This mirrors Pi's
+ * `getSupportedThinkingLevels`: its map is a partial override, not an exhaustive
+ * allowlist. Normal levels are supported unless explicitly mapped to `null`;
+ * extended `xhigh` and `max` levels require explicit map entries.
  */
 export function piModelCapabilities(model: PiSdkModel): ModelCapabilities {
   if (model.reasoning !== true) {
     return EMPTY_CAPABILITIES;
   }
-  const mappedLevels = model.thinkingLevelMap
-    ? Object.entries(model.thinkingLevelMap)
-        .filter(([, value]) => value !== null)
-        .map(([level]) => level)
-    : [];
-  const levels = (mappedLevels.length > 0 ? mappedLevels : [...PI_THINKING_LEVELS]).filter(
-    (level) => (PI_THINKING_LEVELS as ReadonlyArray<string>).includes(level),
-  );
+  const levels = PI_THINKING_LEVELS.filter((level) => {
+    const mapped = model.thinkingLevelMap?.[level];
+    if (mapped === null) return false;
+    if (level === "xhigh" || level === "max") return mapped !== undefined;
+    return true;
+  });
   if (levels.length === 0) {
     return EMPTY_CAPABILITIES;
   }

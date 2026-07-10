@@ -132,6 +132,7 @@ describe("parsePiThinkingLevel", () => {
   it("accepts valid levels and rejects everything else", () => {
     expect(parsePiThinkingLevel("high")).toBe("high");
     expect(parsePiThinkingLevel("xhigh")).toBe("xhigh");
+    expect(parsePiThinkingLevel("max")).toBe("max");
     expect(parsePiThinkingLevel("ultra")).toBeUndefined();
     expect(parsePiThinkingLevel(undefined)).toBeUndefined();
     expect(parsePiThinkingLevel(5)).toBeUndefined();
