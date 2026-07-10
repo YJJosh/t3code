@@ -60,6 +60,12 @@ import {
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  PiSubagentControlError,
+  PiSubagentControlInput,
+  PiSubagentEvent,
+  PiSubagentSubscribeInput,
+} from "./subagents.ts";
+import {
   RelayClientInstallFailedError,
   RelayClientInstallProgressEventSchema,
   RelayClientStatusSchema,
@@ -170,6 +176,10 @@ export const WS_METHODS = {
   vcsCreateRef: "vcs.createRef",
   vcsSwitchRef: "vcs.switchRef",
   vcsInit: "vcs.init",
+
+  // Child-agent methods
+  subagentsControl: "subagents.control",
+  subscribeSubagentEvents: "subscribeSubagentEvents",
 
   // Git workflow methods
   gitRunStackedAction: "git.runStackedAction",
@@ -472,6 +482,18 @@ export const WsVcsInitRpc = Rpc.make(WS_METHODS.vcsInit, {
  * Not the persisted T3 Review model. Future review sessions should use
  * review.open* + review.getSnapshot.
  */
+export const WsSubagentsControlRpc = Rpc.make(WS_METHODS.subagentsControl, {
+  payload: PiSubagentControlInput,
+  error: Schema.Union([PiSubagentControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsSubscribeSubagentEventsRpc = Rpc.make(WS_METHODS.subscribeSubagentEvents, {
+  payload: PiSubagentSubscribeInput,
+  success: PiSubagentEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 export const WsReviewGetDiffPreviewRpc = Rpc.make(WS_METHODS.reviewGetDiffPreview, {
   payload: ReviewDiffPreviewInput,
   success: ReviewDiffPreviewResult,
@@ -718,6 +740,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsCreateRefRpc,
   WsVcsSwitchRefRpc,
   WsVcsInitRpc,
+  WsSubagentsControlRpc,
+  WsSubscribeSubagentEventsRpc,
   WsReviewGetDiffPreviewRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,

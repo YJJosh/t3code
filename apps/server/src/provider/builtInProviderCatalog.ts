@@ -11,6 +11,12 @@ export type ProviderSnapshotSource = {
   readonly instanceId: ProviderInstanceId;
   /** Driver implementation kind. */
   readonly driverKind: ProviderDriverKind;
+  /**
+   * The driver owns the complete model catalog rather than incrementally
+   * enriching a stable built-in list. Successful refreshes may therefore
+   * remove models that are no longer authenticated or available.
+   */
+  readonly authoritativeModelCatalog?: boolean;
   readonly getSnapshot: ServerProviderShape["getSnapshot"];
   readonly refresh: ServerProviderShape["refresh"];
   readonly streamChanges: Stream.Stream<ServerProvider>;

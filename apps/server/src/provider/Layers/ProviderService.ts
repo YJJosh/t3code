@@ -12,6 +12,7 @@
 import {
   ModelSelection,
   NonNegativeInt,
+  PiSubagentControlInput,
   ThreadId,
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
@@ -46,7 +47,7 @@ import {
   withMetrics,
 } from "../../observability/Metrics.ts";
 import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
-import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import type { ProviderAdapterShape, ProviderSubagentEvent } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
@@ -213,6 +214,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+  const subagentEventPubSub = yield* PubSub.unbounded<ProviderSubagentEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId }).pipe(
@@ -340,6 +342,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             event,
           ),
         ).pipe(Effect.forkScoped);
+        if (adapter.subagents) {
+          yield* Stream.runForEach(adapter.subagents.streamEvents, (event) =>
+            PubSub.publish(subagentEventPubSub, event),
+          ).pipe(Effect.forkScoped);
+        }
       }
     }
     yield* Ref.set(subscribedAdapters, next);
@@ -1008,6 +1015,28 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const controlSubagent: ProviderServiceMethod<"controlSubagent"> = Effect.fn("controlSubagent")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.controlSubagent",
+        schema: PiSubagentControlInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.controlSubagent",
+        allowRecovery: true,
+      });
+      if (!routed.adapter.subagents) {
+        return yield* toValidationError(
+          "ProviderService.controlSubagent",
+          `Provider '${routed.adapter.provider}' does not expose subagent controls.`,
+        );
+      }
+      yield* routed.adapter.subagents.control(input);
+    },
+  );
+
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
@@ -1079,6 +1108,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
+    controlSubagent,
+    get streamSubagentEvents(): ProviderServiceMethod<"streamSubagentEvents"> {
+      return Stream.fromPubSub(subagentEventPubSub);
+    },
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
     // independently receive all runtime events.

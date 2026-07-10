@@ -13,6 +13,8 @@ import type {
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
+  PiSubagentControlInput,
+  PiSubagentEvent,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
@@ -42,12 +44,25 @@ export interface ProviderThreadSnapshot {
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
 }
 
+export interface ProviderSubagentEvent {
+  readonly threadId: ThreadId;
+  readonly event: PiSubagentEvent;
+}
+
+export interface ProviderSubagentAdapter<TError> {
+  readonly control: (input: PiSubagentControlInput) => Effect.Effect<void, TError>;
+  readonly streamEvents: Stream.Stream<ProviderSubagentEvent>;
+}
+
 export interface ProviderAdapterShape<TError> {
   /**
    * Provider kind implemented by this adapter.
    */
   readonly provider: ProviderDriverKind;
   readonly capabilities: ProviderAdapterCapabilities;
+
+  /** Optional structured child-agent integration exposed by capable drivers. */
+  readonly subagents?: ProviderSubagentAdapter<TError>;
 
   /**
    * Start a provider-backed session.

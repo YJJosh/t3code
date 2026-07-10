@@ -5,6 +5,35 @@ import { ProviderInstanceId, type ServerConfig } from "@t3tools/contracts";
 import { buildModelOptions } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it("identifies the model provider behind the Pi harness", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "pi",
+          driver: "pi",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            {
+              slug: "opencode-go/claude-fable-5",
+              name: "Claude Fable 5",
+              subProvider: "opencode-go",
+              isCustom: false,
+              capabilities: { optionDescriptors: [] },
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(buildModelOptions(config, null)[0]).toMatchObject({
+      label: "Claude Fable 5",
+      subtitle: "Pi · opencode-go",
+      providerDriver: "pi",
+    });
+  });
+
   it("normalizes a legacy fallback selection against current capabilities", () => {
     const config = {
       providers: [

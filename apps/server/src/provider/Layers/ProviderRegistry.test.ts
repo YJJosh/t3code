@@ -40,6 +40,7 @@ import {
   mergeProviderSnapshot,
   mergeProviderSnapshots,
   ProviderRegistryLive,
+  shouldReplaceProviderSnapshot,
   selectProvidersByKind,
 } from "./ProviderRegistry.ts";
 import * as ServerConfig from "../../config.ts";
@@ -503,6 +504,49 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         ] as const satisfies ReadonlyArray<ServerProvider>;
 
         assert.strictEqual(haveProvidersChanged(providers, [...providers]), false);
+      });
+
+      it("replaces authoritative catalogs when models or definitive unauthenticated state arrive", () => {
+        const source = { authoritativeModelCatalog: true };
+        assert.isTrue(
+          shouldReplaceProviderSnapshot(source, {
+            auth: { status: "authenticated" },
+            models: [
+              {
+                slug: "github-copilot/claude-fable-5",
+                name: "Claude Fable 5",
+                subProvider: "github-copilot",
+                isCustom: false,
+                capabilities: null,
+              },
+            ],
+          }),
+        );
+        assert.isTrue(
+          shouldReplaceProviderSnapshot(source, {
+            auth: { status: "unauthenticated" },
+            models: [],
+          }),
+        );
+        assert.isFalse(
+          shouldReplaceProviderSnapshot(source, {
+            auth: { status: "unknown" },
+            models: [],
+          }),
+        );
+        assert.isFalse(
+          shouldReplaceProviderSnapshot(source, {
+            auth: { status: "unknown" },
+            models: [
+              {
+                slug: "custom-model",
+                name: "Custom Model",
+                isCustom: true,
+                capabilities: null,
+              },
+            ],
+          }),
+        );
       });
 
       it("preserves previously discovered provider models when a refresh returns none", () => {
@@ -1188,6 +1232,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   cursor: { enabled: false },
                   grok: { enabled: false },
                   opencode: { enabled: false },
+                  pi: { enabled: false },
                 },
               }),
             ),
@@ -1301,6 +1346,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   cursor: { enabled: false },
                   grok: { enabled: false },
                   opencode: { enabled: false },
+                  pi: { enabled: false },
                 },
                 providerInstances: {
                   ghost_main: {
@@ -1367,6 +1413,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                       enabled: false,
                     },
                     grok: {
+                      enabled: false,
+                    },
+                    pi: {
                       enabled: false,
                     },
                   },
@@ -1438,6 +1487,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 "cursor",
                 "grok",
                 "opencode",
+                "pi",
               ]);
               assert.strictEqual(cursorProvider?.enabled, false);
               assert.strictEqual(cursorProvider?.status, "disabled");
