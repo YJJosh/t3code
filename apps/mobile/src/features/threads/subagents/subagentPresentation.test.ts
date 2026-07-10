@@ -93,7 +93,7 @@ describe("mobile Pi child-run presentation", () => {
       data: {},
       liveOnly: false,
     }));
-    const run = { activity } as unknown as SubagentRunEntry;
+    const run = { activity, view: {} } as unknown as SubagentRunEntry;
 
     const visible = selectVisibleSubagentActivity(run);
     expect(visible).toHaveLength(MAX_VISIBLE_CHILD_ACTIVITY);

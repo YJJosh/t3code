@@ -102,7 +102,7 @@ const ACTIVITY_DETAIL_KEYS = ["args", "arguments", "input", "result", "output", 
 const MAX_ACTIVITY_SUMMARY_LENGTH = 4_000;
 
 function compactActivityText(value: string): string | null {
-  const trimmed = value.trim();
+  const trimmed = value.replaceAll(/<!--\s*-->/g, "").trim();
   if (trimmed.length === 0) {
     return null;
   }
@@ -133,6 +133,33 @@ function firstStringField(
  * human-facing fields so transcript rows show the actual child output without
  * dumping unrelated event metadata.
  */
+function activityRecord(value: unknown): Readonly<Record<string, unknown>> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : null;
+}
+
+/** Prefer completed assistant text; if a tool-using turn has no text yet, show
+ * only its latest thinking block rather than concatenating every streamed
+ * reasoning fragment into a wall of text. */
+function messageActivityText(data: Readonly<Record<string, unknown>>): string | null {
+  const message = activityRecord(data["message"]);
+  const content = Array.isArray(message?.["content"]) ? message["content"] : [];
+  const blocks = content
+    .map(activityRecord)
+    .filter((block): block is Readonly<Record<string, unknown>> => block !== null);
+  const text = blocks.flatMap((block) =>
+    typeof block["text"] === "string" ? [block["text"]] : [],
+  );
+  if (text.length > 0) {
+    return compactActivityText(text.join("\n"));
+  }
+  const thinking = blocks.flatMap((block) =>
+    typeof block["thinking"] === "string" ? [block["thinking"]] : [],
+  );
+  return thinking.length > 0 ? compactActivityText(thinking.at(-1) ?? "") : null;
+}
+
 function nestedActivityText(value: unknown, depth = 0): string | null {
   if (depth > 8 || value === null || value === undefined) {
     return null;
@@ -195,11 +222,40 @@ function structuredActivityDetail(data: Readonly<Record<string, unknown>>): stri
 export function summarizeSubagentActivity(entry: SubagentActivityEntry): string {
   const name = firstStringField(entry.data, ACTIVITY_NAME_KEYS);
   const directText = firstStringField(entry.data, ACTIVITY_TEXT_KEYS);
-  const text = directText ?? nestedActivityText(entry.data) ?? structuredActivityDetail(entry.data);
-  if (name !== null && text !== null && name !== text) {
-    return `${name}: ${text}`;
+  const nestedText = nestedActivityText(entry.data);
+  const detail = structuredActivityDetail(entry.data);
+  const text =
+    messageActivityText(entry.data) ??
+    directText ??
+    (entry.kind === "child_tool" ? (detail ?? nestedText) : (nestedText ?? detail));
+  // The transcript renders the tool/message name in a dedicated label column,
+  // so repeating it in the detail would produce rows such as "BASH bash: …".
+  return text ?? name ?? entry.type;
+}
+
+function titleCaseActivityName(value: string): string {
+  return value
+    .replace(/^tool_execution_/, "")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+/** Concise Claude-style label for a canonical transcript row. */
+export function subagentActivityLabel(entry: SubagentActivityEntry): string {
+  if (entry.kind === "child_tool") {
+    const toolName = firstStringField(entry.data, ACTIVITY_NAME_KEYS);
+    return titleCaseActivityName(toolName ?? entry.type);
   }
-  return name ?? text ?? entry.type;
+  if (entry.kind === "child_message") {
+    const message = activityRecord(entry.data["message"]);
+    if (message?.["role"] === "user") {
+      return "Manager";
+    }
+    const blocks = Array.isArray(message?.["content"]) ? message["content"] : [];
+    const hasText = blocks.some((value) => typeof activityRecord(value)?.["text"] === "string");
+    return hasText ? "Message" : "Thinking";
+  }
+  return titleCaseActivityName(entry.type);
 }
 
 export function formatSubagentTokens(usage: PiSubagentUsage): string {

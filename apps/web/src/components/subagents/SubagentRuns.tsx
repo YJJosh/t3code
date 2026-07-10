@@ -1,6 +1,7 @@
 import {
   isSubagentRunActive,
   selectSubagentRuns,
+  selectSubagentTranscriptActivity,
   subagentRunNeedsInput,
   type SubagentRunEntry,
 } from "@t3tools/client-runtime/state/subagents";
@@ -15,14 +16,17 @@ import { Sheet, SheetPopup, SheetTitle } from "~/components/ui/sheet";
 import { cn } from "~/lib/utils";
 
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { useResizableWidth, useViewportClampedMaxWidth } from "../../hooks/useResizableWidth";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../../rightPanelLayout";
 import { useSubagentRuntime } from "../../state/useSubagentRuntime";
+import { RightPanelResizeHandle } from "../preview/RightPanelResizeHandle";
 import { SubagentRunControls } from "./SubagentRunControls";
 import {
   formatSubagentActiveMs,
   formatSubagentCost,
   formatSubagentTokens,
   groupSubagentRunsForRoster,
+  subagentActivityLabel,
   subagentRosterSummaryLabel,
   subagentRunAccessibleStatus,
   subagentRunTitle,
@@ -30,6 +34,12 @@ import {
   subagentStatusTone,
   summarizeSubagentActivity,
 } from "./subagentPresentation";
+
+const SUBAGENT_DETAIL_WIDTH_STORAGE_KEY = "t3code:subagent-detail-width";
+const SUBAGENT_DETAIL_DEFAULT_WIDTH = 448;
+const SUBAGENT_DETAIL_MIN_WIDTH = 320;
+const SUBAGENT_DETAIL_MAX_WIDTH = 1_120;
+const SUBAGENT_DETAIL_MAX_VIEWPORT_FRACTION = 0.7;
 
 const TONE_BADGE_VARIANT = {
   info: "info",
@@ -116,7 +126,11 @@ function SubagentRunRow({ run, selected, quiet, onSelect }: SubagentRunRowProps)
 function SubagentActivityTranscript({ run }: { run: SubagentRunEntry }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
-  const latestActivitySequence = run.activity.at(-1)?.sequence ?? 0;
+  const activity = useMemo(() => selectSubagentTranscriptActivity(run), [run]);
+  const latestActivitySequence = activity.reduce(
+    (latest, entry) => Math.max(latest, entry.sequence),
+    0,
+  );
 
   useEffect(() => {
     const viewport = rootRef.current?.querySelector<HTMLElement>(
@@ -146,20 +160,20 @@ function SubagentActivityTranscript({ run }: { run: SubagentRunEntry }) {
     }
   }, [latestActivitySequence]);
 
-  if (run.activity.length === 0) {
+  if (activity.length === 0) {
     return <p className="text-xs text-muted-foreground">No child activity yet.</p>;
   }
 
   return (
     <ScrollArea ref={rootRef} className="min-h-0 flex-1 rounded-md border border-border/60">
       <ul className="flex flex-col gap-0.5 p-1.5">
-        {run.activity.map((entry) => (
+        {activity.map((entry) => (
           <li
             key={entry.sequence}
             className="flex items-start gap-1.5 rounded px-1 py-0.5 text-[11px] text-muted-foreground"
           >
             <span className="shrink-0 font-mono text-[10px] uppercase text-muted-foreground/70">
-              {entry.type}
+              {subagentActivityLabel(entry)}
             </span>
             <span className="min-w-0 flex-1 break-words whitespace-pre-wrap text-foreground/90">
               {summarizeSubagentActivity(entry)}
@@ -262,9 +276,16 @@ function SubagentRunDetail({ environmentId, threadId, run }: SubagentRunDetailPr
             </p>
           )}
           {view.result.result !== undefined && view.result.result.files_changed.length > 0 && (
-            <p className="text-muted-foreground">
-              {view.result.result.files_changed.length} file(s) changed
-            </p>
+            <div className="text-muted-foreground">
+              <p>{view.result.result.files_changed.length} file(s) changed</p>
+              <ul className="mt-0.5 list-disc pl-4">
+                {view.result.result.files_changed.map((path) => (
+                  <li key={path} className="break-all font-mono text-[10px]">
+                    {path}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       )}
@@ -303,6 +324,17 @@ export function SubagentRuns({ environmentId, threadId, enabled }: SubagentRunsP
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [quietExpanded, setQuietExpanded] = useState(false);
   const useSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const maxDetailWidth = useViewportClampedMaxWidth({
+    maxWidth: SUBAGENT_DETAIL_MAX_WIDTH,
+    maxViewportFraction: SUBAGENT_DETAIL_MAX_VIEWPORT_FRACTION,
+  });
+  const { width: detailWidth, handlers: detailResizeHandlers } = useResizableWidth({
+    storageKey: SUBAGENT_DETAIL_WIDTH_STORAGE_KEY,
+    defaultWidth: SUBAGENT_DETAIL_DEFAULT_WIDTH,
+    minWidth: SUBAGENT_DETAIL_MIN_WIDTH,
+    maxWidth: maxDetailWidth,
+    edge: "left",
+  });
 
   useEffect(() => {
     setSelectedRunId(null);
@@ -375,11 +407,10 @@ export function SubagentRuns({ environmentId, threadId, enabled }: SubagentRunsP
         <SheetPopup
           side="right"
           showCloseButton
-          className={cn(
-            "gap-0 p-4",
-            useSheet ? "w-full max-w-none" : "w-[min(42vw,28rem)] min-w-80 max-w-[28rem]",
-          )}
+          className={cn("gap-0 p-4", useSheet ? "w-full max-w-none" : "min-w-80 max-w-none")}
+          style={useSheet ? undefined : { width: `${detailWidth}px` }}
         >
+          {!useSheet && <RightPanelResizeHandle handlers={detailResizeHandlers} />}
           <SheetTitle className="sr-only">Subagent run details</SheetTitle>
           {selectedRun !== null && (
             <SubagentRunDetail

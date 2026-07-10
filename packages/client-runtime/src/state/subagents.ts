@@ -81,3 +81,4 @@ export function createSubagentEnvironmentAtoms<R, E>(
 }
 
 export * from "./subagentRuntime.ts";
+export * from "./subagentTranscript.ts";

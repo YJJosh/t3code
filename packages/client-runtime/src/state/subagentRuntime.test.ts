@@ -21,6 +21,7 @@ import {
   subagentRunNeedsInput,
   type SubagentRuntimeState,
 } from "./subagentRuntime.ts";
+import { selectSubagentTranscriptActivity } from "./subagentTranscript.ts";
 
 const EMPTY_USAGE = {
   input: 0,
@@ -180,6 +181,48 @@ describe("applySubagentEvent", () => {
     expect(run?.activity).toHaveLength(3);
     expect(run?.activity.at(-1)?.data["name"]).toBe("tool-4");
     expect(run?.activity[0]?.data["name"]).toBe("tool-2");
+  });
+
+  it("coalesces adjacent live updates so streaming cannot evict durable history", () => {
+    let state = applySubagentEvent(
+      EMPTY_SUBAGENT_RUNTIME_STATE,
+      event({
+        sequence: 1,
+        kind: "run_created",
+        runId: "run-a",
+        view: runView({ runId: "run-a" }),
+      }),
+    );
+    state = applySubagentEvent(
+      state,
+      event({
+        sequence: 2,
+        kind: "child_tool",
+        runId: "run-a",
+        activity: { type: "tool_execution_end", data: { toolName: "read" } },
+      }),
+    );
+    for (let sequence = 3; sequence <= 20; sequence += 1) {
+      state = applySubagentEvent(
+        state,
+        event({
+          sequence,
+          kind: "child_message",
+          runId: "run-a",
+          activity: {
+            type: "message_update",
+            data: { delta: String(sequence) },
+            liveOnly: true,
+          },
+        }),
+        { maxActivity: 3 },
+      );
+    }
+
+    const activity = selectSubagentRun(state, "run-a")?.activity;
+    expect(activity).toHaveLength(2);
+    expect(activity?.[0]?.type).toBe("tool_execution_end");
+    expect(activity?.[1]?.sequence).toBe(20);
   });
 
   it("drops child activity for a run whose view has not been seen", () => {
@@ -351,6 +394,211 @@ describe("applySubagentEvent", () => {
     );
     const active = selectActiveSubagentRuns(state);
     expect(active.map((entry) => entry.view.runId)).toEqual(["run-a"]);
+  });
+});
+
+describe("selectSubagentTranscriptActivity", () => {
+  function activity(
+    sequence: number,
+    kind: "child_message" | "child_tool" | "child_turn",
+    type: string,
+    data: Readonly<Record<string, unknown>>,
+    liveOnly = false,
+  ) {
+    return {
+      sequence,
+      timestamp: `2026-04-01T00:00:${String(sequence).padStart(2, "0")}.000Z`,
+      kind,
+      type,
+      data,
+      liveOnly,
+    } as const;
+  }
+
+  it("removes lifecycle duplicates while preserving distinct messages and tool calls", () => {
+    const view = runView({
+      runId: "run-a",
+      task: "Inspect the repository",
+      state: "done",
+      result: {
+        run_id: "run-a",
+        model: "claude-opus-4-8",
+        directory: "/workspace",
+        status: "done",
+        result: {
+          status: "done",
+          summary: "Inspection complete.",
+          files_changed: [],
+          open_questions: [],
+        },
+        usage: EMPTY_USAGE,
+      },
+    });
+    const initialPrompt = {
+      role: "user",
+      content: [{ type: "text", text: "Task:\n\nInspect the repository" }],
+    };
+    const resultJson = JSON.stringify({
+      status: "done",
+      summary: "Inspection complete.",
+      files_changed: [],
+      open_questions: [],
+    });
+    const run: Parameters<typeof selectSubagentTranscriptActivity>[0] = {
+      view,
+      activity: [
+        activity(1, "child_turn", "turn_start", {}),
+        activity(2, "child_message", "message_start", { message: initialPrompt }),
+        activity(3, "child_message", "message_end", { message: initialPrompt }),
+        activity(4, "child_message", "message_start", {
+          message: { role: "assistant", content: [] },
+        }),
+        activity(5, "child_message", "message_update", { delta: "Plan" }, true),
+        activity(6, "child_message", "message_update", { delta: "ning" }, true),
+        activity(7, "child_message", "message_end", {
+          message: {
+            role: "assistant",
+            content: [{ type: "thinking", thinking: "Planning the inspection." }],
+          },
+        }),
+        activity(8, "child_tool", "tool_execution_start", {
+          toolCallId: "call-1",
+          toolName: "read",
+          args: { path: "README.md" },
+        }),
+        activity(9, "child_tool", "tool_execution_end", {
+          toolCallId: "call-1",
+          toolName: "read",
+          result: { content: [{ type: "text", text: "contents" }] },
+          isError: false,
+        }),
+        activity(10, "child_message", "message_start", {
+          message: { role: "toolResult", content: [{ type: "text", text: "contents" }] },
+        }),
+        activity(11, "child_message", "message_end", {
+          message: { role: "toolResult", content: [{ type: "text", text: "contents" }] },
+        }),
+        activity(12, "child_turn", "turn_end", {
+          message: {
+            role: "assistant",
+            content: [{ type: "thinking", thinking: "Planning the inspection." }],
+          },
+        }),
+        activity(13, "child_message", "message_end", {
+          message: { role: "user", content: [{ type: "text", text: "Also inspect tests." }] },
+        }),
+        activity(14, "child_message", "message_end", {
+          message: { role: "assistant", content: [{ type: "text", text: resultJson }] },
+        }),
+      ],
+      lastSequence: 14,
+      updatedAt: "2026-04-01T00:00:14.000Z",
+    };
+
+    const transcript = selectSubagentTranscriptActivity(run);
+    expect(transcript.map((entry) => [entry.kind, entry.type])).toEqual([
+      ["child_message", "message_end"],
+      ["child_tool", "tool_execution_end"],
+      ["child_message", "message_end"],
+    ]);
+    expect(transcript[0]?.data["message"]).toEqual({
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "Planning the inspection." }],
+    });
+    expect(transcript[1]?.data["args"]).toEqual({ path: "README.md" });
+    expect(transcript[2]?.data["message"]).toEqual({
+      role: "user",
+      content: [{ type: "text", text: "Also inspect tests." }],
+    });
+  });
+
+  it("strips an appended result contract but keeps the provider's prose", () => {
+    const result = {
+      status: "done" as const,
+      summary: "Inspection complete.",
+      files_changed: [] as string[],
+      open_questions: [] as string[],
+    };
+    const run: Parameters<typeof selectSubagentTranscriptActivity>[0] = {
+      view: runView({
+        runId: "run-a",
+        state: "done",
+        result: {
+          run_id: "run-a",
+          model: "claude-opus-4-8",
+          directory: "/workspace",
+          status: "done",
+          result,
+          usage: EMPTY_USAGE,
+        },
+      }),
+      activity: [
+        activity(1, "child_message", "message_end", {
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: `Useful provider prose.\n\n${JSON.stringify(result)}`,
+              },
+            ],
+          },
+        }),
+      ],
+      lastSequence: 1,
+      updatedAt: "2026-04-01T00:00:01.000Z",
+    };
+
+    expect(selectSubagentTranscriptActivity(run)[0]?.data["message"]).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "Useful provider prose." }],
+    });
+  });
+
+  it("does not repeat the current progress card as a tool row", () => {
+    const run: Parameters<typeof selectSubagentTranscriptActivity>[0] = {
+      view: runView({ runId: "run-a", progressNote: "Current checkpoint" }),
+      activity: [
+        activity(1, "child_tool", "tool_execution_start", {
+          toolCallId: "progress-1",
+          toolName: "progress",
+          args: { note: "Earlier checkpoint" },
+        }),
+        activity(2, "child_tool", "tool_execution_start", {
+          toolCallId: "progress-2",
+          toolName: "progress",
+          args: { note: "Current checkpoint" },
+        }),
+      ],
+      lastSequence: 2,
+      updatedAt: "2026-04-01T00:00:02.000Z",
+    };
+
+    const transcript = selectSubagentTranscriptActivity(run);
+    expect(transcript).toHaveLength(1);
+    expect(transcript[0]?.data["args"]).toEqual({ note: "Earlier checkpoint" });
+  });
+
+  it("keeps separate tool calls even when their text is identical", () => {
+    const run: Parameters<typeof selectSubagentTranscriptActivity>[0] = {
+      view: runView({ runId: "run-a" }),
+      activity: [
+        activity(1, "child_tool", "tool_execution_start", {
+          toolCallId: "call-1",
+          toolName: "read",
+          args: { path: "same.ts" },
+        }),
+        activity(2, "child_tool", "tool_execution_start", {
+          toolCallId: "call-2",
+          toolName: "read",
+          args: { path: "same.ts" },
+        }),
+      ],
+      lastSequence: 2,
+      updatedAt: "2026-04-01T00:00:02.000Z",
+    };
+
+    expect(selectSubagentTranscriptActivity(run)).toHaveLength(2);
   });
 });
 
