@@ -3,10 +3,10 @@
  * SDK.
  *
  * Uses `ModelRegistry` + `AuthStorage` directly (not the CLI) so discovery is
- * fast and does not shell out. `ModelRegistry.getAll()` returns every built-in
- * and custom model; `getAvailable()` returns only those with configured
- * credentials — we use the latter to derive an auth status WITHOUT ever
- * reading or exposing the credentials themselves.
+ * fast and does not shell out. `ModelRegistry.getAvailable()` returns only
+ * models with configured credentials. T3 uses that list both for presentation
+ * and auth status so unavailable built-ins do not flood the model picker.
+ * Credentials themselves are never read or exposed.
  *
  * The SDK is loaded via a dynamic import so it stays off the server's startup
  * path (discovery only runs during a provider probe).
@@ -83,6 +83,7 @@ export function toServerProviderModel(model: PiSdkModel): ServerProviderModel {
   return {
     slug,
     name: model.name?.trim() || slug,
+    subProvider: model.provider,
     isCustom: false,
     capabilities: piModelCapabilities(model),
   };
@@ -107,13 +108,11 @@ export const discoverPiModels = Effect.fn("discoverPiModels")(function* (options
       const modelsJsonPath = agentDir ? `${agentDir.replace(/\/$/, "")}/models.json` : undefined;
       const authStorage = sdk.AuthStorage.create(authPath);
       const registry = sdk.ModelRegistry.create(authStorage, modelsJsonPath) as {
-        getAll: () => ReadonlyArray<PiSdkModel>;
         getAvailable: () => ReadonlyArray<PiSdkModel>;
         getError: () => string | undefined;
       };
-      const all = registry.getAll();
       const available = registry.getAvailable();
-      const models = all.map(toServerProviderModel);
+      const models = available.map(toServerProviderModel);
       const loadError = registry.getError();
       const auth: ServerProviderAuth =
         available.length > 0 ? { status: "authenticated" } : { status: "unauthenticated" };

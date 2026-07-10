@@ -412,6 +412,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin
         ? ["New workspaces start from origin"]
         : []),
+      ...(settings.useWorklerForNewWorkspaces !==
+      DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces
+        ? ["Workler workspace creation"]
+        : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
         : []),
@@ -431,6 +435,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
+      settings.useWorklerForNewWorkspaces,
       settings.diffIgnoreWhitespace,
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
@@ -462,6 +467,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+      useWorklerForNewWorkspaces: DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
@@ -763,6 +769,33 @@ export function GeneralSettingsPanel() {
                 </SelectItem>
               </SelectPopup>
             </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Use Workler"
+          description="Create new isolated workspaces as ordinary Workler clones under the repository's .worktrees directory. Turn this off to create Git worktrees instead. Existing workspaces remain available either way."
+          resetAction={
+            settings.useWorklerForNewWorkspaces !==
+            DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces ? (
+              <SettingResetButton
+                label="Workler workspace creation"
+                onClick={() =>
+                  updateSettings({
+                    useWorklerForNewWorkspaces: DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.useWorklerForNewWorkspaces}
+              onCheckedChange={(checked) =>
+                updateSettings({ useWorklerForNewWorkspaces: Boolean(checked) })
+              }
+              aria-label="Use Workler for new workspaces"
+            />
           }
         />
 

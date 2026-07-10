@@ -1,10 +1,11 @@
 # Workler Workspaces
 
-T3 Code creates isolated thread workspaces with Workler (the `workler` npm package), a local workspace manager. Instead of `git worktree add`, each new isolated workspace is an ordinary local Git clone under the repository's `.worktrees/<name>` directory, with the repository's `.workler` rules (linked or copied untracked files such as `node_modules` or `.env`) applied automatically.
+By default, T3 Code creates isolated thread workspaces with Workler (the `workler` npm package), a local workspace manager. Instead of `git worktree add`, each new isolated workspace is an ordinary local Git clone under the repository's `.worktrees/<name>` directory, with the repository's `.workler` rules (linked or copied untracked files such as `node_modules` or `.env`) applied automatically.
 
 ## Behavior
 
-- **Placement** — new workspaces live at `<repo>/.worktrees/<name>`. The workspace directory name is a filesystem-safe form of the requested branch (`feature/login` → `feature-login`), deduplicated with a numeric suffix when needed. The requested Git branch keeps its original spelling; Workler's separate `base` + `branch` options make that split possible.
+- **Setting** — **Settings → General → Use Workler** is enabled by default. Turning it off makes future isolated workspaces use T3's registered Git-worktree mechanism. It does not hide, convert, or change removal behavior for existing Workler clones or Git worktrees.
+- **Placement** — new Workler workspaces live at `<repo>/.worktrees/<name>`. The workspace directory name is a filesystem-safe form of the requested branch (`feature/login` → `feature-login`), deduplicated with a numeric suffix when needed. The requested Git branch keeps its original spelling; Workler's separate `base` + `branch` options make that split possible.
 - **Base ref** — the workspace branch starts from the requested base. When the "start new workspaces from origin" setting is enabled, the base is the freshly fetched remote commit, and the workspace's remote-tracking ref for the base branch is pinned to it so ahead/behind counts are accurate from the start.
 - **Project metadata** — the repository is initialized as a Workler project on first use (idempotent; it creates `.workler` if missing, excludes `.worktrees/` from Git, and marks the repo with `workler.*` config).
 - **Legacy Git worktrees** — pre-existing `git worktree` checkouts remain fully supported. They stay visible in branch listings, threads keep running in them, and removal uses the safe `git worktree remove` path. They are never converted or deleted automatically.

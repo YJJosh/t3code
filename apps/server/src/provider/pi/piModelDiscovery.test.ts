@@ -44,6 +44,7 @@ describe("toServerProviderModel", () => {
     ).toMatchObject({
       slug: "anthropic/claude-sonnet-5",
       name: "Claude Sonnet 5",
+      subProvider: "anthropic",
       isCustom: false,
     });
   });

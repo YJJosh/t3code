@@ -8,9 +8,9 @@ import * as Layer from "effect/Layer";
  *
  * Workler manages isolated workspaces as ordinary local Git clones under
  * `<repo>/.worktrees/<name>` and applies the repository's `.workler` rules
- * (linked/copied untracked files) to each new workspace. T3 uses it instead of
- * `git worktree add` for new isolated thread workspaces; pre-existing Git
- * worktrees keep working through the Git driver.
+ * (linked/copied untracked files) to each new workspace. T3 uses it by default
+ * for new isolated thread workspaces; users may opt back into `git worktree
+ * add`, while existing Workler clones and Git worktrees remain supported.
  *
  * The library is loaded lazily so layer construction stays side-effect free;
  * the published package is a regular server dependency.

@@ -17,6 +17,16 @@ const TestLayer = GitVcsDriver.layerWithWorkler(
   WorklerWorkspaceService.layerFromLibrary(makeFakeWorklerLibrary()),
 ).pipe(Layer.provideMerge(NodeServices.layer));
 
+const GitWorktreeTestLayer = GitVcsDriver.layerWithWorkler(
+  WorklerWorkspaceService.layerFromLibrary(makeFakeWorklerLibrary()),
+  {
+    getWorkspaceCreationSettings: Effect.succeed({
+      useWorklerForNewWorkspaces: false,
+      gitWorktreesDir: "",
+    }),
+  },
+).pipe(Layer.provideMerge(NodeServices.layer));
+
 const makeTmpDir = (
   prefix = "git-vcs-driver-test-",
 ): Effect.Effect<string, PlatformError.PlatformError, FileSystem.FileSystem | Scope.Scope> =>
@@ -913,4 +923,32 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
   });
+});
+
+it.layer(GitWorktreeTestLayer)("GitVcsDriver Git-worktree fallback", (it) => {
+  it.effect("creates a registered Git worktree when Workler creation is disabled", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      const pathService = yield* Path.Path;
+      const target = pathService.join(yield* makeTmpDir("git-worktrees-"), "feature-fallback");
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+
+      const created = yield* driver.createWorktree({
+        cwd,
+        path: target,
+        refName: initialBranch,
+        newRefName: "feature/fallback",
+      });
+
+      assert.equal(created.worktree.path, target);
+      assert.equal(yield* git(target, ["branch", "--show-current"]), "feature/fallback");
+      assert.include(yield* git(cwd, ["worktree", "list", "--porcelain"]), target);
+
+      // Removal keeps recognizing the legacy mechanism regardless of which
+      // mechanism is selected for future workspaces.
+      yield* driver.removeWorktree({ cwd, path: target });
+      assert.equal(yield* (yield* FileSystem.FileSystem).exists(target), false);
+    }),
+  );
 });

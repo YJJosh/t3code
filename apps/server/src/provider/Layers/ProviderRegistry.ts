@@ -176,9 +176,17 @@ const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
 // after `ProviderInstanceRegistry` rebuilds an instance (e.g. because
 // its settings changed), a fresh source rides the new PubSub instead
 // of a closed one.
+export function shouldReplaceProviderSnapshot(
+  source: Pick<ProviderSnapshotSource, "authoritativeModelCatalog">,
+  provider: Pick<ServerProvider, "auth" | "models">,
+): boolean {
+  return source.authoritativeModelCatalog === true && provider.auth.status !== "unknown";
+}
+
 const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource => ({
   instanceId: instance.instanceId,
   driverKind: instance.driverKind,
+  ...(instance.authoritativeModelCatalog ? { authoritativeModelCatalog: true } : {}),
   getSnapshot: instance.snapshot.getSnapshot,
   refresh: instance.snapshot.refresh,
   streamChanges: instance.snapshot.streamChanges,
@@ -383,10 +391,19 @@ export const ProviderRegistryLive = Layer.effect(
       provider: ServerProvider,
       options?: {
         readonly publish?: boolean;
+        readonly replace?: boolean;
       },
     ) {
       return yield* upsertProviders([provider], options);
     });
+
+    const syncProviderSource = (source: ProviderSnapshotSource, provider: ServerProvider) =>
+      syncProvider(provider, {
+        // An authoritative catalog can legitimately shrink when credentials
+        // are removed. Preserve the previous catalog for an indeterminate
+        // probe failure (unknown auth), even if explicit custom models exist.
+        replace: shouldReplaceProviderSnapshot(source, provider),
+      });
 
     const setProviderMaintenanceActionState = Effect.fn("setProviderMaintenanceActionState")(
       function* (input: {
@@ -433,7 +450,7 @@ export const ProviderRegistryLive = Layer.effect(
       return yield* providerSource.refresh.pipe(
         Effect.flatMap((nextProvider) =>
           correlateSnapshotWithSource(providerSource, nextProvider).pipe(
-            Effect.flatMap(syncProvider),
+            Effect.flatMap((provider) => syncProviderSource(providerSource, provider)),
           ),
         ),
       );
@@ -548,7 +565,9 @@ export const ProviderRegistryLive = Layer.effect(
         for (const [, instance] of newlyAdded) {
           const source = buildSnapshotSource(instance);
           yield* Stream.runForEach(source.streamChanges, (provider) =>
-            correlateSnapshotWithSource(source, provider).pipe(Effect.flatMap(syncProvider)),
+            correlateSnapshotWithSource(source, provider).pipe(
+              Effect.flatMap((correlated) => syncProviderSource(source, correlated)),
+            ),
           ).pipe(Effect.forkScoped);
         }
         yield* Effect.yieldNow;
@@ -564,7 +583,7 @@ export const ProviderRegistryLive = Layer.effect(
               const source = buildSnapshotSource(instance);
               const provider = yield* source.getSnapshot;
               yield* correlateSnapshotWithSource(source, provider).pipe(
-                Effect.flatMap(syncProvider),
+                Effect.flatMap((correlated) => syncProviderSource(source, correlated)),
               );
             }).pipe(Effect.ignoreCause({ log: true })),
           { concurrency: "unbounded", discard: true },

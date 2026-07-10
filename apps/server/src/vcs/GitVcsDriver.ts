@@ -28,7 +28,9 @@ import {
   type VcsStatusInput,
   type VcsStatusResult,
 } from "@t3tools/contracts";
-import { makeGitVcsDriverCore } from "./GitVcsDriverCore.ts";
+import { ServerConfig } from "../config.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import { makeGitVcsDriverCore, type GitVcsDriverCoreOptions } from "./GitVcsDriverCore.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
@@ -870,9 +872,24 @@ export const makeVcsDriver = Effect.gen(function* () {
 });
 
 export const make = Effect.gen(function* () {
-  const git = yield* makeGitVcsDriverCore();
+  const serverConfig = yield* ServerConfig;
+  const serverSettings = yield* ServerSettingsService;
+  const git = yield* makeGitVcsDriverCore({
+    getWorkspaceCreationSettings: serverSettings.getSettings.pipe(
+      Effect.map((settings) => ({
+        useWorklerForNewWorkspaces: settings.useWorklerForNewWorkspaces,
+        gitWorktreesDir: serverConfig.worktreesDir,
+      })),
+    ),
+  });
   return GitVcsDriver.of(git);
 });
+
+const makeWithCoreOptions = (options: GitVcsDriverCoreOptions) =>
+  Effect.gen(function* () {
+    const git = yield* makeGitVcsDriverCore(options);
+    return GitVcsDriver.of(git);
+  });
 
 export const vcsLayer = Layer.effect(VcsDriver.VcsDriver, makeVcsDriver);
 
@@ -882,6 +899,9 @@ export const vcsLayer = Layer.effect(VcsDriver.VcsDriver, makeVcsDriver);
  */
 export const layerWithWorkler = (
   worklerLayer: Layer.Layer<WorklerWorkspaceService.WorklerWorkspaceService>,
-) => Layer.effect(GitVcsDriver, make).pipe(Layer.provide(worklerLayer));
+  options: GitVcsDriverCoreOptions = {},
+) => Layer.effect(GitVcsDriver, makeWithCoreOptions(options)).pipe(Layer.provide(worklerLayer));
 
-export const layer = layerWithWorkler(WorklerWorkspaceService.layer);
+export const layer = Layer.effect(GitVcsDriver, make).pipe(
+  Layer.provide(WorklerWorkspaceService.layer),
+);

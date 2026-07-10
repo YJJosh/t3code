@@ -22,6 +22,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   GitCommandError,
   type ReviewDiffPreviewInput,
+  type ServerSettingsError,
+  type VcsCreateWorktreeInput,
   type ReviewDiffPreviewSource,
   type VcsRef,
 } from "@t3tools/contracts";
@@ -659,12 +661,27 @@ const collectOutput = Effect.fnUntraced(function* (
   };
 });
 
-export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* () {
+export interface GitVcsDriverCoreOptions {
+  readonly getWorkspaceCreationSettings?: Effect.Effect<
+    {
+      readonly useWorklerForNewWorkspaces: boolean;
+      readonly gitWorktreesDir: string;
+    },
+    ServerSettingsError
+  >;
+}
+
+export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* (
+  options: GitVcsDriverCoreOptions = {},
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const workler = yield* WorklerWorkspaceService.WorklerWorkspaceService;
   const crypto = yield* Crypto.Crypto;
+  const getWorkspaceCreationSettings =
+    options.getWorkspaceCreationSettings ??
+    Effect.succeed({ useWorklerForNewWorkspaces: true, gitWorktreesDir: "" });
 
   const executeRaw: GitVcsDriver.GitVcsDriver["Service"]["execute"] = Effect.fnUntraced(
     function* (input) {
@@ -2351,13 +2368,46 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return worktreePaths.slice(1);
   });
 
-  // New isolated workspaces are Workler clones under `<repo>/.worktrees`
-  // rather than `git worktree add` checkouts; `input.path` stays in the
-  // contract for compatibility but no longer picks the location. The
-  // requested Git branch keeps its original spelling while the workspace
-  // directory gets a filesystem-safe name.
-  const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
-    "createWorktree",
+  const configureCreatedBranchBase = Effect.fn("configureCreatedBranchBase")(function* (input: {
+    readonly cwd: string;
+    readonly configCwd: string;
+    readonly refName: string;
+    readonly newRefName: string | undefined;
+    readonly baseRefName: string | undefined;
+    readonly pinRemoteTrackingRef: boolean;
+  }) {
+    if (!input.newRefName || !input.baseRefName) return;
+
+    const remoteNames = yield* listRemoteNames(input.cwd).pipe(Effect.orElseSucceed(() => []));
+    const parsedBaseRef = parseRemoteRefWithRemoteNames(
+      input.baseRefName,
+      remoteNames.toSorted((left, right) => right.length - left.length),
+    );
+    const baseBranch = parsedBaseRef?.branchName ?? input.baseRefName;
+    yield* runGit("GitVcsDriver.createWorktree.configureBaseRef", input.configCwd, [
+      "config",
+      `branch.${input.newRefName}.gh-merge-base`,
+      baseBranch,
+    ]);
+
+    if (
+      input.pinRemoteTrackingRef &&
+      parsedBaseRef?.remoteRef !== undefined &&
+      /^[0-9a-f]{40}$/i.test(input.refName)
+    ) {
+      // A Workler clone snapshots the main repository's refs at clone time.
+      // Pin a freshly fetched remote base so ahead/behind counts start from
+      // the same commit selected by the thread bootstrap flow.
+      yield* runGit("GitVcsDriver.createWorktree.pinBaseTrackingRef", input.configCwd, [
+        "update-ref",
+        `refs/remotes/${parsedBaseRef.remoteRef}`,
+        input.refName,
+      ]);
+    }
+  });
+
+  const createWorklerWorkspace: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
+    "createWorklerWorkspace",
   )(function* (input) {
     const targetBranch = input.newRefName ?? input.refName;
     const mapWorkspaceError = workspaceCommandError("GitVcsDriver.createWorktree", input.cwd);
@@ -2372,33 +2422,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       )
       .pipe(Effect.mapError(mapWorkspaceError));
 
-    if (input.newRefName && input.baseRefName) {
-      const remoteNames = yield* listRemoteNames(input.cwd).pipe(Effect.orElseSucceed(() => []));
-      const parsedBaseRef = parseRemoteRefWithRemoteNames(
-        input.baseRefName,
-        remoteNames.toSorted((left, right) => right.length - left.length),
-      );
-      const baseBranch = parsedBaseRef?.branchName ?? input.baseRefName;
-      // The branch exists only in the workspace clone, so record the merge
-      // base there instead of in the main repository.
-      yield* runGit("GitVcsDriver.createWorktree.configureBaseRef", workspace.path, [
-        "config",
-        `branch.${input.newRefName}.gh-merge-base`,
-        baseBranch,
-      ]);
-
-      if (parsedBaseRef?.remoteRef !== undefined && /^[0-9a-f]{40}$/i.test(input.refName)) {
-        // The clone's remote-tracking refs snapshot the main repository's
-        // local branches. When the workspace starts from a freshly fetched
-        // remote commit, pin the base tracking ref to that commit so
-        // ahead/behind counts reflect the remote state at creation time.
-        yield* runGit("GitVcsDriver.createWorktree.pinBaseTrackingRef", workspace.path, [
-          "update-ref",
-          `refs/remotes/${parsedBaseRef.remoteRef}`,
-          input.refName,
-        ]);
-      }
-    }
+    yield* configureCreatedBranchBase({
+      cwd: input.cwd,
+      configCwd: workspace.path,
+      refName: input.refName,
+      newRefName: input.newRefName,
+      baseRefName: input.baseRefName,
+      pinRemoteTrackingRef: true,
+    });
 
     return {
       worktree: {
@@ -2406,6 +2437,61 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         refName: workspace.branch ?? targetBranch,
       },
     };
+  });
+
+  const createGitWorktree = Effect.fn("createGitWorktree")(function* (
+    input: VcsCreateWorktreeInput,
+    gitWorktreesDir: string,
+  ) {
+    const targetBranch = input.newRefName ?? input.refName;
+    const sanitizedBranch = targetBranch.replace(/\//g, "-");
+    const repoName = path.basename(input.cwd);
+    const worktreePath = input.path ?? path.join(gitWorktreesDir, repoName, sanitizedBranch);
+    const args = input.newRefName
+      ? ["worktree", "add", "-b", input.newRefName, worktreePath, input.refName]
+      : ["worktree", "add", worktreePath, input.refName];
+
+    yield* executeGit("GitVcsDriver.createWorktree", input.cwd, args, {
+      fallbackErrorDetail: "git worktree add failed",
+    });
+    yield* configureCreatedBranchBase({
+      cwd: input.cwd,
+      configCwd: worktreePath,
+      refName: input.refName,
+      newRefName: input.newRefName,
+      baseRefName: input.baseRefName,
+      pinRemoteTrackingRef: false,
+    });
+
+    return {
+      worktree: {
+        path: worktreePath,
+        refName: targetBranch,
+      },
+    };
+  });
+
+  // Workler is the default for new isolated workspaces. The setting only
+  // selects the creation mechanism: listing and removal always recognize both
+  // Workler clones and legacy registered Git worktrees.
+  const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
+    "createWorktree",
+  )(function* (input) {
+    const settings = yield* getWorkspaceCreationSettings.pipe(
+      Effect.mapError(
+        (cause) =>
+          new GitCommandError({
+            operation: "GitVcsDriver.createWorktree",
+            command: "settings",
+            cwd: input.cwd,
+            detail: "Failed to read the workspace creation setting.",
+            cause,
+          }),
+      ),
+    );
+    return yield* settings.useWorklerForNewWorkspaces
+      ? createWorklerWorkspace(input)
+      : createGitWorktree(input, settings.gitWorktreesDir);
   });
 
   const fetchPullRequestBranch: GitVcsDriver.GitVcsDriver["Service"]["fetchPullRequestBranch"] =

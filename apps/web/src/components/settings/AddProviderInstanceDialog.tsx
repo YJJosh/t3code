@@ -13,7 +13,7 @@ import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSet
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Button } from "../ui/button";
-import { ACPRegistryIcon, Gemini, GithubCopilotIcon, PiAgentIcon, type Icon } from "../Icons";
+import { ACPRegistryIcon, Gemini, GithubCopilotIcon, type Icon } from "../Icons";
 import {
   Dialog,
   DialogDescription,
@@ -85,11 +85,6 @@ const COMING_SOON_DRIVER_OPTIONS: readonly ComingSoonDriverOption[] = [
     value: ProviderDriverKind.make("acpRegistry"),
     label: "ACP Registry",
     icon: ACPRegistryIcon,
-  },
-  {
-    value: ProviderDriverKind.make("piAgent"),
-    label: "Pi Agent",
-    icon: PiAgentIcon,
   },
 ];
 
@@ -216,8 +211,8 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup className="max-w-xl overflow-hidden">
-        <div className="flex min-h-0 flex-col overflow-hidden border-foreground/10 bg-background shadow-2xl">
+      <DialogPopup className="max-h-[calc(100dvh-1rem)] max-w-xl overflow-hidden">
+        <div className="flex max-h-[calc(100dvh-1rem)] min-h-0 flex-col overflow-hidden border-foreground/10 bg-background shadow-2xl">
           <DialogHeader className="border-b border-border/70 bg-background">
             <DialogTitle>Add provider instance</DialogTitle>
             <DialogDescription>
@@ -268,7 +263,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
 
           <div
             data-slot="dialog-panel"
-            className="space-y-4 border-b border-border/70 bg-muted/20 px-6 py-5"
+            className="min-h-0 flex-1 space-y-4 overflow-y-auto border-b border-border/70 bg-muted/20 px-6 py-5"
           >
             <AnimatedHeight>
               <div className={cn("grid gap-2", wizardStep !== 0 && "hidden")}>
@@ -282,7 +277,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                   value={driver}
                   onValueChange={(value) => setDriver(ProviderDriverKind.make(value))}
                   aria-labelledby="add-instance-driver-label"
-                  className="grid grid-cols-2 gap-2.5"
+                  className="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
                 >
                   {DRIVER_OPTIONS.map((option) => {
                     const IconComponent = option.icon;

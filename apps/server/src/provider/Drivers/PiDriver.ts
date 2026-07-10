@@ -145,6 +145,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         displayName,
         accentColor,
         enabled,
+        authoritativeModelCatalog: true,
         snapshot,
         adapter,
         textGeneration,
