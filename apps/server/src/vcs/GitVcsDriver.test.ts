@@ -11,12 +11,17 @@ import { GitCommandError } from "@t3tools/contracts";
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
+import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
+import { makeFakeWorklerLibrary } from "./testing/FakeWorklerLibrary.ts";
 import { runVcsDriverContractSuite } from "./testing/VcsDriverContractHarness.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-git-vcs-contract-",
 });
-const GitContractLayer = Layer.mergeAll(GitVcsDriver.vcsLayer, GitVcsDriver.layer).pipe(
+const GitContractLayer = Layer.mergeAll(
+  GitVcsDriver.vcsLayer,
+  GitVcsDriver.layerWithWorkler(WorklerWorkspaceService.layerFromLibrary(makeFakeWorklerLibrary())),
+).pipe(
   Layer.provide(ServerConfigLayer),
   Layer.provideMerge(VcsProcess.layer),
   Layer.provideMerge(NodeServices.layer),
