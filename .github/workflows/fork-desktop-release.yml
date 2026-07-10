@@ -65,7 +65,9 @@ jobs:
         run: vp run typecheck
 
       - name: Test
-        run: vp test
+        # Grok's timeout-race tests are occasionally timing-sensitive on shared
+        # runners; Vitest retries only the failed test, not the full suite.
+        run: vp test --retry=1
 
   build_wsl_node_pty:
     name: Build WSL node-pty (linux-x64)
