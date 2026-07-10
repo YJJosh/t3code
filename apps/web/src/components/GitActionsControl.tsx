@@ -281,7 +281,7 @@ function getMenuActionDisabledReason({
 
   if (item.id === "commit") {
     if (!hasChanges) {
-      return "Worktree is clean. Make changes before committing.";
+      return "Working tree is clean. Make changes before committing.";
     }
     return "Commit is currently unavailable.";
   }

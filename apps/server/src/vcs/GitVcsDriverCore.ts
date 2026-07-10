@@ -22,6 +22,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   GitCommandError,
   type ReviewDiffPreviewInput,
+  type ServerSettingsError,
+  type VcsCreateWorktreeInput,
   type ReviewDiffPreviewSource,
   type VcsRef,
 } from "@t3tools/contracts";
@@ -35,7 +37,7 @@ import {
   parseRemoteNamesInGitOrder,
   parseRemoteRefWithRemoteNames,
 } from "../git/remoteRefs.ts";
-import { ServerConfig } from "../config.ts";
+import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
@@ -60,6 +62,9 @@ const STATUS_UPSTREAM_REFRESH_ENV = Object.freeze({
   SSH_ASKPASS_REQUIRE: "never",
 } satisfies NodeJS.ProcessEnv);
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
+const WORKSPACES_DIR = ".worktrees";
+const RESERVED_WORKSPACE_NAME = "main";
+const MAX_WORKSPACE_NAME_ATTEMPTS = 100;
 const GIT_LIST_BRANCHES_DEFAULT_LIMIT = 100;
 const NON_REPOSITORY_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitStatusDetails>({
   isRepo: false,
@@ -233,6 +238,20 @@ function sanitizeRemoteName(value: string): string {
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return sanitized.length > 0 ? sanitized : "fork";
+}
+
+// Workler workspace names become directory names under `<repo>/.worktrees`,
+// so they must be filesystem-safe; the requested Git branch is passed to
+// Workler separately and keeps its original spelling.
+export function sanitizeWorkspaceName(value: string): string {
+  const sanitized = value
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "");
+  if (sanitized.length === 0) {
+    return "workspace";
+  }
+  return sanitized === RESERVED_WORKSPACE_NAME ? `${sanitized}-workspace` : sanitized;
 }
 
 function normalizeRemoteUrl(value: string): string {
@@ -642,12 +661,27 @@ const collectOutput = Effect.fnUntraced(function* (
   };
 });
 
-export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* () {
+export interface GitVcsDriverCoreOptions {
+  readonly getWorkspaceCreationSettings?: Effect.Effect<
+    {
+      readonly useWorklerForNewWorkspaces: boolean;
+      readonly gitWorktreesDir: string;
+    },
+    ServerSettingsError
+  >;
+}
+
+export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* (
+  options: GitVcsDriverCoreOptions = {},
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const { worktreesDir } = yield* ServerConfig;
+  const workler = yield* WorklerWorkspaceService.WorklerWorkspaceService;
   const crypto = yield* Crypto.Crypto;
+  const getWorkspaceCreationSettings =
+    options.getWorkspaceCreationSettings ??
+    Effect.succeed({ useWorklerForNewWorkspaces: true, gitWorktreesDir: "" });
 
   const executeRaw: GitVcsDriver.GitVcsDriver["Service"]["execute"] = Effect.fnUntraced(
     function* (input) {
@@ -2161,6 +2195,23 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         }
       }
 
+      // Workler workspaces are independent clones, so `git worktree list`
+      // never reports them; surface their checked-out branches the same way
+      // registered worktrees are surfaced. Listing must keep working when the
+      // Workler library is unavailable.
+      const worklerWorkspaces = yield* resolveRepoTopLevel(input.cwd).pipe(
+        Effect.flatMap((root) => workler.listWorkspaces(root)),
+        Effect.orElseSucceed(() => []),
+      );
+      for (const workspace of worklerWorkspaces) {
+        if (workspace.isMain || !workspace.isClone || workspace.broken !== null) {
+          continue;
+        }
+        if (workspace.branch && !worktreeMap.has(workspace.branch)) {
+          worktreeMap.set(workspace.branch, workspace.path);
+        }
+      }
+
       const localBranches = Arr.filterMap(localBranchResult.stdout.split("\n"), (line) => {
         const refName = parseBranchLine(line);
         return refName === null
@@ -2242,13 +2293,160 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
-  const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
-    "createWorktree",
+  const workspaceCommandError =
+    (operation: string, cwd: string) =>
+    (error: WorklerWorkspaceService.WorklerWorkspaceError): GitCommandError =>
+      new GitCommandError({
+        operation,
+        command: "workler",
+        cwd,
+        detail: error.detail,
+        cause: error,
+      });
+
+  const resolveRepoTopLevel = Effect.fn("resolveRepoTopLevel")(function* (cwd: string) {
+    const topLevel = yield* runGitStdout("GitVcsDriver.resolveRepoTopLevel", cwd, [
+      "rev-parse",
+      "--show-toplevel",
+    ]).pipe(Effect.map((stdout) => stdout.trim()));
+    return topLevel.length > 0 ? topLevel : cwd;
+  });
+
+  const canonicalizePathBestEffort = (value: string): Effect.Effect<string> => {
+    const resolved = path.resolve(value);
+    return fileSystem.realPath(resolved).pipe(Effect.orElseSucceed(() => resolved));
+  };
+
+  const resolveAvailableWorkspaceName = Effect.fn("resolveAvailableWorkspaceName")(function* (
+    root: string,
+    desiredBranch: string,
+  ) {
+    const baseName = sanitizeWorkspaceName(desiredBranch);
+    for (let attempt = 0; attempt < MAX_WORKSPACE_NAME_ATTEMPTS; attempt += 1) {
+      const candidate = attempt === 0 ? baseName : `${baseName}-${attempt + 1}`;
+      const taken = yield* fileSystem
+        .exists(path.join(root, WORKSPACES_DIR, candidate))
+        .pipe(Effect.orElseSucceed(() => true));
+      if (!taken) {
+        return candidate;
+      }
+    }
+
+    return yield* new GitCommandError({
+      operation: "GitVcsDriver.createWorktree",
+      command: "workler",
+      cwd: root,
+      detail: `Could not find an available workspace name for '${baseName}'.`,
+    });
+  });
+
+  const listRegisteredWorktreePaths = Effect.fn("listRegisteredWorktreePaths")(function* (
+    cwd: string,
+  ) {
+    const result = yield* executeGit(
+      "GitVcsDriver.listRegisteredWorktreePaths",
+      cwd,
+      ["worktree", "list", "--porcelain"],
+      {
+        allowNonZeroExit: true,
+        timeoutMs: 10_000,
+      },
+    );
+    if (result.exitCode !== 0) {
+      return [];
+    }
+
+    const worktreePaths: string[] = [];
+    for (const line of result.stdout.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        worktreePaths.push(line.slice("worktree ".length).trim());
+      }
+    }
+    // Porcelain output always starts with the primary checkout. Only linked
+    // worktrees are valid removal targets, including when `cwd` itself is a
+    // linked worktree and its repository top-level is not the primary path.
+    return worktreePaths.slice(1);
+  });
+
+  const configureCreatedBranchBase = Effect.fn("configureCreatedBranchBase")(function* (input: {
+    readonly cwd: string;
+    readonly configCwd: string;
+    readonly refName: string;
+    readonly newRefName: string | undefined;
+    readonly baseRefName: string | undefined;
+    readonly pinRemoteTrackingRef: boolean;
+  }) {
+    if (!input.newRefName || !input.baseRefName) return;
+
+    const remoteNames = yield* listRemoteNames(input.cwd).pipe(Effect.orElseSucceed(() => []));
+    const parsedBaseRef = parseRemoteRefWithRemoteNames(
+      input.baseRefName,
+      remoteNames.toSorted((left, right) => right.length - left.length),
+    );
+    const baseBranch = parsedBaseRef?.branchName ?? input.baseRefName;
+    yield* runGit("GitVcsDriver.createWorktree.configureBaseRef", input.configCwd, [
+      "config",
+      `branch.${input.newRefName}.gh-merge-base`,
+      baseBranch,
+    ]);
+
+    if (
+      input.pinRemoteTrackingRef &&
+      parsedBaseRef?.remoteRef !== undefined &&
+      /^[0-9a-f]{40}$/i.test(input.refName)
+    ) {
+      // A Workler clone snapshots the main repository's refs at clone time.
+      // Pin a freshly fetched remote base so ahead/behind counts start from
+      // the same commit selected by the thread bootstrap flow.
+      yield* runGit("GitVcsDriver.createWorktree.pinBaseTrackingRef", input.configCwd, [
+        "update-ref",
+        `refs/remotes/${parsedBaseRef.remoteRef}`,
+        input.refName,
+      ]);
+    }
+  });
+
+  const createWorklerWorkspace: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
+    "createWorklerWorkspace",
   )(function* (input) {
+    const targetBranch = input.newRefName ?? input.refName;
+    const mapWorkspaceError = workspaceCommandError("GitVcsDriver.createWorktree", input.cwd);
+    const root = yield* resolveRepoTopLevel(input.cwd);
+    yield* workler.ensureProject(root).pipe(Effect.mapError(mapWorkspaceError));
+    const workspaceName = yield* resolveAvailableWorkspaceName(root, targetBranch);
+    const workspace = yield* workler
+      .createWorkspace(
+        input.newRefName
+          ? { root, name: workspaceName, branch: input.newRefName, base: input.refName }
+          : { root, name: workspaceName, checkout: input.refName },
+      )
+      .pipe(Effect.mapError(mapWorkspaceError));
+
+    yield* configureCreatedBranchBase({
+      cwd: input.cwd,
+      configCwd: workspace.path,
+      refName: input.refName,
+      newRefName: input.newRefName,
+      baseRefName: input.baseRefName,
+      pinRemoteTrackingRef: true,
+    });
+
+    return {
+      worktree: {
+        path: workspace.path,
+        refName: workspace.branch ?? targetBranch,
+      },
+    };
+  });
+
+  const createGitWorktree = Effect.fn("createGitWorktree")(function* (
+    input: VcsCreateWorktreeInput,
+    gitWorktreesDir: string,
+  ) {
     const targetBranch = input.newRefName ?? input.refName;
     const sanitizedBranch = targetBranch.replace(/\//g, "-");
     const repoName = path.basename(input.cwd);
-    const worktreePath = input.path ?? path.join(worktreesDir, repoName, sanitizedBranch);
+    const worktreePath = input.path ?? path.join(gitWorktreesDir, repoName, sanitizedBranch);
     const args = input.newRefName
       ? ["worktree", "add", "-b", input.newRefName, worktreePath, input.refName]
       : ["worktree", "add", worktreePath, input.refName];
@@ -2256,20 +2454,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     yield* executeGit("GitVcsDriver.createWorktree", input.cwd, args, {
       fallbackErrorDetail: "git worktree add failed",
     });
-
-    if (input.newRefName && input.baseRefName) {
-      const remoteNames = yield* listRemoteNames(input.cwd).pipe(Effect.orElseSucceed(() => []));
-      const parsedBaseRef = parseRemoteRefWithRemoteNames(
-        input.baseRefName,
-        remoteNames.toSorted((left, right) => right.length - left.length),
-      );
-      const baseBranch = parsedBaseRef?.branchName ?? input.baseRefName;
-      yield* runGit("GitVcsDriver.createWorktree.configureBaseRef", input.cwd, [
-        "config",
-        `branch.${input.newRefName}.gh-merge-base`,
-        baseBranch,
-      ]);
-    }
+    yield* configureCreatedBranchBase({
+      cwd: input.cwd,
+      configCwd: worktreePath,
+      refName: input.refName,
+      newRefName: input.newRefName,
+      baseRefName: input.baseRefName,
+      pinRemoteTrackingRef: false,
+    });
 
     return {
       worktree: {
@@ -2277,6 +2469,29 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         refName: targetBranch,
       },
     };
+  });
+
+  // Workler is the default for new isolated workspaces. The setting only
+  // selects the creation mechanism: listing and removal always recognize both
+  // Workler clones and legacy registered Git worktrees.
+  const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
+    "createWorktree",
+  )(function* (input) {
+    const settings = yield* getWorkspaceCreationSettings.pipe(
+      Effect.mapError(
+        (cause) =>
+          new GitCommandError({
+            operation: "GitVcsDriver.createWorktree",
+            command: "settings",
+            cwd: input.cwd,
+            detail: "Failed to read the workspace creation setting.",
+            cause,
+          }),
+      ),
+    );
+    return yield* settings.useWorklerForNewWorkspaces
+      ? createWorklerWorkspace(input)
+      : createGitWorktree(input, settings.gitWorktreesDir);
   });
 
   const fetchPullRequestBranch: GitVcsDriver.GitVcsDriver["Service"]["fetchPullRequestBranch"] =
@@ -2371,17 +2586,75 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       input.branch,
     ]);
 
+  // Removal handles both isolation mechanisms: pre-existing registered Git
+  // worktrees keep the safe `git worktree remove` path, Workler clones go
+  // through the Workler API, and anything else is refused rather than
+  // deleted.
   const removeWorktree: GitVcsDriver.GitVcsDriver["Service"]["removeWorktree"] = Effect.fn(
     "removeWorktree",
   )(function* (input) {
-    const args = ["worktree", "remove"];
-    if (input.force) {
-      args.push("--force");
+    const canonicalTarget = yield* canonicalizePathBestEffort(input.path);
+    const root = yield* resolveRepoTopLevel(input.cwd);
+    const canonicalRoot = yield* canonicalizePathBestEffort(root);
+    const registeredWorktreePaths = yield* listRegisteredWorktreePaths(input.cwd);
+    const canonicalRegisteredPaths = yield* Effect.forEach(
+      registeredWorktreePaths,
+      canonicalizePathBestEffort,
+    );
+    // `git worktree list` includes the primary checkout. It is not an
+    // isolated workspace and must never enter the removal path.
+    if (canonicalTarget !== canonicalRoot && canonicalRegisteredPaths.includes(canonicalTarget)) {
+      const args = ["worktree", "remove"];
+      if (input.force) {
+        args.push("--force");
+      }
+      args.push(input.path);
+      yield* executeGit("GitVcsDriver.removeWorktree", input.cwd, args, {
+        timeoutMs: 15_000,
+        fallbackErrorDetail: "git worktree remove failed",
+      });
+      return;
     }
-    args.push(input.path);
-    yield* executeGit("GitVcsDriver.removeWorktree", input.cwd, args, {
-      timeoutMs: 15_000,
-      fallbackErrorDetail: "git worktree remove failed",
+
+    const mapWorkspaceError = workspaceCommandError("GitVcsDriver.removeWorktree", input.cwd);
+    // A repository that was never Workler-initialized has no Workler
+    // workspaces; report the refusal below instead of an initialization error.
+    const workspaces = yield* workler
+      .listWorkspaces(root)
+      .pipe(
+        Effect.catch((error) =>
+          error.code === "NOT_INITIALIZED" || error.code === "ROOT_NOT_FOUND"
+            ? Effect.succeed<ReadonlyArray<WorklerWorkspaceService.WorklerWorkspaceSummary>>([])
+            : Effect.fail(mapWorkspaceError(error)),
+        ),
+      );
+    for (const workspace of workspaces) {
+      // A directory merely present under `.worktrees` is not enough to
+      // authorize recursive deletion. Workler reports non-clones and damaged
+      // clones as broken entries; leave those for explicit manual recovery.
+      if (workspace.isMain || !workspace.isClone || workspace.broken !== null) {
+        continue;
+      }
+      const canonicalWorkspacePath = yield* canonicalizePathBestEffort(workspace.path);
+      if (canonicalWorkspacePath !== canonicalTarget) {
+        continue;
+      }
+      yield* workler
+        .removeWorkspace({
+          root,
+          name: workspace.name,
+          ...(input.force !== undefined ? { force: input.force } : {}),
+        })
+        .pipe(Effect.mapError(mapWorkspaceError));
+      return;
+    }
+
+    return yield* new GitCommandError({
+      operation: "GitVcsDriver.removeWorktree",
+      command: "workler",
+      cwd: input.cwd,
+      detail:
+        "The path is neither a registered Git worktree nor a Workler workspace of this repository; refusing to remove it.",
     });
   });
 

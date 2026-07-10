@@ -410,7 +410,11 @@ export function useSettingsRestore(onRestored?: () => void) {
         : []),
       ...(settings.newWorktreesStartFromOrigin !==
       DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin
-        ? ["New worktrees start from origin"]
+        ? ["New workspaces start from origin"]
+        : []),
+      ...(settings.useWorklerForNewWorkspaces !==
+      DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces
+        ? ["Workler workspace creation"]
         : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
@@ -431,6 +435,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
+      settings.useWorklerForNewWorkspaces,
       settings.diffIgnoreWhitespace,
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
@@ -462,6 +467,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+      useWorklerForNewWorkspaces: DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
@@ -751,7 +757,7 @@ export function GeneralSettingsPanel() {
             >
               <SelectTrigger className="w-full sm:w-44" aria-label="Default thread mode">
                 <SelectValue>
-                  {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
+                  {settings.defaultThreadEnvMode === "worktree" ? "New workspace" : "Local"}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -759,10 +765,37 @@ export function GeneralSettingsPanel() {
                   Local
                 </SelectItem>
                 <SelectItem hideIndicator value="worktree">
-                  New worktree
+                  New workspace
                 </SelectItem>
               </SelectPopup>
             </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Use Workler"
+          description="Create new isolated workspaces as ordinary Workler clones under the repository's .worktrees directory. Turn this off to create Git worktrees instead. Existing workspaces remain available either way."
+          resetAction={
+            settings.useWorklerForNewWorkspaces !==
+            DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces ? (
+              <SettingResetButton
+                label="Workler workspace creation"
+                onClick={() =>
+                  updateSettings({
+                    useWorklerForNewWorkspaces: DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.useWorklerForNewWorkspaces}
+              onCheckedChange={(checked) =>
+                updateSettings({ useWorklerForNewWorkspaces: Boolean(checked) })
+              }
+              aria-label="Use Workler for new workspaces"
+            />
           }
         />
 
@@ -770,12 +803,12 @@ export function GeneralSettingsPanel() {
           <SettingsRow
             className="bg-muted/20 sm:pl-9"
             title="Start from origin"
-            description="Creates the worktree from the latest matching branch on origin instead of your local branch."
+            description="Creates the workspace from the latest matching branch on origin instead of your local branch."
             resetAction={
               settings.newWorktreesStartFromOrigin !==
               DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
                 <SettingResetButton
-                  label="new worktrees start from origin"
+                  label="new workspaces start from origin"
                   onClick={() =>
                     updateSettings({
                       newWorktreesStartFromOrigin:
@@ -791,7 +824,7 @@ export function GeneralSettingsPanel() {
                 onCheckedChange={(checked) =>
                   updateSettings({ newWorktreesStartFromOrigin: Boolean(checked) })
                 }
-                aria-label="Start new worktrees from origin by default"
+                aria-label="Start new workspaces from origin by default"
               />
             }
           />

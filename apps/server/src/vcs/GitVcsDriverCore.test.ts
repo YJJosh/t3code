@@ -8,17 +8,24 @@ import * as PlatformError from "effect/PlatformError";
 import * as Scope from "effect/Scope";
 
 import { GitCommandError } from "@t3tools/contracts";
-import { ServerConfig } from "../config.ts";
 import { splitNullSeparatedGitStdoutPaths } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
+import { makeFakeWorklerLibrary } from "./testing/FakeWorklerLibrary.ts";
 
-const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
-  prefix: "t3-git-vcs-driver-test-",
-});
-const TestLayer = GitVcsDriver.layer.pipe(
-  Layer.provide(ServerConfigLayer),
-  Layer.provideMerge(NodeServices.layer),
-);
+const TestLayer = GitVcsDriver.layerWithWorkler(
+  WorklerWorkspaceService.layerFromLibrary(makeFakeWorklerLibrary()),
+).pipe(Layer.provideMerge(NodeServices.layer));
+
+const GitWorktreeTestLayer = GitVcsDriver.layerWithWorkler(
+  WorklerWorkspaceService.layerFromLibrary(makeFakeWorklerLibrary()),
+  {
+    getWorkspaceCreationSettings: Effect.succeed({
+      useWorklerForNewWorkspaces: false,
+      gitWorktreesDir: "",
+    }),
+  },
+).pipe(Layer.provideMerge(NodeServices.layer));
 
 const makeTmpDir = (
   prefix = "git-vcs-driver-test-",
@@ -161,7 +168,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("does not wrap a remove-worktree command failure in a synthetic error", () =>
+    it.effect("refuses to remove a path that is neither a worktree nor a workspace", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const pathService = yield* Path.Path;
@@ -176,12 +183,47 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.deepInclude(error, {
           _tag: "GitCommandError",
           operation: "GitVcsDriver.removeWorktree",
-          command: "git",
-          argumentCount: 3,
+          command: "workler",
           cwd,
         });
-        assert.notProperty(error, "cause");
-        assert.notInclude(error.detail, "Git command failed in");
+        assert.include(error.detail, "refusing to remove");
+      }),
+    );
+
+    it.effect("never classifies the primary checkout as a removable worktree", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.initRepo({ cwd });
+
+        const error = yield* driver
+          .removeWorktree({ cwd, path: cwd, force: true })
+          .pipe(Effect.flip);
+
+        assert.equal(error.operation, "GitVcsDriver.removeWorktree");
+        assert.include(error.detail, "refusing to remove");
+        assert.equal(yield* (yield* FileSystem.FileSystem).exists(cwd), true);
+      }),
+    );
+
+    it.effect("refuses to force-remove broken entries under the workspace directory", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        const brokenPath = pathService.join(cwd, ".worktrees", "unmanaged-data");
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.initRepo({ cwd });
+        yield* fileSystem.makeDirectory(brokenPath, { recursive: true });
+        yield* writeTextFile(brokenPath, "keep.txt", "do not delete\n");
+
+        const error = yield* driver
+          .removeWorktree({ cwd, path: brokenPath, force: true })
+          .pipe(Effect.flip);
+
+        assert.equal(error.operation, "GitVcsDriver.removeWorktree");
+        assert.include(error.detail, "refusing to remove");
+        assert.equal(yield* fileSystem.exists(pathService.join(brokenPath, "keep.txt")), true);
       }),
     );
   });
@@ -567,32 +609,110 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
     );
   });
 
-  describe("worktree operations", () => {
-    it.effect("creates and removes a worktree for a new refName", () =>
+  describe("workspace operations", () => {
+    it.effect("creates and removes a Workler workspace for a new refName", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const pathService = yield* Path.Path;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        const created = yield* driver.createWorktree({
+          cwd,
+          path: null,
+          refName: initialBranch,
+          newRefName: "feature/worktree",
+        });
+
+        // The branch keeps its slash while the workspace directory gets a
+        // filesystem-safe name under the repository's `.worktrees`.
+        assert.equal(
+          created.worktree.path,
+          pathService.join(cwd, ".worktrees", "feature-worktree"),
+        );
+        assert.equal(created.worktree.refName, "feature/worktree");
+        assert.equal(
+          yield* git(created.worktree.path, ["branch", "--show-current"]),
+          "feature/worktree",
+        );
+
+        yield* driver.removeWorktree({ cwd, path: created.worktree.path });
+        const fileSystem = yield* FileSystem.FileSystem;
+        assert.equal(yield* fileSystem.exists(created.worktree.path), false);
+      }),
+    );
+
+    it.effect("keeps a registered legacy Git worktree usable and removable", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
         const pathService = yield* Path.Path;
         const worktreePath = pathService.join(
           yield* makeTmpDir("git-worktrees-"),
-          "feature-worktree",
+          "legacy-worktree",
         );
         const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["worktree", "add", "-b", "feature/legacy", worktreePath, initialBranch]);
 
-        const created = yield* driver.createWorktree({
-          cwd,
-          path: worktreePath,
-          refName: initialBranch,
-          newRefName: "feature/worktree",
-        });
-
-        assert.equal(created.worktree.path, worktreePath);
-        assert.equal(created.worktree.refName, "feature/worktree");
-        assert.equal(yield* git(worktreePath, ["branch", "--show-current"]), "feature/worktree");
+        const refs = yield* driver.listRefs({ cwd });
+        assert.equal(
+          refs.refs.find((refName) => refName.name === "feature/legacy")?.worktreePath,
+          worktreePath,
+        );
 
         yield* driver.removeWorktree({ cwd, path: worktreePath });
         const fileSystem = yield* FileSystem.FileSystem;
         assert.equal(yield* fileSystem.exists(worktreePath), false);
+        assert.equal(
+          yield* git(cwd, ["worktree", "list", "--porcelain"]).pipe(
+            Effect.map((stdout) => stdout.includes("legacy-worktree")),
+          ),
+          false,
+        );
+      }),
+    );
+
+    it.effect("refuses the primary checkout even when called from a linked worktree", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const pathService = yield* Path.Path;
+        const legacyPath = pathService.join(yield* makeTmpDir("git-worktrees-"), "legacy-cwd");
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["worktree", "add", "-b", "feature/legacy-cwd", legacyPath, initialBranch]);
+
+        const error = yield* driver
+          .removeWorktree({ cwd: legacyPath, path: cwd, force: true })
+          .pipe(Effect.flip);
+
+        assert.equal(error.operation, "GitVcsDriver.removeWorktree");
+        assert.include(error.detail, "refusing to remove");
+        assert.equal(yield* (yield* FileSystem.FileSystem).exists(cwd), true);
+      }),
+    );
+
+    it.effect("lists branches checked out in Workler workspaces with their path", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* git(cwd, ["branch", "feature/listed"]);
+
+        const created = yield* driver.createWorktree({
+          cwd,
+          path: null,
+          refName: "feature/listed",
+        });
+
+        assert.equal(
+          yield* git(created.worktree.path, ["branch", "--show-current"]),
+          "feature/listed",
+        );
+        const refs = yield* driver.listRefs({ cwd });
+        assert.equal(
+          refs.refs.find((refName) => refName.name === "feature/listed")?.worktreePath,
+          created.worktree.path,
+        );
       }),
     );
   });
@@ -666,18 +786,14 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.deepEqual(explicitlyResolvedBase, resolvedBase);
         assert.equal(yield* git(cwd, ["rev-parse", initialBranch]), beforeFetch);
 
-        const pathService = yield* Path.Path;
-        const worktreePath = pathService.join(
-          yield* makeTmpDir("git-fetched-worktrees-"),
-          "fetched-origin",
-        );
-        yield* driver.createWorktree({
+        const created = yield* driver.createWorktree({
           cwd,
-          path: worktreePath,
+          path: null,
           refName: resolvedBase.commitSha,
           newRefName: "t3code/fetched-origin",
           baseRefName: resolvedBase.remoteRefName,
         });
+        const worktreePath = created.worktree.path;
 
         assert.equal(yield* git(worktreePath, ["rev-parse", "HEAD"]), remoteHead);
         assert.equal(
@@ -807,4 +923,32 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
   });
+});
+
+it.layer(GitWorktreeTestLayer)("GitVcsDriver Git-worktree fallback", (it) => {
+  it.effect("creates a registered Git worktree when Workler creation is disabled", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      const pathService = yield* Path.Path;
+      const target = pathService.join(yield* makeTmpDir("git-worktrees-"), "feature-fallback");
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+
+      const created = yield* driver.createWorktree({
+        cwd,
+        path: target,
+        refName: initialBranch,
+        newRefName: "feature/fallback",
+      });
+
+      assert.equal(created.worktree.path, target);
+      assert.equal(yield* git(target, ["branch", "--show-current"]), "feature/fallback");
+      assert.include(yield* git(cwd, ["worktree", "list", "--porcelain"]), target);
+
+      // Removal keeps recognizing the legacy mechanism regardless of which
+      // mechanism is selected for future workspaces.
+      yield* driver.removeWorktree({ cwd, path: target });
+      assert.equal(yield* (yield* FileSystem.FileSystem).exists(target), false);
+    }),
+  );
 });

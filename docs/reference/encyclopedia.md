@@ -22,9 +22,9 @@ The top-level workspace record in the app. In [the orchestration contracts][1], 
 
 The root filesystem path for a project. In [the orchestration model][1], it is the base directory for branches and optional worktrees. See [workspace-layout.md][2].
 
-#### Worktree
+#### Workspace (isolated)
 
-A Git worktree used as an isolated workspace for a thread. If a thread has a `worktreePath` in [the contracts][1], it runs there instead of in the main working tree. Git operations live in [GitCore.ts][3].
+An isolated checkout used to run a thread outside the main working tree. If a thread has a `worktreePath` in [the contracts][1], it runs there instead of in the main working tree (the persisted field keeps its historical name for compatibility). New isolated workspaces are Workler workspaces — ordinary local Git clones created with the `workler` library under `<repo>/.worktrees/<name>`, with the repository's `.workler` rules applied. Pre-existing Git worktrees remain fully supported: they stay visible, usable, and removable, and are never converted or deleted automatically. Git operations live in [GitCore.ts][3].
 
 ### Thread timeline
 

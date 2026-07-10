@@ -1,3 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off - Vite's dev allow list must resolve Workler-linked dependency paths before the Effect runtime exists.
+import * as NodeFS from "node:fs";
+import * as NodeURL from "node:url";
+
 import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import babel from "@rolldown/plugin-babel";
@@ -11,6 +15,16 @@ import { loadRepoEnv } from "../../scripts/lib/public-config";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
+
+const workspaceRoot = NodeURL.fileURLToPath(new URL("../..", import.meta.url));
+const workspaceNodeModules = NodeURL.fileURLToPath(new URL("../../node_modules", import.meta.url));
+const devServerAllowedPaths = [
+  workspaceRoot,
+  // Workler may link node_modules from the primary checkout. Vite checks the
+  // asset's real path, so permit exactly the linked dependency directory
+  // rather than broadening access to its parent checkout.
+  NodeFS.realpathSync(workspaceNodeModules),
+];
 
 const port = Number(process.env.PORT ?? 5733);
 const host = process.env.HOST?.trim() || "localhost";
@@ -141,6 +155,7 @@ export default defineConfig(() => {
       host,
       port,
       strictPort: true,
+      fs: { allow: devServerAllowedPaths },
       ...(devProxyTarget
         ? {
             proxy: {

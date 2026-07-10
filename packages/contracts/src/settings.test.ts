@@ -87,15 +87,20 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   });
 });
 
-describe("ServerSettings worktree defaults", () => {
-  it("defaults start-from-origin off for legacy configs", () => {
-    expect(decodeServerSettings({}).newWorktreesStartFromOrigin).toBe(false);
+describe("ServerSettings workspace defaults", () => {
+  it("defaults start-from-origin off and Workler on for legacy configs", () => {
+    const settings = decodeServerSettings({});
+    expect(settings.newWorktreesStartFromOrigin).toBe(false);
+    expect(settings.useWorklerForNewWorkspaces).toBe(true);
   });
 
-  it("accepts start-from-origin updates", () => {
-    expect(
-      decodeServerSettingsPatch({ newWorktreesStartFromOrigin: true }).newWorktreesStartFromOrigin,
-    ).toBe(true);
+  it("accepts workspace creation updates", () => {
+    const patch = decodeServerSettingsPatch({
+      newWorktreesStartFromOrigin: true,
+      useWorklerForNewWorkspaces: false,
+    });
+    expect(patch.newWorktreesStartFromOrigin).toBe(true);
+    expect(patch.useWorklerForNewWorkspaces).toBe(false);
   });
 });
 

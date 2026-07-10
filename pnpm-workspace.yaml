@@ -58,6 +58,7 @@ minimumReleaseAgeExclude:
   - "@clerk/expo@3.7.2"
   - "@clerk/react@6.12.1"
   - "@clerk/shared@4.25.1"
+  - workler@0.1.3
 
 overrides:
   "@clerk/backend": "catalog:"

@@ -744,15 +744,15 @@ export function BranchToolbarBranchSelector({
                       id={startFromOriginSwitchId}
                       checked={startFromOrigin}
                       className="[--thumb-size:--spacing(3.5)]"
-                      aria-label="Start worktree from origin"
+                      aria-label="Start workspace from origin"
                       onCheckedChange={(checked) => onStartFromOriginChange(Boolean(checked))}
                     />
                   </label>
                 }
               />
               <TooltipPopup side="top" className="max-w-72 whitespace-normal leading-tight">
-                Creates the worktree from the latest matching branch on origin instead of your local
-                branch.
+                Creates the workspace from the latest matching branch on origin instead of your
+                local branch.
               </TooltipPopup>
             </Tooltip>
           ) : null}

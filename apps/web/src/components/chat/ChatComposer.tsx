@@ -360,7 +360,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         />
       ) : null}
       {props.isPreparingWorktree ? (
-        <span className="text-muted-foreground/70 text-xs">Preparing worktree...</span>
+        <span className="text-muted-foreground/70 text-xs">Preparing workspace...</span>
       ) : null}
       <ComposerPrimaryActions
         compact={props.compact}
