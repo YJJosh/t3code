@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Unsigned desktop release version (for example 0.0.29-pi.1)"
+        description: "Unsigned T3 Dulli release version (for example 0.0.29-pi.4)"
         required: true
-        default: "0.0.29-pi.1"
+        default: "0.0.29-pi.4"
         type: string
 
 permissions:
@@ -67,6 +67,10 @@ jobs:
       - name: Test release integrations
         run: |
           vp test --retry=1 \
+            scripts/build-desktop-artifact.test.ts \
+            apps/desktop/src/app/DesktopEnvironment.test.ts \
+            apps/desktop/src/electron/ElectronApp.test.ts \
+            apps/desktop/src/updates/DesktopUpdates.test.ts \
             packages/contracts/src/settings.test.ts \
             packages/contracts/src/subagents.test.ts \
             packages/client-runtime/src/state/subagentRuntime.test.ts \
@@ -205,6 +209,7 @@ jobs:
         run: |
           set -euo pipefail
           args=(
+            --brand dulli
             --platform "${{ matrix.platform }}"
             --target "${{ matrix.target }}"
             --arch "${{ matrix.arch }}"
@@ -244,6 +249,34 @@ jobs:
             echo "No release assets were produced." >&2
             exit 1
           fi
+
+          version="${{ needs.preflight.outputs.version }}"
+          case "${{ matrix.platform }}" in
+            mac)
+              test -s "release-publish/T3-Dulli-${version}-${{ matrix.arch }}.dmg"
+              test -s "release-publish/T3-Dulli-${version}-${{ matrix.arch }}.zip"
+              if [[ "${{ matrix.arch }}" == "arm64" ]]; then
+                test -s "release-publish/latest-mac.yml"
+              else
+                test -s "release-publish/latest-mac-${{ matrix.arch }}.yml"
+              fi
+              ;;
+            linux)
+              test -s "release-publish/T3-Dulli-${version}-x86_64.AppImage"
+              test -s "release-publish/latest-linux.yml"
+              ;;
+            win)
+              test -s "release-publish/T3-Dulli-${version}-x64.exe"
+              test -s "release-publish/latest.yml"
+              ;;
+          esac
+
+          for manifest in release-publish/latest*.yml; do
+            grep -q 'T3-Dulli-' "$manifest" || {
+              echo "Updater manifest does not reference a branded Dulli artifact: $manifest" >&2
+              exit 1
+            }
+          done
 
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v7
@@ -297,15 +330,15 @@ jobs:
         with:
           tag_name: ${{ needs.preflight.outputs.tag }}
           target_commitish: ${{ needs.preflight.outputs.ref }}
-          name: T3 Code Pi + Workler ${{ needs.preflight.outputs.tag }}
+          name: T3 Dulli ${{ needs.preflight.outputs.tag }}
           prerelease: true
           make_latest: false
           body: |
-            Unsigned community build from `YJJosh/t3code`.
+            Unsigned T3 Dulli community build from `YJJosh/t3code`.
 
             Highlights:
+            - First-class Dulli identity, :D artwork, isolated state, and built-in prerelease updates
             - Pi as a first-class coding-agent provider, including extension-provided models
-            - Accurate Pi thinking controls and long-lived resumable RPC sessions
             - Live Pi subagent activity and controls on desktop/web, with read-only mobile visibility
             - Workler clones for isolated workspaces, with a Git-worktree fallback setting
 
