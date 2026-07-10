@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { piModelCapabilities, toServerProviderModel } from "./piModelDiscovery.ts";
+import {
+  discoverPiModelsWithSdk,
+  piModelCapabilities,
+  toServerProviderModel,
+} from "./piModelDiscovery.ts";
 
 describe("piModelCapabilities", () => {
   it("returns empty capabilities for non-reasoning models", () => {
@@ -30,6 +34,57 @@ describe("piModelCapabilities", () => {
     const optionIds = descriptor?.type === "select" ? descriptor.options.map((o) => o.id) : [];
     expect(optionIds).toContain("high");
     expect(optionIds).toContain("xhigh");
+  });
+});
+
+describe("discoverPiModelsWithSdk", () => {
+  it("loads extension-registered providers before enumerating available models", async () => {
+    let receivedOptions: Record<string, unknown> | undefined;
+    const result = await discoverPiModelsWithSdk(
+      {
+        createAgentSessionServices: async (options) => {
+          receivedOptions = options;
+          return {
+            modelRegistry: {
+              getAvailable: () => [
+                {
+                  id: "claude-sonnet-5",
+                  name: "Claude Sonnet 5",
+                  provider: "claude-agent-sdk",
+                  reasoning: true,
+                },
+              ],
+              getError: () => undefined,
+            },
+            diagnostics: [],
+          };
+        },
+      },
+      { agentDir: "/tmp/pi-agent", cwd: "/tmp/project", profile: "coder" },
+    );
+
+    expect(result).toMatchObject({
+      auth: { status: "authenticated" },
+      models: [
+        {
+          slug: "claude-agent-sdk/claude-sonnet-5",
+          subProvider: "claude-agent-sdk",
+        },
+      ],
+    });
+    expect(receivedOptions).toMatchObject({
+      agentDir: "/tmp/pi-agent",
+      cwd: "/tmp/project",
+      resourceLoaderOptions: {
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+      },
+    });
+    const extensionFlagValues = Reflect.get(receivedOptions ?? {}, "extensionFlagValues");
+    expect(extensionFlagValues).toBeInstanceOf(Map);
+    expect((extensionFlagValues as Map<string, boolean | string>).get("profile")).toBe("coder");
   });
 });
 

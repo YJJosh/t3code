@@ -2,11 +2,12 @@
  * Pi model discovery + auth status via the `@earendil-works/pi-coding-agent`
  * SDK.
  *
- * Uses `ModelRegistry` + `AuthStorage` directly (not the CLI) so discovery is
- * fast and does not shell out. `ModelRegistry.getAvailable()` returns only
- * models with configured credentials. T3 uses that list both for presentation
- * and auth status so unavailable built-ins do not flood the model picker.
- * Credentials themselves are never read or exposed.
+ * Uses Pi's SDK runtime-service loader (not CLI output parsing) so configured
+ * extensions can register custom providers before
+ * `ModelRegistry.getAvailable()` runs. T3 presents only models with configured
+ * credentials, preventing unavailable built-ins from flooding the picker while
+ * retaining extension providers such as `claude-agent-sdk`. Credentials
+ * themselves are never read or exposed.
  *
  * The SDK is loaded via a dynamic import so it stays off the server's startup
  * path (discovery only runs during a provider probe).
@@ -40,6 +41,39 @@ export interface PiModelDiscoveryResult {
   readonly auth: ServerProviderAuth;
   /** Present when the SDK failed to load or enumerate models. */
   readonly error?: string;
+}
+
+export interface PiModelDiscoveryOptions {
+  readonly agentDir?: string | undefined;
+  readonly cwd?: string | undefined;
+  readonly profile?: string | undefined;
+}
+
+interface PiSdkModelRegistry {
+  readonly getAvailable: () => ReadonlyArray<PiSdkModel>;
+  readonly getError: () => string | undefined;
+}
+
+interface PiSdkRuntimeServices {
+  readonly modelRegistry: PiSdkModelRegistry;
+  readonly diagnostics: ReadonlyArray<{
+    readonly type: "info" | "warning" | "error";
+    readonly message: string;
+  }>;
+}
+
+interface PiSdkModule {
+  readonly createAgentSessionServices: (options: {
+    readonly cwd: string;
+    readonly agentDir?: string;
+    readonly extensionFlagValues?: Map<string, boolean | string>;
+    readonly resourceLoaderOptions?: {
+      readonly noSkills?: boolean;
+      readonly noPromptTemplates?: boolean;
+      readonly noThemes?: boolean;
+      readonly noContextFiles?: boolean;
+    };
+  }) => Promise<PiSdkRuntimeServices>;
 }
 
 function piModelSlug(model: PiSdkModel): string {
@@ -89,34 +123,52 @@ export function toServerProviderModel(model: PiSdkModel): ServerProviderModel {
   };
 }
 
+export async function discoverPiModelsWithSdk(
+  sdk: PiSdkModule,
+  options: PiModelDiscoveryOptions = {},
+): Promise<PiModelDiscoveryResult> {
+  const agentDir = options.agentDir?.trim();
+  const profile = options.profile?.trim();
+  const services = await sdk.createAgentSessionServices({
+    cwd: options.cwd?.trim() || process.cwd(),
+    ...(agentDir ? { agentDir } : {}),
+    ...(profile
+      ? { extensionFlagValues: new Map<string, boolean | string>([["profile", profile]]) }
+      : {}),
+    // Provider discovery needs extensions but not the heavier prompt, skill,
+    // theme, or context resources used by an actual Pi session.
+    resourceLoaderOptions: {
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+    },
+  });
+  const available = services.modelRegistry.getAvailable();
+  const models = available.map(toServerProviderModel);
+  const errors = [
+    services.modelRegistry.getError(),
+    ...services.diagnostics
+      .filter((diagnostic) => diagnostic.type === "error")
+      .map((diagnostic) => diagnostic.message),
+  ].filter((message): message is string => typeof message === "string" && message.length > 0);
+  const auth: ServerProviderAuth =
+    available.length > 0 ? { status: "authenticated" } : { status: "unauthenticated" };
+  return errors.length > 0 ? { models, auth, error: errors.join("\n") } : { models, auth };
+}
+
 /**
  * Discover Pi models and derive auth status. Never throws — a failed SDK load
  * degrades to an empty model list with an `unknown` auth status and an `error`
  * message the probe can surface.
  */
-export const discoverPiModels = Effect.fn("discoverPiModels")(function* (options?: {
-  readonly agentDir?: string | undefined;
-}) {
+export const discoverPiModels = Effect.fn("discoverPiModels")(function* (
+  options: PiModelDiscoveryOptions = {},
+) {
   return yield* Effect.tryPromise({
     try: async (): Promise<PiModelDiscoveryResult> => {
-      const sdk = (await import("@earendil-works/pi-coding-agent")) as unknown as {
-        AuthStorage: { create: (authPath?: string) => unknown };
-        ModelRegistry: { create: (authStorage: unknown, modelsJsonPath?: string) => unknown };
-      };
-      const agentDir = options?.agentDir?.trim();
-      const authPath = agentDir ? `${agentDir.replace(/\/$/, "")}/auth.json` : undefined;
-      const modelsJsonPath = agentDir ? `${agentDir.replace(/\/$/, "")}/models.json` : undefined;
-      const authStorage = sdk.AuthStorage.create(authPath);
-      const registry = sdk.ModelRegistry.create(authStorage, modelsJsonPath) as {
-        getAvailable: () => ReadonlyArray<PiSdkModel>;
-        getError: () => string | undefined;
-      };
-      const available = registry.getAvailable();
-      const models = available.map(toServerProviderModel);
-      const loadError = registry.getError();
-      const auth: ServerProviderAuth =
-        available.length > 0 ? { status: "authenticated" } : { status: "unauthenticated" };
-      return loadError ? { models, auth, error: loadError } : { models, auth };
+      const sdk = (await import("@earendil-works/pi-coding-agent")) as unknown as PiSdkModule;
+      return discoverPiModelsWithSdk(sdk, options);
     },
     catch: (cause): PiModelDiscoveryResult => ({
       models: [],

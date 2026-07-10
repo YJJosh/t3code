@@ -18,7 +18,7 @@ T3 does not copy or replace Pi configuration. Each thread starts Pi in that thre
 
 ## Runtime behavior
 
-T3 keeps one long-lived `pi --mode rpc` process per active thread. It starts Pi with `--approve`, uses LF-delimited JSON RPC framing, and persists Pi's authoritative session id so a thread can resume after the server restarts. Model and thinking-level choices come from Pi's own model registry and authentication state; only models with configured credentials are shown, and each picker row identifies the underlying Pi model provider. Credentials are not returned to the client.
+T3 keeps one long-lived `pi --mode rpc` process per active thread. It starts Pi with `--approve`, uses LF-delimited JSON RPC framing, and persists Pi's authoritative session id so a thread can resume after the server restarts. Model and thinking-level choices come from Pi's own model registry and authentication state. T3 loads Pi extensions before discovery, so extension-registered providers such as `claude-agent-sdk` appear alongside built-in providers. Only models with configured credentials are shown, and each picker row identifies the underlying Pi model provider. Credentials are not returned to the client.
 
 Extension confirmation prompts are approved automatically for the full-access runtime. Prompts that require fabricated text input are cancelled instead.
 

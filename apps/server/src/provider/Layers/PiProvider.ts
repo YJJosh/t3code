@@ -182,7 +182,10 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     });
   }
 
-  const discovery = yield* discoverPiModels({ agentDir: settings.agentDir || undefined }).pipe(
+  const discovery = yield* discoverPiModels({
+    agentDir: settings.agentDir || undefined,
+    profile: settings.profile || undefined,
+  }).pipe(
     Effect.timeoutOption(MODEL_DISCOVERY_TIMEOUT_MS),
     Effect.catchCause((cause) => {
       return Effect.logWarning("Pi model discovery failed", {
