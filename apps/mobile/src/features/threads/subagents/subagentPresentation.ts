@@ -1,6 +1,7 @@
-import type {
-  SubagentActivityEntry,
-  SubagentRunEntry,
+import {
+  selectSubagentTranscriptActivity,
+  type SubagentActivityEntry,
+  type SubagentRunEntry,
 } from "@t3tools/client-runtime/state/subagents";
 import type {
   OrchestrationThreadShell,
@@ -101,7 +102,7 @@ const DETAIL_KEYS = ["args", "arguments", "input", "result", "output", "error"] 
 const MAX_ACTIVITY_TEXT_LENGTH = 1_000;
 
 function compactText(value: string): string | null {
-  const text = value.trim();
+  const text = value.replaceAll(/<!--\s*-->/g, "").trim();
   if (!text) return null;
   return text.length > MAX_ACTIVITY_TEXT_LENGTH
     ? `${text.slice(0, MAX_ACTIVITY_TEXT_LENGTH)}…`
@@ -162,14 +163,17 @@ function structuredDetail(data: Readonly<Record<string, unknown>>): string | nul
 
 export function summarizeSubagentActivity(entry: SubagentActivityEntry): string {
   const name = firstString(entry.data, NAME_KEYS);
-  const text = readableValue(entry.data) ?? structuredDetail(entry.data);
+  const readable = readableValue(entry.data);
+  const detail = structuredDetail(entry.data);
+  const text = entry.kind === "child_tool" ? (detail ?? readable) : (readable ?? detail);
   if (name !== null && text !== null && name !== text) return `${name}: ${text}`;
   return name ?? text ?? entry.type;
 }
 
-/** The shared reducer is bounded at ingestion; mobile applies a tighter render cap. */
+/** The shared semantic transcript removes Pi lifecycle duplicates; mobile
+ * applies a tighter render cap to that canonical activity. */
 export function selectVisibleSubagentActivity(
   run: SubagentRunEntry,
 ): ReadonlyArray<SubagentActivityEntry> {
-  return run.activity.slice(-MAX_VISIBLE_CHILD_ACTIVITY);
+  return selectSubagentTranscriptActivity(run).slice(-MAX_VISIBLE_CHILD_ACTIVITY);
 }

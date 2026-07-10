@@ -166,7 +166,18 @@ function appendRunActivity(
   if (existing === undefined) {
     return runs;
   }
-  const appended = [...existing.activity, entry];
+  // Streaming providers can emit hundreds of adjacent update/delta events for
+  // one message. Keep only the latest live frame so it cannot evict durable
+  // tool/message history from the bounded activity window. Completed events
+  // remain append-only and are reconstructed authoritatively from snapshots.
+  const previous = existing.activity.at(-1);
+  const appended =
+    entry.liveOnly &&
+    previous?.liveOnly === true &&
+    previous.kind === entry.kind &&
+    previous.type === entry.type
+      ? [...existing.activity.slice(0, -1), entry]
+      : [...existing.activity, entry];
   const bounded =
     maxActivity > 0 && appended.length > maxActivity
       ? appended.slice(appended.length - maxActivity)

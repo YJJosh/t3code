@@ -13,6 +13,7 @@ import {
   groupSubagentRunsForRoster,
   isSubagentRunQuiet,
   subagentRosterSummaryLabel,
+  subagentActivityLabel,
   subagentRunAccessibleStatus,
   subagentRunTitle,
   subagentStatusLabel,
@@ -81,9 +82,9 @@ describe("subagentPresentation", () => {
     expect(subagentRunTitle("   ", "run-1")).toBe("run-1");
   });
 
-  it("summarizes activity from name and text fields", () => {
+  it("summarizes activity without repeating its separate label", () => {
     expect(summarizeSubagentActivity(activity({ data: { name: "Bash", text: "ls -la" } }))).toBe(
-      "Bash: ls -la",
+      "ls -la",
     );
     expect(summarizeSubagentActivity(activity({ data: { message: "hello" } }))).toBe("hello");
     expect(summarizeSubagentActivity(activity({ type: "turn", data: {} }))).toBe("turn");
@@ -110,6 +111,59 @@ describe("subagentPresentation", () => {
     ).toBe("Implemented the reducer and tests.");
   });
 
+  it("uses the latest thinking block when an assistant turn has no text", () => {
+    expect(
+      summarizeSubagentActivity(
+        activity({
+          type: "message_end",
+          kind: "child_message",
+          data: {
+            message: {
+              role: "assistant",
+              content: [
+                { type: "thinking", thinking: "First thought" },
+                { type: "thinking", thinking: "Useful progress update\n\n<!-- -->" },
+                { type: "toolCall", name: "read" },
+              ],
+            },
+          },
+        }),
+      ),
+    ).toBe("Useful progress update");
+  });
+
+  it("uses concise semantic activity labels", () => {
+    expect(
+      subagentActivityLabel(
+        activity({
+          kind: "child_tool",
+          type: "tool_execution_end",
+          data: { toolName: "bash" },
+        }),
+      ),
+    ).toBe("Bash");
+    expect(
+      subagentActivityLabel(
+        activity({
+          kind: "child_message",
+          type: "message_end",
+          data: {
+            message: { role: "assistant", content: [{ type: "thinking", thinking: "Plan" }] },
+          },
+        }),
+      ),
+    ).toBe("Thinking");
+    expect(
+      subagentActivityLabel(
+        activity({
+          kind: "child_message",
+          type: "message_end",
+          data: { message: { role: "user", content: [{ type: "text", text: "Continue" }] } },
+        }),
+      ),
+    ).toBe("Manager");
+  });
+
   it("renders tool names with nested output or compact arguments", () => {
     expect(
       summarizeSubagentActivity(
@@ -121,7 +175,7 @@ describe("subagentPresentation", () => {
           },
         }),
       ),
-    ).toBe("read: file contents");
+    ).toBe("file contents");
     expect(
       summarizeSubagentActivity(
         activity({
@@ -129,7 +183,19 @@ describe("subagentPresentation", () => {
           data: { toolName: "bash", args: { command: "ls" } },
         }),
       ),
-    ).toBe('bash: {"command":"ls"}');
+    ).toBe('{"command":"ls"}');
+    expect(
+      summarizeSubagentActivity(
+        activity({
+          type: "tool_execution_end",
+          data: {
+            toolName: "bash",
+            args: { command: "ls" },
+            result: { content: [{ type: "text", text: "very long command output" }] },
+          },
+        }),
+      ),
+    ).toBe('{"command":"ls"}');
   });
 
   it("formats usage and duration", () => {

@@ -1,7 +1,7 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode } from "react";
 
 import { isElectron } from "~/env";
-import { useResizableWidth } from "~/hooks/useResizableWidth";
+import { useResizableWidth, useViewportClampedMaxWidth } from "~/hooks/useResizableWidth";
 import { cn } from "~/lib/utils";
 
 import { RightPanelResizeHandle } from "./RightPanelResizeHandle";
@@ -28,7 +28,10 @@ export function PreviewPanelShell(props: {
 }) {
   const useDragRegion = isElectron && props.mode !== "sheet" && props.mode !== "embedded";
   const isInline = props.mode === "inline";
-  const maxWidth = useViewportClampedMaxWidth();
+  const maxWidth = useViewportClampedMaxWidth({
+    maxWidth: PREVIEW_PANEL_MAX_WIDTH_PX,
+    maxViewportFraction: PREVIEW_PANEL_MAX_WIDTH_FRACTION,
+  });
   const { width, handlers } = useResizableWidth({
     storageKey: PREVIEW_PANEL_WIDTH_STORAGE_KEY,
     defaultWidth: PREVIEW_PANEL_DEFAULT_WIDTH,
@@ -56,31 +59,4 @@ export function PreviewPanelShell(props: {
       {props.children}
     </div>
   );
-}
-
-/**
- * Track viewport width to derive a sensible upper bound for the panel.
- * Resize-aware so dragging the OS window narrower re-clamps the stored
- * width on the next render (the hook's clamp picks this up automatically).
- */
-function useViewportClampedMaxWidth(): number {
-  const [vw, setVw] = useState(() => (typeof window === "undefined" ? 1280 : window.innerWidth));
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    let frame = 0;
-    const onResize = () => {
-      // Coalesce rapid resize events into one rAF tick.
-      if (frame !== 0) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = 0;
-        setVw(window.innerWidth);
-      });
-    };
-    window.addEventListener("resize", onResize);
-    return () => {
-      window.removeEventListener("resize", onResize);
-      if (frame !== 0) window.cancelAnimationFrame(frame);
-    };
-  }, []);
-  return Math.min(PREVIEW_PANEL_MAX_WIDTH_PX, Math.floor(vw * PREVIEW_PANEL_MAX_WIDTH_FRACTION));
 }
