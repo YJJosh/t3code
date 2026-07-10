@@ -62,7 +62,7 @@ export class ElectronUpdater extends Context.Service<
     readonly setFeedURL: (options: ElectronUpdaterFeedUrl) => Effect.Effect<void>;
     readonly setAutoDownload: (value: boolean) => Effect.Effect<void>;
     readonly setAutoInstallOnAppQuit: (value: boolean) => Effect.Effect<void>;
-    readonly setChannel: (channel: string) => Effect.Effect<void>;
+    readonly setChannel: (channel: string | null) => Effect.Effect<void>;
     readonly setAllowPrerelease: (value: boolean) => Effect.Effect<void>;
     readonly allowDowngrade: Effect.Effect<boolean>;
     readonly setAllowDowngrade: (value: boolean) => Effect.Effect<void>;

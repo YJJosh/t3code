@@ -40,6 +40,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
   let checkCount = 0;
   let allowDowngrade = false;
   let allowPrerelease = false;
+  let updaterChannel: string | null | undefined;
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
   const sentStates: DesktopUpdateState[] = [];
@@ -68,7 +69,10 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
       }),
     setAutoDownload: () => Effect.void,
     setAutoInstallOnAppQuit: () => Effect.void,
-    setChannel: () => Effect.void,
+    setChannel: (channel) =>
+      Effect.sync(() => {
+        updaterChannel = channel;
+      }),
     setAllowPrerelease: (value) =>
       Effect.sync(() => {
         allowPrerelease = value;
@@ -200,6 +204,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
         0,
       ),
     sentStates,
+    updaterChannel: () => updaterChannel,
     emit: (eventName: string, payload?: unknown) => {
       for (const listener of listeners.get(eventName) ?? []) {
         listener(payload);
@@ -260,6 +265,7 @@ describe("DesktopUpdates", () => {
           const state = yield* updates.getState;
           assert.equal(state.enabled, true);
           assert.equal(state.status, "idle");
+          assert.equal(harness.updaterChannel(), "latest");
           assert.deepEqual(harness.feedUrls(), [
             { provider: "generic", url: "http://localhost:4141" },
           ]);
@@ -285,6 +291,7 @@ describe("DesktopUpdates", () => {
 
         const state = yield* updates.getState;
         assert.equal(state.channel, "latest");
+        assert.equal(harness.updaterChannel(), null);
         assert.equal(harness.allowPrerelease(), true);
         assert.equal(harness.allowDowngrade(), false);
       }),

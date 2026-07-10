@@ -328,11 +328,15 @@ export const make = Effect.gen(function* () {
     yield* Effect.annotateCurrentSpan({ channel });
     const allowsPrerelease = channel === "nightly" || environment.allowsPrereleaseUpdates;
     const allowsDowngrade = channel === "nightly";
-    yield* electronUpdater.setChannel(channel);
+    // GitHubProvider treats an explicit `latest` as the prerelease identifier. Leave it unset so
+    // electron-updater derives Dulli's `pi` prerelease channel from the installed version.
+    const updaterChannel = environment.isDulli && channel === "latest" ? null : channel;
+    yield* electronUpdater.setChannel(updaterChannel);
     yield* electronUpdater.setAllowPrerelease(allowsPrerelease);
     yield* electronUpdater.setAllowDowngrade(allowsDowngrade);
     yield* logUpdaterInfo("using update channel", {
       channel,
+      updaterChannel,
       allowPrerelease: allowsPrerelease,
       allowDowngrade: allowsDowngrade,
     });
