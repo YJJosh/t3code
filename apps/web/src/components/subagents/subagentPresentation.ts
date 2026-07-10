@@ -1,4 +1,7 @@
-import type { SubagentActivityEntry } from "@t3tools/client-runtime/state/subagents";
+import type {
+  SubagentActivityEntry,
+  SubagentRunEntry,
+} from "@t3tools/client-runtime/state/subagents";
 import type { PiSubagentRunStatus, PiSubagentUsage } from "@t3tools/contracts";
 
 export type SubagentStatusTone = "info" | "warning" | "success" | "error";
@@ -23,6 +26,14 @@ const STATUS_TONES: Record<PiSubagentRunStatus, SubagentStatusTone> = {
   interrupted: "error",
 };
 
+/**
+ * Statuses that no longer need attention: the run finished (successfully or
+ * not) and isn't waiting on anything. Kept separate from `failed`, which stays
+ * in the always-visible roster since a failure is something the user should
+ * notice, not just a quiet historical record.
+ */
+const QUIET_STATUSES: ReadonlySet<PiSubagentRunStatus> = new Set(["done", "killed", "interrupted"]);
+
 export function subagentStatusLabel(status: PiSubagentRunStatus): string {
   return STATUS_LABELS[status];
 }
@@ -31,10 +42,49 @@ export function subagentStatusTone(status: PiSubagentRunStatus): SubagentStatusT
   return STATUS_TONES[status];
 }
 
+/** True once a run is done/killed/interrupted and can collapse out of the way. */
+export function isSubagentRunQuiet(status: PiSubagentRunStatus): boolean {
+  return QUIET_STATUSES.has(status);
+}
+
 /** Short, human title for a run row: prefer the task text, fall back to run id. */
 export function subagentRunTitle(task: string, runId: string): string {
   const trimmed = task.trim();
   return trimmed.length > 0 ? trimmed : runId;
+}
+
+/** Accessible status string, calling out when a run needs the user's input. */
+export function subagentRunAccessibleStatus(status: PiSubagentRunStatus): string {
+  const label = subagentStatusLabel(status);
+  return status === "needs_input" ? `${label} — needs your input` : label;
+}
+
+export interface SubagentRosterGroups {
+  /** Runs that still need visibility: spawning, running, waiting, or failed. */
+  readonly attention: ReadonlyArray<SubagentRunEntry>;
+  /** Finished runs (done/killed/interrupted) that can collapse behind a summary. */
+  readonly quiet: ReadonlyArray<SubagentRunEntry>;
+}
+
+/**
+ * Split runs for the roster panel so active/waiting/failed runs stay always
+ * visible while finished runs collapse behind a summary row. Spawn order is
+ * preserved within each group.
+ */
+export function groupSubagentRunsForRoster(
+  runs: ReadonlyArray<SubagentRunEntry>,
+): SubagentRosterGroups {
+  const attention: SubagentRunEntry[] = [];
+  const quiet: SubagentRunEntry[] = [];
+  for (const run of runs) {
+    (isSubagentRunQuiet(run.view.state) ? quiet : attention).push(run);
+  }
+  return { attention, quiet };
+}
+
+/** Label for the collapsed finished-run summary row. */
+export function subagentRosterSummaryLabel(count: number): string {
+  return `${count} finished run${count === 1 ? "" : "s"}`;
 }
 
 const ACTIVITY_TEXT_KEYS = [

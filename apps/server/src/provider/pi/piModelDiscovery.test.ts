@@ -45,9 +45,84 @@ describe("piModelCapabilities", () => {
     const optionIds = descriptor?.type === "select" ? descriptor.options.map((o) => o.id) : [];
     expect(optionIds).toEqual(["off", "minimal", "low", "medium", "high"]);
   });
+
+  it("advertises Standard and Fast service tiers for supported OpenAI Codex models", () => {
+    const capabilities = piModelCapabilities(
+      {
+        id: "gpt-5.5",
+        provider: "openai-codex",
+        reasoning: true,
+      },
+      { codexFastCommandAvailable: true },
+    );
+    const descriptor = capabilities.optionDescriptors?.find(
+      (option) => option.id === "serviceTier",
+    );
+    expect(descriptor).toMatchObject({
+      id: "serviceTier",
+      label: "Service Tier",
+      type: "select",
+      options: [
+        { id: "default", label: "Standard", isDefault: true },
+        { id: "priority", label: "Fast" },
+      ],
+    });
+  });
+
+  it("requires the selected Pi profile to load the /fast extension command", () => {
+    const capabilities = piModelCapabilities(
+      { id: "gpt-5.5", provider: "openai-codex", reasoning: true },
+      { codexFastCommandAvailable: false },
+    );
+    expect(capabilities.optionDescriptors?.some((option) => option.id === "serviceTier")).toBe(
+      false,
+    );
+  });
+
+  it("does not advertise Fast service for unsupported Codex model ids", () => {
+    const capabilities = piModelCapabilities(
+      {
+        id: "gpt-5.6-sol",
+        provider: "openai-codex",
+        reasoning: true,
+      },
+      { codexFastCommandAvailable: true },
+    );
+    expect(capabilities.optionDescriptors?.some((option) => option.id === "serviceTier")).toBe(
+      false,
+    );
+  });
 });
 
 describe("discoverPiModelsWithSdk", () => {
+  it("exposes Fast only when the loaded profile registers the command", async () => {
+    const result = await discoverPiModelsWithSdk({
+      createAgentSessionServices: async () => ({
+        modelRegistry: {
+          getAvailable: () => [
+            {
+              id: "gpt-5.5",
+              name: "GPT-5.5",
+              provider: "openai-codex",
+              reasoning: true,
+            },
+          ],
+          getError: () => undefined,
+        },
+        resourceLoader: {
+          getExtensions: () => ({
+            extensions: [{ commands: new Map([["fast", {}]]) }],
+          }),
+        },
+        diagnostics: [],
+      }),
+    });
+
+    expect(result.models[0]?.capabilities?.optionDescriptors).toContainEqual(
+      expect.objectContaining({ id: "serviceTier", label: "Service Tier" }),
+    );
+  });
+
   it("loads extension-registered providers before enumerating available models", async () => {
     let receivedOptions: Record<string, unknown> | undefined;
     const result = await discoverPiModelsWithSdk(

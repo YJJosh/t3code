@@ -7,10 +7,12 @@ import {
   buildPiRpcArgs,
   buildPiRpcEnv,
   extractPiAssistantText,
+  parsePiFastServiceEnabled,
   parsePiSubagentNotification,
   parsePiThinkingLevel,
   PI_SUBAGENTS_RPC_EVENT_PREFIX,
   resolvePiBinary,
+  supportsPiCodexFastService,
   type PiExtensionUiRequest,
 } from "./piRpcProtocol.ts";
 
@@ -136,6 +138,17 @@ describe("parsePiThinkingLevel", () => {
     expect(parsePiThinkingLevel("ultra")).toBeUndefined();
     expect(parsePiThinkingLevel(undefined)).toBeUndefined();
     expect(parsePiThinkingLevel(5)).toBeUndefined();
+  });
+});
+
+describe("Pi Codex Fast service", () => {
+  it("recognizes supported models and service-tier values", () => {
+    expect(supportsPiCodexFastService("openai-codex/gpt-5.5")).toBe(true);
+    expect(supportsPiCodexFastService("openai-codex/gpt-5.4")).toBe(true);
+    expect(supportsPiCodexFastService("openai-codex/gpt-5.6-sol")).toBe(false);
+    expect(parsePiFastServiceEnabled("priority")).toBe(true);
+    expect(parsePiFastServiceEnabled("default")).toBe(false);
+    expect(parsePiFastServiceEnabled("flex")).toBeUndefined();
   });
 });
 

@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import type { SubagentActivityEntry } from "@t3tools/client-runtime/state/subagents";
-import type { PiSubagentUsage } from "@t3tools/contracts";
+import type {
+  SubagentActivityEntry,
+  SubagentRunEntry,
+} from "@t3tools/client-runtime/state/subagents";
+import type { PiSubagentRunStatus, PiSubagentRunView, PiSubagentUsage } from "@t3tools/contracts";
 
 import {
   formatSubagentActiveMs,
   formatSubagentCost,
   formatSubagentTokens,
+  groupSubagentRunsForRoster,
+  isSubagentRunQuiet,
+  subagentRosterSummaryLabel,
+  subagentRunAccessibleStatus,
   subagentRunTitle,
   subagentStatusLabel,
   subagentStatusTone,
@@ -34,6 +41,30 @@ const usage: PiSubagentUsage = {
   turns: 3,
   cost_estimate_usd: 1.2345,
 };
+
+function runEntry(runId: string, state: PiSubagentRunStatus): SubagentRunEntry {
+  const view: PiSubagentRunView = {
+    runId,
+    task: `Task ${runId}`,
+    model: "claude-sonnet-5",
+    state,
+    directory: "/tmp/work",
+    skills: [],
+    turns: 1,
+    activeMs: 1_000,
+    usageSoFar: usage,
+    openQuestions: [],
+    checkAfterTokens: 0,
+    nextCheckTokens: 0,
+    managerCheckPending: false,
+  };
+  return {
+    view,
+    activity: [],
+    lastSequence: 1,
+    updatedAt: "2026-04-01T00:00:00.000Z",
+  };
+}
 
 describe("subagentPresentation", () => {
   it("labels and tones every run status", () => {
@@ -107,5 +138,47 @@ describe("subagentPresentation", () => {
     expect(formatSubagentActiveMs(500)).toBe("500ms");
     expect(formatSubagentActiveMs(4200)).toBe("4.2s");
     expect(formatSubagentActiveMs(95_000)).toBe("1m 35s");
+  });
+
+  it("calls out needs_input in the accessible status but not other statuses", () => {
+    expect(subagentRunAccessibleStatus("needs_input")).toBe("Needs input — needs your input");
+    expect(subagentRunAccessibleStatus("running")).toBe("Running");
+    expect(subagentRunAccessibleStatus("failed")).toBe("Failed");
+  });
+
+  it("treats only done/killed/interrupted as quiet, keeping failed always visible", () => {
+    expect(isSubagentRunQuiet("done")).toBe(true);
+    expect(isSubagentRunQuiet("killed")).toBe(true);
+    expect(isSubagentRunQuiet("interrupted")).toBe(true);
+    expect(isSubagentRunQuiet("failed")).toBe(false);
+    expect(isSubagentRunQuiet("running")).toBe(false);
+    expect(isSubagentRunQuiet("spawning")).toBe(false);
+    expect(isSubagentRunQuiet("needs_input")).toBe(false);
+  });
+
+  it("groups runs into attention vs quiet while preserving spawn order", () => {
+    const runs = [
+      runEntry("a", "running"),
+      runEntry("b", "done"),
+      runEntry("c", "needs_input"),
+      runEntry("d", "failed"),
+      runEntry("e", "killed"),
+    ];
+
+    const { attention, quiet } = groupSubagentRunsForRoster(runs);
+
+    expect(attention.map((run) => run.view.runId)).toEqual(["a", "c", "d"]);
+    expect(quiet.map((run) => run.view.runId)).toEqual(["b", "e"]);
+  });
+
+  it("returns empty groups for an empty run list", () => {
+    const { attention, quiet } = groupSubagentRunsForRoster([]);
+    expect(attention).toEqual([]);
+    expect(quiet).toEqual([]);
+  });
+
+  it("pluralizes the collapsed summary label", () => {
+    expect(subagentRosterSummaryLabel(1)).toBe("1 finished run");
+    expect(subagentRosterSummaryLabel(3)).toBe("3 finished runs");
   });
 });
