@@ -64,10 +64,23 @@ jobs:
       - name: Typecheck
         run: vp run typecheck
 
-      - name: Test
-        # Grok's timeout-race tests are occasionally timing-sensitive on shared
-        # runners; Vitest retries only the failed test, not the full suite.
-        run: vp test --retry=1
+      - name: Test release integrations
+        run: |
+          vp test --retry=1 \
+            packages/contracts/src/settings.test.ts \
+            packages/contracts/src/subagents.test.ts \
+            packages/client-runtime/src/state/subagentRuntime.test.ts \
+            apps/server/src/provider/pi/piJsonl.test.ts \
+            apps/server/src/provider/pi/piModelDiscovery.test.ts \
+            apps/server/src/provider/pi/piRpcProtocol.test.ts \
+            apps/server/src/provider/Layers/PiAdapter.test.ts \
+            apps/server/src/vcs/GitVcsDriver.test.ts \
+            apps/server/src/vcs/GitVcsDriverCore.test.ts \
+            apps/server/src/vcs/WorklerWorkspaceService.test.ts \
+            apps/web/src/components/settings/ProviderSettingsForm.test.ts \
+            apps/web/src/components/subagents/subagentPresentation.test.ts \
+            apps/mobile/src/lib/modelOptions.test.ts \
+            apps/mobile/src/features/threads/subagents/subagentPresentation.test.ts
 
   build_wsl_node_pty:
     name: Build WSL node-pty (linux-x64)
