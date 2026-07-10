@@ -95,6 +95,26 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("uses first-class isolated identity for packaged T3 Dulli builds", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment({
+        appName: "T3 Dulli",
+        appPath: "/Applications/T3 Dulli.app/Contents/Resources/app.asar",
+        isPackaged: true,
+      });
+
+      assert.equal(environment.isDulli, true);
+      assert.equal(environment.allowsPrereleaseUpdates, true);
+      assert.equal(environment.displayName, "T3 Dulli");
+      assert.equal(environment.baseDir, "/Users/alice/.t3-dulli");
+      assert.equal(environment.stateDir, "/Users/alice/.t3-dulli/userdata");
+      assert.equal(environment.userDataDirName, "t3-dulli");
+      assert.equal(environment.appUserModelId, "com.yjjosh.t3dulli");
+      assert.equal(environment.linuxDesktopEntryName, "t3-dulli-clean.desktop");
+      assert.equal(environment.linuxWmClass, "t3-dulli");
+    }),
+  );
+
   it.effect("uses a configured app user model id override", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(

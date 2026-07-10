@@ -6,6 +6,15 @@
   - If changing native mobile code, `vp run lint:mobile` must also pass.
 - Use `vp test` for the built-in Vite+ test command and `vp run test` when you specifically need the `test` package script.
 
+## Fork Development
+
+- This repository is the canonical home for T3 Dulli application code, branding assets, packaging, release automation, and fork operations.
+- Start fork changes from `origin/main` in an isolated Workler clone or Git worktree; do not develop directly on `main`.
+- Keep Pi configuration/extensions in `pi-config` and Workler package changes in the Workler repository.
+- Never commit `.workler` markers, credentials, machine-local paths, downloaded installers, or local state.
+- Use repository-pinned `./node_modules/.bin/vp` (or `vp` only where CI setup provides the pinned binary).
+- Follow [docs/fork-development.md](docs/fork-development.md) for branding, local installation, release, and update procedures.
+
 ## Project Snapshot
 
 T3 Code is a minimal web GUI for using coding agents like Codex and Claude.
