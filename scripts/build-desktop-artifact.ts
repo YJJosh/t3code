@@ -770,6 +770,22 @@ function escapeXml(value: string): string {
     .replaceAll("'", "&apos;");
 }
 
+export function renderMacAdHocEntitlements(): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>
+`;
+}
+
 export function renderMacPasskeyEntitlements(
   configuration: MacPasskeySigningConfiguration,
 ): string {
@@ -1481,6 +1497,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       }
     | undefined,
   brand: DesktopBuildBrand = "t3code",
+  macAdHocEntitlementsPath: string | undefined = undefined,
 ) {
   const brandMetadata = resolveDesktopBuildBrandMetadata(brand, version);
   const buildConfig: Record<string, unknown> = {
@@ -1541,7 +1558,17 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
             entitlements: macPasskeySigning.entitlementsPath,
             provisioningProfile: macPasskeySigning.provisioningProfilePath,
           }
-        : {}),
+        : !signed
+          ? {
+              // Modern Electron binaries contain partial linker signatures. Leaving the app
+              // otherwise unsigned produces an invalid bundle that macOS reports as damaged.
+              // A complete ad-hoc signature keeps community builds internally valid; because it
+              // has no Developer ID and is not notarized, users must still approve the first run.
+              identity: "-",
+              entitlements: macAdHocEntitlementsPath ?? "entitlements.mac.plist",
+              entitlementsInherit: macAdHocEntitlementsPath ?? "entitlements.mac.plist",
+            }
+          : {}),
     };
   }
 
@@ -1830,9 +1857,8 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         ),
       }
     : undefined;
-  const macEntitlementsPath = macPasskeySigning
-    ? path.join(stageAppDir, "entitlements.mac.plist")
-    : undefined;
+  const macEntitlementsPath =
+    options.platform === "mac" ? path.join(stageAppDir, "entitlements.mac.plist") : undefined;
   if (macPasskeySigning && macEntitlementsPath) {
     if (!(yield* fs.exists(macPasskeySigning.provisioningProfilePath))) {
       return yield* new MacProvisioningProfileNotFoundError({
@@ -1840,6 +1866,8 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       });
     }
     yield* fs.writeFileString(macEntitlementsPath, renderMacPasskeyEntitlements(macPasskeySigning));
+  } else if (macEntitlementsPath) {
+    yield* fs.writeFileString(macEntitlementsPath, renderMacAdHocEntitlements());
   }
 
   const stageDependencies = {
@@ -1891,6 +1919,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
           }
         : undefined,
       options.brand,
+      macEntitlementsPath,
     ),
     dependencies: stageDependencies,
     devDependencies: {

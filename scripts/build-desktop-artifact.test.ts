@@ -22,6 +22,7 @@ import {
   LinuxIconResizeError,
   MacPasskeySigningConfigurationResolutionError,
   MissingMacPasskeyProvisioningProfileError,
+  renderMacAdHocEntitlements,
   renderMacPasskeyEntitlements,
   resolveClerkPasskeyNativeArtifacts,
   resolveMacPasskeySigningConfiguration,
@@ -400,6 +401,18 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
   });
 
+  it("renders the runtime entitlements required by ad-hoc Electron signatures", () => {
+    const entitlements = renderMacAdHocEntitlements();
+
+    assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
+    assert.include(
+      entitlements,
+      "<key>com.apple.security.cs.allow-unsigned-executable-memory</key>",
+    );
+    assert.include(entitlements, "<key>com.apple.security.cs.disable-library-validation</key>");
+    assert.notInclude(entitlements, "com.apple.developer.team-identifier");
+  });
+
   it("normalizes explicit macOS passkey RP domains and renders required entitlements", () => {
     const configuration = resolveMacPasskeySigningConfiguration({
       T3CODE_APPLE_TEAM_ID: "ABC1234567",
@@ -560,8 +573,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           undefined,
           undefined,
           "dulli",
+          "/tmp/t3-dulli-stage/entitlements.mac.plist",
         );
-        assert.notProperty(macConfig.mac as Record<string, unknown>, "protocols");
+        const mac = macConfig.mac as Record<string, unknown>;
+        assert.notProperty(mac, "protocols");
+        assert.equal(mac.identity, "-");
+        assert.equal(mac.entitlements, "/tmp/t3-dulli-stage/entitlements.mac.plist");
+        assert.equal(mac.entitlementsInherit, "/tmp/t3-dulli-stage/entitlements.mac.plist");
       }).pipe(
         Effect.provide(
           ConfigProvider.layer(
