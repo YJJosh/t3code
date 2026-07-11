@@ -81,6 +81,8 @@ Use the equivalent `mac/dmg` or `win/nsis` target on those host platforms. Fork 
 
 Run it from GitHub Actions with a version that does not already have a tag. Verify that the release contains `T3-Dulli-*` installers for every platform, `latest*.yml` updater manifests, macOS ZIP update payloads, and blockmaps before announcing it.
 
+The upstream `.github/workflows/release.yml` workflow has no scheduled trigger in this fork. Do not restore its nightly cron: Dulli releases are created manually through **Fork Desktop Release** and the upstream workflow requires production infrastructure that is not configured here.
+
 Do not use Blacksmith/self-hosted labels, public `t3-api` naming, embedded fork credentials, or hardcoded checkout paths in workflows and scripts.
 
 ## Installation and built-in updates
