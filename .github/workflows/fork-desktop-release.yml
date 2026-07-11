@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Unsigned T3 Dulli release version (for example 0.0.29-pi.4)"
+        description: "T3 Dulli community release version (for example 0.0.29-pi.4)"
         required: true
         default: "0.0.29-pi.4"
         type: string
@@ -204,7 +204,7 @@ jobs:
             sudo apt-get install -y imagemagick
           fi
 
-      - name: Build unsigned desktop artifact
+      - name: Build desktop artifact
         shell: bash
         run: |
           set -euo pipefail
@@ -220,6 +220,26 @@ jobs:
             args+=(--wsl-prebuild "$GITHUB_WORKSPACE/wsl-prebuild/pty.node")
           fi
           vp run dist:desktop:artifact "${args[@]}"
+
+      - name: Verify macOS app signature
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.preflight.outputs.version }}"
+          dmg="release/T3-Dulli-${version}-${{ matrix.arch }}.dmg"
+          mount_point="$(mktemp -d)"
+          cleanup() {
+            hdiutil detach "$mount_point" >/dev/null 2>&1 || true
+            rmdir "$mount_point" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_point" >/dev/null
+          app="$(find "$mount_point" -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app" 2>&1 | grep -q 'Signature=adhoc'
 
       - name: Collect release assets
         shell: bash
@@ -286,7 +306,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish unsigned desktop release
+    name: Publish community desktop release
     needs: [preflight, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -334,7 +354,7 @@ jobs:
           prerelease: true
           make_latest: false
           body: |
-            Unsigned T3 Dulli community build from `YJJosh/t3code`.
+            T3 Dulli community build from `YJJosh/t3code`.
 
             Highlights:
             - First-class Dulli identity, :D artwork, isolated state, and built-in prerelease updates
@@ -342,7 +362,11 @@ jobs:
             - Live Pi subagent activity and controls on desktop/web, with read-only mobile visibility
             - Workler clones for isolated workspaces, with a Git-worktree fallback setting
 
-            These installers are unsigned. Windows and macOS may display an unverified-developer warning.
+            The macOS app has a complete ad-hoc signature but is not Apple-notarized, so macOS
+            displays an unverified-developer warning on first launch. After copying it to
+            Applications, approve it under **System Settings → Privacy & Security → Open Anyway**.
+            The Windows installer is unsigned and may display a Microsoft Defender SmartScreen
+            warning; choose **More info → Run anyway** only if you trust this build.
           files: |
             release-assets/*.dmg
             release-assets/*.zip
