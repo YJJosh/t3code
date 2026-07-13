@@ -22,7 +22,7 @@ export const BRAND_ASSET_PATHS = {
   developmentWebFavicon32Png: "assets/dev/blueprint-web-favicon-32x32.png",
   developmentWebAppleTouchIconPng: "assets/dev/blueprint-web-apple-touch-180.png",
 
-  dulliMacIconPng: "assets/dulli/dulli-universal-1024.png",
+  dulliMacIconPng: "assets/dulli/dulli-macos-1024.png",
   dulliLinuxIconPng: "assets/dulli/dulli-universal-1024.png",
   dulliWindowsIconIco: "assets/dulli/dulli-windows.ico",
   dulliWebFaviconIco: "assets/dulli/dulli-web-favicon.ico",

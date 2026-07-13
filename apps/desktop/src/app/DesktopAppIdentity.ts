@@ -126,7 +126,10 @@ export const make = Effect.gen(function* () {
       yield* electronApp.setDesktopName(environment.linuxDesktopEntryName);
     }
 
-    if (environment.platform === "darwin") {
+    // A packaged macOS app must keep its bundled icon so Dock rendering does not
+    // change when the process exits. Development Electron bundles still need the
+    // explicit override to show this checkout's branded icon.
+    if (environment.platform === "darwin" && environment.isDevelopment) {
       const iconPaths = yield* assets.iconPaths;
       yield* Option.match(iconPaths.png, {
         onNone: () => Effect.void,
