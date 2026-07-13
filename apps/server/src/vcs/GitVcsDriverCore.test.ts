@@ -591,6 +591,63 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("avoids parent ref namespace collisions when renaming a branch", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* git(cwd, ["branch", "feature"]);
+        const current = yield* git(cwd, ["branch", "--show-current"]);
+        const renamed = yield* driver.renameBranch({
+          cwd,
+          oldBranch: current,
+          newBranch: "feature/login",
+        });
+
+        assert.equal(renamed.branch, "feature-login");
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), "feature-login");
+        assert.deepEqual(yield* driver.listLocalBranchNames(cwd), ["feature", "feature-login"]);
+      }),
+    );
+
+    it.effect("retains the desired namespace when an existing branch is its child", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* git(cwd, ["branch", "feature/login/legacy"]);
+        const current = yield* git(cwd, ["branch", "--show-current"]);
+        const renamed = yield* driver.renameBranch({
+          cwd,
+          oldBranch: current,
+          newBranch: "feature/login",
+        });
+
+        assert.equal(renamed.branch, "feature/login-1");
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), "feature/login-1");
+      }),
+    );
+
+    it.effect("allows the renamed branch itself to become a parent namespace", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        const current = yield* git(cwd, ["branch", "--show-current"]);
+        const renamed = yield* driver.renameBranch({
+          cwd,
+          oldBranch: current,
+          newBranch: `${current}/topic`,
+        });
+
+        assert.equal(renamed.branch, `${current}/topic`);
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), `${current}/topic`);
+      }),
+    );
+
     it.effect("returns the existing refName when rename source and target match", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
