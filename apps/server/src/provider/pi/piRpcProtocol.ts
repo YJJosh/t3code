@@ -76,6 +76,8 @@ export function parsePiThinkingLevel(value: unknown): PiThinkingLevel | undefine
 }
 
 export interface PiSpawnOptions {
+  /** Profile selected for this thread, overriding the provider setting. */
+  readonly profile?: string | undefined;
   /**
    * Resolved model slug (e.g. `anthropic/claude-sonnet-5`) or `undefined` to
    * let Pi use its configured default.
@@ -103,7 +105,7 @@ export interface PiSpawnOptions {
  *    (see {@link buildPiRpcEnv}), NOT a CLI flag.
  */
 export function buildPiRpcArgs(config: PiSettings, options: PiSpawnOptions = {}): string[] {
-  const profile = config.profile?.trim() || DEFAULT_PI_PROFILE;
+  const profile = options.profile?.trim() || config.profile?.trim() || DEFAULT_PI_PROFILE;
   const args = ["--mode", "rpc", "--approve", "--profile", profile];
 
   if (options.resumeSessionId?.trim()) {

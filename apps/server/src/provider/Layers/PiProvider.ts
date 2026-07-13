@@ -10,18 +10,31 @@
  *
  * @module provider/Layers/PiProvider
  */
-import { type PiSettings, ProviderDriverKind, type ServerProviderModel } from "@t3tools/contracts";
+import {
+  PI_PROFILE_OPTION_ID,
+  type PiSettings,
+  ProviderDriverKind,
+  type ServerProviderModel,
+} from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { discoverPiModels } from "../pi/piModelDiscovery.ts";
+import {
+  discoverPiProfileChoices,
+  parsePiProfileChoices,
+  type PiProfileChoice,
+} from "../pi/piProfileDiscovery.ts";
 import { resolvePiBinary } from "../pi/piRpcProtocol.ts";
 import {
+  buildSelectOptionDescriptor,
   buildServerProvider,
   isCommandMissingCause,
   parseGenericCliVersion,
@@ -41,13 +54,48 @@ const PI_PRESENTATION = {
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
 const MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 
+function piProfileDescriptor(profileChoices: ReadonlyArray<PiProfileChoice>) {
+  return buildSelectOptionDescriptor({
+    id: PI_PROFILE_OPTION_ID,
+    label: "Profile",
+    description: "Pi profile loaded when this thread starts.",
+    options: profileChoices.map((profile) => ({
+      value: profile.id,
+      label: profile.label,
+      ...(profile.description ? { description: profile.description } : {}),
+      ...(profile.isDefault ? { isDefault: true } : {}),
+    })),
+  });
+}
+
+function withPiProfileChoices(
+  models: ReadonlyArray<ServerProviderModel>,
+  profileChoices: ReadonlyArray<PiProfileChoice>,
+): ReadonlyArray<ServerProviderModel> {
+  const profileDescriptor = piProfileDescriptor(profileChoices);
+  return models.map((model) => ({
+    ...model,
+    capabilities: {
+      ...model.capabilities,
+      optionDescriptors: [
+        ...(model.capabilities?.optionDescriptors ?? []).filter(
+          (descriptor) => descriptor.id !== PI_PROFILE_OPTION_ID,
+        ),
+        profileDescriptor,
+      ],
+    },
+  }));
+}
+
 function piModelsFromSettings(
   customModels: ReadonlyArray<string> | undefined,
   builtInModels: ReadonlyArray<ServerProviderModel> = [],
+  profileChoices: ReadonlyArray<PiProfileChoice> = parsePiProfileChoices(undefined),
 ): ReadonlyArray<ServerProviderModel> {
-  return providerModelsFromSettings(builtInModels, PROVIDER, customModels ?? [], {
+  const models = providerModelsFromSettings(builtInModels, PROVIDER, customModels ?? [], {
     optionDescriptors: [],
   });
+  return withPiProfileChoices(models, profileChoices);
 }
 
 export function buildInitialPiProviderSnapshot(
@@ -55,7 +103,11 @@ export function buildInitialPiProviderSnapshot(
 ): Effect.Effect<ServerProviderDraft> {
   return Effect.gen(function* () {
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
-    const models = piModelsFromSettings(settings.customModels);
+    const models = piModelsFromSettings(
+      settings.customModels,
+      [],
+      parsePiProfileChoices(undefined, settings.profile),
+    );
     if (!settings.enabled) {
       return buildServerProvider({
         presentation: PI_PRESENTATION,
@@ -103,9 +155,18 @@ const runPiVersionCommand = (settings: PiSettings, environment: NodeJS.ProcessEn
 export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function* (
   settings: PiSettings,
   environment: NodeJS.ProcessEnv = process.env,
-): Effect.fn.Return<ServerProviderDraft, never, ChildProcessSpawner.ChildProcessSpawner> {
+): Effect.fn.Return<
+  ServerProviderDraft,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  const fallbackModels = piModelsFromSettings(settings.customModels);
+  const profileChoices = yield* discoverPiProfileChoices({
+    agentDir: settings.agentDir || undefined,
+    configuredProfile: settings.profile,
+    environment,
+  });
+  const fallbackModels = piModelsFromSettings(settings.customModels, [], profileChoices);
 
   if (!settings.enabled) {
     return buildServerProvider({
@@ -197,7 +258,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   const discovered = Option.getOrUndefined(discovery);
   const models =
     discovered && discovered.models.length > 0
-      ? piModelsFromSettings(settings.customModels, discovered.models)
+      ? piModelsFromSettings(settings.customModels, discovered.models, profileChoices)
       : fallbackModels;
   const auth = discovered?.auth ?? { status: "unknown" as const };
 

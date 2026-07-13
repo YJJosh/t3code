@@ -17,6 +17,7 @@
 import {
   EventId,
   type ModelSelection,
+  PI_PROFILE_OPTION_ID,
   type PiSettings,
   type PiSubagentControlInput,
   type PiSubagentEvent,
@@ -579,7 +580,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             getModelSelectionStringOptionValue(selection, PI_SERVICE_TIER_OPTION_ID),
           ) ?? false)
         : undefined;
-      return { model, thinkingLevel, fastServiceEnabled };
+      const profile = getModelSelectionStringOptionValue(selection, PI_PROFILE_OPTION_ID)?.trim();
+      return { model, thinkingLevel, fastServiceEnabled, profile: profile || undefined };
     };
 
     const startSession: PiAdapterShape["startSession"] = (input) =>
@@ -604,7 +606,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           yield* stopSessionInternal(existing);
         }
 
-        const { model, thinkingLevel, fastServiceEnabled } = resolveModelSelection(
+        const { model, thinkingLevel, fastServiceEnabled, profile } = resolveModelSelection(
           input.modelSelection,
         );
         const resumeSessionId =
@@ -640,6 +642,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           threadId: input.threadId,
           binaryPath: resolvePiBinary(piSettings),
           args: buildPiRpcArgs(piSettings, {
+            ...(profile ? { profile } : {}),
             ...(model ? { model } : {}),
             ...(thinkingLevel ? { thinkingLevel } : {}),
             ...(resumeSessionId ? { resumeSessionId } : {}),

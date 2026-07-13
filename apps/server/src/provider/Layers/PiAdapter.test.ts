@@ -189,7 +189,10 @@ describe("makePiAdapter", () => {
       const modelSelection: ModelSelection = {
         instanceId: INSTANCE,
         model: "anthropic/claude-sonnet-5",
-        options: [{ id: "reasoning", value: "high" }],
+        options: [
+          { id: "reasoning", value: "high" },
+          { id: "profile", value: "research" },
+        ],
       };
 
       yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access", modelSelection });
@@ -200,7 +203,7 @@ describe("makePiAdapter", () => {
         "rpc",
         "--approve",
         "--profile",
-        "coder",
+        "research",
         "--model",
         "anthropic/claude-sonnet-5",
         "--thinking",

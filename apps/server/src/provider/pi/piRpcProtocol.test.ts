@@ -44,9 +44,16 @@ describe("buildPiRpcArgs", () => {
     expect(args).not.toContain("--no-context-files");
   });
 
-  it("honors a custom profile", () => {
+  it("honors a custom provider profile", () => {
     const args = buildPiRpcArgs(decodePiSettings({ profile: "reviewer" }));
     expect(args).toEqual(["--mode", "rpc", "--approve", "--profile", "reviewer"]);
+  });
+
+  it("lets a thread selection override the provider profile", () => {
+    const args = buildPiRpcArgs(decodePiSettings({ profile: "coder" }), {
+      profile: "research",
+    });
+    expect(args).toEqual(["--mode", "rpc", "--approve", "--profile", "research"]);
   });
 
   it("appends resume/model/thinking flags in order", () => {
