@@ -1,4 +1,5 @@
 import {
+  PI_PROFILE_OPTION_ID,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderOptionSelection,
@@ -46,6 +47,9 @@ type TraitsRenderInput = {
   modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
   prompt: string;
   onPromptChange: (prompt: string) => void;
+  includeDescriptorIds?: ReadonlyArray<string> | undefined;
+  excludeDescriptorIds?: ReadonlyArray<string> | undefined;
+  disabled?: boolean | undefined;
 };
 
 export function getComposerPromptInjectionState(prompt: string): ComposerPromptInjectionState {
@@ -58,7 +62,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
   const descriptors = getProviderOptionDescriptors({ caps, selections: modelOptions });
   const primarySelectDescriptor = descriptors.find(
     (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>
-      descriptor.type === "select",
+      descriptor.type === "select" && descriptor.id !== PI_PROFILE_OPTION_ID,
   );
   const primaryValue = getProviderOptionCurrentValue(primarySelectDescriptor ?? null);
   const promptEffort = typeof primaryValue === "string" ? primaryValue : null;
@@ -94,11 +98,22 @@ function renderTraitsControl(
     modelOptions,
     prompt,
     onPromptChange,
+    includeDescriptorIds,
+    excludeDescriptorIds,
+    disabled,
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
   if (
     !hasTarget ||
-    !shouldRenderTraitsControls({ provider, models, model, modelOptions, prompt })
+    !shouldRenderTraitsControls({
+      provider,
+      models,
+      model,
+      modelOptions,
+      prompt,
+      includeDescriptorIds,
+      excludeDescriptorIds,
+    })
   ) {
     return null;
   }
@@ -113,6 +128,9 @@ function renderTraitsControl(
       modelOptions={modelOptions}
       prompt={prompt}
       onPromptChange={onPromptChange}
+      includeDescriptorIds={includeDescriptorIds}
+      excludeDescriptorIds={excludeDescriptorIds}
+      disabled={disabled}
     />
   );
 }

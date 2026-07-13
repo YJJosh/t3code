@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  PI_PROFILE_OPTION_ID,
   ProviderDriverKind,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ServerProviderModel,
 } from "@t3tools/contracts";
+import { DraftId } from "../../composerDraftStore";
 import {
   getComposerPromptInjectionState,
   getComposerProviderState,
@@ -165,6 +167,23 @@ describe("getComposerProviderState", () => {
     );
   });
 
+  it("dispatches a Pi profile without treating it as prompt effort", () => {
+    const state = getComposerProviderState({
+      provider: ProviderDriverKind.make("pi"),
+      model: MODEL,
+      models: modelWith([
+        selectDescriptor(PI_PROFILE_OPTION_ID, [{ id: "coder", label: "coder", isDefault: true }]),
+      ]),
+      modelOptions: undefined,
+    });
+
+    expect(state).toEqual({
+      provider: ProviderDriverKind.make("pi"),
+      promptEffort: null,
+      modelOptionsForDispatch: selections([PI_PROFILE_OPTION_ID, "coder"]),
+    });
+  });
+
   it("returns undefined dispatch options when the model declares no descriptors", () => {
     const state = getComposerProviderState({
       provider: PROVIDER,
@@ -240,6 +259,25 @@ describe("provider traits render guards", () => {
       modelOptions: undefined,
       prompt: "",
       onPromptChange: () => {},
+    };
+
+    expect(renderProviderTraitsPicker(args)).toBeNull();
+    expect(renderProviderTraitsMenuContent(args)).toBeNull();
+  });
+
+  it("returns null when descriptor filters leave no controls to render", () => {
+    const draftId = DraftId.make("draft-profile-filter");
+    const args = {
+      provider: PROVIDER,
+      draftId,
+      model: MODEL,
+      models: modelWith([
+        selectDescriptor("effort", [{ id: "high", label: "High", isDefault: true }]),
+      ]),
+      modelOptions: undefined,
+      prompt: "",
+      onPromptChange: () => {},
+      includeDescriptorIds: [PI_PROFILE_OPTION_ID],
     };
 
     expect(renderProviderTraitsPicker(args)).toBeNull();

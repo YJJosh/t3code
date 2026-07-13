@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import type { ModelCapabilities } from "@t3tools/contracts";
+import { PI_PROFILE_OPTION_ID, type ModelCapabilities } from "@t3tools/contracts";
 
 import {
   applyProviderOptionMenuEvent,
   buildProviderOptionMenuActions,
+  excludeProviderOptionDescriptors,
   providerOptionsConfigurationLabel,
   resolveProviderOptionDescriptors,
 } from "./providerOptions";
@@ -60,6 +61,41 @@ describe("mobile provider options", () => {
       },
     ]);
     expect(providerOptionsConfigurationLabel(descriptors)).toBe("Medium · Standard");
+  });
+
+  it("hides start-only options from an active thread without dropping their selections", () => {
+    const allDescriptors = resolveProviderOptionDescriptors({
+      capabilities: {
+        optionDescriptors: [
+          ...(CODEX_CAPABILITIES.optionDescriptors ?? []),
+          {
+            id: PI_PROFILE_OPTION_ID,
+            label: "Profile",
+            type: "select",
+            options: [{ id: "coder", label: "coder", isDefault: true }],
+            currentValue: "coder",
+          },
+        ],
+      },
+      selections: [{ id: PI_PROFILE_OPTION_ID, value: "coder" }],
+    });
+    const visibleDescriptors = excludeProviderOptionDescriptors(allDescriptors, [
+      PI_PROFILE_OPTION_ID,
+    ]);
+
+    expect(visibleDescriptors.map((descriptor) => descriptor.id)).toEqual([
+      "reasoningEffort",
+      "serviceTier",
+    ]);
+
+    const actions = buildProviderOptionMenuActions(visibleDescriptors);
+    const highReasoningEvent = actions[0]?.subactions?.[1]?.id;
+    expect(highReasoningEvent).toBeDefined();
+    expect(applyProviderOptionMenuEvent(allDescriptors, highReasoningEvent!)).toEqual([
+      { id: "reasoningEffort", value: "high" },
+      { id: "serviceTier", value: "default" },
+      { id: PI_PROFILE_OPTION_ID, value: "coder" },
+    ]);
   });
 
   it("updates generic select options without knowing provider-specific ids", () => {
