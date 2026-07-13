@@ -9,6 +9,11 @@ import {
 } from "./brand-assets.ts";
 
 describe("brand-assets", () => {
+  it("uses platform-safe macOS artwork for Dulli desktop builds", () => {
+    expect(BRAND_ASSET_PATHS.dulliMacIconPng).toBe("assets/dulli/dulli-macos-1024.png");
+    expect(BRAND_ASSET_PATHS.dulliMacIconPng).not.toBe(BRAND_ASSET_PATHS.dulliLinuxIconPng);
+  });
+
   it("maps server publish web assets to production icons", () => {
     expect(PUBLISH_ICON_OVERRIDES).toEqual([
       {
