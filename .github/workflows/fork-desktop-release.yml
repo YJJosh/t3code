@@ -208,11 +208,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ matrix.platform }}" == "mac" ]]; then
-            echo "macOS open-file limit before: $(ulimit -S -n)"
-            ulimit -S -n 10240
-            echo "macOS open-file limit after: $(ulimit -S -n)"
-          fi
           args=(
             --brand dulli
             --platform "${{ matrix.platform }}"
