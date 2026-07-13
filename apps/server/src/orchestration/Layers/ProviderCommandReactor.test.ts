@@ -145,6 +145,8 @@ describe("ProviderCommandReactor", () => {
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
     readonly requiresNewThreadForModelChange?: boolean;
+    readonly includeT3CodeBranchPrefix?: boolean;
+    readonly useConventionalBranchPrefixes?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -370,7 +372,16 @@ describe("ProviderCommandReactor", () => {
           generateThreadTitle,
         }),
       ),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(
+        ServerSettingsService.layerTest({
+          ...(input?.includeT3CodeBranchPrefix === undefined
+            ? {}
+            : { includeT3CodeBranchPrefix: input.includeT3CodeBranchPrefix }),
+          ...(input?.useConventionalBranchPrefixes === undefined
+            ? {}
+            : { useConventionalBranchPrefixes: input.useConventionalBranchPrefixes }),
+        }),
+      ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -609,8 +620,11 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.title).toBe("Reconnect spinner resume bug");
   });
 
-  it("generates a worktree branch name for the first turn", async () => {
-    const harness = await createHarness();
+  it("applies configured naming rules to the first-turn worktree branch", async () => {
+    const harness = await createHarness({
+      includeT3CodeBranchPrefix: false,
+      useConventionalBranchPrefixes: true,
+    });
     const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
@@ -623,19 +637,8 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    harness.generateBranchName.mockImplementation((input: unknown) =>
-      Effect.succeed({
-        branch:
-          typeof input === "object" &&
-          input !== null &&
-          "modelSelection" in input &&
-          typeof input.modelSelection === "object" &&
-          input.modelSelection !== null &&
-          "model" in input.modelSelection &&
-          typeof input.modelSelection.model === "string"
-            ? `feature/${input.modelSelection.model}`
-            : "feature/generated",
-      }),
+    harness.generateBranchName.mockImplementation(() =>
+      Effect.succeed({ branch: "refactor/reconnect-backoff" }),
     );
 
     await Effect.runPromise(
@@ -659,6 +662,11 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.refreshStatus.mock.calls.length === 1);
     expect(harness.generateBranchName.mock.calls[0]?.[0]).toMatchObject({
       message: "Add a safer reconnect backoff.",
+      useConventionalBranchPrefixes: true,
+    });
+    expect(harness.renameBranch.mock.calls[0]?.[0]).toMatchObject({
+      oldBranch: "t3code/1234abcd",
+      newBranch: "refactor/reconnect-backoff",
     });
     expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe("/tmp/provider-project-worktree");
   });

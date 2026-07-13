@@ -93,6 +93,58 @@ export function buildTemporaryWorktreeBranchName(
   return `${WORKTREE_BRANCH_PREFIX}/${token}`;
 }
 
+export const CONVENTIONAL_BRANCH_PREFIXES = [
+  "feature",
+  "fix",
+  "chore",
+  "refactor",
+  "docs",
+  "test",
+  "build",
+  "ci",
+  "perf",
+  "style",
+  "revert",
+] as const;
+
+const CONVENTIONAL_BRANCH_PREFIX_SET = new Set<string>(CONVENTIONAL_BRANCH_PREFIXES);
+
+/**
+ * Normalize an agent-generated branch and apply the configured naming policy.
+ * The conventional-prefix fallback is deterministic so the setting remains
+ * enforced even if the text-generation model ignores its prompt.
+ */
+export function buildGeneratedWorktreeBranchName(
+  raw: string,
+  options: {
+    readonly includeT3CodePrefix: boolean;
+    readonly useConventionalPrefix: boolean;
+  },
+): string {
+  const normalized = raw
+    .trim()
+    .toLowerCase()
+    .replace(/^refs\/heads\//, "")
+    .replace(/['"`]/g, "");
+  const withoutT3CodePrefix = normalized.startsWith(`${WORKTREE_BRANCH_PREFIX}/`)
+    ? normalized.slice(`${WORKTREE_BRANCH_PREFIX}/`.length)
+    : normalized;
+
+  let branchCandidate = withoutT3CodePrefix;
+  if (options.useConventionalPrefix) {
+    const categoryMatch = /^([a-z]+)[/\s:_-]+(.+)$/.exec(withoutT3CodePrefix);
+    branchCandidate =
+      categoryMatch?.[1] && categoryMatch[2] && CONVENTIONAL_BRANCH_PREFIX_SET.has(categoryMatch[1])
+        ? `${categoryMatch[1]}/${categoryMatch[2]}`
+        : `feature/${withoutT3CodePrefix}`;
+  }
+
+  const branchFragment = sanitizeBranchFragment(branchCandidate);
+  return options.includeT3CodePrefix
+    ? `${WORKTREE_BRANCH_PREFIX}/${branchFragment}`
+    : branchFragment;
+}
+
 export function isTemporaryWorktreeBranch(refName: string): boolean {
   return TEMP_WORKTREE_BRANCH_PATTERN.test(refName.trim().toLowerCase());
 }

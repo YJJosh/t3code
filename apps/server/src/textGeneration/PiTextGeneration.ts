@@ -189,6 +189,7 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
       const { prompt, outputSchema } = buildBranchNamePrompt({
         message: input.message,
         attachments: input.attachments,
+        useConventionalBranchPrefixes: input.useConventionalBranchPrefixes,
       });
       const generated = yield* runPiJson({
         operation: "generateBranchName",

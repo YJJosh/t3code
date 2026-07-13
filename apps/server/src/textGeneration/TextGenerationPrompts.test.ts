@@ -83,6 +83,16 @@ describe("buildBranchNamePrompt", () => {
     expect(result.prompt).not.toContain("Attachment metadata:");
   });
 
+  it("requires an allowed category when conventional branch prefixes are enabled", () => {
+    const result = buildBranchNamePrompt({
+      message: "Refactor the login flow",
+      useConventionalBranchPrefixes: true,
+    });
+
+    expect(result.prompt).toContain("Start the branch with exactly one category prefix");
+    expect(result.prompt).toContain("feature, fix, chore, refactor");
+  });
+
   it("includes attachment metadata when attachments are provided", () => {
     const result = buildBranchNamePrompt({
       message: "Fix the layout from screenshot",
