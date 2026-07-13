@@ -1,0 +1,31 @@
+# Workler workspace rules
+#
+# Syntax:
+#   link <path>  # symlink from workspace back to this project
+#   copy <path>  # copy into each workspace when applied
+#
+# Shared dependencies stay in the main checkout. pnpm creates package-local
+# node_modules directories as well as the root store, so link every workspace
+# package directory that can contain dependency symlinks. Missing sources are
+# skipped, allowing a clone to install its own dependencies when needed.
+link node_modules
+link apps/desktop/node_modules
+link apps/marketing/node_modules
+link apps/mobile/node_modules
+link apps/server/node_modules
+link apps/web/node_modules
+link infra/relay/node_modules
+link oxlint-plugin-t3code/node_modules
+link packages/client-runtime/node_modules
+link packages/contracts/node_modules
+link packages/effect-acp/node_modules
+link packages/effect-codex-app-server/node_modules
+link packages/shared/node_modules
+link packages/ssh/node_modules
+link packages/tailscale/node_modules
+link scripts/node_modules
+
+# Copy ignored local configuration into each workspace so it can be edited
+# independently without changing the main checkout.
+copy .env
+copy .env.local
