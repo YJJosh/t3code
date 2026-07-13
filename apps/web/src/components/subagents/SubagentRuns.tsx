@@ -350,7 +350,7 @@ export function SubagentRuns({ environmentId, threadId, enabled }: SubagentRunsP
 
   return (
     <>
-      <div className="pointer-events-auto mb-1.5 max-h-48 overflow-y-auto rounded-lg border border-border/70 bg-card/85 p-1 shadow-sm backdrop-blur-sm sm:max-h-56">
+      <div className="pointer-events-auto mx-auto mb-1.5 max-h-48 w-full max-w-3xl overflow-y-auto rounded-lg border border-border/70 bg-card/85 p-1 shadow-sm backdrop-blur-sm sm:max-h-56">
         {attention.length > 0 && (
           <div role="list" aria-label="Subagent runs needing attention">
             {attention.map((run) => (
