@@ -58,6 +58,14 @@ export function resolveProviderOptionDescriptors(input: {
   });
 }
 
+export function excludeProviderOptionDescriptors(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  excludedDescriptorIds: ReadonlyArray<string>,
+): ReadonlyArray<ProviderOptionDescriptor> {
+  const excludedIds = new Set(excludedDescriptorIds);
+  return descriptors.filter((descriptor) => !excludedIds.has(descriptor.id));
+}
+
 export function buildProviderOptionMenuActions(
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
 ): ReadonlyArray<MenuAction> {

@@ -1,12 +1,13 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
-import type {
-  EnvironmentId,
-  MessageId,
-  ModelSelection,
-  OrchestrationThreadShell,
-  ProviderInteractionMode,
-  RuntimeMode,
-  ServerConfig as T3ServerConfig,
+import {
+  PI_PROFILE_OPTION_ID,
+  type EnvironmentId,
+  type MessageId,
+  type ModelSelection,
+  type OrchestrationThreadShell,
+  type ProviderInteractionMode,
+  type RuntimeMode,
+  type ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
 import {
   detectComposerTrigger,
@@ -58,6 +59,7 @@ import {
 import {
   applyProviderOptionMenuEvent,
   buildProviderOptionMenuActions,
+  excludeProviderOptionDescriptors,
   providerOptionsConfigurationLabel,
   resolveProviderOptionDescriptors,
 } from "../../lib/providerOptions";
@@ -580,13 +582,17 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         option.selection.instanceId === currentModelSelection.instanceId &&
         option.selection.model === currentModelSelection.model,
     ) ?? null;
-  const providerOptionDescriptors = useMemo(
+  const allProviderOptionDescriptors = useMemo(
     () =>
       resolveProviderOptionDescriptors({
         capabilities: currentModelOption?.capabilities,
         selections: currentModelSelection.options,
       }),
     [currentModelOption?.capabilities, currentModelSelection.options],
+  );
+  const providerOptionDescriptors = useMemo(
+    () => excludeProviderOptionDescriptors(allProviderOptionDescriptors, [PI_PROFILE_OPTION_ID]),
+    [allProviderOptionDescriptors],
   );
   const configurationLabel = useMemo(
     () => providerOptionsConfigurationLabel(providerOptionDescriptors),
@@ -674,7 +680,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   }
 
   function handleOptionsMenuAction(event: string) {
-    const providerOptions = applyProviderOptionMenuEvent(providerOptionDescriptors, event);
+    const providerOptions = applyProviderOptionMenuEvent(allProviderOptionDescriptors, event);
     if (providerOptions) {
       props.onUpdateModelSelection({
         ...currentModelSelection,

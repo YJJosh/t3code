@@ -25,13 +25,60 @@ function configuredProfileName(value: string | undefined): string {
   return value?.trim() || DEFAULT_PI_PROFILE;
 }
 
+const RESERVED_TOP_LEVEL_PROFILE_KEYS = new Set([
+  "default",
+  "lastProfile",
+  "profiles",
+  "promptParts",
+  "parts",
+  "systemParts",
+  "systemPromptParts",
+  "mcpServers",
+  "$schema",
+]);
+
+const PROFILE_CONFIG_KEYS = new Set([
+  "provider",
+  "model",
+  "thinkingLevel",
+  "tools",
+  "disabledTools",
+  "parts",
+  "systemParts",
+  "systemPromptParts",
+  "promptParts",
+  "appendSystemPrompt",
+  "systemPrompt",
+  "system",
+  "skills",
+  "disableProjectInputs",
+  "disableProjectContext",
+  "disabledProjectContextPaths",
+  "disableProjectSkills",
+  "mcpServers",
+  "mcp",
+  "agentSdk",
+  "modelOverrides",
+]);
+
+function isProfileConfig(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && Object.keys(value).some((key) => PROFILE_CONFIG_KEYS.has(key));
+}
+
+function profileEntries(value: unknown): ReadonlyArray<readonly [string, unknown]> {
+  if (!isRecord(value)) return [];
+  if (isRecord(value.profiles)) return Object.entries(value.profiles);
+  return Object.entries(value).filter(
+    ([key, profile]) => !RESERVED_TOP_LEVEL_PROFILE_KEYS.has(key) && isProfileConfig(profile),
+  );
+}
+
 export function parsePiProfileChoices(
   value: unknown,
   configuredProfile?: string,
 ): ReadonlyArray<PiProfileChoice> {
   const selectedProfile = configuredProfileName(configuredProfile);
-  const profiles = isRecord(value) && isRecord(value.profiles) ? value.profiles : {};
-  const choices = Object.entries(profiles).flatMap(([rawName, rawProfile]) => {
+  const choices = profileEntries(value).flatMap(([rawName, rawProfile]) => {
     const name = rawName.trim();
     if (!name || !isRecord(rawProfile)) return [];
     const description =
