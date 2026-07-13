@@ -1,9 +1,9 @@
 name: Deploy T3 Connect relay
 
+# The fork does not currently operate T3 Connect infrastructure. Keep this
+# workflow manual-only until production relay deployment is configured.
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
