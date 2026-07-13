@@ -416,6 +416,13 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces
         ? ["Workler workspace creation"]
         : []),
+      ...(settings.includeT3CodeBranchPrefix !== DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix
+        ? ["T3 Code branch prefix"]
+        : []),
+      ...(settings.useConventionalBranchPrefixes !==
+      DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes
+        ? ["Branch category prefixes"]
+        : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
         : []),
@@ -436,6 +443,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
       settings.useWorklerForNewWorkspaces,
+      settings.includeT3CodeBranchPrefix,
+      settings.useConventionalBranchPrefixes,
       settings.diffIgnoreWhitespace,
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
@@ -468,6 +477,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
       useWorklerForNewWorkspaces: DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
+      includeT3CodeBranchPrefix: DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix,
+      useConventionalBranchPrefixes: DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
@@ -906,6 +917,61 @@ export function GeneralSettingsPanel() {
                 updateSettings({ confirmThreadDelete: Boolean(checked) })
               }
               aria-label="Confirm thread deletion"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="T3 Code branch prefix"
+          description="Prefix agent-generated worktree branches with t3code/."
+          resetAction={
+            settings.includeT3CodeBranchPrefix !==
+            DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix ? (
+              <SettingResetButton
+                label="T3 Code branch prefix"
+                onClick={() =>
+                  updateSettings({
+                    includeT3CodeBranchPrefix: DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.includeT3CodeBranchPrefix}
+              onCheckedChange={(checked) =>
+                updateSettings({ includeT3CodeBranchPrefix: Boolean(checked) })
+              }
+              aria-label="Prefix agent-generated branches with t3code"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Branch category prefixes"
+          description="Require agent-generated names to start with a category such as feature/, fix/, chore/, or refactor/."
+          resetAction={
+            settings.useConventionalBranchPrefixes !==
+            DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes ? (
+              <SettingResetButton
+                label="branch category prefixes"
+                onClick={() =>
+                  updateSettings({
+                    useConventionalBranchPrefixes:
+                      DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.useConventionalBranchPrefixes}
+              onCheckedChange={(checked) =>
+                updateSettings({ useConventionalBranchPrefixes: Boolean(checked) })
+              }
+              aria-label="Require category prefixes on agent-generated branches"
             />
           }
         />

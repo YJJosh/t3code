@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   applyGitStatusStreamEvent,
+  buildGeneratedWorktreeBranchName,
   buildTemporaryWorktreeBranchName,
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
@@ -50,6 +51,53 @@ describe("parseGitHubRepositoryNameWithOwnerFromRemoteUrl", () => {
     expect(
       parseGitHubRepositoryNameWithOwnerFromRemoteUrl("https://github.com/T3Tools/T3Code.git"),
     ).toBe("T3Tools/T3Code");
+  });
+});
+
+describe("buildGeneratedWorktreeBranchName", () => {
+  it("preserves the default t3code namespace", () => {
+    expect(
+      buildGeneratedWorktreeBranchName("feature/add-login", {
+        includeT3CodePrefix: true,
+        useConventionalPrefix: false,
+      }),
+    ).toBe("t3code/feature/add-login");
+  });
+
+  it("can omit the t3code namespace", () => {
+    expect(
+      buildGeneratedWorktreeBranchName("t3code/add-login", {
+        includeT3CodePrefix: false,
+        useConventionalPrefix: false,
+      }),
+    ).toBe("add-login");
+  });
+
+  it("preserves an allowed conventional prefix", () => {
+    expect(
+      buildGeneratedWorktreeBranchName("refs/heads/refactor/simplify-auth", {
+        includeT3CodePrefix: false,
+        useConventionalPrefix: true,
+      }),
+    ).toBe("refactor/simplify-auth");
+  });
+
+  it("normalizes conventional-commit punctuation without losing the chosen category", () => {
+    expect(
+      buildGeneratedWorktreeBranchName("chore: update dependencies", {
+        includeT3CodePrefix: false,
+        useConventionalPrefix: true,
+      }),
+    ).toBe("chore/update-dependencies");
+  });
+
+  it("enforces a conventional prefix when the model omits one", () => {
+    expect(
+      buildGeneratedWorktreeBranchName("Add login", {
+        includeT3CodePrefix: true,
+        useConventionalPrefix: true,
+      }),
+    ).toBe("t3code/feature/add-login");
   });
 });
 

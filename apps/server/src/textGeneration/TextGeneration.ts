@@ -53,6 +53,8 @@ export interface BranchNameGenerationInput {
   cwd: string;
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  /** Require the model to choose an allowed semantic category prefix. */
+  useConventionalBranchPrefixes?: boolean | undefined;
   /** What model and provider to use for generation. */
   modelSelection: ModelSelection;
 }

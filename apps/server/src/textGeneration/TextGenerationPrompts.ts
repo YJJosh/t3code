@@ -8,6 +8,7 @@
  */
 import * as Schema from "effect/Schema";
 import type { ChatAttachment } from "@t3tools/contracts";
+import { CONVENTIONAL_BRANCH_PREFIXES } from "@t3tools/shared/git";
 
 import { limitSection } from "./TextGenerationUtils.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
@@ -128,6 +129,7 @@ export interface BranchNamePromptInput {
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
   policy?: TextGenerationPolicy | undefined;
+  useConventionalBranchPrefixes?: boolean | undefined;
 }
 
 interface PromptFromMessageInput {
@@ -173,6 +175,11 @@ export function buildBranchNamePrompt(input: BranchNamePromptInput) {
       "Branch should describe the requested work from the user message.",
       "Keep it short and specific (2-6 words).",
       "Use plain words only, no issue prefixes and no punctuation-heavy text.",
+      ...(input.useConventionalBranchPrefixes
+        ? [
+            `Start the branch with exactly one category prefix followed by a slash: ${CONVENTIONAL_BRANCH_PREFIXES.join(", ")}. Choose the category that best matches the requested work.`,
+          ]
+        : []),
       "If images are attached, use them as primary context for visual/UI issues.",
     ],
     message: input.message,

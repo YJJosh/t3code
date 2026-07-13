@@ -905,19 +905,56 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       },
     ).pipe(Effect.map((result) => result.exitCode === 0));
 
+  const readLocalBranchNames = (cwd: string): Effect.Effect<Array<string>, GitCommandError> =>
+    runGitStdout("GitVcsDriver.listLocalBranchNames", cwd, [
+      "branch",
+      "--list",
+      "--no-column",
+      "--format=%(refname:short)",
+    ]).pipe(
+      Effect.map((stdout) =>
+        stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((branchName) => branchName.length > 0),
+      ),
+    );
+
   const resolveAvailableBranchName = Effect.fn("resolveAvailableBranchName")(function* (
     cwd: string,
     desiredBranch: string,
+    oldBranch: string,
   ) {
-    const isDesiredTaken = yield* branchExists(cwd, desiredBranch);
-    if (!isDesiredTaken) {
+    const existingBranchNames = (yield* readLocalBranchNames(cwd)).filter(
+      (branchName) => branchName !== oldBranch,
+    );
+    const conflictsWithExistingRef = (candidate: string) =>
+      existingBranchNames.some(
+        (branchName) =>
+          branchName === candidate ||
+          branchName.startsWith(`${candidate}/`) ||
+          candidate.startsWith(`${branchName}/`),
+      );
+
+    if (!conflictsWithExistingRef(desiredBranch)) {
       return desiredBranch;
     }
 
+    // A ref such as `feature` prevents Git from storing `feature/login`.
+    // Flatten only this unavoidable parent-ref collision; exact and child-ref
+    // collisions can retain their namespace by suffixing the leaf segment.
+    const hasBlockingParent = existingBranchNames.some((branchName) =>
+      desiredBranch.startsWith(`${branchName}/`),
+    );
+    const candidateBase = hasBlockingParent ? desiredBranch.replaceAll("/", "-") : desiredBranch;
+
+    if (!conflictsWithExistingRef(candidateBase)) {
+      return candidateBase;
+    }
+
     for (let suffix = 1; suffix <= 100; suffix += 1) {
-      const candidate = `${desiredBranch}-${suffix}`;
-      const isCandidateTaken = yield* branchExists(cwd, candidate);
-      if (!isCandidateTaken) {
+      const candidate = `${candidateBase}-${suffix}`;
+      if (!conflictsWithExistingRef(candidate)) {
         return candidate;
       }
     }
@@ -2664,7 +2701,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     if (input.oldBranch === input.newBranch) {
       return { branch: input.newBranch };
     }
-    const targetBranch = yield* resolveAvailableBranchName(input.cwd, input.newBranch);
+    const targetBranch = yield* resolveAvailableBranchName(
+      input.cwd,
+      input.newBranch,
+      input.oldBranch,
+    );
 
     yield* executeGit(
       "GitVcsDriver.renameBranch",
@@ -2781,26 +2822,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       fallbackErrorDetail: "git init failed",
     }).pipe(Effect.asVoid);
 
-  const listLocalBranchNames: GitVcsDriver.GitVcsDriver["Service"]["listLocalBranchNames"] = (
-    cwd,
-  ) =>
-    runGitStdout("GitVcsDriver.listLocalBranchNames", cwd, [
-      "branch",
-      "--list",
-      "--no-column",
-      "--format=%(refname:short)",
-    ]).pipe(
-      Effect.map((stdout) => {
-        const branchNames: Array<string> = [];
-        for (const line of stdout.split("\n")) {
-          const branchName = line.trim();
-          if (branchName.length > 0) {
-            branchNames.push(branchName);
-          }
-        }
-        return branchNames;
-      }),
-    );
+  const listLocalBranchNames: GitVcsDriver.GitVcsDriver["Service"]["listLocalBranchNames"] =
+    readLocalBranchNames;
 
   return GitVcsDriver.GitVcsDriver.of({
     execute,

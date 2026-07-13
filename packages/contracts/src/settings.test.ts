@@ -88,19 +88,25 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
 });
 
 describe("ServerSettings workspace defaults", () => {
-  it("defaults start-from-origin off and Workler on for legacy configs", () => {
+  it("defaults workspace and branch naming settings for legacy configs", () => {
     const settings = decodeServerSettings({});
     expect(settings.newWorktreesStartFromOrigin).toBe(false);
     expect(settings.useWorklerForNewWorkspaces).toBe(true);
+    expect(settings.includeT3CodeBranchPrefix).toBe(true);
+    expect(settings.useConventionalBranchPrefixes).toBe(false);
   });
 
-  it("accepts workspace creation updates", () => {
+  it("accepts workspace creation and branch naming updates", () => {
     const patch = decodeServerSettingsPatch({
       newWorktreesStartFromOrigin: true,
       useWorklerForNewWorkspaces: false,
+      includeT3CodeBranchPrefix: false,
+      useConventionalBranchPrefixes: true,
     });
     expect(patch.newWorktreesStartFromOrigin).toBe(true);
     expect(patch.useWorklerForNewWorkspaces).toBe(false);
+    expect(patch.includeT3CodeBranchPrefix).toBe(false);
+    expect(patch.useConventionalBranchPrefixes).toBe(true);
   });
 });
 
