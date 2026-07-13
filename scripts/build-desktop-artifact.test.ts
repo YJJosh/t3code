@@ -25,6 +25,7 @@ import {
   renderMacAdHocEntitlements,
   renderMacPasskeyEntitlements,
   resolveClerkPasskeyNativeArtifacts,
+  resolveDesktopAsarUnpack,
   resolveMacPasskeySigningConfiguration,
   resolveDesktopRuntimeDependencies,
   resolveFffNativeDependencies,
@@ -511,6 +512,16 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.strictEqual(error.cause, cause);
     assert.equal(error.message, "Failed to resolve macOS passkey signing configuration.");
     assert.notInclude(error.message, secret);
+  });
+
+  it("only unpacks the complete server runtime for the Windows WSL backend", () => {
+    assert.deepStrictEqual(resolveDesktopAsarUnpack("mac"), [...DESKTOP_ASAR_UNPACK]);
+    assert.deepStrictEqual(resolveDesktopAsarUnpack("linux"), [...DESKTOP_ASAR_UNPACK]);
+    assert.deepStrictEqual(resolveDesktopAsarUnpack("win"), [
+      ...DESKTOP_ASAR_UNPACK,
+      "apps/server/dist/**",
+      "**/node_modules/**",
+    ]);
   });
 
   it.effect("adds passkey entitlements and both renderer protocols to signed macOS builds", () =>
