@@ -37,6 +37,7 @@ import {
   resolveBranchToolbarValue,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
+  resolveWorktreeBranchToInitialize,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
 import {
@@ -243,14 +244,23 @@ export function BranchToolbarBranchSelector({
   const refs = branchRefState.refs;
   const hasNextPage =
     branchRefState.data?.nextCursor !== null && branchRefState.data?.nextCursor !== undefined;
-  const isFetchingNextPage = branchRefState.isPending && branchRefState.data !== null;
-  const isInitialBranchesLoadPending = branchRefState.isPending && branchRefState.data === null;
+  const hasLoadedInitialBranches = branchRefState.data !== null;
+  const isFetchingNextPage = branchRefState.isPending && hasLoadedInitialBranches;
+  const isInitialBranchesLoadPending = branchRefState.isPending && !hasLoadedInitialBranches;
   const currentGitBranch =
     branchStatusQuery.data?.refName ?? refs.find((refName) => refName.current)?.name ?? null;
   const defaultWorktreeBranch = startFromDefaultBranch
     ? resolveNewWorktreeDefaultBranch(refs)
     : null;
   const initialWorktreeBranch = defaultWorktreeBranch ?? currentGitBranch;
+  const worktreeBranchToInitialize = resolveWorktreeBranchToInitialize({
+    effectiveEnvMode,
+    activeWorktreePath,
+    activeThreadBranch,
+    initialWorktreeBranch,
+    startFromDefaultBranch,
+    hasLoadedInitialBranches,
+  });
   const sourceControlPresentation = useMemo(
     () => getSourceControlPresentation(branchStatusQuery.data?.sourceControlProvider),
     [branchStatusQuery.data?.sourceControlProvider],
@@ -430,22 +440,11 @@ export function BranchToolbarBranchSelector({
   };
 
   useEffect(() => {
-    if (
-      effectiveEnvMode !== "worktree" ||
-      activeWorktreePath ||
-      activeThreadBranch ||
-      !initialWorktreeBranch
-    ) {
+    if (worktreeBranchToInitialize === null) {
       return;
     }
-    setThreadBranch(initialWorktreeBranch, null);
-  }, [
-    activeThreadBranch,
-    activeWorktreePath,
-    effectiveEnvMode,
-    initialWorktreeBranch,
-    setThreadBranch,
-  ]);
+    setThreadBranch(worktreeBranchToInitialize, null);
+  }, [setThreadBranch, worktreeBranchToInitialize]);
 
   // ---------------------------------------------------------------------------
   // Combobox / list plumbing
