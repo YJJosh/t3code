@@ -6,7 +6,7 @@ T3 Dulli is the branded desktop distribution maintained in `YJJosh/t3code`. This
 
 1. Fetch `origin` and start from `origin/main` in an isolated Workler clone or Git worktree.
 2. Keep branch names descriptive and submit changes through a pull request.
-3. Do not commit `.workler`, credentials, downloaded release artifacts, machine-local paths, `.t3-dulli` state, or generated logs.
+3. Do not commit credentials, downloaded release artifacts, machine-local paths, `.t3-dulli` state, or generated logs.
 4. Before opening a pull request, run:
 
    ```sh

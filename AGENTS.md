@@ -11,7 +11,7 @@
 - This repository is the canonical home for T3 Dulli application code, branding assets, packaging, release automation, and fork operations.
 - Start fork changes from `origin/main` in an isolated Workler clone or Git worktree; do not develop directly on `main`.
 - Keep Pi configuration/extensions in `pi-config` and Workler package changes in the Workler repository.
-- Never commit `.workler` markers, credentials, machine-local paths, downloaded installers, or local state.
+- Never commit credentials, machine-local paths, downloaded installers, or local state.
 - Use repository-pinned `./node_modules/.bin/vp` (or `vp` only where CI setup provides the pinned binary).
 - Follow [docs/fork-development.md](docs/fork-development.md) for branding, local installation, release, and update procedures.
 
