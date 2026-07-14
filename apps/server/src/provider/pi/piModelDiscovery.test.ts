@@ -46,6 +46,22 @@ describe("piModelCapabilities", () => {
     expect(optionIds).toEqual(["off", "minimal", "low", "medium", "high"]);
   });
 
+  it("defaults OpenAI Codex reasoning to high when no selection exists", () => {
+    const capabilities = piModelCapabilities({
+      id: "gpt-5.6-sol",
+      provider: "openai-codex",
+      reasoning: true,
+      thinkingLevelMap: { off: null, minimal: null, max: "max" },
+    });
+    const descriptor = capabilities.optionDescriptors?.find((option) => option.id === "reasoning");
+
+    expect(descriptor).toMatchObject({
+      type: "select",
+      currentValue: "high",
+      options: expect.arrayContaining([{ id: "high", label: "high", isDefault: true }]),
+    });
+  });
+
   it("advertises context-window choices from the configured default through the catalog max", () => {
     const capabilities = piModelCapabilities(
       {

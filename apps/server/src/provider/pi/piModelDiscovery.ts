@@ -187,11 +187,17 @@ export function piModelCapabilities(
       return true;
     });
     if (levels.length > 0) {
+      const defaultLevel =
+        model.provider === "openai-codex" && levels.includes("high") ? "high" : undefined;
       optionDescriptors.push(
         buildSelectOptionDescriptor({
           id: PI_THINKING_OPTION_ID,
           label: "Reasoning",
-          options: levels.map((level) => ({ value: level, label: level })),
+          options: levels.map((level) => ({
+            value: level,
+            label: level,
+            ...(level === defaultLevel ? { isDefault: true } : {}),
+          })),
         }),
       );
     }
