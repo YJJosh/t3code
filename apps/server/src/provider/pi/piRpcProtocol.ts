@@ -52,12 +52,21 @@ export type PiThinkingLevel = (typeof PI_THINKING_LEVELS)[number];
  */
 export const PI_THINKING_OPTION_ID = "reasoning";
 
-/** Pi model option + extension command used for OpenAI Codex priority service. */
+/** Pi model options + extension commands exposed in the composer. */
+export const PI_CONTEXT_WINDOW_OPTION_ID = "contextWindow";
+export const PI_CONTEXT_COMMAND = "context";
+export const PI_AUTO_CONTEXT_WINDOW = "auto";
 export const PI_SERVICE_TIER_OPTION_ID = "serviceTier";
 export const PI_STANDARD_SERVICE_TIER = "default";
 export const PI_FAST_SERVICE_TIER = "priority";
 export const PI_CODEX_FAST_COMMAND = "fast";
-const PI_CODEX_FAST_MODEL_SLUGS = new Set(["openai-codex/gpt-5.4", "openai-codex/gpt-5.5"]);
+const PI_CODEX_FAST_MODEL_SLUGS = new Set([
+  "openai-codex/gpt-5.4",
+  "openai-codex/gpt-5.5",
+  "openai-codex/gpt-5.6-luna",
+  "openai-codex/gpt-5.6-sol",
+  "openai-codex/gpt-5.6-terra",
+]);
 
 export function supportsPiCodexFastService(modelSlug: string | undefined): boolean {
   return modelSlug !== undefined && PI_CODEX_FAST_MODEL_SLUGS.has(modelSlug);
@@ -67,6 +76,19 @@ export function parsePiFastServiceEnabled(value: unknown): boolean | undefined {
   if (value === PI_FAST_SERVICE_TIER) return true;
   if (value === PI_STANDARD_SERVICE_TIER) return false;
   return undefined;
+}
+
+/** Validate a composer value before interpolating it into Pi's `/context` command. */
+export function parsePiContextWindow(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === PI_AUTO_CONTEXT_WINDOW) return normalized;
+  if (!/^[0-9]+(?:\.[0-9]+)?(?:k|m)?$/.test(normalized)) return undefined;
+
+  const suffix = normalized.at(-1);
+  const numericText = suffix === "k" || suffix === "m" ? normalized.slice(0, -1) : normalized;
+  const numericValue = Number(numericText);
+  return Number.isFinite(numericValue) && numericValue > 0 ? normalized : undefined;
 }
 
 export function parsePiThinkingLevel(value: unknown): PiThinkingLevel | undefined {

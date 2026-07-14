@@ -24,7 +24,10 @@ import * as Effect from "effect/Effect";
 
 import { buildSelectOptionDescriptor } from "../providerSnapshot.ts";
 import {
+  PI_AUTO_CONTEXT_WINDOW,
   PI_CODEX_FAST_COMMAND,
+  PI_CONTEXT_COMMAND,
+  PI_CONTEXT_WINDOW_OPTION_ID,
   PI_FAST_SERVICE_TIER,
   PI_SERVICE_TIER_OPTION_ID,
   PI_STANDARD_SERVICE_TIER,
@@ -42,6 +45,7 @@ interface PiSdkModel {
   readonly provider: string;
   readonly reasoning?: boolean;
   readonly thinkingLevelMap?: Record<string, string | null> | undefined;
+  readonly contextWindow?: number | undefined;
 }
 
 export interface PiModelDiscoveryResult {
@@ -106,6 +110,67 @@ function piModelSlug(model: PiSdkModel): string {
  */
 export interface PiModelCapabilityOptions {
   readonly codexFastCommandAvailable?: boolean | undefined;
+  readonly contextCommandAvailable?: boolean | undefined;
+}
+
+const PI_CONTEXT_WINDOW_PRESETS = [
+  128_000, 200_000, 256_000, 272_000, 372_000, 400_000, 1_000_000, 1_050_000,
+] as const;
+const PI_CATALOG_CONTEXT_MAX_WINDOWS = new Map<string, number>([
+  ["openai-codex/gpt-5.6-luna", 372_000],
+  ["openai-codex/gpt-5.6-sol", 372_000],
+  ["openai-codex/gpt-5.6-terra", 372_000],
+]);
+
+function formatContextWindowValue(tokens: number): string {
+  if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) return `${tokens / 1_000_000}m`;
+  if (tokens >= 1_000 && tokens % 1_000 === 0) return `${tokens / 1_000}k`;
+  return String(tokens);
+}
+
+function formatContextWindowLabel(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    return `${Number((tokens / 1_000_000).toFixed(2))}M`;
+  }
+  if (tokens >= 1_000) {
+    return `${Number((tokens / 1_000).toFixed(1))}K`;
+  }
+  return String(tokens);
+}
+
+function piContextWindowChoices(model: PiSdkModel) {
+  const configuredWindow = model.contextWindow;
+  if (
+    typeof configuredWindow !== "number" ||
+    !Number.isFinite(configuredWindow) ||
+    configuredWindow < 1_000
+  ) {
+    return [];
+  }
+  const defaultWindow = Math.floor(configuredWindow);
+  const maximumWindow = Math.max(
+    defaultWindow,
+    PI_CATALOG_CONTEXT_MAX_WINDOWS.get(piModelSlug(model)) ?? defaultWindow,
+  );
+  const manualWindows = Array.from(
+    new Set([
+      ...PI_CONTEXT_WINDOW_PRESETS.filter((tokens) => tokens <= maximumWindow),
+      defaultWindow,
+      maximumWindow,
+    ]),
+  ).sort((left, right) => left - right);
+
+  return [
+    {
+      value: PI_AUTO_CONTEXT_WINDOW,
+      label: `Auto (${formatContextWindowLabel(defaultWindow)})`,
+      isDefault: true,
+    },
+    ...manualWindows.map((tokens) => ({
+      value: formatContextWindowValue(tokens),
+      label: formatContextWindowLabel(tokens),
+    })),
+  ];
 }
 
 export function piModelCapabilities(
@@ -122,11 +187,31 @@ export function piModelCapabilities(
       return true;
     });
     if (levels.length > 0) {
+      const defaultLevel = levels.includes("high") ? "high" : undefined;
       optionDescriptors.push(
         buildSelectOptionDescriptor({
           id: PI_THINKING_OPTION_ID,
-          label: "Thinking",
-          options: levels.map((level) => ({ value: level, label: level })),
+          label: "Reasoning",
+          options: levels.map((level) => ({
+            value: level,
+            label: level,
+            ...(level === defaultLevel ? { isDefault: true } : {}),
+          })),
+        }),
+      );
+    }
+  }
+
+  if (options.contextCommandAvailable === true) {
+    const contextWindowOptions = piContextWindowChoices(model);
+    if (contextWindowOptions.length > 0) {
+      optionDescriptors.push(
+        buildSelectOptionDescriptor({
+          id: PI_CONTEXT_WINDOW_OPTION_ID,
+          label: "Context Window",
+          description:
+            "Auto uses Pi's configured model limit. Manual values can lower it or select a separately known catalog maximum.",
+          options: contextWindowOptions,
         }),
       );
     }
@@ -191,12 +276,15 @@ export async function discoverPiModelsWithSdk(
     },
   });
   const available = services.modelRegistry.getAvailable();
-  const codexFastCommandAvailable =
-    services.resourceLoader
-      ?.getExtensions()
-      .extensions.some((extension) => extension.commands.has(PI_CODEX_FAST_COMMAND)) ?? false;
+  const extensions = services.resourceLoader?.getExtensions().extensions ?? [];
+  const codexFastCommandAvailable = extensions.some((extension) =>
+    extension.commands.has(PI_CODEX_FAST_COMMAND),
+  );
+  const contextCommandAvailable = extensions.some((extension) =>
+    extension.commands.has(PI_CONTEXT_COMMAND),
+  );
   const models = available.map((model) =>
-    toServerProviderModel(model, { codexFastCommandAvailable }),
+    toServerProviderModel(model, { codexFastCommandAvailable, contextCommandAvailable }),
   );
   const errors = [
     services.modelRegistry.getError(),

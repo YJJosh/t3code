@@ -48,6 +48,7 @@ interface FakePi {
 
 const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
   readonly subagentsCommand?: boolean;
+  readonly contextCommand?: boolean;
   readonly fastCommand?: boolean;
 }) {
   const stdoutQueue = yield* Queue.unbounded<Uint8Array>();
@@ -100,6 +101,9 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
                               ...(input?.subagentsCommand === false
                                 ? []
                                 : [{ name: "subagents-rpc", source: "extension" }]),
+                              ...(input?.contextCommand === true
+                                ? [{ name: "context", source: "extension" }]
+                                : []),
                               ...(input?.fastCommand === true
                                 ? [{ name: "fast", source: "extension" }]
                                 : []),
@@ -253,18 +257,19 @@ describe("makePiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
-  it.effect("synchronizes Codex Fast service before the user prompt", () =>
+  it.effect("synchronizes Pi context and Codex Fast service before the user prompt", () =>
     Effect.gen(function* () {
-      const fake = yield* makeFakePi({ fastCommand: true });
+      const fake = yield* makeFakePi({ contextCommand: true, fastCommand: true });
       const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
       );
       const threadId = ThreadId.make("88888888-8888-4888-8888-888888888888");
       const fastSelection: ModelSelection = {
         instanceId: INSTANCE,
-        model: "openai-codex/gpt-5.5",
+        model: "openai-codex/gpt-5.6-sol",
         options: [
           { id: "reasoning", value: "off" },
+          { id: "contextWindow", value: "372k" },
           { id: "serviceTier", value: "priority" },
         ],
       };
@@ -283,12 +288,16 @@ describe("makePiAdapter", () => {
       const thinkingIndex = fake.written.findIndex(
         (command) => command.type === "set_thinking_level" && command.level === "off",
       );
+      const contextIndex = fake.written.findIndex(
+        (command) => command.type === "prompt" && command.message === "/context 372k",
+      );
       const fastIndex = fake.written.findIndex(
         (command) => command.type === "prompt" && command.message === "/fast on",
       );
       expect(modelIndex).toBeGreaterThanOrEqual(0);
       expect(thinkingIndex).toBeGreaterThan(modelIndex);
-      expect(fastIndex).toBeGreaterThan(thinkingIndex);
+      expect(contextIndex).toBeGreaterThan(thinkingIndex);
+      expect(fastIndex).toBeGreaterThan(contextIndex);
 
       yield* adapter.sendTurn({
         threadId,
@@ -297,6 +306,7 @@ describe("makePiAdapter", () => {
           ...fastSelection,
           options: [
             { id: "reasoning", value: "off" },
+            { id: "contextWindow", value: "auto" },
             { id: "serviceTier", value: "default" },
           ],
         },
@@ -305,10 +315,77 @@ describe("makePiAdapter", () => {
         (command) => command.type === "prompt" && command.message === "/fast off",
       );
       expect(disabled.message).toBe("/fast off");
+      const resetContextIndex = fake.written.findIndex(
+        (command) => command.type === "prompt" && command.message === "/context auto",
+      );
+      const disableFastIndex = fake.written.findIndex(
+        (command) => command.type === "prompt" && command.message === "/fast off",
+      );
+      expect(resetContextIndex).toBeGreaterThan(fastIndex);
+      expect(disableFastIndex).toBeGreaterThan(resetContextIndex);
       const userPrompt = yield* fake.takeStdinUntil(
         (command) => command.type === "prompt" && command.message === "Use the standard tier now",
       );
       expect(userPrompt.message).toBe("Use the standard tier now");
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("drops stale profile options when the live Pi profile lacks their commands", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("77777777-7777-4777-8777-777777777777");
+      const staleSelection: ModelSelection = {
+        instanceId: INSTANCE,
+        model: "openai-codex/gpt-5.6-sol",
+        options: [
+          { id: "reasoning", value: "high" },
+          { id: "contextWindow", value: "372k" },
+          { id: "serviceTier", value: "priority" },
+          { id: "profile", value: "without-effort-commands" },
+        ],
+      };
+
+      yield* adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: staleSelection,
+      });
+
+      expect(fake.captured.args).toContain("without-effort-commands");
+      const contextWarning = yield* takeEventOfType(events, "runtime.warning");
+      const fastWarning = yield* takeEventOfType(events, "runtime.warning");
+      expect(
+        contextWarning.type === "runtime.warning" ? contextWarning.payload.message : "",
+      ).toContain("does not provide /context");
+      expect(fastWarning.type === "runtime.warning" ? fastWarning.payload.message : "").toContain(
+        "does not provide /fast",
+      );
+      expect(fake.written).not.toContainEqual(
+        expect.objectContaining({ type: "prompt", message: "/context 372k" }),
+      );
+      expect(fake.written).not.toContainEqual(
+        expect.objectContaining({ type: "prompt", message: "/fast on" }),
+      );
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Continue without profile-specific options",
+        modelSelection: staleSelection,
+      });
+      const prompt = yield* fake.takeStdinUntil(
+        (command) =>
+          command.type === "prompt" &&
+          command.message === "Continue without profile-specific options",
+      );
+      expect(prompt.message).toBe("Continue without profile-specific options");
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
@@ -361,7 +438,8 @@ describe("makePiAdapter", () => {
         (command) => command.type === "prompt" && command.message === "first-fast-prompt",
       );
       const fastOffIndex = fake.written.findIndex(
-        (command) => command.type === "prompt" && command.message === "/fast off",
+        (command, index) =>
+          index > firstPromptIndex && command.type === "prompt" && command.message === "/fast off",
       );
       const secondPromptIndex = fake.written.findIndex(
         (command) => command.type === "steer" && command.message === "second-standard-steer",

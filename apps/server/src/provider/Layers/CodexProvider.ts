@@ -109,8 +109,16 @@ function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"])
 export function mapCodexModelCapabilities(
   model: CodexSchema.V2ModelListResponse__Model,
 ): ModelCapabilities {
-  const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
-    reasoningEffort === model.defaultReasoningEffort
+  const supportedReasoningEfforts = model.supportedReasoningEfforts.map(
+    ({ reasoningEffort }) => reasoningEffort,
+  );
+  const defaultReasoning = supportedReasoningEfforts.includes(model.defaultReasoningEffort)
+    ? model.defaultReasoningEffort
+    : supportedReasoningEfforts.includes("high")
+      ? "high"
+      : undefined;
+  const reasoningOptions = supportedReasoningEfforts.map((reasoningEffort) =>
+    reasoningEffort === defaultReasoning
       ? {
           id: reasoningEffort,
           label: reasoningEffortLabel(reasoningEffort),
@@ -121,7 +129,6 @@ export function mapCodexModelCapabilities(
           label: reasoningEffortLabel(reasoningEffort),
         },
   );
-  const defaultReasoning = reasoningOptions.find((option) => option.isDefault)?.id;
   const serviceTiers =
     model.serviceTiers && model.serviceTiers.length > 0
       ? model.serviceTiers

@@ -167,6 +167,44 @@ describe("getComposerProviderState", () => {
     );
   });
 
+  it("dispatches Pi reasoning, context, and Fast controls from the composer settings chip", () => {
+    const state = getComposerProviderState({
+      provider: ProviderDriverKind.make("pi"),
+      model: MODEL,
+      models: modelWith([
+        selectDescriptor("reasoning", [
+          { id: "high", label: "High" },
+          { id: "xhigh", label: "Extra High", isDefault: true },
+        ]),
+        selectDescriptor("contextWindow", [
+          { id: "auto", label: "Auto (272K)", isDefault: true },
+          { id: "372k", label: "372K" },
+        ]),
+        selectDescriptor("serviceTier", [
+          { id: "default", label: "Standard", isDefault: true },
+          { id: "priority", label: "Fast" },
+        ]),
+        selectDescriptor(PI_PROFILE_OPTION_ID, [{ id: "coder", label: "coder", isDefault: true }]),
+      ]),
+      modelOptions: selections(
+        ["reasoning", "high"],
+        ["contextWindow", "372k"],
+        ["serviceTier", "priority"],
+      ),
+    });
+
+    expect(state).toEqual({
+      provider: ProviderDriverKind.make("pi"),
+      promptEffort: "high",
+      modelOptionsForDispatch: selections(
+        ["reasoning", "high"],
+        ["contextWindow", "372k"],
+        ["serviceTier", "priority"],
+        [PI_PROFILE_OPTION_ID, "coder"],
+      ),
+    });
+  });
+
   it("dispatches a Pi profile without treating it as prompt effort", () => {
     const state = getComposerProviderState({
       provider: ProviderDriverKind.make("pi"),

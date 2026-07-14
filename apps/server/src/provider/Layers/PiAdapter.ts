@@ -56,10 +56,14 @@ import {
   buildPiRpcArgs,
   buildPiRpcEnv,
   extractPiAssistantText,
+  parsePiContextWindow,
   parsePiFastServiceEnabled,
   parsePiSubagentNotification,
   parsePiThinkingLevel,
+  PI_AUTO_CONTEXT_WINDOW,
   PI_CODEX_FAST_COMMAND,
+  PI_CONTEXT_COMMAND,
+  PI_CONTEXT_WINDOW_OPTION_ID,
   PI_SERVICE_TIER_OPTION_ID,
   PI_THINKING_OPTION_ID,
   resolvePiBinary,
@@ -94,10 +98,11 @@ interface PiSessionContext {
   assistantItemId: ProviderItemId | undefined;
   assistantText: string;
   reasoningText: string;
-  /** Cached `/fast` command availability and synchronized session state. */
-  fastCommandAvailable: boolean | undefined;
+  /** Cached extension-command availability and synchronized session state. */
+  extensionCommandNames: ReadonlySet<string> | undefined;
+  contextWindowSelectionKey: string | undefined;
   fastServiceEnabled: boolean | undefined;
-  /** Keeps model/thinking/service-tier synchronization atomic with its prompt. */
+  /** Keeps model/thinking/context/service-tier synchronization atomic with its prompt. */
   sendSemaphore: Semaphore.Semaphore;
   stopped: boolean;
 }
@@ -155,12 +160,14 @@ export function splitPiModelSlug(slug: string): { provider: string; modelId: str
   return { provider: trimmed.slice(0, slashIndex), modelId: trimmed.slice(slashIndex + 1) };
 }
 
-function piRpcAdvertisesCommand(response: PiRpcResponse, commandName: string): boolean {
+function piRpcCommandNames(response: PiRpcResponse): ReadonlySet<string> {
   if (!isRecord(response.data) || !Array.isArray(response.data.commands)) {
-    return false;
+    return new Set();
   }
-  return response.data.commands.some(
-    (command) => isRecord(command) && command.name === commandName,
+  return new Set(
+    response.data.commands.flatMap((command) =>
+      isRecord(command) && typeof command.name === "string" ? [command.name] : [],
+    ),
   );
 }
 
@@ -251,24 +258,63 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         });
       });
 
+    const piAdvertisesCommand = (ctx: PiSessionContext, commandName: string) =>
+      Effect.gen(function* () {
+        if (ctx.extensionCommandNames === undefined) {
+          const commands = yield* request(ctx, { type: "get_commands" });
+          ctx.extensionCommandNames = piRpcCommandNames(commands);
+        }
+        return ctx.extensionCommandNames.has(commandName);
+      });
+
+    const syncContextWindow = (
+      ctx: PiSessionContext,
+      model: string | undefined,
+      selection: string | undefined,
+    ) =>
+      Effect.gen(function* () {
+        if (selection === undefined) return;
+        const selectionKey = `${model ?? ""}\u0000${selection}`;
+        if (selectionKey === ctx.contextWindowSelectionKey) return;
+        if (!(yield* piAdvertisesCommand(ctx, PI_CONTEXT_COMMAND))) {
+          // Capabilities are discovered with the configured default profile,
+          // while a draft can select another profile. Revalidate against the
+          // live session and drop a stale option instead of failing the thread.
+          ctx.contextWindowSelectionKey = selectionKey;
+          if (selection !== PI_AUTO_CONTEXT_WINDOW) {
+            yield* emitWarning(
+              ctx.threadId,
+              ctx.activeTurnId,
+              "Ignoring the context-window selection because this Pi profile does not provide /context.",
+              { model, selection },
+            );
+          }
+          return;
+        }
+        yield* request(ctx, {
+          type: "prompt",
+          message: `/${PI_CONTEXT_COMMAND} ${selection}`,
+        });
+        ctx.contextWindowSelectionKey = selectionKey;
+      });
+
     const syncFastService = (ctx: PiSessionContext, enabled: boolean | undefined) =>
       Effect.gen(function* () {
         if (enabled === undefined || enabled === ctx.fastServiceEnabled) return;
-        if (ctx.fastCommandAvailable === undefined) {
-          const commands = yield* request(ctx, { type: "get_commands" });
-          ctx.fastCommandAvailable = piRpcAdvertisesCommand(commands, PI_CODEX_FAST_COMMAND);
-        }
-        if (!ctx.fastCommandAvailable) {
-          if (!enabled) {
-            ctx.fastServiceEnabled = false;
-            return;
+        if (!(yield* piAdvertisesCommand(ctx, PI_CODEX_FAST_COMMAND))) {
+          // As with /context, a per-draft profile can differ from the profile
+          // used for provider discovery. Treat an unavailable command as an
+          // unsupported option for this session rather than a startup error.
+          ctx.fastServiceEnabled = enabled;
+          if (enabled) {
+            yield* emitWarning(
+              ctx.threadId,
+              ctx.activeTurnId,
+              "Ignoring Codex Fast because this Pi profile does not provide /fast.",
+              { model: ctx.session.model },
+            );
           }
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: PI_CODEX_FAST_COMMAND,
-            detail:
-              "Pi does not advertise the /fast command required for Codex priority service. Enable the effort-commands extension in the selected Pi profile.",
-          });
+          return;
         }
         yield* request(ctx, {
           type: "prompt",
@@ -575,13 +621,22 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       const thinkingLevel = parsePiThinkingLevel(
         getModelSelectionStringOptionValue(selection, PI_THINKING_OPTION_ID),
       );
+      const contextWindow = parsePiContextWindow(
+        getModelSelectionStringOptionValue(selection, PI_CONTEXT_WINDOW_OPTION_ID),
+      );
       const fastServiceEnabled = supportsPiCodexFastService(model)
         ? (parsePiFastServiceEnabled(
             getModelSelectionStringOptionValue(selection, PI_SERVICE_TIER_OPTION_ID),
           ) ?? false)
         : undefined;
       const profile = getModelSelectionStringOptionValue(selection, PI_PROFILE_OPTION_ID)?.trim();
-      return { model, thinkingLevel, fastServiceEnabled, profile: profile || undefined };
+      return {
+        model,
+        thinkingLevel,
+        contextWindow,
+        fastServiceEnabled,
+        profile: profile || undefined,
+      };
     };
 
     const startSession: PiAdapterShape["startSession"] = (input) =>
@@ -606,9 +661,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           yield* stopSessionInternal(existing);
         }
 
-        const { model, thinkingLevel, fastServiceEnabled, profile } = resolveModelSelection(
-          input.modelSelection,
-        );
+        const { model, thinkingLevel, contextWindow, fastServiceEnabled, profile } =
+          resolveModelSelection(input.modelSelection);
         const resumeSessionId =
           isRecord(input.resumeCursor) && typeof input.resumeCursor.piSessionId === "string"
             ? input.resumeCursor.piSessionId
@@ -632,7 +686,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           assistantItemId: undefined,
           assistantText: "",
           reasoningText: "",
-          fastCommandAvailable: undefined,
+          extensionCommandNames: undefined,
+          contextWindowSelectionKey: undefined,
           fastServiceEnabled: undefined,
           sendSemaphore,
           stopped: false,
@@ -698,6 +753,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           updatedAt: now,
         };
         (ctx as { session: ProviderSession }).session = session;
+        yield* syncContextWindow(ctx, model, contextWindow);
         yield* syncFastService(ctx, fastServiceEnabled);
 
         sessions.set(input.threadId, ctx);
@@ -732,9 +788,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       Effect.flatMap(requireSession(input.threadId), (ctx) =>
         ctx.sendSemaphore.withPermit(
           Effect.gen(function* () {
-            const { model, thinkingLevel, fastServiceEnabled } = resolveModelSelection(
-              input.modelSelection,
-            );
+            const { model, thinkingLevel, contextWindow, fastServiceEnabled } =
+              resolveModelSelection(input.modelSelection);
 
             // In-session model / thinking switch.
             if (model && model !== ctx.session.model) {
@@ -744,6 +799,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             if (thinkingLevel) {
               yield* request(ctx, { type: "set_thinking_level", level: thinkingLevel });
             }
+            yield* syncContextWindow(ctx, model, contextWindow);
             yield* syncFastService(ctx, fastServiceEnabled);
 
             const text = input.input?.trim();
@@ -899,8 +955,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // model by Pi. Verify the private bridge command exists before sending
         // it so opening a thread without the optional pi-subagents extension
         // can never create an unintended user turn.
-        const commands = yield* request(ctx, { type: "get_commands" });
-        if (!piRpcAdvertisesCommand(commands, "subagents-rpc")) {
+        if (!(yield* piAdvertisesCommand(ctx, "subagents-rpc"))) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
             operation: "controlSubagent",
