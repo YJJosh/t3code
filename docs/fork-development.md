@@ -153,7 +153,7 @@ openssl x509 \
   -noout -subject -dates -fingerprint -sha256
 ```
 
-The workflow imports the certificate as a non-extractable key into an ephemeral keychain, checks it against the pinned SHA-1 repository variable, explicitly selects it for Electron Builder, verifies the resulting bundle's certificate-root requirement, and deletes the keychain. It fails rather than silently falling back to ad-hoc signing when any signing configuration is missing or mismatched.
+The workflow imports the certificate as a non-extractable key into an ephemeral keychain, checks it against the pinned SHA-1 repository variable, and temporarily trusts only the public certificate in the GitHub-hosted runner's admin trust domain. It explicitly selects the identity for Electron Builder, verifies the resulting bundle's certificate-root requirement, and removes both the system trust entry and keychain before uploading artifacts. It fails rather than silently falling back to ad-hoc signing when any signing configuration is missing or mismatched.
 
 Existing ad-hoc releases cannot accept the first self-signed release because their designated requirements are already tied to release-specific hashes. Install the first self-signed release manually once; subsequent releases signed with the unchanged certificate can update through the app.
 
