@@ -196,6 +196,7 @@ jobs:
           keychain_password="$(openssl rand -hex 32)"
           echo "::add-mask::$keychain_password"
           echo "DULLI_MACOS_SIGNING_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
+          echo "DULLI_MACOS_SIGNING_CERTIFICATE_SHA1=$expected_identity" >> "$GITHUB_ENV"
           cleanup_sensitive_files() {
             rm -f "$certificate_path" "$certificate_pem_path"
           }
@@ -217,11 +218,19 @@ jobs:
             -P "$CERTIFICATE_PASSWORD" \
             -x \
             -T /usr/bin/codesign
-          security add-trusted-cert \
+          echo "Imported the non-extractable community signing identity."
+
+          # User-domain trust opens SecurityAgent and hangs on headless GitHub runners. The
+          # runners provide passwordless sudo, so install only the public certificate in the
+          # ephemeral VM's admin trust domain and remove it immediately after verification.
+          sudo -n security add-trusted-cert \
+            -d \
             -r trustRoot \
             -p codeSign \
-            -k "$keychain_path" \
+            -k /Library/Keychains/System.keychain \
             "$certificate_pem_path"
+          echo "Trusted the community certificate for code signing on this ephemeral runner."
+
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s \
@@ -332,10 +341,16 @@ jobs:
           printf '%s\n' "$requirement" | grep -Fq \
             "identifier \"com.yjjosh.t3dulli\" and certificate root = H\"$identity_lower\""
 
-      - name: Remove macOS community signing keychain
+      - name: Remove macOS community signing material
         if: always() && matrix.platform == 'mac'
         shell: bash
         run: |
+          if [[ "$DULLI_MACOS_SIGNING_CERTIFICATE_SHA1" =~ ^[0-9A-F]{40}$ ]]; then
+            sudo -n security delete-certificate \
+              -t \
+              -Z "$DULLI_MACOS_SIGNING_CERTIFICATE_SHA1" \
+              /Library/Keychains/System.keychain || true
+          fi
           if [[ -n "${DULLI_MACOS_SIGNING_KEYCHAIN:-}" ]]; then
             security delete-keychain "$DULLI_MACOS_SIGNING_KEYCHAIN" || true
           fi
