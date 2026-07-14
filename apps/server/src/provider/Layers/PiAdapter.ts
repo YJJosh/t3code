@@ -277,16 +277,19 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const selectionKey = `${model ?? ""}\u0000${selection}`;
         if (selectionKey === ctx.contextWindowSelectionKey) return;
         if (!(yield* piAdvertisesCommand(ctx, PI_CONTEXT_COMMAND))) {
-          if (selection === PI_AUTO_CONTEXT_WINDOW) {
-            ctx.contextWindowSelectionKey = selectionKey;
-            return;
+          // Capabilities are discovered with the configured default profile,
+          // while a draft can select another profile. Revalidate against the
+          // live session and drop a stale option instead of failing the thread.
+          ctx.contextWindowSelectionKey = selectionKey;
+          if (selection !== PI_AUTO_CONTEXT_WINDOW) {
+            yield* emitWarning(
+              ctx.threadId,
+              ctx.activeTurnId,
+              "Ignoring the context-window selection because this Pi profile does not provide /context.",
+              { model, selection },
+            );
           }
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: PI_CONTEXT_COMMAND,
-            detail:
-              "Pi does not advertise the /context command required for context-window selection. Enable the effort-commands extension in the selected Pi profile.",
-          });
+          return;
         }
         yield* request(ctx, {
           type: "prompt",
@@ -299,16 +302,19 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       Effect.gen(function* () {
         if (enabled === undefined || enabled === ctx.fastServiceEnabled) return;
         if (!(yield* piAdvertisesCommand(ctx, PI_CODEX_FAST_COMMAND))) {
-          if (!enabled) {
-            ctx.fastServiceEnabled = false;
-            return;
+          // As with /context, a per-draft profile can differ from the profile
+          // used for provider discovery. Treat an unavailable command as an
+          // unsupported option for this session rather than a startup error.
+          ctx.fastServiceEnabled = enabled;
+          if (enabled) {
+            yield* emitWarning(
+              ctx.threadId,
+              ctx.activeTurnId,
+              "Ignoring Codex Fast because this Pi profile does not provide /fast.",
+              { model: ctx.session.model },
+            );
           }
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: PI_CODEX_FAST_COMMAND,
-            detail:
-              "Pi does not advertise the /fast command required for Codex priority service. Enable the effort-commands extension in the selected Pi profile.",
-          });
+          return;
         }
         yield* request(ctx, {
           type: "prompt",

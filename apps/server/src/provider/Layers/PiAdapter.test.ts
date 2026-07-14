@@ -330,6 +330,65 @@ describe("makePiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
+  it.effect("drops stale profile options when the live Pi profile lacks their commands", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("77777777-7777-4777-8777-777777777777");
+      const staleSelection: ModelSelection = {
+        instanceId: INSTANCE,
+        model: "openai-codex/gpt-5.6-sol",
+        options: [
+          { id: "reasoning", value: "high" },
+          { id: "contextWindow", value: "372k" },
+          { id: "serviceTier", value: "priority" },
+          { id: "profile", value: "without-effort-commands" },
+        ],
+      };
+
+      yield* adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: staleSelection,
+      });
+
+      expect(fake.captured.args).toContain("without-effort-commands");
+      const contextWarning = yield* takeEventOfType(events, "runtime.warning");
+      const fastWarning = yield* takeEventOfType(events, "runtime.warning");
+      expect(
+        contextWarning.type === "runtime.warning" ? contextWarning.payload.message : "",
+      ).toContain("does not provide /context");
+      expect(fastWarning.type === "runtime.warning" ? fastWarning.payload.message : "").toContain(
+        "does not provide /fast",
+      );
+      expect(fake.written).not.toContainEqual(
+        expect.objectContaining({ type: "prompt", message: "/context 372k" }),
+      );
+      expect(fake.written).not.toContainEqual(
+        expect.objectContaining({ type: "prompt", message: "/fast on" }),
+      );
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Continue without profile-specific options",
+        modelSelection: staleSelection,
+      });
+      const prompt = yield* fake.takeStdinUntil(
+        (command) =>
+          command.type === "prompt" &&
+          command.message === "Continue without profile-specific options",
+      );
+      expect(prompt.message).toBe("Continue without profile-specific options");
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
   it.effect("keeps opposite Fast tiers atomic with concurrent sends", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi({ fastCommand: true });
