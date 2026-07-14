@@ -7,6 +7,7 @@ import {
   buildPiRpcArgs,
   buildPiRpcEnv,
   extractPiAssistantText,
+  parsePiContextWindow,
   parsePiFastServiceEnabled,
   parsePiSubagentNotification,
   parsePiThinkingLevel,
@@ -152,10 +153,25 @@ describe("Pi Codex Fast service", () => {
   it("recognizes supported models and service-tier values", () => {
     expect(supportsPiCodexFastService("openai-codex/gpt-5.5")).toBe(true);
     expect(supportsPiCodexFastService("openai-codex/gpt-5.4")).toBe(true);
-    expect(supportsPiCodexFastService("openai-codex/gpt-5.6-sol")).toBe(false);
+    expect(supportsPiCodexFastService("openai-codex/gpt-5.6-sol")).toBe(true);
+    expect(supportsPiCodexFastService("openai-codex/gpt-5.6-terra")).toBe(true);
+    expect(supportsPiCodexFastService("openai-codex/gpt-5.6-luna")).toBe(true);
+    expect(supportsPiCodexFastService("openai-codex/gpt-5.4-mini")).toBe(false);
     expect(parsePiFastServiceEnabled("priority")).toBe(true);
     expect(parsePiFastServiceEnabled("default")).toBe(false);
     expect(parsePiFastServiceEnabled("flex")).toBeUndefined();
+  });
+});
+
+describe("parsePiContextWindow", () => {
+  it("accepts safe context values and rejects command injection or invalid values", () => {
+    expect(parsePiContextWindow("auto")).toBe("auto");
+    expect(parsePiContextWindow(" 372K ")).toBe("372k");
+    expect(parsePiContextWindow("1.05m")).toBe("1.05m");
+    expect(parsePiContextWindow("/context 200k")).toBeUndefined();
+    expect(parsePiContextWindow("200k\n/fast on")).toBeUndefined();
+    expect(parsePiContextWindow("0")).toBeUndefined();
+    expect(parsePiContextWindow(undefined)).toBeUndefined();
   });
 });
 

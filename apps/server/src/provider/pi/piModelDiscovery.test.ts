@@ -46,6 +46,43 @@ describe("piModelCapabilities", () => {
     expect(optionIds).toEqual(["off", "minimal", "low", "medium", "high"]);
   });
 
+  it("advertises context-window choices from the configured default through the catalog max", () => {
+    const capabilities = piModelCapabilities(
+      {
+        id: "gpt-5.6-sol",
+        provider: "openai-codex",
+        contextWindow: 272_000,
+      },
+      { contextCommandAvailable: true },
+    );
+    const descriptor = capabilities.optionDescriptors?.find(
+      (option) => option.id === "contextWindow",
+    );
+    expect(descriptor).toMatchObject({
+      id: "contextWindow",
+      label: "Context Window",
+      type: "select",
+      options: [
+        { id: "auto", label: "Auto (272K)", isDefault: true },
+        { id: "128k", label: "128K" },
+        { id: "200k", label: "200K" },
+        { id: "256k", label: "256K" },
+        { id: "272k", label: "272K" },
+        { id: "372k", label: "372K" },
+      ],
+    });
+  });
+
+  it("does not advertise context-window controls without the /context extension command", () => {
+    const capabilities = piModelCapabilities(
+      { id: "gpt-x", provider: "custom", contextWindow: 200_000 },
+      { contextCommandAvailable: false },
+    );
+    expect(capabilities.optionDescriptors?.some((option) => option.id === "contextWindow")).toBe(
+      false,
+    );
+  });
+
   it("advertises Standard and Fast service tiers for supported OpenAI Codex models", () => {
     const capabilities = piModelCapabilities(
       {
@@ -82,7 +119,7 @@ describe("piModelCapabilities", () => {
   it("does not advertise Fast service for unsupported Codex model ids", () => {
     const capabilities = piModelCapabilities(
       {
-        id: "gpt-5.6-sol",
+        id: "gpt-5.4-mini",
         provider: "openai-codex",
         reasoning: true,
       },
@@ -120,6 +157,34 @@ describe("discoverPiModelsWithSdk", () => {
 
     expect(result.models[0]?.capabilities?.optionDescriptors).toContainEqual(
       expect.objectContaining({ id: "serviceTier", label: "Service Tier" }),
+    );
+  });
+
+  it("exposes context controls when the loaded profile registers the command", async () => {
+    const result = await discoverPiModelsWithSdk({
+      createAgentSessionServices: async () => ({
+        modelRegistry: {
+          getAvailable: () => [
+            {
+              id: "gpt-5.6-sol",
+              name: "GPT-5.6 Sol",
+              provider: "openai-codex",
+              contextWindow: 272_000,
+            },
+          ],
+          getError: () => undefined,
+        },
+        resourceLoader: {
+          getExtensions: () => ({
+            extensions: [{ commands: new Map([["context", {}]]) }],
+          }),
+        },
+        diagnostics: [],
+      }),
+    });
+
+    expect(result.models[0]?.capabilities?.optionDescriptors).toContainEqual(
+      expect.objectContaining({ id: "contextWindow", label: "Context Window" }),
     );
   });
 
