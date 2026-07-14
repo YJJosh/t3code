@@ -24,15 +24,38 @@ import {
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import { readThreadShell, useProjects, useServerConfigs, useThread } from "../state/entities";
-import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
+import { useAtomQueryRunner } from "../state/use-atom-query-runner";
+import { vcsEnvironment } from "../state/vcs";
+import {
+  resolveNewDraftStartFromOrigin,
+  resolveNewWorktreeDefaultBranch,
+} from "../lib/chatThreadActions";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
+
+const DEFAULT_BRANCH_LOOKUP_TIMEOUT_MS = 1_000;
+
+async function withDefaultBranchLookupTimeout<A>(operation: Promise<A>): Promise<A | null> {
+  let timeoutId: number | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timeoutId = window.setTimeout(() => resolve(null), DEFAULT_BRANCH_LOOKUP_TIMEOUT_MS);
+  });
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timeoutId !== undefined) {
+      window.clearTimeout(timeoutId);
+    }
+  });
+}
 
 export function useNewThreadHandler() {
   const projects = useProjects();
   const serverConfigs = useServerConfigs();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const listRefs = useAtomQueryRunner(vcsEnvironment.listRefs, {
+    label: "resolve new workspace default branch",
+    reportFailure: false,
+  });
   const router = useRouter();
   const getCurrentRouteTarget = useCallback(() => {
     const currentRouteParams = router.state.matches[router.state.matches.length - 1]?.params ?? {};
@@ -40,7 +63,7 @@ export function useNewThreadHandler() {
   }, [router]);
 
   return useCallback(
-    (
+    async (
       projectRef: ScopedProjectRef,
       options?: {
         branch?: string | null;
@@ -54,10 +77,9 @@ export function useNewThreadHandler() {
         getDraftSession,
         getDraftThread,
         applyStickyState,
-        setDraftThreadContext,
         setLogicalProjectDraftThreadId,
       } = useComposerDraftStore.getState();
-      const currentRouteTarget = getCurrentRouteTarget();
+      let currentRouteTarget = getCurrentRouteTarget();
       const project = projects.find(
         (candidate) =>
           candidate.id === projectRef.projectId &&
@@ -68,18 +90,56 @@ export function useNewThreadHandler() {
       const logicalProjectKey = project
         ? deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings)
         : scopedProjectKey(projectRef);
-      const hasBranchOption = options?.branch !== undefined;
-      const hasWorktreePathOption = options?.worktreePath !== undefined;
-      const hasEnvModeOption = options?.envMode !== undefined;
-      const hasStartFromOriginOption = options?.startFromOrigin !== undefined;
-      const storedDraftThread = getDraftSessionByLogicalProjectKey(logicalProjectKey);
-      const storedDraftThreadRef = storedDraftThread
+      let storedDraftThread = getDraftSessionByLogicalProjectKey(logicalProjectKey);
+      let storedDraftThreadRef = storedDraftThread
         ? scopeThreadRef(storedDraftThread.environmentId, storedDraftThread.threadId)
         : null;
-      const reusableStoredDraftThread =
+      let reusableStoredDraftThread =
         storedDraftThreadRef && readThreadShell(storedDraftThreadRef) !== null
           ? null
           : storedDraftThread;
+      const initialEnvMode = options?.envMode ?? environmentSettings.defaultThreadEnvMode;
+      const mayStartFromDefaultBranch =
+        environmentSettings.newWorktreesStartFromDefaultBranch &&
+        initialEnvMode === "worktree" &&
+        reusableStoredDraftThread === null;
+      let defaultBranch: string | null = null;
+      if (mayStartFromDefaultBranch && project) {
+        const refsResult = await withDefaultBranchLookupTimeout(
+          listRefs({
+            environmentId: projectRef.environmentId,
+            input: { cwd: project.workspaceRoot, limit: 100 },
+          }),
+        );
+        if (refsResult?._tag === "Success") {
+          defaultBranch = resolveNewWorktreeDefaultBranch(refsResult.value.refs);
+        }
+
+        // The ref lookup is asynchronous. Re-read routing and draft state so
+        // concurrent new-thread actions reuse the draft created by the first
+        // lookup instead of racing to create duplicate drafts.
+        currentRouteTarget = getCurrentRouteTarget();
+        storedDraftThread = getDraftSessionByLogicalProjectKey(logicalProjectKey);
+        storedDraftThreadRef = storedDraftThread
+          ? scopeThreadRef(storedDraftThread.environmentId, storedDraftThread.threadId)
+          : null;
+        reusableStoredDraftThread =
+          storedDraftThreadRef && readThreadShell(storedDraftThreadRef) !== null
+            ? null
+            : storedDraftThread;
+      }
+      const shouldApplyNewWorkspaceDefaults =
+        initialEnvMode === "worktree" && reusableStoredDraftThread === null;
+      const shouldStartFromDefaultBranch =
+        environmentSettings.newWorktreesStartFromDefaultBranch && shouldApplyNewWorkspaceDefaults;
+      const branchOption = shouldStartFromDefaultBranch ? defaultBranch : options?.branch;
+      const worktreePathOption = shouldStartFromDefaultBranch ? null : options?.worktreePath;
+      const startFromOriginOption = shouldApplyNewWorkspaceDefaults
+        ? resolveNewDraftStartFromOrigin({
+            envMode: initialEnvMode,
+            newWorktreesStartFromOrigin: environmentSettings.newWorktreesStartFromOrigin,
+          })
+        : options?.startFromOrigin;
       if (storedDraftThreadRef && reusableStoredDraftThread === null) {
         markPromotedDraftThreadByRef(storedDraftThreadRef);
       }
@@ -90,19 +150,8 @@ export function useNewThreadHandler() {
         : null;
       if (reusableStoredDraftThread) {
         return (async () => {
-          if (
-            hasBranchOption ||
-            hasWorktreePathOption ||
-            hasEnvModeOption ||
-            hasStartFromOriginOption
-          ) {
-            setDraftThreadContext(reusableStoredDraftThread.draftId, {
-              ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
-              ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
-              ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
-              ...(hasStartFromOriginOption ? { startFromOrigin: options?.startFromOrigin } : {}),
-            });
-          }
+          // A reusable draft already has per-chat branch and origin choices.
+          // Navigating back to it must not replace those with new-thread defaults.
           setLogicalProjectDraftThreadId(
             logicalProjectKey,
             projectRef,
@@ -130,28 +179,13 @@ export function useNewThreadHandler() {
         latestActiveDraftThread.logicalProjectKey === logicalProjectKey &&
         latestActiveDraftThread.promotedTo == null
       ) {
-        if (
-          hasBranchOption ||
-          hasWorktreePathOption ||
-          hasEnvModeOption ||
-          hasStartFromOriginOption
-        ) {
-          setDraftThreadContext(currentRouteTarget.draftId, {
-            ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
-            ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
-            ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
-            ...(hasStartFromOriginOption ? { startFromOrigin: options?.startFromOrigin } : {}),
-          });
-        }
+        // The active blank draft is already this project's new thread. Keep
+        // its per-chat choices instead of re-seeding it from the prior context.
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, currentRouteTarget.draftId, {
           threadId: latestActiveDraftThread.threadId,
           createdAt: latestActiveDraftThread.createdAt,
           runtimeMode: latestActiveDraftThread.runtimeMode,
           interactionMode: latestActiveDraftThread.interactionMode,
-          ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
-          ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
-          ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
-          ...(hasStartFromOriginOption ? { startFromOrigin: options?.startFromOrigin } : {}),
         });
         return Promise.resolve();
       }
@@ -159,16 +193,15 @@ export function useNewThreadHandler() {
       const draftId = newDraftId();
       const threadId = newThreadId();
       const createdAt = new Date().toISOString();
-      const initialEnvMode = options?.envMode ?? environmentSettings.defaultThreadEnvMode;
       return (async () => {
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {
           threadId,
           createdAt,
-          branch: options?.branch ?? null,
-          worktreePath: options?.worktreePath ?? null,
+          branch: branchOption ?? null,
+          worktreePath: worktreePathOption ?? null,
           envMode: initialEnvMode,
           startFromOrigin:
-            options?.startFromOrigin ??
+            startFromOriginOption ??
             resolveNewDraftStartFromOrigin({
               envMode: initialEnvMode,
               newWorktreesStartFromOrigin: environmentSettings.newWorktreesStartFromOrigin,
@@ -183,7 +216,7 @@ export function useNewThreadHandler() {
         });
       })();
     },
-    [getCurrentRouteTarget, projectGroupingSettings, projects, router, serverConfigs],
+    [getCurrentRouteTarget, listRefs, projectGroupingSettings, projects, router, serverConfigs],
   );
 }
 

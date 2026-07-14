@@ -408,6 +408,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode
         ? ["New thread mode"]
         : []),
+      ...(settings.newWorktreesStartFromDefaultBranch !==
+      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch
+        ? ["New workspaces start from default branch"]
+        : []),
       ...(settings.newWorktreesStartFromOrigin !==
       DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin
         ? ["New workspaces start from origin"]
@@ -441,6 +445,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.confirmThreadDelete,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
+      settings.newWorktreesStartFromDefaultBranch,
       settings.newWorktreesStartFromOrigin,
       settings.useWorklerForNewWorkspaces,
       settings.includeT3CodeBranchPrefix,
@@ -475,6 +480,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+      newWorktreesStartFromDefaultBranch:
+        DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
       useWorklerForNewWorkspaces: DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
       includeT3CodeBranchPrefix: DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix,
@@ -742,16 +749,12 @@ export function GeneralSettingsPanel() {
           title="New threads"
           description="Pick the default workspace mode for newly created draft threads."
           resetAction={
-            settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ||
-            settings.newWorktreesStartFromOrigin !==
-              DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
+            settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
               <SettingResetButton
                 label="new threads"
                 onClick={() =>
                   updateSettings({
                     defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
-                    newWorktreesStartFromOrigin:
-                      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
                   })
                 }
               />
@@ -810,36 +813,63 @@ export function GeneralSettingsPanel() {
           }
         />
 
-        {settings.defaultThreadEnvMode === "worktree" ? (
-          <SettingsRow
-            className="bg-muted/20 sm:pl-9"
-            title="Start from origin"
-            description="Creates the workspace from the latest matching branch on origin instead of your local branch."
-            resetAction={
-              settings.newWorktreesStartFromOrigin !==
-              DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
-                <SettingResetButton
-                  label="new workspaces start from origin"
-                  onClick={() =>
-                    updateSettings({
-                      newWorktreesStartFromOrigin:
-                        DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
-                    })
-                  }
-                />
-              ) : null
-            }
-            control={
-              <Switch
-                checked={settings.newWorktreesStartFromOrigin}
-                onCheckedChange={(checked) =>
-                  updateSettings({ newWorktreesStartFromOrigin: Boolean(checked) })
+        <SettingsRow
+          className="bg-muted/20"
+          title="Default branch"
+          description="Start new workspace threads from the repository's default branch instead of inheriting a branch or using the current checkout."
+          resetAction={
+            settings.newWorktreesStartFromDefaultBranch !==
+            DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch ? (
+              <SettingResetButton
+                label="new workspaces start from the default branch"
+                onClick={() =>
+                  updateSettings({
+                    newWorktreesStartFromDefaultBranch:
+                      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch,
+                  })
                 }
-                aria-label="Start new workspaces from origin by default"
               />
-            }
-          />
-        ) : null}
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.newWorktreesStartFromDefaultBranch}
+              onCheckedChange={(checked) =>
+                updateSettings({ newWorktreesStartFromDefaultBranch: Boolean(checked) })
+              }
+              aria-label="Start new workspaces from the default branch"
+            />
+          }
+        />
+
+        <SettingsRow
+          className="bg-muted/20"
+          title="Start from origin"
+          description="Creates the workspace from the latest matching branch on origin instead of your local branch."
+          resetAction={
+            settings.newWorktreesStartFromOrigin !==
+            DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
+              <SettingResetButton
+                label="new workspaces start from origin"
+                onClick={() =>
+                  updateSettings({
+                    newWorktreesStartFromOrigin:
+                      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.newWorktreesStartFromOrigin}
+              onCheckedChange={(checked) =>
+                updateSettings({ newWorktreesStartFromOrigin: Boolean(checked) })
+              }
+              aria-label="Start new workspaces from origin by default"
+            />
+          }
+        />
 
         <SettingsRow
           title="Add project starts in"

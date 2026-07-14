@@ -90,6 +90,7 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
 describe("ServerSettings workspace defaults", () => {
   it("defaults workspace and branch naming settings for legacy configs", () => {
     const settings = decodeServerSettings({});
+    expect(settings.newWorktreesStartFromDefaultBranch).toBe(false);
     expect(settings.newWorktreesStartFromOrigin).toBe(false);
     expect(settings.useWorklerForNewWorkspaces).toBe(true);
     expect(settings.includeT3CodeBranchPrefix).toBe(true);
@@ -98,11 +99,13 @@ describe("ServerSettings workspace defaults", () => {
 
   it("accepts workspace creation and branch naming updates", () => {
     const patch = decodeServerSettingsPatch({
+      newWorktreesStartFromDefaultBranch: true,
       newWorktreesStartFromOrigin: true,
       useWorklerForNewWorkspaces: false,
       includeT3CodeBranchPrefix: false,
       useConventionalBranchPrefixes: true,
     });
+    expect(patch.newWorktreesStartFromDefaultBranch).toBe(true);
     expect(patch.newWorktreesStartFromOrigin).toBe(true);
     expect(patch.useWorklerForNewWorkspaces).toBe(false);
     expect(patch.includeT3CodeBranchPrefix).toBe(false);
