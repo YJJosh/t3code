@@ -12,6 +12,7 @@ import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import {
   markPromotedDraftThreadByRef,
+  type DraftId,
   type DraftThreadEnvMode,
   type DraftThreadState,
   useComposerDraftStore,
@@ -24,7 +25,7 @@ import {
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import { readThreadShell, useProjects, useServerConfigs, useThread } from "../state/entities";
-import { useAtomQueryRunner } from "../state/use-atom-query-runner";
+import { useAtomCommand } from "../state/use-atom-command";
 import { vcsEnvironment } from "../state/vcs";
 import {
   resolveNewDraftStartFromOrigin,
@@ -35,6 +36,7 @@ import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore"
 import { useClientSettings } from "./useSettings";
 
 const DEFAULT_BRANCH_LOOKUP_TIMEOUT_MS = 1_000;
+const DEFAULT_BRANCH_FALLBACK = "main";
 
 async function withDefaultBranchLookupTimeout<A>(operation: Promise<A>): Promise<A | null> {
   let timeoutId: number | undefined;
@@ -52,7 +54,7 @@ export function useNewThreadHandler() {
   const projects = useProjects();
   const serverConfigs = useServerConfigs();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const listRefs = useAtomQueryRunner(vcsEnvironment.listRefs, {
+  const listRefs = useAtomCommand(vcsEnvironment.listRefsOnce, {
     label: "resolve new workspace default branch",
     reportFailure: false,
   });
@@ -77,9 +79,10 @@ export function useNewThreadHandler() {
         getDraftSession,
         getDraftThread,
         applyStickyState,
+        setDraftThreadContext,
         setLogicalProjectDraftThreadId,
       } = useComposerDraftStore.getState();
-      let currentRouteTarget = getCurrentRouteTarget();
+      const currentRouteTarget = getCurrentRouteTarget();
       const project = projects.find(
         (candidate) =>
           candidate.id === projectRef.projectId &&
@@ -90,49 +93,51 @@ export function useNewThreadHandler() {
       const logicalProjectKey = project
         ? deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings)
         : scopedProjectKey(projectRef);
-      let storedDraftThread = getDraftSessionByLogicalProjectKey(logicalProjectKey);
-      let storedDraftThreadRef = storedDraftThread
+      const storedDraftThread = getDraftSessionByLogicalProjectKey(logicalProjectKey);
+      const storedDraftThreadRef = storedDraftThread
         ? scopeThreadRef(storedDraftThread.environmentId, storedDraftThread.threadId)
         : null;
-      let reusableStoredDraftThread =
+      const reusableStoredDraftThread =
         storedDraftThreadRef && readThreadShell(storedDraftThreadRef) !== null
           ? null
           : storedDraftThread;
       const initialEnvMode = options?.envMode ?? environmentSettings.defaultThreadEnvMode;
-      const mayStartFromDefaultBranch =
-        environmentSettings.newWorktreesStartFromDefaultBranch &&
-        initialEnvMode === "worktree" &&
-        reusableStoredDraftThread === null;
-      let defaultBranch: string | null = null;
-      if (mayStartFromDefaultBranch && project) {
+      const shouldApplyNewWorkspaceDefaults = initialEnvMode === "worktree";
+      const shouldStartFromDefaultBranch =
+        environmentSettings.newWorktreesStartFromDefaultBranch && shouldApplyNewWorkspaceDefaults;
+      const provisionalDefaultBranch = shouldStartFromDefaultBranch
+        ? DEFAULT_BRANCH_FALLBACK
+        : null;
+      const branchOption = shouldStartFromDefaultBranch
+        ? provisionalDefaultBranch
+        : options?.branch;
+      const resolveAndApplyDefaultBranch = async (draftId: DraftId) => {
+        if (!shouldStartFromDefaultBranch || !project || provisionalDefaultBranch === null) {
+          return;
+        }
         const refsResult = await withDefaultBranchLookupTimeout(
           listRefs({
             environmentId: projectRef.environmentId,
             input: { cwd: project.workspaceRoot, limit: 100 },
           }),
         );
-        if (refsResult?._tag === "Success") {
-          defaultBranch = resolveNewWorktreeDefaultBranch(refsResult.value.refs);
+        if (refsResult?._tag !== "Success") {
+          return;
         }
-
-        // The ref lookup is asynchronous. Re-read routing and draft state so
-        // concurrent new-thread actions reuse the draft created by the first
-        // lookup instead of racing to create duplicate drafts.
-        currentRouteTarget = getCurrentRouteTarget();
-        storedDraftThread = getDraftSessionByLogicalProjectKey(logicalProjectKey);
-        storedDraftThreadRef = storedDraftThread
-          ? scopeThreadRef(storedDraftThread.environmentId, storedDraftThread.threadId)
-          : null;
-        reusableStoredDraftThread =
-          storedDraftThreadRef && readThreadShell(storedDraftThreadRef) !== null
-            ? null
-            : storedDraftThread;
-      }
-      const shouldApplyNewWorkspaceDefaults =
-        initialEnvMode === "worktree" && reusableStoredDraftThread === null;
-      const shouldStartFromDefaultBranch =
-        environmentSettings.newWorktreesStartFromDefaultBranch && shouldApplyNewWorkspaceDefaults;
-      const branchOption = shouldStartFromDefaultBranch ? defaultBranch : options?.branch;
+        const resolvedBranch = resolveNewWorktreeDefaultBranch(refsResult.value.refs);
+        if (resolvedBranch === null || resolvedBranch === provisionalDefaultBranch) {
+          return;
+        }
+        const currentDraft = getDraftSession(draftId);
+        if (
+          currentDraft?.envMode === "worktree" &&
+          currentDraft.worktreePath === null &&
+          currentDraft.branch === provisionalDefaultBranch &&
+          currentDraft.promotedTo === null
+        ) {
+          setDraftThreadContext(draftId, { branch: resolvedBranch });
+        }
+      };
       const worktreePathOption = shouldStartFromDefaultBranch ? null : options?.worktreePath;
       const startFromOriginOption = shouldApplyNewWorkspaceDefaults
         ? resolveNewDraftStartFromOrigin({
@@ -150,8 +155,19 @@ export function useNewThreadHandler() {
         : null;
       if (reusableStoredDraftThread) {
         return (async () => {
-          // A reusable draft already has per-chat branch and origin choices.
-          // Navigating back to it must not replace those with new-thread defaults.
+          if (options !== undefined || shouldApplyNewWorkspaceDefaults) {
+            setDraftThreadContext(reusableStoredDraftThread.draftId, {
+              branch: branchOption ?? null,
+              worktreePath: worktreePathOption ?? null,
+              envMode: initialEnvMode,
+              startFromOrigin:
+                startFromOriginOption ??
+                resolveNewDraftStartFromOrigin({
+                  envMode: initialEnvMode,
+                  newWorktreesStartFromOrigin: environmentSettings.newWorktreesStartFromOrigin,
+                }),
+            });
+          }
           setLogicalProjectDraftThreadId(
             logicalProjectKey,
             projectRef,
@@ -161,15 +177,15 @@ export function useNewThreadHandler() {
             },
           );
           if (
-            currentRouteTarget?.kind === "draft" &&
-            currentRouteTarget.draftId === reusableStoredDraftThread.draftId
+            currentRouteTarget?.kind !== "draft" ||
+            currentRouteTarget.draftId !== reusableStoredDraftThread.draftId
           ) {
-            return;
+            await router.navigate({
+              to: "/draft/$draftId",
+              params: { draftId: reusableStoredDraftThread.draftId },
+            });
           }
-          await router.navigate({
-            to: "/draft/$draftId",
-            params: { draftId: reusableStoredDraftThread.draftId },
-          });
+          await resolveAndApplyDefaultBranch(reusableStoredDraftThread.draftId);
         })();
       }
 
@@ -214,6 +230,7 @@ export function useNewThreadHandler() {
           to: "/draft/$draftId",
           params: { draftId },
         });
+        await resolveAndApplyDefaultBranch(draftId);
       })();
     },
     [getCurrentRouteTarget, listRefs, projectGroupingSettings, projects, router, serverConfigs],
