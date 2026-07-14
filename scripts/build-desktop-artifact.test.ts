@@ -27,6 +27,7 @@ import {
   resolveClerkPasskeyNativeArtifacts,
   resolveDesktopAsarUnpack,
   resolveMacPasskeySigningConfiguration,
+  resolveMacCommunitySigningIdentity,
   resolveDesktopRuntimeDependencies,
   resolveFffNativeDependencies,
   resolveBuildOptions,
@@ -402,6 +403,20 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
   });
 
+  it("resolves an optional persistent macOS community signing identity", () => {
+    assert.equal(
+      resolveMacCommunitySigningIdentity({
+        T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY: " 0123456789ABCDEF0123456789ABCDEF01234567 ",
+      }),
+      "0123456789ABCDEF0123456789ABCDEF01234567",
+    );
+    assert.isUndefined(
+      resolveMacCommunitySigningIdentity({
+        T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY: "   ",
+      }),
+    );
+  });
+
   it("renders the runtime entitlements required by ad-hoc Electron signatures", () => {
     const entitlements = renderMacAdHocEntitlements();
 
@@ -588,9 +603,29 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
         const mac = macConfig.mac as Record<string, unknown>;
         assert.notProperty(mac, "protocols");
+        assert.notProperty(macConfig, "forceCodeSigning");
+        assert.notProperty(mac, "notarize");
         assert.equal(mac.identity, "-");
         assert.equal(mac.entitlements, "/tmp/t3-dulli-stage/entitlements.mac.plist");
         assert.equal(mac.entitlementsInherit, "/tmp/t3-dulli-stage/entitlements.mac.plist");
+
+        const communityMacConfig = yield* createBuildConfig(
+          "mac",
+          "dmg",
+          "0.0.29-pi.4",
+          false,
+          false,
+          undefined,
+          undefined,
+          "dulli",
+          "/tmp/t3-dulli-stage/entitlements.mac.plist",
+          "0123456789ABCDEF0123456789ABCDEF01234567",
+        );
+        const communityMac = communityMacConfig.mac as Record<string, unknown>;
+        assert.equal(communityMacConfig.forceCodeSigning, true);
+        assert.equal(communityMac.notarize, false);
+        assert.equal(communityMac.identity, "0123456789ABCDEF0123456789ABCDEF01234567");
+        assert.equal(communityMac.entitlements, "/tmp/t3-dulli-stage/entitlements.mac.plist");
       }).pipe(
         Effect.provide(
           ConfigProvider.layer(

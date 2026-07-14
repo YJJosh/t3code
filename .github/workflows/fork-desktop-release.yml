@@ -10,7 +10,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: fork-desktop-release-${{ inputs.version }}
@@ -171,6 +171,91 @@ jobs:
       - name: Align package versions
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
+      - name: Import persistent macOS community signing certificate
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.DULLI_MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DULLI_MACOS_CERTIFICATE_PASSWORD }}
+          EXPECTED_CERTIFICATE_SHA1: ${{ vars.DULLI_MACOS_CERTIFICATE_SHA1 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$CERTIFICATE_P12_BASE64" || -z "$CERTIFICATE_PASSWORD" ]]; then
+            echo "DULLI_MACOS_CERTIFICATE_P12_BASE64 and DULLI_MACOS_CERTIFICATE_PASSWORD must be configured as repository secrets." >&2
+            exit 1
+          fi
+          expected_identity="$(printf '%s' "$EXPECTED_CERTIFICATE_SHA1" | tr '[:lower:]' '[:upper:]')"
+          if [[ ! "$expected_identity" =~ ^[0-9A-F]{40}$ ]]; then
+            echo "DULLI_MACOS_CERTIFICATE_SHA1 must be configured as a 40-character repository variable." >&2
+            exit 1
+          fi
+
+          certificate_path="$RUNNER_TEMP/t3-dulli-community-signing.p12"
+          certificate_pem_path="$RUNNER_TEMP/t3-dulli-community-signing.pem"
+          keychain_path="$RUNNER_TEMP/t3-dulli-community-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$keychain_password"
+          echo "DULLI_MACOS_SIGNING_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
+          cleanup_sensitive_files() {
+            rm -f "$certificate_path" "$certificate_pem_path"
+          }
+          trap cleanup_sensitive_files EXIT
+
+          printf '%s' "$CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
+          openssl pkcs12 \
+            -in "$certificate_path" \
+            -clcerts \
+            -nokeys \
+            -passin env:CERTIFICATE_PASSWORD \
+            -out "$certificate_pem_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -x \
+            -T /usr/bin/codesign
+          security add-trusted-cert \
+            -r trustRoot \
+            -p codeSign \
+            -k "$keychain_path" \
+            "$certificate_pem_path"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path" >/dev/null
+
+          current_keychains=()
+          while IFS= read -r current_keychain; do
+            current_keychain="${current_keychain#*\"}"
+            current_keychain="${current_keychain%\"*}"
+            if [[ -n "$current_keychain" ]]; then
+              current_keychains+=("$current_keychain")
+            fi
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain_path" "${current_keychains[@]}"
+
+          identities="$(security find-identity -v -p codesigning "$keychain_path")"
+          identity_count="$(printf '%s\n' "$identities" | awk '/^[[:space:]]*[0-9]+\)/ { count++ } END { print count + 0 }')"
+          if [[ "$identity_count" != "1" ]]; then
+            echo "Expected exactly one valid code-signing identity in the community signing certificate; found $identity_count." >&2
+            exit 1
+          fi
+          identity="$(printf '%s\n' "$identities" | awk '/^[[:space:]]*[0-9]+\)/ { print $2; exit }')"
+          if [[ ! "$identity" =~ ^[0-9A-F]{40}$ ]]; then
+            echo "Could not resolve the community signing certificate SHA-1 identity." >&2
+            exit 1
+          fi
+          if [[ "$identity" != "$expected_identity" ]]; then
+            echo "The imported community signing certificate does not match DULLI_MACOS_CERTIFICATE_SHA1." >&2
+            exit 1
+          fi
+
+          echo "T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
       - name: Download WSL prebuild
         if: matrix.platform == 'win'
         uses: actions/download-artifact@v8
@@ -239,7 +324,21 @@ jobs:
           app="$(find "$mount_point" -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
-          codesign --display --verbose=2 "$app" 2>&1 | grep -q 'Signature=adhoc'
+          signature="$(codesign --display --verbose=4 "$app" 2>&1)"
+          requirement="$(codesign --display --requirements - "$app" 2>&1)"
+          identity_lower="$(printf '%s' "$T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY" | tr '[:upper:]' '[:lower:]')"
+          printf '%s\n' "$signature" | grep -q 'Identifier=com.yjjosh.t3dulli'
+          printf '%s\n' "$signature" | grep -q 'Authority=T3 Dulli Community Code Signing'
+          printf '%s\n' "$requirement" | grep -Fq \
+            "identifier \"com.yjjosh.t3dulli\" and certificate root = H\"$identity_lower\""
+
+      - name: Remove macOS community signing keychain
+        if: always() && matrix.platform == 'mac'
+        shell: bash
+        run: |
+          if [[ -n "${DULLI_MACOS_SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$DULLI_MACOS_SIGNING_KEYCHAIN" || true
+          fi
 
       - name: Collect release assets
         shell: bash
@@ -310,6 +409,8 @@ jobs:
     needs: [preflight, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -362,9 +463,12 @@ jobs:
             - Live Pi subagent activity and controls on desktop/web, with read-only mobile visibility
             - Workler clones for isolated workspaces, with a Git-worktree fallback setting
 
-            The macOS app has a complete ad-hoc signature but is not Apple-notarized, so macOS
-            displays an unverified-developer warning on first launch. After copying it to
-            Applications, approve it under **System Settings → Privacy & Security → Open Anyway**.
+            The macOS app has a persistent self-signed community signature but is not
+            Apple-notarized, so macOS displays an unverified-developer warning on first launch.
+            After copying it to Applications, approve it under
+            **System Settings → Privacy & Security → Open Anyway**. If the installed copy predates
+            persistent community signing, macOS will reject its built-in update once; manually
+            replace the app with this release, and later signed updates can install normally.
             The Windows installer is unsigned and may display a Microsoft Defender SmartScreen
             warning; choose **More info → Run anyway** only if you trust this build.
           files: |

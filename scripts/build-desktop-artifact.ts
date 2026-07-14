@@ -793,6 +793,13 @@ export function renderMacAdHocEntitlements(): string {
 `;
 }
 
+export function resolveMacCommunitySigningIdentity(
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const identity = env.T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY?.trim();
+  return identity && identity.length > 0 ? identity : undefined;
+}
+
 export function renderMacPasskeyEntitlements(
   configuration: MacPasskeySigningConfiguration,
 ): string {
@@ -1505,6 +1512,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
   brand: DesktopBuildBrand = "t3code",
   macAdHocEntitlementsPath: string | undefined = undefined,
+  macCommunitySigningIdentity: string | undefined = undefined,
 ) {
   const brandMetadata = resolveDesktopBuildBrandMetadata(brand, version);
   const buildConfig: Record<string, unknown> = {
@@ -1514,6 +1522,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     directories: {
       buildResources: "apps/desktop/resources",
     },
+    ...(platform === "mac" && macCommunitySigningIdentity ? { forceCodeSigning: true } : {}),
     // The primary backend runs through ELECTRON_RUN_AS_NODE and can read from
     // app.asar on every platform. The Windows WSL backend instead launches plain
     // Linux Node, so its server bundle and external runtime dependencies must be
@@ -1562,11 +1571,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           ? {
               // Modern Electron binaries contain partial linker signatures. Leaving the app
               // otherwise unsigned produces an invalid bundle that macOS reports as damaged.
-              // A complete ad-hoc signature keeps community builds internally valid; because it
-              // has no Developer ID and is not notarized, users must still approve the first run.
-              identity: "-",
+              // A persistent community identity gives Squirrel.Mac a stable designated
+              // requirement across releases. Local builds fall back to a complete ad-hoc
+              // signature; neither mode is Apple-notarized, so users must approve the first run.
+              identity: macCommunitySigningIdentity ?? "-",
               entitlements: macAdHocEntitlementsPath ?? "entitlements.mac.plist",
               entitlementsInherit: macAdHocEntitlementsPath ?? "entitlements.mac.plist",
+              ...(macCommunitySigningIdentity ? { notarize: false } : {}),
             }
           : {}),
     };
@@ -1757,6 +1768,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const appVersion = options.version ?? serverPackageJson.version;
   const brandMetadata = resolveDesktopBuildBrandMetadata(options.brand, appVersion);
   const iconAssets = resolveDesktopBuildIconAssets(appVersion, options.brand);
+  const repoEnv = loadRepoEnv({ repoRoot });
   const commitHash = yield* resolveGitCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
@@ -1843,10 +1855,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
-          try: () =>
-            resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot }), brandMetadata.appId),
+          try: () => resolveMacPasskeySigningConfiguration(repoEnv, brandMetadata.appId),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
+      : undefined;
+  const macCommunitySigningIdentity =
+    options.platform === "mac" && !options.signed
+      ? resolveMacCommunitySigningIdentity(repoEnv)
       : undefined;
   const macPasskeySigning = configuredMacPasskeySigning
     ? {
@@ -1920,6 +1935,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         : undefined,
       options.brand,
       macEntitlementsPath,
+      macCommunitySigningIdentity,
     ),
     dependencies: stageDependencies,
     devDependencies: {
