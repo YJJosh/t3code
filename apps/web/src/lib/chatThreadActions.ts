@@ -1,5 +1,5 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ProjectId, ScopedProjectRef } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId, ScopedProjectRef, VcsRef } from "@t3tools/contracts";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 
 interface ThreadContextLike {
@@ -40,6 +40,18 @@ export function resolveNewDraftStartFromOrigin(input: {
   newWorktreesStartFromOrigin: boolean;
 }): boolean {
   return input.envMode === "worktree" && input.newWorktreesStartFromOrigin;
+}
+
+export function resolveNewWorktreeDefaultBranch(
+  refs: ReadonlyArray<Pick<VcsRef, "name" | "isDefault" | "isRemote">>,
+): string | null {
+  const localRefs = refs.filter((ref) => ref.isRemote !== true);
+  return (
+    localRefs.find((ref) => ref.isDefault)?.name ??
+    localRefs.find((ref) => ref.name === "main")?.name ??
+    localRefs.find((ref) => ref.name === "master")?.name ??
+    null
+  );
 }
 
 export function resolveThreadActionProjectRef(

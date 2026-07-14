@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   resolveThreadActionProjectRef,
   resolveNewDraftStartFromOrigin,
+  resolveNewWorktreeDefaultBranch,
   startNewLocalThreadFromContext,
   startNewThreadFromContext,
   type ChatThreadActionContext,
@@ -37,6 +38,26 @@ describe("chatThreadActions", () => {
         newWorktreesStartFromOrigin: true,
       }),
     ).toBe(false);
+  });
+
+  it("resolves the local default branch for a new workspace", () => {
+    expect(
+      resolveNewWorktreeDefaultBranch([
+        { name: "feature/current", isDefault: false, isRemote: false },
+        { name: "main", isDefault: true, isRemote: false },
+        { name: "origin/main", isDefault: false, isRemote: true },
+      ]),
+    ).toBe("main");
+  });
+
+  it("falls back to conventional local default branch names", () => {
+    expect(
+      resolveNewWorktreeDefaultBranch([
+        { name: "origin/main", isDefault: false, isRemote: true },
+        { name: "main", isDefault: false, isRemote: false },
+      ]),
+    ).toBe("main");
+    expect(resolveNewWorktreeDefaultBranch([])).toBeNull();
   });
 
   it("prefers the active draft thread project when resolving thread actions", () => {

@@ -4846,8 +4846,13 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
+      const shouldResetToDefaultBranch =
+        mode === "worktree" && settings.newWorktreesStartFromDefaultBranch;
       if (canOverrideServerThreadEnvMode) {
         setPendingServerThreadEnvMode(mode);
+        if (shouldResetToDefaultBranch) {
+          setPendingServerThreadBranch(null);
+        }
         scheduleComposerFocus();
         return;
       }
@@ -4858,7 +4863,10 @@ function ChatViewContent(props: ChatViewProps) {
             envMode: mode,
             newWorktreesStartFromOrigin: settings.newWorktreesStartFromOrigin,
           }),
-          ...(mode === "worktree" && draftThread?.worktreePath ? { worktreePath: null } : {}),
+          ...(shouldResetToDefaultBranch ? { branch: null, worktreePath: null } : {}),
+          ...(!shouldResetToDefaultBranch && mode === "worktree" && draftThread?.worktreePath
+            ? { worktreePath: null }
+            : {}),
         });
       }
       scheduleComposerFocus();
@@ -4868,6 +4876,7 @@ function ChatViewContent(props: ChatViewProps) {
       composerDraftTarget,
       draftThread?.worktreePath,
       isLocalDraftThread,
+      settings.newWorktreesStartFromDefaultBranch,
       settings.newWorktreesStartFromOrigin,
       setPendingServerThreadEnvMode,
       scheduleComposerFocus,
@@ -5243,6 +5252,7 @@ function ChatViewContent(props: ChatViewProps) {
                       threadId={activeThread.id}
                       {...(routeKind === "draft" && draftId ? { draftId } : {})}
                       onEnvModeChange={onEnvModeChange}
+                      startFromDefaultBranch={settings.newWorktreesStartFromDefaultBranch}
                       startFromOrigin={startFromOrigin}
                       onStartFromOriginChange={onStartFromOriginChange}
                       {...(canOverrideServerThreadEnvMode

@@ -6149,6 +6149,21 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             pr: null,
           }),
         );
+        const readLocalStatus = vi.fn(
+          (_: Parameters<GitManager.GitManager["Service"]["localStatus"]>[0]) =>
+            Effect.succeed({
+              isRepo: true,
+              hasPrimaryRemote: true,
+              isDefaultRef: true,
+              refName: "main",
+              hasWorkingTreeChanges: false,
+              workingTree: {
+                files: [],
+                insertions: 0,
+                deletions: 0,
+              },
+            }),
+        );
         const fetchRemote = vi.fn(
           (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"]>[0]) =>
             Effect.sync(() => {
@@ -6195,10 +6210,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
         yield* buildAppUnderTest({
           layers: {
+            vcsDriver: {
+              isInsideWorkTree: () => Effect.succeed(true),
+            },
             gitVcsDriver: {
               fetchRemote,
               resolveRemoteTrackingCommit,
               createWorktree,
+            },
+            gitManager: {
+              localStatus: readLocalStatus,
             },
             vcsStatusBroadcaster: {
               refreshStatus,
@@ -6276,6 +6297,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           baseRefName: "main",
           path: null,
         });
+        assert.deepEqual(readLocalStatus.mock.calls[0]?.[0], {
+          cwd: "/tmp/project",
+        });
         assert.deepEqual(fetchRemote.mock.calls[0]?.[0], {
           cwd: "/tmp/project",
           remoteName: "origin",
@@ -6312,6 +6336,132 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           assert.equal(finalCommand.bootstrap, undefined);
         }
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("uses the local base when start-from-origin is enabled without an origin remote", () =>
+    Effect.gen(function* () {
+      const readLocalStatus = vi.fn(
+        (_: Parameters<GitManager.GitManager["Service"]["localStatus"]>[0]) =>
+          Effect.succeed({
+            isRepo: true,
+            hasPrimaryRemote: false,
+            isDefaultRef: true,
+            refName: "main",
+            hasWorkingTreeChanges: false,
+            workingTree: {
+              files: [],
+              insertions: 0,
+              deletions: 0,
+            },
+          }),
+      );
+      const fetchRemote = vi.fn(
+        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"]>[0]) =>
+          Effect.die(new Error("fetch must not run without origin")),
+      );
+      const resolveRemoteTrackingCommit = vi.fn(
+        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteTrackingCommit"]>[0]) =>
+          Effect.die(new Error("remote resolution must not run without origin")),
+      );
+      const createWorktree = vi.fn(
+        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
+          Effect.succeed({
+            worktree: {
+              refName: "t3code/local-bootstrap",
+              path: "/tmp/local-bootstrap-worktree",
+            },
+          }),
+      );
+
+      yield* buildAppUnderTest({
+        layers: {
+          vcsDriver: {
+            isInsideWorkTree: () => Effect.succeed(true),
+          },
+          gitVcsDriver: {
+            fetchRemote,
+            resolveRemoteTrackingCommit,
+            createWorktree,
+          },
+          gitManager: {
+            localStatus: readLocalStatus,
+          },
+          vcsStatusBroadcaster: {
+            refreshStatus: () =>
+              Effect.succeed({
+                isRepo: true,
+                hasPrimaryRemote: false,
+                isDefaultRef: true,
+                refName: "t3code/local-bootstrap",
+                hasWorkingTreeChanges: false,
+                workingTree: {
+                  files: [],
+                  insertions: 0,
+                  deletions: 0,
+                },
+                hasUpstream: false,
+                aheadCount: 0,
+                behindCount: 0,
+                pr: null,
+              }),
+          },
+        },
+      });
+
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-bootstrap-without-origin"),
+            threadId: ThreadId.make("thread-bootstrap-without-origin"),
+            message: {
+              messageId: MessageId.make("msg-bootstrap-without-origin"),
+              role: "user",
+              text: "hello",
+              attachments: [],
+            },
+            modelSelection: defaultModelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            bootstrap: {
+              createThread: {
+                projectId: defaultProjectId,
+                title: "Bootstrap without origin",
+                modelSelection: defaultModelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: "main",
+                worktreePath: null,
+                createdAt,
+              },
+              prepareWorktree: {
+                projectCwd: "/tmp/project",
+                baseBranch: "main",
+                branch: "t3code/local-bootstrap",
+                startFromOrigin: true,
+              },
+              runSetupScript: false,
+            },
+            createdAt,
+          }),
+        ),
+      );
+
+      assert.deepEqual(readLocalStatus.mock.calls[0]?.[0], {
+        cwd: "/tmp/project",
+      });
+      assert.equal(fetchRemote.mock.calls.length, 0);
+      assert.equal(resolveRemoteTrackingCommit.mock.calls.length, 0);
+      assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
+        cwd: "/tmp/project",
+        refName: "main",
+        newRefName: "t3code/local-bootstrap",
+        baseRefName: "main",
+        path: null,
+      });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("records setup-script failures without aborting bootstrap turn start", () =>

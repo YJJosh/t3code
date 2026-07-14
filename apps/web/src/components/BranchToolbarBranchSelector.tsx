@@ -20,6 +20,7 @@ import {
 } from "react";
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
+import { resolveNewWorktreeDefaultBranch } from "../lib/chatThreadActions";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { usePaginatedBranches } from "../state/queries";
 import { useProject, useThread } from "../state/entities";
@@ -36,6 +37,7 @@ import {
   resolveBranchToolbarValue,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
+  resolveWorktreeBranchToInitialize,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
 import {
@@ -67,6 +69,7 @@ interface BranchToolbarBranchSelectorProps {
   effectiveEnvModeOverride?: "local" | "worktree";
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (refName: string | null) => void;
+  startFromDefaultBranch: boolean;
   startFromOrigin: boolean;
   onStartFromOriginChange: (startFromOrigin: boolean) => void;
   onCheckoutPullRequestRequest?: (reference: string) => void;
@@ -101,6 +104,7 @@ export function BranchToolbarBranchSelector({
   effectiveEnvModeOverride,
   activeThreadBranchOverride,
   onActiveThreadBranchOverrideChange,
+  startFromDefaultBranch,
   startFromOrigin,
   onStartFromOriginChange,
   onCheckoutPullRequestRequest,
@@ -240,10 +244,23 @@ export function BranchToolbarBranchSelector({
   const refs = branchRefState.refs;
   const hasNextPage =
     branchRefState.data?.nextCursor !== null && branchRefState.data?.nextCursor !== undefined;
-  const isFetchingNextPage = branchRefState.isPending && branchRefState.data !== null;
-  const isInitialBranchesLoadPending = branchRefState.isPending && branchRefState.data === null;
+  const hasLoadedInitialBranches = branchRefState.data !== null;
+  const isFetchingNextPage = branchRefState.isPending && hasLoadedInitialBranches;
+  const isInitialBranchesLoadPending = branchRefState.isPending && !hasLoadedInitialBranches;
   const currentGitBranch =
     branchStatusQuery.data?.refName ?? refs.find((refName) => refName.current)?.name ?? null;
+  const defaultWorktreeBranch = startFromDefaultBranch
+    ? resolveNewWorktreeDefaultBranch(refs)
+    : null;
+  const initialWorktreeBranch = defaultWorktreeBranch ?? currentGitBranch;
+  const worktreeBranchToInitialize = resolveWorktreeBranchToInitialize({
+    effectiveEnvMode,
+    activeWorktreePath,
+    activeThreadBranch,
+    initialWorktreeBranch,
+    startFromDefaultBranch,
+    hasLoadedInitialBranches,
+  });
   const sourceControlPresentation = useMemo(
     () => getSourceControlPresentation(branchStatusQuery.data?.sourceControlProvider),
     [branchStatusQuery.data?.sourceControlProvider],
@@ -423,16 +440,11 @@ export function BranchToolbarBranchSelector({
   };
 
   useEffect(() => {
-    if (
-      effectiveEnvMode !== "worktree" ||
-      activeWorktreePath ||
-      activeThreadBranch ||
-      !currentGitBranch
-    ) {
+    if (worktreeBranchToInitialize === null) {
       return;
     }
-    setThreadBranch(currentGitBranch, null);
-  }, [activeThreadBranch, activeWorktreePath, currentGitBranch, effectiveEnvMode, setThreadBranch]);
+    setThreadBranch(worktreeBranchToInitialize, null);
+  }, [setThreadBranch, worktreeBranchToInitialize]);
 
   // ---------------------------------------------------------------------------
   // Combobox / list plumbing

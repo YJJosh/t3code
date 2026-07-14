@@ -11,6 +11,7 @@ import {
   resolveEnvModeLabel,
   resolveBranchToolbarValue,
   resolveLockedWorkspaceLabel,
+  resolveWorktreeBranchToInitialize,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
 
@@ -81,6 +82,50 @@ describe("resolveBranchToolbarValue", () => {
         currentGitBranch: "main",
       }),
     ).toBe("main");
+  });
+});
+
+describe("resolveWorktreeBranchToInitialize", () => {
+  const newWorktreeInput = {
+    effectiveEnvMode: "worktree" as const,
+    activeWorktreePath: null,
+    activeThreadBranch: null,
+    initialWorktreeBranch: "feature/current",
+    startFromDefaultBranch: true,
+    hasLoadedInitialBranches: false,
+  };
+
+  it("waits for refs before initializing a default-branch worktree", () => {
+    expect(resolveWorktreeBranchToInitialize(newWorktreeInput)).toBeNull();
+  });
+
+  it("initializes the resolved branch after refs load", () => {
+    expect(
+      resolveWorktreeBranchToInitialize({
+        ...newWorktreeInput,
+        initialWorktreeBranch: "main",
+        hasLoadedInitialBranches: true,
+      }),
+    ).toBe("main");
+  });
+
+  it("can initialize the current branch immediately when the default-branch setting is off", () => {
+    expect(
+      resolveWorktreeBranchToInitialize({
+        ...newWorktreeInput,
+        startFromDefaultBranch: false,
+      }),
+    ).toBe("feature/current");
+  });
+
+  it("does not replace an explicit branch selection", () => {
+    expect(
+      resolveWorktreeBranchToInitialize({
+        ...newWorktreeInput,
+        activeThreadBranch: "feature/selected",
+        hasLoadedInitialBranches: true,
+      }),
+    ).toBeNull();
   });
 });
 

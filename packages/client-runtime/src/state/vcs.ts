@@ -163,6 +163,10 @@ export function createVcsEnvironmentAtoms<R, E>(
 
   return {
     listRefs,
+    listRefsOnce: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:list-refs-once",
+      tag: WS_METHODS.vcsListRefs,
+    }),
     status: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:vcs:status",
       subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.subscribeVcsStatus>) =>
