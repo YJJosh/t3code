@@ -173,7 +173,9 @@ describe("ProviderSessionReaper", () => {
       },
       rollbackConversation: () => unsupported(),
       controlSubagent: () => unsupported(),
+      controlBackgroundTerminal: () => unsupported(),
       streamSubagentEvents: Stream.empty,
+      streamBackgroundTerminalEvents: Stream.empty,
       streamEvents: Stream.empty,
     };
 

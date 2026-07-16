@@ -13,6 +13,8 @@ import type {
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
+  PiBackgroundTerminalControlInput,
+  PiBackgroundTerminalEvent,
   PiSubagentControlInput,
   PiSubagentEvent,
   ProviderSendTurnInput,
@@ -54,6 +56,16 @@ export interface ProviderSubagentAdapter<TError> {
   readonly streamEvents: Stream.Stream<ProviderSubagentEvent>;
 }
 
+export interface ProviderBackgroundTerminalEvent {
+  readonly threadId: ThreadId;
+  readonly event: PiBackgroundTerminalEvent;
+}
+
+export interface ProviderBackgroundTerminalAdapter<TError> {
+  readonly control: (input: PiBackgroundTerminalControlInput) => Effect.Effect<void, TError>;
+  readonly streamEvents: Stream.Stream<ProviderBackgroundTerminalEvent>;
+}
+
 export interface ProviderAdapterShape<TError> {
   /**
    * Provider kind implemented by this adapter.
@@ -63,6 +75,9 @@ export interface ProviderAdapterShape<TError> {
 
   /** Optional structured child-agent integration exposed by capable drivers. */
   readonly subagents?: ProviderSubagentAdapter<TError>;
+
+  /** Optional read-only background-terminal integration exposed by capable drivers. */
+  readonly backgroundTerminals?: ProviderBackgroundTerminalAdapter<TError>;
 
   /**
    * Start a provider-backed session.

@@ -12,6 +12,7 @@
  * @module ProviderService
  */
 import type {
+  PiBackgroundTerminalControlInput,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   PiSubagentControlInput,
@@ -30,7 +31,11 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities, ProviderSubagentEvent } from "./ProviderAdapter.ts";
+import type {
+  ProviderAdapterCapabilities,
+  ProviderBackgroundTerminalEvent,
+  ProviderSubagentEvent,
+} from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -113,6 +118,14 @@ export interface ProviderServiceShape {
 
   /** Live structured child-agent events, correlated with their T3 thread. */
   readonly streamSubagentEvents: Stream.Stream<ProviderSubagentEvent>;
+
+  /** Route an immediate control to the background-terminal integration for a thread. */
+  readonly controlBackgroundTerminal: (
+    input: PiBackgroundTerminalControlInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Live Pi background-terminal events, correlated with their T3 thread. */
+  readonly streamBackgroundTerminalEvents: Stream.Stream<ProviderBackgroundTerminalEvent>;
 
   /**
    * Canonical provider runtime event stream.

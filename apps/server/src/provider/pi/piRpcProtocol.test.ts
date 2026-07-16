@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { PiSettings, PiSubagentEvent } from "@t3tools/contracts";
+import { PiBackgroundTerminalEvent, PiSettings, PiSubagentEvent } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -9,8 +9,10 @@ import {
   extractPiAssistantText,
   parsePiContextWindow,
   parsePiFastServiceEnabled,
+  parsePiBackgroundTerminalNotification,
   parsePiSubagentNotification,
   parsePiThinkingLevel,
+  PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX,
   PI_SUBAGENTS_RPC_EVENT_PREFIX,
   resolvePiBinary,
   supportsPiCodexFastService,
@@ -84,12 +86,45 @@ describe("buildPiRpcEnv", () => {
     const env = buildPiRpcEnv(DEFAULTS, { HOME: "/home/x" });
     expect(env.PI_CODING_AGENT_DIR).toBeUndefined();
     expect(env.PI_SUBAGENTS_RPC_BRIDGE).toBe("1");
+    expect(env.PI_BACKGROUND_TERMINALS_RPC_BRIDGE).toBe("1");
     expect(env.HOME).toBe("/home/x");
   });
 
   it("sets PI_CODING_AGENT_DIR only when an override is configured", () => {
     const env = buildPiRpcEnv(decodePiSettings({ agentDir: "/custom/agent" }), { HOME: "/home/x" });
     expect(env.PI_CODING_AGENT_DIR).toBe("/custom/agent");
+  });
+});
+
+describe("parsePiBackgroundTerminalNotification", () => {
+  it("decodes only valid v1 background-terminal notifications", () => {
+    const envelope = {
+      contractVersion: 1,
+      managerId: "pi-background-terminals:manager",
+      sequence: 1,
+      timestamp: "2026-07-09T12:00:00.000Z",
+      kind: "control_result",
+      control: { action: "replay", success: true },
+    } as const;
+    const encode = Schema.encodeSync(Schema.fromJsonString(PiBackgroundTerminalEvent));
+    expect(
+      parsePiBackgroundTerminalNotification({
+        type: "extension_ui_request",
+        id: "terminal-event-1",
+        method: "notify",
+        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${encode(envelope)}`,
+        notifyType: "info",
+      }),
+    ).toEqual(envelope);
+    expect(
+      parsePiBackgroundTerminalNotification({
+        type: "extension_ui_request",
+        id: "terminal-event-2",
+        method: "notify",
+        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}{bad`,
+        notifyType: "info",
+      }),
+    ).toBeUndefined();
   });
 });
 

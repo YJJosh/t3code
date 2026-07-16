@@ -239,6 +239,7 @@ import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { RightPanelSheet } from "./RightPanelSheet";
+import { BackgroundTerminalRuns } from "./background-terminals/BackgroundTerminalRuns";
 import { SubagentRuns } from "./subagents/SubagentRuns";
 import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -2148,9 +2149,11 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
   // Pi is the only built-in driver that exposes structured subagent controls.
   // Gate the subagent surface on a running server-backed Pi session so an
-  // unsupported provider never subscribes or renders controls.
+  // unsupported provider never subscribes or renders controls. Background
+  // terminals are a Pi-only feature too, so they share the same gate.
   const subagentsEnabled =
     isServerThread && activeProviderStatus?.driver === PI_SUBAGENT_DRIVER_KIND;
+  const backgroundTerminalsEnabled = subagentsEnabled;
   const subagentEnvironmentId = activeThread?.environmentId ?? null;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
@@ -5157,6 +5160,11 @@ function ChatViewContent(props: ChatViewProps) {
               <div className="chat-composer-horizontal-inset">
                 <div className="pointer-events-auto relative z-10 isolate">
                   <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
+                  <BackgroundTerminalRuns
+                    environmentId={subagentEnvironmentId}
+                    threadId={activeThreadId}
+                    enabled={backgroundTerminalsEnabled}
+                  />
                   <SubagentRuns
                     environmentId={subagentEnvironmentId}
                     threadId={activeThreadId}
