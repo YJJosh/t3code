@@ -745,6 +745,11 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           stopped: false,
         };
 
+        // A Pi process owns its extension-local terminal manager. Clear the
+        // previous process epoch before wiring onMessage so a real startup
+        // snapshot from the new extension always wins this ordering race.
+        yield* resetBackgroundTerminals(input.threadId);
+
         const connection = yield* makePiRpcConnection({
           threadId: input.threadId,
           binaryPath: resolvePiBinary(piSettings),
@@ -811,10 +816,6 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         sessions.set(input.threadId, ctx);
         scopeTransferred = true;
         yield* startEventPump(ctx);
-        // A Pi process owns its extension-local terminal manager. Reset native
-        // state on every process epoch even when the optional extension is
-        // absent and therefore cannot emit its own authoritative snapshot.
-        yield* resetBackgroundTerminals(input.threadId);
 
         yield* emit({
           type: "session.started",

@@ -188,14 +188,19 @@ function reconcileOutputBuffer(
     }
   } else {
     const overlap = suffixPrefixOverlap(current.text, output.text);
-    if (overlap > 0) {
-      merged = current.text + output.text.slice(overlap);
+    const appendedText = output.text.slice(overlap);
+    const reportedNewBytes = output.totalBytes - current.totalBytes;
+    const overlapIsContiguous =
+      overlap > 0 && textEncoder.encode(appendedText).length === reportedNewBytes;
+    if (overlapIsContiguous) {
+      merged = current.text + appendedText;
       recoveredPrefixBytes = textEncoder.encode(
         current.text.slice(0, current.text.length - overlap),
       ).length;
     } else {
-      // The bridge rolled past more output than one frame can represent. Its
-      // tail is the only contiguous truth, so replace rather than invent a gap.
+      // A string overlap is not enough to prove continuity: after a reconnect
+      // it may be incidental while bytes are missing in between. Trust only an
+      // overlap whose appended UTF-8 size exactly accounts for totalBytes.
       merged = output.text;
       retainedClientHistory = false;
     }

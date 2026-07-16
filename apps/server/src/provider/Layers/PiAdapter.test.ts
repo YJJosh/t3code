@@ -56,6 +56,7 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
   readonly subagentsCommand?: boolean;
   readonly backgroundTerminalsCommand?: boolean;
   readonly backgroundTerminalControlSuccess?: boolean;
+  readonly backgroundTerminalStartupEvent?: boolean;
   readonly contextCommand?: boolean;
   readonly fastCommand?: boolean;
 }) {
@@ -92,6 +93,43 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
             written.push(command);
             yield* Queue.offer(stdinQueue, command);
             if (typeof command.id !== "string" || typeof command.type !== "string") return;
+            if (command.type === "get_state" && input?.backgroundTerminalStartupEvent === true) {
+              const encodedStartupEvent = encodeUnknownJsonStringSync({
+                contractVersion: 1,
+                managerId: "pi-background-terminals:startup",
+                sequence: 1,
+                timestamp: "2026-07-09T12:00:00.000Z",
+                kind: "snapshot",
+                snapshot: {
+                  replay: true,
+                  terminals: [
+                    {
+                      id: "bt-1",
+                      command: "pnpm dev",
+                      title: "startup terminal",
+                      cwd: "/workspace",
+                      pid: 123,
+                      status: "running",
+                      createdAt: 1_752_067_200_000,
+                      stdout: { text: "ready", totalBytes: 5, truncatedBytes: 0 },
+                      stderr: { text: "", totalBytes: 0, truncatedBytes: 0 },
+                    },
+                  ],
+                },
+              });
+              yield* Queue.offer(
+                stdoutQueue,
+                encoder.encode(
+                  serializeJsonlLine({
+                    type: "extension_ui_request",
+                    id: "background-terminal-startup",
+                    method: "notify",
+                    message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${encodedStartupEvent}`,
+                    notifyType: "info",
+                  }),
+                ),
+              );
+            }
             yield* Queue.offer(
               stdoutQueue,
               encoder.encode(
@@ -623,6 +661,35 @@ describe("makePiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
+  it.effect("publishes the process reset before an extension startup snapshot", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ backgroundTerminalStartupEvent: true });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const received = yield* Queue.unbounded<{
+        readonly threadId: ThreadId;
+        readonly event: PiBackgroundTerminalEvent;
+      }>();
+      yield* Stream.runForEach(adapter.backgroundTerminals!.streamEvents, (event) =>
+        Queue.offer(received, event),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const threadId = ThreadId.make("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+      const reset = yield* Queue.take(received);
+      const startup = yield* Queue.take(received);
+      expect(reset.event).toMatchObject({ kind: "snapshot", snapshot: { terminals: [] } });
+      expect(startup.event).toMatchObject({
+        managerId: "pi-background-terminals:startup",
+        kind: "snapshot",
+        snapshot: { terminals: [{ id: "bt-1", title: "startup terminal" }] },
+      });
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
   it.effect("streams background-terminal events and sends advertised direct controls", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi();
@@ -633,6 +700,7 @@ describe("makePiAdapter", () => {
       yield* Stream.runForEach(adapter.backgroundTerminals!.streamEvents, (event) =>
         Queue.offer(received, event),
       ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
       const threadId = ThreadId.make("88888888-8888-4888-8888-888888888888");
       yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
       const reset = (yield* Queue.take(received)) as {

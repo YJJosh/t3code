@@ -313,6 +313,35 @@ describe("applyBackgroundTerminalEvent", () => {
       expect(isBackgroundTerminalOutputTruncated(terminal!.stdout)).toBe(false);
     });
 
+    it("rejects incidental overlap when totalBytes proves output was missed", () => {
+      let state = applyBackgroundTerminalEvent(
+        EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE,
+        event({
+          sequence: 1,
+          view: view({
+            id: "term-a",
+            stdout: outputView("abc", { totalBytes: 3 }),
+          }),
+        }),
+      );
+      state = applyBackgroundTerminalEvent(
+        state,
+        event({
+          sequence: 2,
+          kind: "terminal_upsert",
+          view: view({
+            id: "term-a",
+            stdout: outputView("cXYZ", { totalBytes: 100, truncatedBytes: 96 }),
+          }),
+        }),
+      );
+
+      const terminal = selectBackgroundTerminal(state, "term-a");
+      expect(terminal?.stdout.text).toBe("cXYZ");
+      expect(terminal?.stdout.truncatedBytes).toBe(96);
+      expect(isBackgroundTerminalOutputTruncated(terminal!.stdout)).toBe(true);
+    });
+
     it("keeps output bounded to the configured client byte budget", () => {
       let state = applyBackgroundTerminalEvent(
         EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE,

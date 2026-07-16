@@ -136,14 +136,21 @@ export function backgroundTerminalTruncatedBytes(buffer: BackgroundTerminalOutpu
 // "]", so the two can never ambiguously overlap.
 const ESCAPE_CHAR = String.fromCharCode(27);
 const BELL_CHAR = String.fromCharCode(7);
+const CSI_CHAR = String.fromCharCode(0x9b);
+const OSC_CHAR = String.fromCharCode(0x9d);
+const STRING_TERMINATOR_CHAR = String.fromCharCode(0x9c);
 
-// Strips ANSI CSI sequences (ESC [ ... letter, e.g. color/cursor codes) and
-// OSC sequences (ESC ] ... BEL or ESC ] ... ESC \\, e.g. terminal title
-// changes) so raw escape codes from a spawned process don't render as
-// garbled text in the plain preformatted tail.
-const ANSI_CSI_PATTERN = `${ESCAPE_CHAR}\\[[0-9;:]*[a-zA-Z]`;
-const ANSI_OSC_PATTERN = `${ESCAPE_CHAR}\\][^${BELL_CHAR}${ESCAPE_CHAR}]*(?:${BELL_CHAR}|${ESCAPE_CHAR}\\\\)`;
-const ANSI_ESCAPE_PATTERN = new RegExp(`${ANSI_CSI_PATTERN}|${ANSI_OSC_PATTERN}`, "g");
+// Standards-shaped ANSI matchers. CSI accepts private parameters and
+// intermediate bytes (for example ESC [ ? 25 l), while OSC accepts BEL or
+// string-terminator endings. Remaining two-byte/charset escape forms are
+// removed separately so a stripped ESC never leaves visible garbage behind.
+const ANSI_OSC_PATTERN = `(?:${ESCAPE_CHAR}\\]|${OSC_CHAR})(?:[^${BELL_CHAR}${ESCAPE_CHAR}${STRING_TERMINATOR_CHAR}]|${ESCAPE_CHAR}(?!\\\\))*(?:${BELL_CHAR}|${ESCAPE_CHAR}\\\\|${STRING_TERMINATOR_CHAR})`;
+const ANSI_CSI_PATTERN = `(?:${ESCAPE_CHAR}\\[|${CSI_CHAR})[0-?]*[ -/]*[@-~]`;
+const ANSI_OTHER_ESCAPE_PATTERN = `${ESCAPE_CHAR}(?:[()][0-2A-Z]|[ -/]*[@-~])`;
+const ANSI_ESCAPE_PATTERN = new RegExp(
+  `${ANSI_OSC_PATTERN}|${ANSI_CSI_PATTERN}|${ANSI_OTHER_ESCAPE_PATTERN}`,
+  "g",
+);
 
 // C0 control characters other than tab/newline/carriage-return, plus DEL.
 const KEEP_CONTROL_CODES: ReadonlySet<number> = new Set([9, 10, 13]);
@@ -152,7 +159,8 @@ function stripOtherControlCharacters(text: string): string {
   let result = "";
   for (const char of text) {
     const code = char.codePointAt(0) ?? 0;
-    const isUnwantedControl = (code <= 0x1f || code === 0x7f) && !KEEP_CONTROL_CODES.has(code);
+    const isUnwantedControl =
+      (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) && !KEEP_CONTROL_CODES.has(code);
     if (!isUnwantedControl) {
       result += char;
     }

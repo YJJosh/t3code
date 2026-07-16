@@ -168,8 +168,8 @@ describe("sanitizeTerminalOutputText", () => {
   const ESC = String.fromCharCode(27);
   const BEL = String.fromCharCode(7);
 
-  it("strips ANSI CSI color/cursor sequences", () => {
-    const raw = `${ESC}[31mError:${ESC}[0m something failed`;
+  it("strips ANSI CSI color, cursor, and private-mode sequences", () => {
+    const raw = `${ESC}[?25l${ESC}[31mError:${ESC}[0m something failed${ESC}[?25h`;
     expect(sanitizeTerminalOutputText(raw)).toBe("Error: something failed");
   });
 
