@@ -125,6 +125,8 @@ function createProviderServiceHarness(
     rollbackConversation,
     controlSubagent: () => unsupported(),
     streamSubagentEvents: Stream.empty,
+    controlBackgroundTerminal: () => unsupported(),
+    streamBackgroundTerminalEvents: Stream.empty,
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
     },

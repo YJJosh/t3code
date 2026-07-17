@@ -4,6 +4,12 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
+  PiBackgroundTerminalControlError,
+  PiBackgroundTerminalControlInput,
+  PiBackgroundTerminalEvent,
+  PiBackgroundTerminalSubscribeInput,
+} from "./backgroundTerminals.ts";
+import {
   AuthAccessStreamError,
   AuthAccessStreamEvent,
   EnvironmentAuthorizationError,
@@ -180,6 +186,8 @@ export const WS_METHODS = {
   // Child-agent methods
   subagentsControl: "subagents.control",
   subscribeSubagentEvents: "subscribeSubagentEvents",
+  backgroundTerminalsControl: "backgroundTerminals.control",
+  subscribeBackgroundTerminalEvents: "subscribeBackgroundTerminalEvents",
 
   // Git workflow methods
   gitRunStackedAction: "git.runStackedAction",
@@ -494,6 +502,21 @@ export const WsSubscribeSubagentEventsRpc = Rpc.make(WS_METHODS.subscribeSubagen
   stream: true,
 });
 
+export const WsBackgroundTerminalsControlRpc = Rpc.make(WS_METHODS.backgroundTerminalsControl, {
+  payload: PiBackgroundTerminalControlInput,
+  error: Schema.Union([PiBackgroundTerminalControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsSubscribeBackgroundTerminalEventsRpc = Rpc.make(
+  WS_METHODS.subscribeBackgroundTerminalEvents,
+  {
+    payload: PiBackgroundTerminalSubscribeInput,
+    success: PiBackgroundTerminalEvent,
+    error: EnvironmentAuthorizationError,
+    stream: true,
+  },
+);
+
 export const WsReviewGetDiffPreviewRpc = Rpc.make(WS_METHODS.reviewGetDiffPreview, {
   payload: ReviewDiffPreviewInput,
   success: ReviewDiffPreviewResult,
@@ -742,6 +765,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsInitRpc,
   WsSubagentsControlRpc,
   WsSubscribeSubagentEventsRpc,
+  WsBackgroundTerminalsControlRpc,
+  WsSubscribeBackgroundTerminalEventsRpc,
   WsReviewGetDiffPreviewRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,

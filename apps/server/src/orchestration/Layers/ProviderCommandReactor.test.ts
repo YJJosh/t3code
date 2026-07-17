@@ -329,7 +329,9 @@ describe("ProviderCommandReactor", () => {
       },
       rollbackConversation: () => unsupported(),
       controlSubagent: () => unsupported(),
+      controlBackgroundTerminal: () => unsupported(),
       streamSubagentEvents: Stream.empty,
+      streamBackgroundTerminalEvents: Stream.empty,
       get streamEvents() {
         return Stream.fromPubSub(runtimeEventPubSub);
       },

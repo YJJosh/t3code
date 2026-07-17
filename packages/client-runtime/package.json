@@ -47,6 +47,10 @@
       "types": "./src/state/assets.ts",
       "default": "./src/state/assets.ts"
     },
+    "./state/background-terminals": {
+      "types": "./src/state/backgroundTerminals.ts",
+      "default": "./src/state/backgroundTerminals.ts"
+    },
     "./state/connections": {
       "types": "./src/state/connections.ts",
       "default": "./src/state/connections.ts"

@@ -46,6 +46,7 @@ import {
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   OrchestrationReplayEventsError,
+  PiBackgroundTerminalControlError,
   PiSubagentControlError,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
@@ -324,6 +325,8 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.vcsInit, AuthOrchestrationOperateScope],
   [WS_METHODS.subagentsControl, AuthOrchestrationOperateScope],
   [WS_METHODS.subscribeSubagentEvents, AuthOrchestrationReadScope],
+  [WS_METHODS.backgroundTerminalsControl, AuthTerminalOperateScope],
+  [WS_METHODS.subscribeBackgroundTerminalEvents, AuthTerminalOperateScope],
   [WS_METHODS.reviewGetDiffPreview, AuthReviewWriteScope],
   [WS_METHODS.terminalOpen, AuthTerminalOperateScope],
   [WS_METHODS.terminalAttach, AuthTerminalOperateScope],
@@ -1176,6 +1179,14 @@ const makeWsRpcLayer = (
                 })),
               );
 
+              // Attach live delivery before reading either replay or snapshot state.
+              // Otherwise an event published while the snapshot is loading is lost.
+              const liveBuffer = yield* Queue.unbounded<OrchestrationThreadStreamItem>();
+              yield* Effect.forkScoped(
+                liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
+              );
+              const bufferedLiveStream = Stream.fromQueue(liveBuffer);
+
               // When the client already loaded the snapshot over HTTP it passes
               // that snapshot's sequence, and we resume the live subscription by
               // replaying persisted events after it instead of re-sending the
@@ -1195,28 +1206,20 @@ const makeWsRpcLayer = (
               // so a global cap could otherwise omit this thread's events.
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
-                return Stream.unwrap(
-                  Effect.gen(function* () {
-                    const liveBuffer = yield* Queue.unbounded<OrchestrationThreadStreamItem>();
-                    yield* Effect.forkScoped(
-                      liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
-                    );
-                    const catchUpStream = orchestrationEngine
-                      .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)
-                      .pipe(
-                        Stream.filter(isThisThreadDetailEvent),
-                        Stream.map((event) => ({ kind: "event" as const, event })),
-                        Stream.mapError(
-                          (cause) =>
-                            new OrchestrationGetSnapshotError({
-                              message: `Failed to replay thread ${input.threadId} events`,
-                              cause,
-                            }),
-                        ),
-                      );
-                    return Stream.concat(catchUpStream, Stream.fromQueue(liveBuffer));
-                  }),
-                );
+                const catchUpStream = orchestrationEngine
+                  .readEvents(afterSequence, Number.MAX_SAFE_INTEGER)
+                  .pipe(
+                    Stream.filter(isThisThreadDetailEvent),
+                    Stream.map((event) => ({ kind: "event" as const, event })),
+                    Stream.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: `Failed to replay thread ${input.threadId} events`,
+                          cause,
+                        }),
+                    ),
+                  );
+                return Stream.concat(catchUpStream, bufferedLiveStream);
               }
 
               const snapshot = yield* projectionSnapshotQuery
@@ -1243,7 +1246,7 @@ const makeWsRpcLayer = (
                   kind: "snapshot" as const,
                   snapshot: snapshot.value,
                 }),
-                liveStream,
+                bufferedLiveStream,
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -1656,6 +1659,31 @@ const makeWsRpcLayer = (
               Stream.map((entry) => entry.event),
             ),
             { "rpc.aggregate": "subagents" },
+          ),
+        [WS_METHODS.backgroundTerminalsControl]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.backgroundTerminalsControl,
+            providerService.controlBackgroundTerminal(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PiBackgroundTerminalControlError({
+                    message:
+                      cause instanceof Error
+                        ? cause.message
+                        : "Failed to control Pi background terminal.",
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "background-terminals" },
+          ),
+        [WS_METHODS.subscribeBackgroundTerminalEvents]: (input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeBackgroundTerminalEvents,
+            providerService.streamBackgroundTerminalEvents.pipe(
+              Stream.filter((entry) => entry.threadId === input.threadId),
+              Stream.map((entry) => entry.event),
+            ),
+            { "rpc.aggregate": "background-terminals" },
           ),
         [WS_METHODS.reviewGetDiffPreview]: (input) =>
           observeRpcEffect(WS_METHODS.reviewGetDiffPreview, review.getDiffPreview(input), {

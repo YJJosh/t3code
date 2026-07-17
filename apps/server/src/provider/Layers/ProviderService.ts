@@ -12,6 +12,7 @@
 import {
   ModelSelection,
   NonNegativeInt,
+  PiBackgroundTerminalControlInput,
   PiSubagentControlInput,
   ThreadId,
   ProviderInterruptTurnInput,
@@ -34,7 +35,9 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import {
   increment,
@@ -47,6 +50,7 @@ import {
   withMetrics,
 } from "../../observability/Metrics.ts";
 import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import { makeBackgroundTerminalEventPubSub } from "../backgroundTerminalEvents.ts";
 import type { ProviderAdapterShape, ProviderSubagentEvent } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
@@ -215,6 +219,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const subagentEventPubSub = yield* PubSub.unbounded<ProviderSubagentEvent>();
+  const backgroundTerminalEventPubSub = yield* makeBackgroundTerminalEventPubSub();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId }).pipe(
@@ -347,6 +352,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             PubSub.publish(subagentEventPubSub, event),
           ).pipe(Effect.forkScoped);
         }
+        if (adapter.backgroundTerminals) {
+          yield* Stream.runForEach(adapter.backgroundTerminals.streamEvents, (event) =>
+            PubSub.publish(backgroundTerminalEventPubSub, event),
+          ).pipe(Effect.forkScoped);
+        }
       }
     }
     yield* Ref.set(subscribedAdapters, next);
@@ -358,6 +368,33 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     Stream.fromSubscription(instanceChanges),
     () => reconcileInstanceSubscriptions,
   ).pipe(Effect.forkScoped);
+
+  // Recovery is a check-then-start operation. Serialize it per thread so
+  // reconnect-time consumers (for example subagent and background-terminal
+  // replay) cannot both resume the same persisted provider session.
+  const sessionRoutingLocksRef = yield* SynchronizedRef.make(
+    new Map<ThreadId, Semaphore.Semaphore>(),
+  );
+  const getSessionRoutingLock = (threadId: ThreadId) =>
+    SynchronizedRef.modifyEffect(sessionRoutingLocksRef, (current) => {
+      const existing = Option.fromNullishOr(current.get(threadId));
+      return Option.match(existing, {
+        onNone: () =>
+          Semaphore.make(1).pipe(
+            Effect.map((semaphore) => {
+              const next = new Map(current);
+              next.set(threadId, semaphore);
+              return [semaphore, next] as const;
+            }),
+          ),
+        onSome: (semaphore) => Effect.succeed([semaphore, current] as const),
+      });
+    });
+  const withSessionRoutingLock = <A, E, R>(
+    threadId: ThreadId,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    Effect.flatMap(getSessionRoutingLock(threadId), (semaphore) => semaphore.withPermit(effect));
 
   const recoverSessionForThread = Effect.fn("recoverSessionForThread")(function* (input: {
     readonly binding: ProviderSessionDirectory.ProviderRuntimeBinding;
@@ -444,51 +481,61 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const resolveRoutableSessionUnlocked = Effect.fn("resolveRoutableSessionUnlocked")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly operation: string;
+      readonly allowRecovery: boolean;
+    }) {
+      const bindingOption = yield* directory.getBinding(input.threadId);
+      const binding = Option.getOrUndefined(bindingOption);
+      if (!binding) {
+        return yield* toValidationError(
+          input.operation,
+          `Cannot route thread '${input.threadId}' because no persisted provider binding exists.`,
+        );
+      }
+      const instanceId = yield* requireBindingInstanceId(input.operation, binding);
+      const adapter = yield* registry.getByInstance(instanceId);
+
+      const hasRequestedSession = yield* adapter.hasSession(input.threadId);
+      if (hasRequestedSession) {
+        return {
+          adapter,
+          instanceId,
+          threadId: input.threadId,
+          isActive: true,
+        } as const;
+      }
+
+      if (!input.allowRecovery) {
+        return {
+          adapter,
+          instanceId,
+          threadId: input.threadId,
+          isActive: false,
+        } as const;
+      }
+
+      const recovered = yield* recoverSessionForThread({
+        binding,
+        operation: input.operation,
+      });
+      return {
+        adapter: recovered.adapter,
+        instanceId,
+        threadId: input.threadId,
+        isActive: true,
+      } as const;
+    },
+  );
+
   const resolveRoutableSession = Effect.fn("resolveRoutableSession")(function* (input: {
     readonly threadId: ThreadId;
     readonly operation: string;
     readonly allowRecovery: boolean;
   }) {
-    const bindingOption = yield* directory.getBinding(input.threadId);
-    const binding = Option.getOrUndefined(bindingOption);
-    if (!binding) {
-      return yield* toValidationError(
-        input.operation,
-        `Cannot route thread '${input.threadId}' because no persisted provider binding exists.`,
-      );
-    }
-    const instanceId = yield* requireBindingInstanceId(input.operation, binding);
-    const adapter = yield* registry.getByInstance(instanceId);
-
-    const hasRequestedSession = yield* adapter.hasSession(input.threadId);
-    if (hasRequestedSession) {
-      return {
-        adapter,
-        instanceId,
-        threadId: input.threadId,
-        isActive: true,
-      } as const;
-    }
-
-    if (!input.allowRecovery) {
-      return {
-        adapter,
-        instanceId,
-        threadId: input.threadId,
-        isActive: false,
-      } as const;
-    }
-
-    const recovered = yield* recoverSessionForThread({
-      binding,
-      operation: input.operation,
-    });
-    return {
-      adapter: recovered.adapter,
-      instanceId,
-      threadId: input.threadId,
-      isActive: true,
-    } as const;
+    return yield* withSessionRoutingLock(input.threadId, resolveRoutableSessionUnlocked(input));
   });
 
   const stopStaleSessionsForThread = Effect.fn("stopStaleSessionsForThread")(function* (input: {
@@ -1037,6 +1084,28 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const controlBackgroundTerminal: ProviderServiceMethod<"controlBackgroundTerminal"> = Effect.fn(
+    "controlBackgroundTerminal",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.controlBackgroundTerminal",
+      schema: PiBackgroundTerminalControlInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.controlBackgroundTerminal",
+      allowRecovery: true,
+    });
+    if (!routed.adapter.backgroundTerminals) {
+      return yield* toValidationError(
+        "ProviderService.controlBackgroundTerminal",
+        `Provider '${routed.adapter.provider}' does not expose background-terminal controls.`,
+      );
+    }
+    yield* routed.adapter.backgroundTerminals.control(input);
+  });
+
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
@@ -1111,6 +1180,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     controlSubagent,
     get streamSubagentEvents(): ProviderServiceMethod<"streamSubagentEvents"> {
       return Stream.fromPubSub(subagentEventPubSub);
+    },
+    controlBackgroundTerminal,
+    get streamBackgroundTerminalEvents(): ProviderServiceMethod<"streamBackgroundTerminalEvents"> {
+      return Stream.fromPubSub(backgroundTerminalEventPubSub);
     },
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each

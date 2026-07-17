@@ -4,6 +4,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type ModelSelection,
+  type PiBackgroundTerminalEvent,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import { PiSettings } from "@t3tools/contracts";
@@ -19,11 +20,16 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
 import { parseJsonlLine, serializeJsonlLine } from "../pi/piJsonl.ts";
-import { PI_SUBAGENTS_RPC_EVENT_PREFIX } from "../pi/piRpcProtocol.ts";
+import {
+  PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX,
+  PI_SUBAGENTS_RPC_EVENT_PREFIX,
+} from "../pi/piRpcProtocol.ts";
 import { makePiAdapter, splitPiModelSlug } from "./PiAdapter.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
+const decodeUnknownJsonString = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
 const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+const encodeUnknownJsonStringSync = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -48,6 +54,9 @@ interface FakePi {
 
 const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
   readonly subagentsCommand?: boolean;
+  readonly backgroundTerminalsCommand?: boolean;
+  readonly backgroundTerminalControlSuccess?: boolean;
+  readonly backgroundTerminalStartupEvent?: boolean;
   readonly contextCommand?: boolean;
   readonly fastCommand?: boolean;
 }) {
@@ -84,6 +93,43 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
             written.push(command);
             yield* Queue.offer(stdinQueue, command);
             if (typeof command.id !== "string" || typeof command.type !== "string") return;
+            if (command.type === "get_state" && input?.backgroundTerminalStartupEvent === true) {
+              const encodedStartupEvent = encodeUnknownJsonStringSync({
+                contractVersion: 1,
+                managerId: "pi-background-terminals:test",
+                sequence: 1,
+                timestamp: "2026-07-09T12:00:00.000Z",
+                kind: "snapshot",
+                snapshot: {
+                  replay: true,
+                  terminals: [
+                    {
+                      id: "bt-1",
+                      command: "pnpm dev",
+                      title: "startup terminal",
+                      cwd: "/workspace",
+                      pid: 123,
+                      status: "running",
+                      createdAt: 1_752_067_200_000,
+                      stdout: { text: "ready", totalBytes: 5, truncatedBytes: 0 },
+                      stderr: { text: "", totalBytes: 0, truncatedBytes: 0 },
+                    },
+                  ],
+                },
+              });
+              yield* Queue.offer(
+                stdoutQueue,
+                encoder.encode(
+                  serializeJsonlLine({
+                    type: "extension_ui_request",
+                    id: "background-terminal-startup",
+                    method: "notify",
+                    message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${encodedStartupEvent}`,
+                    notifyType: "info",
+                  }),
+                ),
+              );
+            }
             yield* Queue.offer(
               stdoutQueue,
               encoder.encode(
@@ -101,6 +147,9 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
                               ...(input?.subagentsCommand === false
                                 ? []
                                 : [{ name: "subagents-rpc", source: "extension" }]),
+                              ...(input?.backgroundTerminalsCommand === false
+                                ? []
+                                : [{ name: "background-terminals-rpc", source: "extension" }]),
                               ...(input?.contextCommand === true
                                 ? [{ name: "context", source: "extension" }]
                                 : []),
@@ -114,6 +163,41 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
                 }),
               ),
             );
+            if (
+              command.type === "prompt" &&
+              typeof command.message === "string" &&
+              command.message.startsWith("/background-terminals-rpc ")
+            ) {
+              const control = decodeUnknownJsonString(
+                command.message.slice("/background-terminals-rpc ".length),
+              ) as { readonly action: "replay" | "kill"; readonly request_id: string };
+              const success = input?.backgroundTerminalControlSuccess !== false;
+              const encodedControlEvent = encodeUnknownJsonStringSync({
+                contractVersion: 1,
+                managerId: "pi-background-terminals:test",
+                sequence: written.length,
+                timestamp: "2026-07-09T12:00:02.000Z",
+                kind: "control_result",
+                control: {
+                  action: control.action,
+                  requestId: control.request_id,
+                  success,
+                  ...(success ? {} : { error: "simulated control rejection" }),
+                },
+              });
+              yield* Queue.offer(
+                stdoutQueue,
+                encoder.encode(
+                  serializeJsonlLine({
+                    type: "extension_ui_request",
+                    id: `background-terminal-control-${written.length}`,
+                    method: "notify",
+                    message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${encodedControlEvent}`,
+                    notifyType: "info",
+                  }),
+                ),
+              );
+            }
           });
         }),
         stdout: Stream.fromQueue(stdoutQueue),
@@ -254,6 +338,40 @@ describe("makePiAdapter", () => {
       const completed = yield* takeEventOfType(events, "turn.completed");
       expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");
       expect(completed.turnId).toBe(turn.turnId);
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("steers user input into an autonomous Pi continuation turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("12121212-1212-4212-8212-121212121212");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* takeEventOfType(events, "thread.started");
+
+      // A background extension wake-up starts a new agent loop without a user prompt.
+      yield* fake.pushFrame({ type: "agent_start" });
+      const autonomousTurn = yield* takeEventOfType(events, "turn.started");
+      expect(autonomousTurn.type).toBe("turn.started");
+
+      const steeredTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "correct the running background work",
+      });
+      const steer = yield* fake.takeStdinUntil((command) => command.type === "steer");
+      expect(steer.message).toBe("correct the running background work");
+      expect(steeredTurn.turnId).toBe(autonomousTurn.turnId);
+
+      yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+      const completed = yield* takeEventOfType(events, "turn.completed");
+      expect(completed.turnId).toBe(autonomousTurn.turnId);
+      expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
@@ -575,6 +693,174 @@ describe("makePiAdapter", () => {
       expect(fake.written.some((command) => command.type === "get_commands")).toBe(true);
       expect(fake.written.some((command) => command.type === "prompt")).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("publishes the process reset before an extension startup snapshot", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ backgroundTerminalStartupEvent: true });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const received = yield* Queue.unbounded<{
+        readonly threadId: ThreadId;
+        readonly event: PiBackgroundTerminalEvent;
+      }>();
+      yield* Stream.runForEach(adapter.backgroundTerminals!.streamEvents, (event) =>
+        Queue.offer(received, event),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const threadId = ThreadId.make("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+      const reset = yield* Queue.take(received);
+      const startup = yield* Queue.take(received);
+      expect(reset.event).toMatchObject({ kind: "snapshot", snapshot: { terminals: [] } });
+      expect(startup.event).toMatchObject({
+        managerId: "pi-background-terminals:test",
+        kind: "snapshot",
+        snapshot: { terminals: [{ id: "bt-1", title: "startup terminal" }] },
+      });
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("streams background-terminal events and sends advertised direct controls", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const received = yield* Queue.unbounded<unknown>();
+      yield* Stream.runForEach(adapter.backgroundTerminals!.streamEvents, (event) =>
+        Queue.offer(received, event),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      const threadId = ThreadId.make("88888888-8888-4888-8888-888888888888");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      const reset = (yield* Queue.take(received)) as {
+        readonly threadId: ThreadId;
+        readonly event: PiBackgroundTerminalEvent;
+      };
+      expect(reset.threadId).toBe(threadId);
+      expect(reset.event).toMatchObject({
+        contractVersion: 1,
+        sequence: 1,
+        kind: "snapshot",
+        snapshot: { terminals: [] },
+      });
+      expect(reset.event.managerId).toMatch(/^pi-session-/);
+      const managerSnapshot = {
+        contractVersion: 1,
+        managerId: "pi-background-terminals:test",
+        sequence: 1,
+        timestamp: "2026-07-09T12:00:00.000Z",
+        kind: "snapshot",
+        snapshot: { terminals: [] },
+      } as const;
+      const encodedManagerSnapshot = yield* encodeUnknownJsonString(managerSnapshot);
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        id: "terminal-snapshot-1",
+        method: "notify",
+        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${encodedManagerSnapshot}`,
+        notifyType: "info",
+      });
+      expect(yield* Queue.take(received)).toEqual({ threadId, event: managerSnapshot });
+
+      const envelope = {
+        contractVersion: 1,
+        managerId: "pi-background-terminals:test",
+        sequence: 2,
+        timestamp: "2026-07-09T12:00:01.000Z",
+        kind: "control_result",
+        control: { action: "replay", success: true, requestId: "replay-1" },
+      } as const;
+      const encodedEnvelope = yield* encodeUnknownJsonString(envelope);
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        id: "terminal-event-1",
+        method: "notify",
+        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${encodedEnvelope}`,
+        notifyType: "info",
+      });
+      expect(yield* Queue.take(received)).toEqual({ threadId, event: envelope });
+      const staleKillError = yield* adapter
+        .backgroundTerminals!.control({
+          threadId,
+          action: "kill",
+          terminalId: "bt-1",
+          managerId: "pi-background-terminals:stale",
+          requestId: "stale-kill",
+        })
+        .pipe(Effect.flip);
+      expect(staleKillError._tag).toBe("ProviderAdapterValidationError");
+      expect(staleKillError.message).toContain("stale Pi process");
+
+      yield* adapter.backgroundTerminals!.control({
+        threadId,
+        action: "kill",
+        terminalId: "bt-1",
+        managerId: "pi-background-terminals:test",
+        requestId: "kill-1",
+      });
+      const control = yield* fake.takeStdinUntil(
+        (command) =>
+          command.type === "prompt" &&
+          typeof command.message === "string" &&
+          command.message.startsWith("/background-terminals-rpc "),
+      );
+      expect(control.message).toContain('"action":"kill"');
+      expect(control.message).toContain('"terminal_id":"bt-1"');
+
+      yield* adapter.backgroundTerminals!.control({ threadId, action: "replay" });
+      yield* fake.takeStdinUntil(
+        (command) =>
+          command.type === "prompt" &&
+          typeof command.message === "string" &&
+          command.message.startsWith("/background-terminals-rpc ") &&
+          command.message.includes('"action":"replay"'),
+      );
+      expect(fake.written.filter((command) => command.type === "get_commands")).toHaveLength(2);
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("surfaces a rejected background-terminal control result", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({
+        backgroundTerminalControlSuccess: false,
+        backgroundTerminalStartupEvent: true,
+      });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const threadId = ThreadId.make("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+      const error = yield* adapter
+        .backgroundTerminals!.control({ threadId, action: "replay", requestId: "rejected-control" })
+        .pipe(Effect.flip);
+
+      expect(error._tag).toBe("ProviderAdapterRequestError");
+      expect(error.message).toContain("simulated control rejection");
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect(
+    "never forwards background-terminal control when its extension command is unavailable",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi({ backgroundTerminalsCommand: false });
+        const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+        const threadId = ThreadId.make("99999999-9999-4999-8999-999999999999");
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+        const error = yield* adapter
+          .backgroundTerminals!.control({ threadId, action: "replay" })
+          .pipe(Effect.flip);
+        expect(error._tag).toBe("ProviderAdapterValidationError");
+        expect(fake.written.some((command) => command.type === "prompt")).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
   it.effect("auto-confirms an extension_ui confirm request in yolo mode", () =>
