@@ -22,7 +22,6 @@ import {
   type PiSettings,
   type PiBackgroundTerminalControlInput,
   type PiBackgroundTerminalControlResult,
-  type PiBackgroundTerminalEvent,
   type PiSubagentControlInput,
   type PiSubagentEvent,
   ProviderDriverKind,
@@ -56,6 +55,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
+import { makeBackgroundTerminalEventPubSub } from "../backgroundTerminalEvents.ts";
 import {
   autoRespondToExtensionUi,
   buildPiRpcArgs,
@@ -193,14 +193,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       readonly threadId: ThreadId;
       readonly event: PiSubagentEvent;
     }>();
-    const backgroundTerminalEvents = yield* PubSub.unbounded<{
-      readonly threadId: ThreadId;
-      readonly event: PiBackgroundTerminalEvent;
-    }>();
+    const backgroundTerminalEvents = yield* makeBackgroundTerminalEventPubSub();
     const backgroundTerminalControlWaiters = new Map<
       string,
       Deferred.Deferred<PiBackgroundTerminalControlResult>
     >();
+    const backgroundTerminalManagerIds = new Map<ThreadId, string>();
     const backgroundTerminalControlKey = (threadId: ThreadId, requestId: string) =>
       `${threadId}\u0000${requestId}`;
 
@@ -223,11 +221,13 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     const resetBackgroundTerminals = (threadId: ThreadId) =>
       Effect.gen(function* () {
         const id = yield* randomUUIDv4;
+        const managerId = `pi-session-${id}`;
+        backgroundTerminalManagerIds.set(threadId, managerId);
         yield* PubSub.publish(backgroundTerminalEvents, {
           threadId,
           event: {
             contractVersion: PI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION,
-            managerId: `pi-session-${id}`,
+            managerId,
             sequence: 1,
             timestamp: yield* nowIso,
             kind: "snapshot",
@@ -377,6 +377,19 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }
         const backgroundTerminalEvent = parsePiBackgroundTerminalNotification(request);
         if (backgroundTerminalEvent) {
+          const activeManagerId = backgroundTerminalManagerIds.get(ctx.threadId);
+          // A manager switch is authoritative only when announced by a snapshot.
+          // Ignore late non-snapshot events from a stopped/replaced Pi process.
+          if (
+            activeManagerId !== undefined &&
+            activeManagerId !== backgroundTerminalEvent.managerId &&
+            backgroundTerminalEvent.kind !== "snapshot"
+          ) {
+            return;
+          }
+          if (activeManagerId === undefined || backgroundTerminalEvent.kind === "snapshot") {
+            backgroundTerminalManagerIds.set(ctx.threadId, backgroundTerminalEvent.managerId);
+          }
           yield* PubSub.publish(backgroundTerminalEvents, {
             threadId: ctx.threadId,
             event: backgroundTerminalEvent,
@@ -557,7 +570,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
 
     const handlePiMessage = (ctx: PiSessionContext) => (message: unknown) =>
       Effect.gen(function* () {
-        if (!isRecord(message) || typeof message.type !== "string") return;
+        if (ctx.stopped || !isRecord(message) || typeof message.type !== "string") return;
         switch (message.type) {
           case "extension_ui_request":
             yield* handleExtensionUiRequest(ctx, message as unknown as PiExtensionUiRequest);
@@ -628,7 +641,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         yield* ctx.connection.awaitExit.pipe(
           Effect.flatMap((code) =>
             Effect.gen(function* () {
-              if (ctx.stopped) return;
+              if (ctx.stopped || sessions.get(ctx.threadId) !== ctx) return;
               if (ctx.activeTurnId !== undefined) {
                 yield* completeTurn(ctx, "failed", {
                   errorMessage: `Pi process exited unexpectedly (code ${code}).`,
@@ -656,15 +669,17 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         if (ctx.stopped) return;
         ctx.stopped = true;
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
-        sessions.delete(ctx.threadId);
-        yield* resetBackgroundTerminals(ctx.threadId);
-        yield* emit({
-          type: "session.exited",
-          ...(yield* makeStamp()),
-          provider: PROVIDER,
-          threadId: ctx.threadId,
-          payload: { exitKind: "graceful" },
-        });
+        if (sessions.get(ctx.threadId) === ctx) {
+          sessions.delete(ctx.threadId);
+          yield* resetBackgroundTerminals(ctx.threadId);
+          yield* emit({
+            type: "session.exited",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            payload: { exitKind: "graceful" },
+          });
+        }
       });
 
     const resolveModelSelection = (modelSelection: ModelSelection | undefined) => {
@@ -1048,6 +1063,16 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     const controlBackgroundTerminal = (input: PiBackgroundTerminalControlInput) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
+        if (
+          input.action === "kill" &&
+          backgroundTerminalManagerIds.get(input.threadId) !== input.managerId
+        ) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "controlBackgroundTerminal",
+            issue: "The selected background terminal belongs to a stale Pi process.",
+          });
+        }
         // Pi treats unknown slash commands as model prompts. Only send this
         // private extension command after it was advertised by the live session.
         if (!(yield* piAdvertisesCommand(ctx, "background-terminals-rpc", true))) {

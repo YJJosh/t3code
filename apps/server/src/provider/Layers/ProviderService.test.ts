@@ -22,6 +22,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { it, assert, vi } from "@effect/vitest";
 
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -1157,6 +1158,56 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, initial.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("single-flights concurrent recovery for the same persisted thread", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-concurrent-recovery");
+      const initial = yield* provider.startSession(threadId, {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project-concurrent-recovery",
+        runtimeMode: "full-access",
+      });
+
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+      const originalStartSession = routing.codex.startSession.getMockImplementation();
+      assert.isDefined(originalStartSession);
+      const recoveryStarted = yield* Deferred.make<void>();
+      const releaseRecovery = yield* Deferred.make<void>();
+      routing.codex.startSession.mockImplementation((input) =>
+        Deferred.succeed(recoveryStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseRecovery)),
+          Effect.andThen(originalStartSession!(input)),
+        ),
+      );
+
+      yield* Effect.gen(function* () {
+        const first = yield* provider
+          .sendTurn({ threadId: initial.threadId, input: "first", attachments: [] })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(recoveryStarted);
+        const second = yield* provider
+          .sendTurn({ threadId: initial.threadId, input: "second", attachments: [] })
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+
+        assert.equal(routing.codex.startSession.mock.calls.length, 1);
+        yield* Deferred.succeed(releaseRecovery, undefined);
+        yield* Fiber.join(first);
+        yield* Fiber.join(second);
+        assert.equal(routing.codex.startSession.mock.calls.length, 1);
+        assert.equal(routing.codex.sendTurn.mock.calls.length, 2);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => routing.codex.startSession.mockImplementation(originalStartSession!)),
+        ),
+      );
     }),
   );
 

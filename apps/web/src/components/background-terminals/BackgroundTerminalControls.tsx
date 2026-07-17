@@ -18,6 +18,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 interface BackgroundTerminalControlsProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
+  managerId: string;
   terminal: BackgroundTerminalEntry;
 }
 
@@ -37,6 +38,7 @@ function controlErrorMessage(error: unknown, fallback: string): string {
 export function BackgroundTerminalControls({
   environmentId,
   threadId,
+  managerId,
   terminal,
 }: BackgroundTerminalControlsProps) {
   const runControl = useAtomCommand(backgroundTerminalEnvironment.control, {
@@ -58,6 +60,7 @@ export function BackgroundTerminalControls({
         threadId,
         action: "kill",
         terminalId,
+        managerId,
         requestId: `${terminalId}:${requestFieldId}:${++requestSequenceRef.current}`,
       };
       const result = await runControl({ environmentId, input });
@@ -67,7 +70,7 @@ export function BackgroundTerminalControls({
     } finally {
       setPending(false);
     }
-  }, [environmentId, requestFieldId, runControl, terminalId, threadId]);
+  }, [environmentId, managerId, requestFieldId, runControl, terminalId, threadId]);
 
   if (!canKill) {
     return null;

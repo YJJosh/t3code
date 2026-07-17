@@ -96,7 +96,7 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
             if (command.type === "get_state" && input?.backgroundTerminalStartupEvent === true) {
               const encodedStartupEvent = encodeUnknownJsonStringSync({
                 contractVersion: 1,
-                managerId: "pi-background-terminals:startup",
+                managerId: "pi-background-terminals:test",
                 sequence: 1,
                 timestamp: "2026-07-09T12:00:00.000Z",
                 kind: "snapshot",
@@ -683,7 +683,7 @@ describe("makePiAdapter", () => {
       const startup = yield* Queue.take(received);
       expect(reset.event).toMatchObject({ kind: "snapshot", snapshot: { terminals: [] } });
       expect(startup.event).toMatchObject({
-        managerId: "pi-background-terminals:startup",
+        managerId: "pi-background-terminals:test",
         kind: "snapshot",
         snapshot: { terminals: [{ id: "bt-1", title: "startup terminal" }] },
       });
@@ -715,11 +715,29 @@ describe("makePiAdapter", () => {
         snapshot: { terminals: [] },
       });
       expect(reset.event.managerId).toMatch(/^pi-session-/);
-      const envelope = {
+      const managerSnapshot = {
         contractVersion: 1,
         managerId: "pi-background-terminals:test",
         sequence: 1,
         timestamp: "2026-07-09T12:00:00.000Z",
+        kind: "snapshot",
+        snapshot: { terminals: [] },
+      } as const;
+      const encodedManagerSnapshot = yield* encodeUnknownJsonString(managerSnapshot);
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        id: "terminal-snapshot-1",
+        method: "notify",
+        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${encodedManagerSnapshot}`,
+        notifyType: "info",
+      });
+      expect(yield* Queue.take(received)).toEqual({ threadId, event: managerSnapshot });
+
+      const envelope = {
+        contractVersion: 1,
+        managerId: "pi-background-terminals:test",
+        sequence: 2,
+        timestamp: "2026-07-09T12:00:01.000Z",
         kind: "control_result",
         control: { action: "replay", success: true, requestId: "replay-1" },
       } as const;
@@ -732,10 +750,23 @@ describe("makePiAdapter", () => {
         notifyType: "info",
       });
       expect(yield* Queue.take(received)).toEqual({ threadId, event: envelope });
+      const staleKillError = yield* adapter
+        .backgroundTerminals!.control({
+          threadId,
+          action: "kill",
+          terminalId: "bt-1",
+          managerId: "pi-background-terminals:stale",
+          requestId: "stale-kill",
+        })
+        .pipe(Effect.flip);
+      expect(staleKillError._tag).toBe("ProviderAdapterValidationError");
+      expect(staleKillError.message).toContain("stale Pi process");
+
       yield* adapter.backgroundTerminals!.control({
         threadId,
         action: "kill",
         terminalId: "bt-1",
+        managerId: "pi-background-terminals:test",
         requestId: "kill-1",
       });
       const control = yield* fake.takeStdinUntil(
@@ -761,7 +792,10 @@ describe("makePiAdapter", () => {
 
   it.effect("surfaces a rejected background-terminal control result", () =>
     Effect.gen(function* () {
-      const fake = yield* makeFakePi({ backgroundTerminalControlSuccess: false });
+      const fake = yield* makeFakePi({
+        backgroundTerminalControlSuccess: false,
+        backgroundTerminalStartupEvent: true,
+      });
       const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
       );

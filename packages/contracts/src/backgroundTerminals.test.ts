@@ -103,10 +103,22 @@ describe("PiBackgroundTerminalControlInput", () => {
     expect(decodeControl({ threadId, action: "replay", terminalId: "bt-1" })).not.toHaveProperty(
       "terminalId",
     );
-    expect(decodeControl({ threadId, action: "kill", terminalId: "bt-1" })).toMatchObject({
-      action: "kill",
-    });
-    expect(() => decodeControl({ threadId, action: "kill" })).toThrow();
-    expect(() => decodeControl({ threadId, action: "kill", terminalId: "terminal-1" })).toThrow();
+    expect(
+      decodeControl({
+        threadId,
+        action: "kill",
+        terminalId: "bt-1",
+        managerId: "pi-background-terminals:test",
+      }),
+    ).toMatchObject({ action: "kill", managerId: "pi-background-terminals:test" });
+    expect(() => decodeControl({ threadId, action: "kill", terminalId: "bt-1" })).toThrow();
+    expect(() =>
+      decodeControl({
+        threadId,
+        action: "kill",
+        terminalId: "terminal-1",
+        managerId: "pi-background-terminals:test",
+      }),
+    ).toThrow();
   });
 });

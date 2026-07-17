@@ -20,7 +20,8 @@ export const PiBackgroundTerminalId = TrimmedNonEmptyString.check(
 );
 export type PiBackgroundTerminalId = typeof PiBackgroundTerminalId.Type;
 const PiBackgroundTerminalRequestId = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
-const PiBackgroundTerminalManagerId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+export const PiBackgroundTerminalManagerId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+export type PiBackgroundTerminalManagerId = typeof PiBackgroundTerminalManagerId.Type;
 
 export const PiBackgroundTerminalStatus = Schema.Literals(["running", "done", "failed", "killed"]);
 export type PiBackgroundTerminalStatus = typeof PiBackgroundTerminalStatus.Type;
@@ -155,6 +156,8 @@ export const PiBackgroundTerminalControlInput = Schema.Union([
     ...PiBackgroundTerminalControlBase,
     action: Schema.Literal("kill"),
     terminalId: PiBackgroundTerminalId,
+    /** Process epoch shown by the client; prevents stale rows from killing a reused terminal id. */
+    managerId: PiBackgroundTerminalManagerId,
   }),
 ]);
 export type PiBackgroundTerminalControlInput = typeof PiBackgroundTerminalControlInput.Type;

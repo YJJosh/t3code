@@ -127,18 +127,18 @@ describe("applyBackgroundTerminalEvent", () => {
     expect(selectBackgroundTerminal(created, "term-a")?.view.status).toBe("running");
   });
 
-  it("dedupes per manager, not globally", () => {
+  it("rejects non-snapshot events from a different manager epoch", () => {
     const first = applyBackgroundTerminalEvent(
       EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE,
       event({ sequence: 10, managerId: "manager-1", view: view({ id: "term-a" }) }),
     );
-    const second = applyBackgroundTerminalEvent(
+    const lateOldProcessEvent = applyBackgroundTerminalEvent(
       first,
       event({ sequence: 2, managerId: "manager-2", view: view({ id: "term-b" }) }),
     );
-    expect(selectBackgroundTerminals(second)).toHaveLength(2);
-    expect(second.managerSequences.get("manager-1")).toBe(10);
-    expect(second.managerSequences.get("manager-2")).toBe(2);
+    expect(selectBackgroundTerminals(lateOldProcessEvent)).toHaveLength(1);
+    expect(lateOldProcessEvent.managerSequences.has("manager-2")).toBe(false);
+    expect(lateOldProcessEvent.needsReconciliation).toBe(true);
   });
 
   it("removes a terminal on terminal_removed", () => {
@@ -227,6 +227,54 @@ describe("applyBackgroundTerminalEvent", () => {
       expect(terminal?.stdout.text).toBe("hello world");
       expect(terminal?.stdout.totalBytes).toBe(11);
       expect(terminal?.stderr.text).toBe("");
+    });
+
+    it("drops every append after a sequence gap until a replay snapshot heals state", () => {
+      let state = applyBackgroundTerminalEvent(
+        EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE,
+        event({ sequence: 1, view: view({ id: "term-a", stdout: outputView("before") }) }),
+      );
+      for (const [sequence, text, totalBytes] of [
+        [3, "missed-gap", 16],
+        [4, "still-unsafe", 28],
+      ] as const) {
+        state = applyBackgroundTerminalEvent(
+          state,
+          event({
+            sequence,
+            kind: "terminal_output",
+            terminalId: "term-a",
+            output: {
+              terminalId: "term-a",
+              stream: "stdout",
+              text,
+              replace: false,
+              totalBytes,
+              truncatedBytes: 0,
+            },
+          }),
+        );
+      }
+      expect(selectBackgroundTerminal(state, "term-a")?.stdout.text).toBe("before");
+      expect(state.needsReconciliation).toBe(true);
+
+      state = applyBackgroundTerminalEvent(
+        state,
+        event({
+          sequence: 5,
+          kind: "snapshot",
+          snapshot: {
+            terminals: [
+              view({
+                id: "term-a",
+                stdout: outputView("replayed-tail", { totalBytes: 28 }),
+              }),
+            ],
+          },
+        }),
+      );
+      expect(selectBackgroundTerminal(state, "term-a")?.stdout.text).toBe("replayed-tail");
+      expect(state.needsReconciliation).toBe(false);
     });
 
     it("replaces output when the delta requests replace", () => {
@@ -375,6 +423,38 @@ describe("applyBackgroundTerminalEvent", () => {
       expect(isBackgroundTerminalOutputTruncated(terminal!.stdout)).toBe(true);
     });
 
+    it("does not reapply cumulative server truncation to retained append history", () => {
+      let state = applyBackgroundTerminalEvent(
+        EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE,
+        event({
+          sequence: 1,
+          view: view({
+            id: "term-a",
+            stdout: outputView("retained tail", { totalBytes: 100, truncatedBytes: 0 }),
+          }),
+        }),
+      );
+      state = applyBackgroundTerminalEvent(
+        state,
+        event({
+          sequence: 2,
+          kind: "terminal_output",
+          terminalId: "term-a",
+          output: {
+            terminalId: "term-a",
+            stream: "stdout",
+            text: " next",
+            replace: false,
+            totalBytes: 105,
+            truncatedBytes: 90,
+          },
+        }),
+      );
+      const terminal = selectBackgroundTerminal(state, "term-a");
+      expect(terminal?.stdout.text).toBe("retained tail next");
+      expect(terminal?.stdout.truncatedBytes).toBe(0);
+    });
+
     it("reports truncation from server-side counts even without client trimming", () => {
       const state = applyBackgroundTerminalEvent(
         EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE,
@@ -433,6 +513,48 @@ describe("applyBackgroundTerminalEvent", () => {
       expect(terminal?.view.status).toBe("failed");
       expect(terminal?.stdout.text).toBe("build failed");
       expect(rebuilt.managerSequences.get("manager-1")).toBe(20);
+    });
+
+    it("retains proven contiguous history across a same-manager replay snapshot", () => {
+      let state = applyBackgroundTerminalEvent(
+        EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE,
+        event({ sequence: 1, view: view({ id: "term-a" }) }),
+      );
+      state = applyBackgroundTerminalEvent(
+        state,
+        event({
+          sequence: 2,
+          kind: "terminal_output",
+          terminalId: "term-a",
+          output: {
+            terminalId: "term-a",
+            stream: "stdout",
+            text: "hello world",
+            replace: false,
+            totalBytes: 11,
+            truncatedBytes: 0,
+          },
+        }),
+      );
+      state = applyBackgroundTerminalEvent(
+        state,
+        event({
+          sequence: 3,
+          kind: "snapshot",
+          snapshot: {
+            terminals: [
+              view({
+                id: "term-a",
+                stdout: outputView("world", { totalBytes: 11, truncatedBytes: 6 }),
+              }),
+            ],
+          },
+        }),
+      );
+
+      const terminal = selectBackgroundTerminal(state, "term-a");
+      expect(terminal?.stdout.text).toBe("hello world");
+      expect(terminal?.stdout.truncatedBytes).toBe(0);
     });
 
     it("clears all terminals when a new manager sends an empty snapshot", () => {

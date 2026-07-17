@@ -68,9 +68,16 @@ function backgroundTerminalRuntimeChanges(threadId: ThreadId) {
   );
 
   return Stream.merge(events, replayOnConnect).pipe(
-    Stream.scan(EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE, (state, event) =>
-      applyBackgroundTerminalEvent(state, event),
-    ),
+    Stream.scanEffect(EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE, (state, event) => {
+      const next = applyBackgroundTerminalEvent(state, event);
+      if (!state.needsReconciliation && next.needsReconciliation) {
+        return request(WS_METHODS.backgroundTerminalsControl, {
+          threadId,
+          action: "replay",
+        }).pipe(Effect.ignore, Effect.as(next));
+      }
+      return Effect.succeed(next);
+    }),
   );
 }
 

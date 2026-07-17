@@ -69,6 +69,8 @@ export interface BackgroundTerminalRuntimeState {
   readonly managerSequences: ReadonlyMap<string, number>;
   /** Recent control acknowledgements (bounded), newest last. */
   readonly controlResults: ReadonlyArray<BackgroundTerminalControlEntry>;
+  /** Whether a sequence gap requires an authoritative replay snapshot. */
+  readonly needsReconciliation: boolean;
   /** Monotonic version bumped on every applied (non-stale) event. */
   readonly version: number;
 }
@@ -84,6 +86,7 @@ export const EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE: BackgroundTerminalRuntimeS
     terminals: new Map<string, BackgroundTerminalEntry>(),
     managerSequences: new Map<string, number>(),
     controlResults: [] as ReadonlyArray<BackgroundTerminalControlEntry>,
+    needsReconciliation: false,
     version: 0,
   });
 
@@ -222,13 +225,17 @@ function appendOrReplaceOutput(
   delta: PiBackgroundTerminalOutputDelta,
   maxBytes: number,
 ): BackgroundTerminalOutputBuffer {
-  const merged = delta.replace ? delta.text : buffer.text + delta.text;
-  const { text, trimmedBytes } = trimToUtf8ByteBudget(merged, maxBytes);
+  if (delta.replace) {
+    return reconcileOutputBuffer(buffer, delta, maxBytes);
+  }
+  const { text, trimmedBytes } = trimToUtf8ByteBudget(buffer.text + delta.text, maxBytes);
   return {
     text,
     totalBytes: delta.totalBytes,
-    truncatedBytes: delta.truncatedBytes,
-    clientTruncatedBytes: (delta.replace ? 0 : buffer.clientTruncatedBytes) + trimmedBytes,
+    // Append frames do not roll the bridge tail; preserve the client's actual
+    // missing-prefix count instead of reapplying the bridge's cumulative count.
+    truncatedBytes: buffer.truncatedBytes,
+    clientTruncatedBytes: buffer.clientTruncatedBytes + trimmedBytes,
   };
 }
 
@@ -293,13 +300,15 @@ function applyOutputDelta(
   sequence: number,
   timestamp: string,
   maxOutputBytes: number,
+  needsReconciliation: boolean,
 ): ReadonlyMap<string, BackgroundTerminalEntry> {
   const existing = terminals.get(terminalId);
   // Output for a terminal whose view has not been seen yet is dropped rather
   // than synthesizing a placeholder entry we cannot populate with metadata.
-  // `terminal_upsert` always precedes `terminal_output` for a given terminal
-  // in a well-formed stream.
-  if (existing === undefined) {
+  // Also drop a non-authoritative append after queue overflow: a later replace
+  // frame, upsert, or snapshot will heal the bounded stream without fabricating
+  // contiguous output across missing events.
+  if (existing === undefined || (needsReconciliation && !delta.replace)) {
     return terminals;
   }
   const isStdout = delta.stream === "stdout";
@@ -340,11 +349,13 @@ function applySnapshot(
   // terminal absent from the snapshot (e.g. a brand new manager after
   // reconnect) is dropped, which is how an empty snapshot clears stale state.
   const rebuilt = new Map<string, BackgroundTerminalEntry>();
+  const sameManager = state.managerId === event.managerId;
   for (const view of terminalViews) {
+    const existing = sameManager ? state.terminals.get(view.id) : undefined;
     rebuilt.set(view.id, {
       view,
-      stdout: initOutputBuffer(view.stdout, maxOutputBytes),
-      stderr: initOutputBuffer(view.stderr, maxOutputBytes),
+      stdout: reconcileOutputBuffer(existing?.stdout, view.stdout, maxOutputBytes),
+      stderr: reconcileOutputBuffer(existing?.stderr, view.stderr, maxOutputBytes),
       lastSequence: event.sequence,
       updatedAt: event.timestamp,
     });
@@ -359,6 +370,7 @@ function applySnapshot(
       event.sequence,
     ),
     controlResults: state.controlResults,
+    needsReconciliation: false,
     version: state.version + 1,
   };
 }
@@ -385,6 +397,18 @@ export function applyBackgroundTerminalEvent(
     return applySnapshot(state, event, event.snapshot.terminals, maxOutputBytes);
   }
 
+  // Only snapshots may establish a different process epoch. A late event from
+  // an older Pi manager must never overwrite rows belonging to the current one.
+  if (state.managerId !== null && state.managerId !== event.managerId) {
+    return state.needsReconciliation
+      ? state
+      : { ...state, needsReconciliation: true, version: state.version + 1 };
+  }
+
+  const previousManagerSequence = state.managerSequences.get(event.managerId);
+  const hasSequenceGap =
+    previousManagerSequence !== undefined && event.sequence > previousManagerSequence + 1;
+  const needsReconciliation = state.needsReconciliation || hasSequenceGap;
   let terminals = state.terminals;
   let controlResults = state.controlResults;
 
@@ -407,6 +431,7 @@ export function applyBackgroundTerminalEvent(
         event.sequence,
         event.timestamp,
         maxOutputBytes,
+        needsReconciliation,
       );
       break;
     }
@@ -433,6 +458,7 @@ export function applyBackgroundTerminalEvent(
       event.sequence,
     ),
     controlResults,
+    needsReconciliation,
     version: state.version + 1,
   };
 }

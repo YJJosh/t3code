@@ -189,12 +189,14 @@ function BackgroundTerminalOutputPane({ buffer }: BackgroundTerminalOutputPanePr
 interface BackgroundTerminalDetailProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
+  managerId: string;
   terminal: BackgroundTerminalEntry;
 }
 
 function BackgroundTerminalDetail({
   environmentId,
   threadId,
+  managerId,
   terminal,
 }: BackgroundTerminalDetailProps) {
   const view = terminal.view;
@@ -296,6 +298,7 @@ function BackgroundTerminalDetail({
       <BackgroundTerminalControls
         environmentId={environmentId}
         threadId={threadId}
+        managerId={managerId}
         terminal={terminal}
       />
     </div>
@@ -356,7 +359,13 @@ export function BackgroundTerminalRuns({
     selectedTerminalId === null ? null : (state.terminals.get(selectedTerminalId) ?? null);
   const close = useCallback(() => setSelectedTerminalId(null), []);
 
-  if (!enabled || environmentId === null || threadId === null || terminals.length === 0) {
+  if (
+    !enabled ||
+    environmentId === null ||
+    threadId === null ||
+    state.managerId === null ||
+    terminals.length === 0
+  ) {
     return null;
   }
 
@@ -426,9 +435,10 @@ export function BackgroundTerminalRuns({
           <SheetTitle className="sr-only">Background terminal details</SheetTitle>
           {selectedTerminal !== null && (
             <BackgroundTerminalDetail
-              key={selectedTerminal.view.id}
+              key={`${state.managerId}:${selectedTerminal.view.id}`}
               environmentId={environmentId}
               threadId={threadId}
+              managerId={state.managerId}
               terminal={selectedTerminal}
             />
           )}
