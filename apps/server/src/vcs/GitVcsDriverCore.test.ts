@@ -120,10 +120,9 @@ it.effect("uses stable diagnostics for every parsed non-repository command", () 
     NodeServices.layer,
     Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
   );
-  const layer = GitVcsDriver.layer.pipe(
-    Layer.provide(ServerConfigLayer),
-    Layer.provideMerge(nodeServicesLayer),
-  );
+  const layer = GitVcsDriver.layerWithWorkler(
+    WorklerWorkspaceService.layerFromLibrary(makeFakeWorklerLibrary()),
+  ).pipe(Layer.provideMerge(nodeServicesLayer));
 
   return Effect.gen(function* () {
     const driver = yield* GitVcsDriver.GitVcsDriver;
