@@ -341,6 +341,40 @@ describe("makePiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
+  it.effect("steers user input into an autonomous Pi continuation turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("12121212-1212-4212-8212-121212121212");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* takeEventOfType(events, "thread.started");
+
+      // A background extension wake-up starts a new agent loop without a user prompt.
+      yield* fake.pushFrame({ type: "agent_start" });
+      const autonomousTurn = yield* takeEventOfType(events, "turn.started");
+      expect(autonomousTurn.type).toBe("turn.started");
+
+      const steeredTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "correct the running background work",
+      });
+      const steer = yield* fake.takeStdinUntil((command) => command.type === "steer");
+      expect(steer.message).toBe("correct the running background work");
+      expect(steeredTurn.turnId).toBe(autonomousTurn.turnId);
+
+      yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+      const completed = yield* takeEventOfType(events, "turn.completed");
+      expect(completed.turnId).toBe(autonomousTurn.turnId);
+      expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
   it.effect("synchronizes Pi context and Codex Fast service before the user prompt", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi({ contextCommand: true, fastCommand: true });

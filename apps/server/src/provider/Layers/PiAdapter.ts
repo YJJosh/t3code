@@ -524,6 +524,36 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         });
       });
 
+    const ensureActiveTurnForAgentEvent = (ctx: PiSessionContext) =>
+      ctx.sendSemaphore.withPermit(
+        Effect.gen(function* () {
+          if (ctx.activeTurnId !== undefined) return ctx.activeTurnId;
+
+          // Pi extensions can resume the agent autonomously after the user turn
+          // completed (for example, when a background subagent reports back).
+          // Model that work as a synthetic turn so a concurrent user message is
+          // steered into the live agent loop instead of rejected as a new prompt.
+          const turnId = TurnId.make(yield* randomUUIDv4);
+          const updatedAt = yield* nowIso;
+          ctx.activeTurnId = turnId;
+          ctx.session = {
+            ...ctx.session,
+            status: "running",
+            activeTurnId: turnId,
+            updatedAt,
+          };
+          yield* emit({
+            type: "turn.started",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            turnId,
+            payload: ctx.session.model ? { model: ctx.session.model } : {},
+          });
+          return turnId;
+        }),
+      );
+
     const handleToolEvent = (
       ctx: PiSessionContext,
       lifecycle: "item.started" | "item.updated" | "item.completed",
@@ -584,22 +614,30 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             }
             return;
           }
+          case "agent_start":
+            yield* ensureActiveTurnForAgentEvent(ctx);
+            return;
           case "message_start":
+            yield* ensureActiveTurnForAgentEvent(ctx);
             return;
           case "message_update":
           case "message_end":
+            yield* ensureActiveTurnForAgentEvent(ctx);
             yield* emitAssistantDelta(ctx, message.message);
             if (message.type === "message_end") {
               yield* finishAssistantItem(ctx);
             }
             return;
           case "tool_execution_start":
+            yield* ensureActiveTurnForAgentEvent(ctx);
             yield* handleToolEvent(ctx, "item.started", message);
             return;
           case "tool_execution_update":
+            yield* ensureActiveTurnForAgentEvent(ctx);
             yield* handleToolEvent(ctx, "item.updated", message);
             return;
           case "tool_execution_end":
+            yield* ensureActiveTurnForAgentEvent(ctx);
             yield* handleToolEvent(ctx, "item.completed", message);
             return;
           case "agent_end": {
