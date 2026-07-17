@@ -17,8 +17,12 @@
 import {
   EventId,
   type ModelSelection,
+  PI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION,
   PI_PROFILE_OPTION_ID,
   type PiSettings,
+  type PiBackgroundTerminalControlInput,
+  type PiBackgroundTerminalControlResult,
+  type PiBackgroundTerminalEvent,
   type PiSubagentControlInput,
   type PiSubagentEvent,
   ProviderDriverKind,
@@ -33,6 +37,7 @@ import {
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -56,6 +61,7 @@ import {
   buildPiRpcArgs,
   buildPiRpcEnv,
   extractPiAssistantText,
+  parsePiBackgroundTerminalNotification,
   parsePiContextWindow,
   parsePiFastServiceEnabled,
   parsePiSubagentNotification,
@@ -187,6 +193,16 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       readonly threadId: ThreadId;
       readonly event: PiSubagentEvent;
     }>();
+    const backgroundTerminalEvents = yield* PubSub.unbounded<{
+      readonly threadId: ThreadId;
+      readonly event: PiBackgroundTerminalEvent;
+    }>();
+    const backgroundTerminalControlWaiters = new Map<
+      string,
+      Deferred.Deferred<PiBackgroundTerminalControlResult>
+    >();
+    const backgroundTerminalControlKey = (threadId: ThreadId, requestId: string) =>
+      `${threadId}\u0000${requestId}`;
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
@@ -204,6 +220,21 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     const makeStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
     const emit = (event: ProviderRuntimeEvent) =>
       PubSub.publish(runtimeEvents, event).pipe(Effect.asVoid);
+    const resetBackgroundTerminals = (threadId: ThreadId) =>
+      Effect.gen(function* () {
+        const id = yield* randomUUIDv4;
+        yield* PubSub.publish(backgroundTerminalEvents, {
+          threadId,
+          event: {
+            contractVersion: PI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION,
+            managerId: `pi-session-${id}`,
+            sequence: 1,
+            timestamp: yield* nowIso,
+            kind: "snapshot",
+            snapshot: { terminals: [], replay: true },
+          },
+        });
+      });
 
     const emitWarning = (
       threadId: ThreadId,
@@ -258,9 +289,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         });
       });
 
-    const piAdvertisesCommand = (ctx: PiSessionContext, commandName: string) =>
+    const piAdvertisesCommand = (ctx: PiSessionContext, commandName: string, refresh = false) =>
       Effect.gen(function* () {
-        if (ctx.extensionCommandNames === undefined) {
+        if (refresh || ctx.extensionCommandNames === undefined) {
           const commands = yield* request(ctx, { type: "get_commands" });
           ctx.extensionCommandNames = piRpcCommandNames(commands);
         }
@@ -342,6 +373,25 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const subagentEvent = parsePiSubagentNotification(request);
         if (subagentEvent) {
           yield* PubSub.publish(subagentEvents, { threadId: ctx.threadId, event: subagentEvent });
+          return;
+        }
+        const backgroundTerminalEvent = parsePiBackgroundTerminalNotification(request);
+        if (backgroundTerminalEvent) {
+          yield* PubSub.publish(backgroundTerminalEvents, {
+            threadId: ctx.threadId,
+            event: backgroundTerminalEvent,
+          });
+          if (
+            backgroundTerminalEvent.kind === "control_result" &&
+            backgroundTerminalEvent.control.requestId
+          ) {
+            const waiter = backgroundTerminalControlWaiters.get(
+              backgroundTerminalControlKey(ctx.threadId, backgroundTerminalEvent.control.requestId),
+            );
+            if (waiter) {
+              yield* Deferred.succeed(waiter, backgroundTerminalEvent.control).pipe(Effect.ignore);
+            }
+          }
           return;
         }
         const response = autoRespondToExtensionUi(request);
@@ -592,6 +642,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                 payload: { exitKind: code === 0 ? "graceful" : "error" },
               });
               sessions.delete(ctx.threadId);
+              yield* resetBackgroundTerminals(ctx.threadId);
             }),
           ),
           Effect.forkIn(ctx.scope),
@@ -606,6 +657,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         ctx.stopped = true;
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         sessions.delete(ctx.threadId);
+        yield* resetBackgroundTerminals(ctx.threadId);
         yield* emit({
           type: "session.exited",
           ...(yield* makeStamp()),
@@ -692,6 +744,11 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           sendSemaphore,
           stopped: false,
         };
+
+        // A Pi process owns its extension-local terminal manager. Clear the
+        // previous process epoch before wiring onMessage so a real startup
+        // snapshot from the new extension always wins this ordering race.
+        yield* resetBackgroundTerminals(input.threadId);
 
         const connection = yield* makePiRpcConnection({
           threadId: input.threadId,
@@ -955,7 +1012,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // model by Pi. Verify the private bridge command exists before sending
         // it so opening a thread without the optional pi-subagents extension
         // can never create an unintended user turn.
-        if (!(yield* piAdvertisesCommand(ctx, "subagents-rpc"))) {
+        if (!(yield* piAdvertisesCommand(ctx, "subagents-rpc", true))) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
             operation: "controlSubagent",
@@ -988,6 +1045,78 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         });
       });
 
+    const controlBackgroundTerminal = (input: PiBackgroundTerminalControlInput) =>
+      Effect.gen(function* () {
+        const ctx = yield* requireSession(input.threadId);
+        // Pi treats unknown slash commands as model prompts. Only send this
+        // private extension command after it was advertised by the live session.
+        if (!(yield* piAdvertisesCommand(ctx, "background-terminals-rpc", true))) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "controlBackgroundTerminal",
+            issue: "The Pi background-terminal control extension is not installed in this session.",
+          });
+        }
+        const requestId = input.requestId ?? `t3-${yield* randomUUIDv4}`;
+        const waiterKey = backgroundTerminalControlKey(input.threadId, requestId);
+        if (backgroundTerminalControlWaiters.has(waiterKey)) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "controlBackgroundTerminal",
+            issue: `A background-terminal control with request id '${requestId}' is already pending.`,
+          });
+        }
+        const envelope = {
+          action: input.action,
+          request_id: requestId,
+          ...(input.action === "kill" ? { terminal_id: input.terminalId } : {}),
+        };
+        const encoded = yield* encodeUnknownJsonString(envelope).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "background-terminals-rpc",
+                detail: "Failed to encode Pi background-terminal control.",
+                cause,
+              }),
+          ),
+        );
+        const waiter = yield* Deferred.make<PiBackgroundTerminalControlResult>();
+        backgroundTerminalControlWaiters.set(waiterKey, waiter);
+        const result = yield* Effect.gen(function* () {
+          yield* request(ctx, {
+            type: "prompt",
+            message: `/background-terminals-rpc ${encoded}`,
+          });
+          return yield* Deferred.await(waiter).pipe(
+            Effect.timeout("12 seconds"),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "background-terminals-rpc",
+                  detail: "Timed out waiting for the Pi background-terminal control result.",
+                  cause,
+                }),
+            ),
+          );
+        }).pipe(
+          Effect.ensuring(Effect.sync(() => backgroundTerminalControlWaiters.delete(waiterKey))),
+        );
+        if (result.action !== input.action || !result.success) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "background-terminals-rpc",
+            detail:
+              result.error ||
+              (result.action !== input.action
+                ? `Pi returned a '${result.action}' result for the '${input.action}' control.`
+                : `Pi rejected the background-terminal ${input.action} control.`),
+          });
+        }
+      });
+
     const stopAll: PiAdapterShape["stopAll"] = () =>
       Effect.forEach(Array.from(sessions.values()), stopSessionInternal, { discard: true });
 
@@ -995,6 +1124,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       Effect.ignore(stopAll()).pipe(
         Effect.tap(() => PubSub.shutdown(runtimeEvents)),
         Effect.tap(() => PubSub.shutdown(subagentEvents)),
+        Effect.tap(() => PubSub.shutdown(backgroundTerminalEvents)),
       ),
     );
 
@@ -1006,6 +1136,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       subagents: {
         control: controlSubagent,
         streamEvents: Stream.fromPubSub(subagentEvents),
+      },
+      backgroundTerminals: {
+        control: controlBackgroundTerminal,
+        streamEvents: Stream.fromPubSub(backgroundTerminalEvents),
       },
       startSession,
       sendTurn,

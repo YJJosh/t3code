@@ -46,6 +46,7 @@ import {
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   OrchestrationReplayEventsError,
+  PiBackgroundTerminalControlError,
   PiSubagentControlError,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
@@ -324,6 +325,8 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.vcsInit, AuthOrchestrationOperateScope],
   [WS_METHODS.subagentsControl, AuthOrchestrationOperateScope],
   [WS_METHODS.subscribeSubagentEvents, AuthOrchestrationReadScope],
+  [WS_METHODS.backgroundTerminalsControl, AuthOrchestrationOperateScope],
+  [WS_METHODS.subscribeBackgroundTerminalEvents, AuthOrchestrationReadScope],
   [WS_METHODS.reviewGetDiffPreview, AuthReviewWriteScope],
   [WS_METHODS.terminalOpen, AuthTerminalOperateScope],
   [WS_METHODS.terminalAttach, AuthTerminalOperateScope],
@@ -1656,6 +1659,31 @@ const makeWsRpcLayer = (
               Stream.map((entry) => entry.event),
             ),
             { "rpc.aggregate": "subagents" },
+          ),
+        [WS_METHODS.backgroundTerminalsControl]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.backgroundTerminalsControl,
+            providerService.controlBackgroundTerminal(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PiBackgroundTerminalControlError({
+                    message:
+                      cause instanceof Error
+                        ? cause.message
+                        : "Failed to control Pi background terminal.",
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "background-terminals" },
+          ),
+        [WS_METHODS.subscribeBackgroundTerminalEvents]: (input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeBackgroundTerminalEvents,
+            providerService.streamBackgroundTerminalEvents.pipe(
+              Stream.filter((entry) => entry.threadId === input.threadId),
+              Stream.map((entry) => entry.event),
+            ),
+            { "rpc.aggregate": "background-terminals" },
           ),
         [WS_METHODS.reviewGetDiffPreview]: (input) =>
           observeRpcEffect(WS_METHODS.reviewGetDiffPreview, review.getDiffPreview(input), {

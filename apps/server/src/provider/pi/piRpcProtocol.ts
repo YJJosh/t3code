@@ -9,8 +9,10 @@
  * @module provider/pi/piRpcProtocol
  */
 import {
+  PiBackgroundTerminalEvent,
   PiSubagentEvent,
   type PiSettings,
+  type PiBackgroundTerminalEvent as PiBackgroundTerminalEventType,
   type PiSubagentEvent as PiSubagentEventType,
 } from "@t3tools/contracts";
 import type {
@@ -29,9 +31,14 @@ export const DEFAULT_PI_BINARY = "pi";
 export const DEFAULT_PI_PROFILE = "coder";
 export const PI_SUBAGENTS_RPC_BRIDGE_ENV = "PI_SUBAGENTS_RPC_BRIDGE";
 export const PI_SUBAGENTS_RPC_EVENT_PREFIX = "pi-subagents:event:v1:";
+export const PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV = "PI_BACKGROUND_TERMINALS_RPC_BRIDGE";
+export const PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX = "pi-background-terminals:event:v1:";
 
 const decodePiSubagentEventJson = Schema.decodeUnknownOption(
   Schema.fromJsonString(PiSubagentEvent),
+);
+const decodePiBackgroundTerminalEventJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(PiBackgroundTerminalEvent),
 );
 
 /** Pi's `ThinkingLevel` union, mirrored so we can validate without importing runtime code. */
@@ -164,6 +171,8 @@ export function buildPiRpcEnv(
     // Opt in to structured pi-subagents notifications. Extensions that do not
     // implement the bridge simply ignore this environment variable.
     [PI_SUBAGENTS_RPC_BRIDGE_ENV]: "1",
+    // Opt in independently to the structured Pi background-terminal bridge.
+    [PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV]: "1",
     ...(agentDir ? { PI_CODING_AGENT_DIR: agentDir } : {}),
   };
 }
@@ -181,6 +190,24 @@ export function parsePiSubagentNotification(
   }
   return Option.getOrUndefined(
     decodePiSubagentEventJson(request.message.slice(PI_SUBAGENTS_RPC_EVENT_PREFIX.length)),
+  );
+}
+
+/** Decode a structured Pi background-terminal envelope from an RPC UI notification. */
+export function parsePiBackgroundTerminalNotification(
+  request: PiExtensionUiRequest,
+): PiBackgroundTerminalEventType | undefined {
+  if (
+    request.method !== "notify" ||
+    typeof request.message !== "string" ||
+    !request.message.startsWith(PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX)
+  ) {
+    return undefined;
+  }
+  return Option.getOrUndefined(
+    decodePiBackgroundTerminalEventJson(
+      request.message.slice(PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX.length),
+    ),
   );
 }
 
