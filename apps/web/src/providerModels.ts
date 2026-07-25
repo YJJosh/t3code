@@ -14,6 +14,12 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
+const PI_DRIVER_KIND = ProviderDriverKind.make("pi");
+
+export interface ProviderRuntimeModePresentation {
+  readonly driver: ProviderDriverKind;
+  readonly showRuntimeModeToggle?: boolean;
+}
 
 export function formatProviderDriverKindLabel(provider: ProviderDriverKind): string {
   return provider
@@ -51,6 +57,12 @@ export function getProviderInteractionModeToggle(
   provider: ProviderDriverKind,
 ): boolean {
   return getProviderSnapshot(providers, provider)?.showInteractionModeToggle ?? true;
+}
+
+export function getProviderRuntimeModeToggle(
+  provider: ProviderRuntimeModePresentation | null | undefined,
+): boolean {
+  return provider?.showRuntimeModeToggle ?? provider?.driver !== PI_DRIVER_KIND;
 }
 
 export function isProviderEnabled(

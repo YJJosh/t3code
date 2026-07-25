@@ -155,8 +155,8 @@ describe("discoverPiModelsWithSdk", () => {
   it("exposes Fast only when the loaded profile registers the command", async () => {
     const result = await discoverPiModelsWithSdk({
       createAgentSessionServices: async () => ({
-        modelRegistry: {
-          getAvailable: () => [
+        modelRuntime: {
+          getAvailable: async () => [
             {
               id: "gpt-5.5",
               name: "GPT-5.5",
@@ -183,8 +183,8 @@ describe("discoverPiModelsWithSdk", () => {
   it("exposes context controls when the loaded profile registers the command", async () => {
     const result = await discoverPiModelsWithSdk({
       createAgentSessionServices: async () => ({
-        modelRegistry: {
-          getAvailable: () => [
+        modelRuntime: {
+          getAvailable: async () => [
             {
               id: "gpt-5.6-sol",
               name: "GPT-5.6 Sol",
@@ -209,14 +209,16 @@ describe("discoverPiModelsWithSdk", () => {
   });
 
   it("loads extension-registered providers before enumerating available models", async () => {
-    let receivedOptions: Record<string, unknown> | undefined;
+    let receivedOptions:
+      | Parameters<Parameters<typeof discoverPiModelsWithSdk>[0]["createAgentSessionServices"]>[0]
+      | undefined;
     const result = await discoverPiModelsWithSdk(
       {
         createAgentSessionServices: async (options) => {
           receivedOptions = options;
           return {
-            modelRegistry: {
-              getAvailable: () => [
+            modelRuntime: {
+              getAvailable: async () => [
                 {
                   id: "claude-sonnet-5",
                   name: "Claude Sonnet 5",
@@ -252,7 +254,7 @@ describe("discoverPiModelsWithSdk", () => {
         noContextFiles: true,
       },
     });
-    const extensionFlagValues = Reflect.get(receivedOptions ?? {}, "extensionFlagValues");
+    const extensionFlagValues = receivedOptions?.extensionFlagValues;
     expect(extensionFlagValues).toBeInstanceOf(Map);
     expect((extensionFlagValues as Map<string, boolean | string>).get("profile")).toBe("coder");
   });

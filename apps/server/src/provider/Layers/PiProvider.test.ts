@@ -17,6 +17,8 @@ describe("buildInitialPiProviderSnapshot", () => {
         }),
       );
 
+      expect(snapshot).toMatchObject({ showRuntimeModeToggle: false });
+
       const profileDescriptor = snapshot.models[0]?.capabilities?.optionDescriptors?.find(
         (descriptor) => descriptor.id === "profile",
       );

@@ -23,6 +23,7 @@ import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import { getProviderRuntimeModeToggle } from "../../lib/providerOptions";
 import { groupProjectsByRepository } from "../../lib/repositoryGroups";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -136,6 +137,7 @@ type NewTaskFlowContextValue = {
   readonly selectedModel: ModelSelection | null;
   readonly selectedModelOption: ModelOption | null;
   readonly selectedProviderSkills: ReadonlyArray<ServerProviderSkill>;
+  readonly showRuntimeModeToggle: boolean;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
   readonly filteredBranches: ReadonlyArray<VcsRef>;
   readonly reset: () => void;
@@ -391,13 +393,18 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         option.selection.instanceId === selectedModel.instanceId &&
         option.selection.model === selectedModel.model,
     ) ?? null;
-  const selectedProviderSkills = useMemo(
+  const selectedProviderStatus = useMemo(
     () =>
       selectedEnvironmentServerConfig?.providers.find(
         (provider) => provider.instanceId === selectedModel?.instanceId,
-      )?.skills ?? [],
+      ) ?? null,
     [selectedEnvironmentServerConfig, selectedModel?.instanceId],
   );
+  const selectedProviderSkills = useMemo(
+    () => selectedProviderStatus?.skills ?? [],
+    [selectedProviderStatus],
+  );
+  const showRuntimeModeToggle = getProviderRuntimeModeToggle(selectedProviderStatus);
   const setSelectedModelKey = useCallback(
     (key: string | null) => {
       if (!key || !selectedProjectDraftKey) {
@@ -846,6 +853,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       selectedModel,
       selectedModelOption,
       selectedProviderSkills,
+      showRuntimeModeToggle,
       providerGroups,
       filteredBranches,
       reset,
@@ -901,6 +909,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       selectedModelOption,
       selectedProjectDraftKey,
       selectedProviderSkills,
+      showRuntimeModeToggle,
       setSelectedModelOptions,
       selectedProject,
       selectedProjectKey,

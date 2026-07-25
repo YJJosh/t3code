@@ -65,7 +65,9 @@ import {
 import {
   applyProviderOptionMenuEvent,
   buildProviderOptionMenuActions,
+  buildRuntimeModeMenuActions,
   excludeProviderOptionDescriptors,
+  getProviderRuntimeModeToggle,
   providerOptionsConfigurationLabel,
   resolveProviderOptionDescriptors,
 } from "../../lib/providerOptions";
@@ -334,6 +336,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       ) ?? null
     );
   }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  const showRuntimeModeToggle = getProviderRuntimeModeToggle(selectedProviderStatus);
 
   // ── Trigger detection ────────────────────────────────────
   const [composerSelection, setComposerSelection] = useState(() => ({
@@ -636,31 +639,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const optionsMenuActions = useMemo(
     () => [
       ...buildProviderOptionMenuActions(providerOptionDescriptors),
-      {
-        id: "options-runtime",
-        title: "Runtime",
-        subtitle:
-          currentRuntimeMode === "approval-required"
-            ? "Approve actions"
-            : currentRuntimeMode === "auto-accept-edits"
-              ? "Auto-accept edits"
-              : currentRuntimeMode === "auto"
-                ? "Auto"
-                : "Full access",
-        subactions: [
-          { id: "options:runtime:approval-required", title: "Approve actions" },
-          { id: "options:runtime:auto-accept-edits", title: "Auto-accept edits" },
-          { id: "options:runtime:auto", title: "Auto" },
-          { id: "options:runtime:full-access", title: "Full access" },
-        ].map((option) => {
-          const value = option.id.replace("options:runtime:", "");
-          return {
-            id: option.id,
-            title: option.title,
-            state: currentRuntimeMode === value ? ("on" as const) : undefined,
-          };
-        }),
-      },
+      ...buildRuntimeModeMenuActions({
+        runtimeMode: currentRuntimeMode,
+        showRuntimeModeToggle,
+      }),
       {
         id: "options-interaction",
         title: "Interaction",
@@ -678,7 +660,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         }),
       },
     ],
-    [currentInteractionMode, currentRuntimeMode, providerOptionDescriptors],
+    [currentInteractionMode, currentRuntimeMode, providerOptionDescriptors, showRuntimeModeToggle],
   );
 
   // ── Menu handlers ────────────────────────────────────────

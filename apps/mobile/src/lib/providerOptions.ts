@@ -1,7 +1,9 @@
 import type {
   ModelCapabilities,
+  ProviderDriverKind,
   ProviderOptionDescriptor,
   ProviderOptionSelection,
+  RuntimeMode,
 } from "@t3tools/contracts";
 import type { MenuAction } from "@react-native-menu/menu";
 import {
@@ -12,6 +14,17 @@ import {
 } from "@t3tools/shared/model";
 
 const PROVIDER_OPTION_EVENT_PREFIX = "provider-option:";
+
+export interface ProviderRuntimeModePresentation {
+  readonly driver: ProviderDriverKind;
+  readonly showRuntimeModeToggle?: boolean;
+}
+
+export function getProviderRuntimeModeToggle(
+  provider: ProviderRuntimeModePresentation | null | undefined,
+): boolean {
+  return provider?.showRuntimeModeToggle ?? provider?.driver !== "pi";
+}
 
 function providerOptionEvent(id: string, value: string | boolean): string {
   return `${PROVIDER_OPTION_EVENT_PREFIX}${encodeURIComponent(JSON.stringify({ id, value }))}`;
@@ -99,6 +112,36 @@ export function buildProviderOptionMenuActions(
       subactions: choices,
     };
   });
+}
+
+export function buildRuntimeModeMenuActions(input: {
+  readonly runtimeMode: RuntimeMode;
+  readonly showRuntimeModeToggle: boolean;
+}): ReadonlyArray<MenuAction> {
+  if (!input.showRuntimeModeToggle) {
+    return [];
+  }
+
+  const options = [
+    { value: "approval-required", title: "Approve actions" },
+    { value: "auto-accept-edits", title: "Auto-accept edits" },
+    { value: "auto", title: "Auto" },
+    { value: "full-access", title: "Full access" },
+  ] as const;
+  const selectedOption = options.find((option) => option.value === input.runtimeMode);
+
+  return [
+    {
+      id: "options-runtime",
+      title: "Runtime",
+      subtitle: selectedOption?.title,
+      subactions: options.map((option) => ({
+        id: `options:runtime:${option.value}`,
+        title: option.title,
+        state: input.runtimeMode === option.value ? ("on" as const) : undefined,
+      })),
+    },
+  ];
 }
 
 export function providerOptionsConfigurationLabel(
