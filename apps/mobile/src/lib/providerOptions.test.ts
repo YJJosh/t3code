@@ -5,6 +5,7 @@ import { PI_PROFILE_OPTION_ID, type ModelCapabilities } from "@t3tools/contracts
 import {
   applyProviderOptionMenuEvent,
   buildProviderOptionMenuActions,
+  buildRuntimeModeMenuActions,
   excludeProviderOptionDescriptors,
   providerOptionsConfigurationLabel,
   resolveProviderOptionDescriptors,
@@ -95,6 +96,32 @@ describe("mobile provider options", () => {
       { id: "reasoningEffort", value: "high" },
       { id: "serviceTier", value: "default" },
       { id: PI_PROFILE_OPTION_ID, value: "coder" },
+    ]);
+  });
+
+  it("omits runtime access options when the provider does not support them", () => {
+    expect(
+      buildRuntimeModeMenuActions({
+        runtimeMode: "full-access",
+        showRuntimeModeToggle: false,
+      }),
+    ).toEqual([]);
+    expect(
+      buildRuntimeModeMenuActions({
+        runtimeMode: "auto-accept-edits",
+        showRuntimeModeToggle: true,
+      }),
+    ).toMatchObject([
+      {
+        title: "Runtime",
+        subtitle: "Auto-accept edits",
+        subactions: [
+          { title: "Approve actions", state: undefined },
+          { title: "Auto-accept edits", state: "on" },
+          { title: "Auto", state: undefined },
+          { title: "Full access", state: undefined },
+        ],
+      },
     ]);
   });
 

@@ -31,6 +31,7 @@ import { convertPastedImagesToAttachments, pickComposerImages } from "../../lib/
 import {
   applyProviderOptionMenuEvent,
   buildProviderOptionMenuActions,
+  buildRuntimeModeMenuActions,
   providerOptionsConfigurationLabel,
   resolveProviderOptionDescriptors,
 } from "../../lib/providerOptions";
@@ -574,31 +575,10 @@ export function NewTaskDraftScreen(props: {
   const optionsMenuActions = useMemo(
     () => [
       ...buildProviderOptionMenuActions(providerOptionDescriptors),
-      {
-        id: "options-runtime",
-        title: "Runtime",
-        subtitle:
-          flow.runtimeMode === "approval-required"
-            ? "Approve actions"
-            : flow.runtimeMode === "auto-accept-edits"
-              ? "Auto-accept edits"
-              : flow.runtimeMode === "auto"
-                ? "Auto"
-                : "Full access",
-        subactions: [
-          { id: "options:runtime:approval-required", title: "Approve actions" },
-          { id: "options:runtime:auto-accept-edits", title: "Auto-accept edits" },
-          { id: "options:runtime:auto", title: "Auto" },
-          { id: "options:runtime:full-access", title: "Full access" },
-        ].map((option) => {
-          const value = option.id.replace("options:runtime:", "");
-          return {
-            id: option.id,
-            title: option.title,
-            state: flow.runtimeMode === value ? ("on" as const) : undefined,
-          };
-        }),
-      },
+      ...buildRuntimeModeMenuActions({
+        runtimeMode: flow.runtimeMode,
+        showRuntimeModeToggle: flow.showRuntimeModeToggle,
+      }),
       {
         id: "options-interaction",
         title: "Interaction",
@@ -616,7 +596,7 @@ export function NewTaskDraftScreen(props: {
         }),
       },
     ],
-    [flow.interactionMode, flow.runtimeMode, providerOptionDescriptors],
+    [flow.interactionMode, flow.runtimeMode, flow.showRuntimeModeToggle, providerOptionDescriptors],
   );
 
   const workspaceMenuActions = useMemo(() => {

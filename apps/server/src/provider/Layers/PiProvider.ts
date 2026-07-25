@@ -13,7 +13,6 @@
 import {
   PI_PROFILE_OPTION_ID,
   type PiSettings,
-  ProviderDriverKind,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
@@ -43,10 +42,10 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 
-const PROVIDER = ProviderDriverKind.make("pi");
 const PI_PRESENTATION = {
   displayName: "Pi",
   showInteractionModeToggle: false,
+  showRuntimeModeToggle: false,
   // Pi supports in-session model switching via the RPC `set_model` command.
   requiresNewThreadForModelChange: false,
 } as const;

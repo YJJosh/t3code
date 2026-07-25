@@ -18,9 +18,11 @@ describe("ServerProvider", () => {
         status: "authenticated",
       },
       checkedAt: "2026-04-10T00:00:00.000Z",
+      showRuntimeModeToggle: false,
       models: [],
     });
 
+    expect(parsed.showRuntimeModeToggle).toBe(false);
     expect(parsed.slashCommands).toEqual([]);
     expect(parsed.skills).toEqual([]);
     expect(parsed.versionAdvisory).toBeUndefined();

@@ -61,13 +61,21 @@ export interface PiModelDiscoveryOptions {
   readonly profile?: string | undefined;
 }
 
-interface PiSdkModelRegistry {
-  readonly getAvailable: () => ReadonlyArray<PiSdkModel>;
-  readonly getError: () => string | undefined;
+type PiSdkCreateAgentSessionServices =
+  (typeof import("@earendil-works/pi-coding-agent"))["createAgentSessionServices"];
+type PiSdkCreateAgentSessionServicesOptions = Parameters<PiSdkCreateAgentSessionServices>[0];
+type PiSdkAgentSessionServices = Awaited<ReturnType<PiSdkCreateAgentSessionServices>>;
+type PiSdkModelRuntimeShape = PiSdkAgentSessionServices["modelRuntime"];
+
+interface PiSdkModelRuntime {
+  readonly getAvailable: (
+    ...args: Parameters<PiSdkModelRuntimeShape["getAvailable"]>
+  ) => Promise<ReadonlyArray<PiSdkModel>>;
+  readonly getError: PiSdkModelRuntimeShape["getError"];
 }
 
 interface PiSdkRuntimeServices {
-  readonly modelRegistry: PiSdkModelRegistry;
+  readonly modelRuntime: PiSdkModelRuntime;
   readonly resourceLoader?:
     | {
         readonly getExtensions: () => {
@@ -84,17 +92,9 @@ interface PiSdkRuntimeServices {
 }
 
 interface PiSdkModule {
-  readonly createAgentSessionServices: (options: {
-    readonly cwd: string;
-    readonly agentDir?: string;
-    readonly extensionFlagValues?: Map<string, boolean | string>;
-    readonly resourceLoaderOptions?: {
-      readonly noSkills?: boolean;
-      readonly noPromptTemplates?: boolean;
-      readonly noThemes?: boolean;
-      readonly noContextFiles?: boolean;
-    };
-  }) => Promise<PiSdkRuntimeServices>;
+  readonly createAgentSessionServices: (
+    options: PiSdkCreateAgentSessionServicesOptions,
+  ) => Promise<PiSdkRuntimeServices>;
 }
 
 function piModelSlug(model: PiSdkModel): string {
@@ -275,7 +275,7 @@ export async function discoverPiModelsWithSdk(
       noContextFiles: true,
     },
   });
-  const available = services.modelRegistry.getAvailable();
+  const available = await services.modelRuntime.getAvailable();
   const extensions = services.resourceLoader?.getExtensions().extensions ?? [];
   const codexFastCommandAvailable = extensions.some((extension) =>
     extension.commands.has(PI_CODEX_FAST_COMMAND),
@@ -287,7 +287,7 @@ export async function discoverPiModelsWithSdk(
     toServerProviderModel(model, { codexFastCommandAvailable, contextCommandAvailable }),
   );
   const errors = [
-    services.modelRegistry.getError(),
+    services.modelRuntime.getError(),
     ...services.diagnostics
       .filter((diagnostic) => diagnostic.type === "error")
       .map((diagnostic) => diagnostic.message),
