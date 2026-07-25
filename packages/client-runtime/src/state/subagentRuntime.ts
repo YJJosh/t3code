@@ -44,6 +44,18 @@ export interface SubagentRunEntry {
   readonly updatedAt: string;
 }
 
+export interface SubagentWorkflowGroup {
+  readonly workflowId: string;
+  readonly name: string | null;
+  /** Workflow-owned child runs in creation order. */
+  readonly runs: ReadonlyArray<SubagentRunEntry>;
+}
+
+export interface SubagentRunGroups {
+  readonly workflows: ReadonlyArray<SubagentWorkflowGroup>;
+  readonly standalone: ReadonlyArray<SubagentRunEntry>;
+}
+
 export interface SubagentControlEntry extends PiSubagentControlResult {
   readonly sequence: number;
   readonly timestamp: string;
@@ -358,7 +370,51 @@ export function applySubagentEvent(
 }
 
 export function selectSubagentRuns(state: SubagentRuntimeState): ReadonlyArray<SubagentRunEntry> {
-  return Array.from(state.runs.values());
+  return Array.from(state.runs.values()).sort((left, right) => {
+    const leftCreatedAt = left.view.createdAt;
+    const rightCreatedAt = right.view.createdAt;
+    if (leftCreatedAt === undefined || rightCreatedAt === undefined) {
+      return 0;
+    }
+    return leftCreatedAt - rightCreatedAt;
+  });
+}
+
+/**
+ * Split the thread roster into standalone agents and workflow-owned children.
+ * A workflow is intentionally only a grouping projection: the v1 Pi bridge
+ * exposes per-child metadata, not authoritative workflow lifecycle or queued
+ * steps, so callers must not infer whole-workflow completion from this shape.
+ */
+export function selectSubagentRunGroups(state: SubagentRuntimeState): SubagentRunGroups {
+  const workflowsById = new Map<string, SubagentWorkflowGroup>();
+  const standalone: SubagentRunEntry[] = [];
+
+  for (const run of selectSubagentRuns(state)) {
+    const workflow = run.view.workflow;
+    if (workflow === undefined) {
+      standalone.push(run);
+      continue;
+    }
+
+    const existing = workflowsById.get(workflow.runId);
+    if (existing === undefined) {
+      workflowsById.set(workflow.runId, {
+        workflowId: workflow.runId,
+        name: workflow.name?.trim() || null,
+        runs: [run],
+      });
+      continue;
+    }
+
+    workflowsById.set(workflow.runId, {
+      ...existing,
+      name: existing.name ?? (workflow.name?.trim() || null),
+      runs: [...existing.runs, run],
+    });
+  }
+
+  return { workflows: Array.from(workflowsById.values()), standalone };
 }
 
 export function selectSubagentRun(

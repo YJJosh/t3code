@@ -10,15 +10,16 @@ import {
   formatSubagentActiveMs,
   formatSubagentCost,
   formatSubagentTokens,
-  groupSubagentRunsForRoster,
-  isSubagentRunQuiet,
-  subagentRosterSummaryLabel,
+  subagentRosterOverviewLabel,
   subagentActivityLabel,
   subagentRunAccessibleStatus,
+  subagentRunDisplayTitle,
+  subagentRunStatusLabel,
   subagentRunTitle,
   subagentStatusLabel,
   subagentStatusTone,
   summarizeSubagentActivity,
+  summarizeSubagentRoster,
 } from "./subagentPresentation.ts";
 
 function activity(overrides: Partial<SubagentActivityEntry>): SubagentActivityEntry {
@@ -77,9 +78,23 @@ describe("subagentPresentation", () => {
     expect(subagentStatusTone("killed")).toBe("error");
   });
 
-  it("prefers task text over run id for titles", () => {
+  it("prefers task text over run id for titles and workflow labels over prompts", () => {
     expect(subagentRunTitle("  Investigate flake  ", "run-1")).toBe("Investigate flake");
     expect(subagentRunTitle("   ", "run-1")).toBe("run-1");
+    const baseRun = runEntry("run-1", "running");
+    const workflowRun: SubagentRunEntry = {
+      ...baseRun,
+      view: {
+        ...baseRun.view,
+        workflow: {
+          runId: "wf-1",
+          name: "Review workflow",
+          label: "Security audit",
+          phase: "Review",
+        },
+      },
+    };
+    expect(subagentRunDisplayTitle(workflowRun)).toBe("Security audit");
   });
 
   it("summarizes activity without repeating its separate label", () => {
@@ -206,45 +221,62 @@ describe("subagentPresentation", () => {
     expect(formatSubagentActiveMs(95_000)).toBe("1m 35s");
   });
 
-  it("calls out needs_input in the accessible status but not other statuses", () => {
+  it("calls out actionable input without making false claims for workflow agents", () => {
     expect(subagentRunAccessibleStatus("needs_input")).toBe("Needs input — needs your input");
+    expect(subagentRunAccessibleStatus("needs_input", true)).toBe(
+      "Stopping — workflow agents cannot pause for input",
+    );
     expect(subagentRunAccessibleStatus("running")).toBe("Running");
     expect(subagentRunAccessibleStatus("failed")).toBe("Failed");
+
+    const baseRun = runEntry("workflow-input", "needs_input");
+    const workflowRun: SubagentRunEntry = {
+      ...baseRun,
+      view: {
+        ...baseRun.view,
+        workflow: { runId: "wf-1", label: "Unattended review" },
+      },
+    };
+    expect(subagentRunStatusLabel(workflowRun)).toBe("Stopping");
   });
 
-  it("treats only done/killed/interrupted as quiet, keeping failed always visible", () => {
-    expect(isSubagentRunQuiet("done")).toBe(true);
-    expect(isSubagentRunQuiet("killed")).toBe(true);
-    expect(isSubagentRunQuiet("interrupted")).toBe(true);
-    expect(isSubagentRunQuiet("failed")).toBe(false);
-    expect(isSubagentRunQuiet("running")).toBe(false);
-    expect(isSubagentRunQuiet("spawning")).toBe(false);
-    expect(isSubagentRunQuiet("needs_input")).toBe(false);
-  });
-
-  it("groups runs into attention vs quiet while preserving spawn order", () => {
-    const runs = [
+  it("summarizes roster activity for the compact inspector trigger", () => {
+    const stats = summarizeSubagentRoster([
       runEntry("a", "running"),
-      runEntry("b", "done"),
+      runEntry("b", "spawning"),
       runEntry("c", "needs_input"),
       runEntry("d", "failed"),
-      runEntry("e", "killed"),
-    ];
+      runEntry("e", "done"),
+      runEntry("f", "killed"),
+      runEntry("g", "interrupted"),
+    ]);
+    expect(stats).toEqual({
+      total: 7,
+      active: 2,
+      spawning: 1,
+      running: 1,
+      needsInput: 1,
+      workflowStopping: 0,
+      done: 1,
+      failed: 1,
+      stopped: 2,
+      settled: 4,
+    });
+    expect(subagentRosterOverviewLabel(stats)).toBe(
+      "1 waiting · 1 spawning · 1 running · 1 done · 1 failed · 2 stopped",
+    );
+    expect(subagentRosterOverviewLabel(summarizeSubagentRoster([runEntry("e", "done")]))).toBe(
+      "1 done",
+    );
 
-    const { attention, quiet } = groupSubagentRunsForRoster(runs);
-
-    expect(attention.map((run) => run.view.runId)).toEqual(["a", "c", "d"]);
-    expect(quiet.map((run) => run.view.runId)).toEqual(["b", "e"]);
-  });
-
-  it("returns empty groups for an empty run list", () => {
-    const { attention, quiet } = groupSubagentRunsForRoster([]);
-    expect(attention).toEqual([]);
-    expect(quiet).toEqual([]);
-  });
-
-  it("pluralizes the collapsed summary label", () => {
-    expect(subagentRosterSummaryLabel(1)).toBe("1 finished run");
-    expect(subagentRosterSummaryLabel(3)).toBe("3 finished runs");
+    const baseRun = runEntry("workflow-input", "needs_input");
+    const workflowRun: SubagentRunEntry = {
+      ...baseRun,
+      view: {
+        ...baseRun.view,
+        workflow: { runId: "wf-1", label: "Unattended review" },
+      },
+    };
+    expect(subagentRosterOverviewLabel(summarizeSubagentRoster([workflowRun]))).toBe("1 stopping");
   });
 });

@@ -41,8 +41,11 @@ export function SubagentRunControls({ environmentId, threadId, run }: SubagentRu
   const runId = run.view.runId;
   const isActive = isSubagentRunActive(run.view.state);
   const needsInput = subagentRunNeedsInput(run.view.state);
-  const canSteer = isActive;
-  const canReply = needsInput;
+  const workflowOwned = run.view.workflow !== undefined;
+  // A spawning child has an id but is not ready to receive a prompt yet.
+  const canSteer = run.view.state === "running";
+  // Workflow steps are unattended; Pi automatically stops one that asks for input.
+  const canReply = needsInput && !workflowOwned;
   const canKill = isActive || needsInput;
 
   const submit = useCallback(
@@ -81,7 +84,18 @@ export function SubagentRunControls({ environmentId, threadId, run }: SubagentRu
   }
 
   return (
-    <div className="flex flex-col gap-2" data-slot="subagent-controls">
+    <div
+      className="flex flex-col gap-2 rounded-lg border border-border/65 bg-card/35 p-3"
+      data-slot="subagent-controls"
+    >
+      <div>
+        <p className="text-xs font-semibold text-foreground">Agent controls</p>
+        {workflowOwned && (
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            Controls apply to this agent only. Its workflow may continue with other steps.
+          </p>
+        )}
+      </div>
       {(canSteer || canReply) && (
         <div className="flex flex-col gap-1.5">
           <label htmlFor={messageFieldId} className="text-xs font-medium text-muted-foreground">
@@ -135,7 +149,7 @@ export function SubagentRunControls({ environmentId, threadId, run }: SubagentRu
             }
           >
             {killBusy ? <Spinner /> : null}
-            Stop run
+            Stop agent
           </Button>
         </div>
       )}
