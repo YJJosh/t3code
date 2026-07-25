@@ -52,6 +52,7 @@ function SubagentActivityTranscript({ run }: { run: SubagentRunEntry }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
   const activity = useMemo(() => selectSubagentTranscriptActivity(run), [run]);
+  const hasActivity = activity.length > 0;
   const latestActivitySequence = activity.reduce(
     (latest, entry) => Math.max(latest, entry.sequence),
     0,
@@ -69,7 +70,7 @@ function SubagentActivityTranscript({ run }: { run: SubagentRunEntry }) {
     };
     viewport.addEventListener("scroll", updateStickiness, { passive: true });
     return () => viewport.removeEventListener("scroll", updateStickiness);
-  }, []);
+  }, [hasActivity]);
 
   useEffect(() => {
     if (!stickToBottomRef.current) return;
@@ -79,7 +80,7 @@ function SubagentActivityTranscript({ run }: { run: SubagentRunEntry }) {
     if (viewport !== undefined && viewport !== null) viewport.scrollTop = viewport.scrollHeight;
   }, [latestActivitySequence]);
 
-  if (activity.length === 0) {
+  if (!hasActivity) {
     return (
       <div className="flex h-40 items-center justify-center rounded-lg border border-dashed border-border/70 text-xs text-muted-foreground">
         Waiting for agent activity…
@@ -192,7 +193,7 @@ function SubagentResult({ run }: { run: SubagentRunEntry }) {
       {result.result?.summary !== undefined && (
         <p className="mt-1.5 whitespace-pre-wrap text-muted-foreground">{result.result.summary}</p>
       )}
-      {result.reason !== undefined && result.result?.summary === undefined && (
+      {result.reason !== undefined && (
         <p className="mt-1.5 whitespace-pre-wrap text-destructive-foreground">{result.reason}</p>
       )}
       {result.result !== undefined && result.result.files_changed.length > 0 && (

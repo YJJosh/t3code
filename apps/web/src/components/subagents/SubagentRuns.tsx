@@ -122,6 +122,7 @@ export function SubagentRuns({ environmentId, threadId, enabled }: SubagentRunsP
   const runs = useMemo(() => selectSubagentRuns(state), [state]);
   const groups = useMemo(() => selectSubagentRunGroups(state), [state]);
   const stats = useMemo(() => summarizeSubagentRoster(runs), [runs]);
+  const hasRuns = runs.length > 0;
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [compactReturnFocusRunId, setCompactReturnFocusRunId] = useState<string | null>(null);
@@ -148,6 +149,13 @@ export function SubagentRuns({ environmentId, threadId, enabled }: SubagentRunsP
   }, [environmentId, threadId]);
 
   useEffect(() => {
+    if (hasRuns) return;
+    setInspectorOpen(false);
+    setSelectedRunId(null);
+    setCompactReturnFocusRunId(null);
+  }, [hasRuns]);
+
+  useEffect(() => {
     if (inspectorOpen && !compactLayout && selectedRun === null) {
       setSelectedRunId(preferredRunId);
     }
@@ -168,7 +176,7 @@ export function SubagentRuns({ environmentId, threadId, enabled }: SubagentRunsP
     setInspectorOpen(true);
   }, [compactLayout, preferredRunId, selectedRunId]);
 
-  if (!enabled || environmentId === null || threadId === null || runs.length === 0) {
+  if (!enabled || environmentId === null || threadId === null || !hasRuns) {
     return null;
   }
 
