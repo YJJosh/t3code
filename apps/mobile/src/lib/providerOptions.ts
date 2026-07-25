@@ -1,6 +1,5 @@
 import type {
   ModelCapabilities,
-  ProviderDriverKind,
   ProviderOptionDescriptor,
   ProviderOptionSelection,
   RuntimeMode,
@@ -14,17 +13,6 @@ import {
 } from "@t3tools/shared/model";
 
 const PROVIDER_OPTION_EVENT_PREFIX = "provider-option:";
-
-export interface ProviderRuntimeModePresentation {
-  readonly driver: ProviderDriverKind;
-  readonly showRuntimeModeToggle?: boolean;
-}
-
-export function getProviderRuntimeModeToggle(
-  provider: ProviderRuntimeModePresentation | null | undefined,
-): boolean {
-  return provider?.showRuntimeModeToggle ?? provider?.driver !== "pi";
-}
 
 function providerOptionEvent(id: string, value: string | boolean): string {
   return `${PROVIDER_OPTION_EVENT_PREFIX}${encodeURIComponent(JSON.stringify({ id, value }))}`;

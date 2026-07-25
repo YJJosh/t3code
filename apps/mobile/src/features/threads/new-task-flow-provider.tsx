@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { getProviderRuntimeModeToggle } from "@t3tools/client-runtime/provider-capabilities";
 import type {
   EnvironmentId,
   ModelSelection,
@@ -23,7 +24,6 @@ import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
-import { getProviderRuntimeModeToggle } from "../../lib/providerOptions";
 import { groupProjectsByRepository } from "../../lib/repositoryGroups";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { appAtomRegistry } from "../../state/atom-registry";

@@ -20,6 +20,7 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
+import { getProviderRuntimeModeToggle } from "@t3tools/client-runtime/provider-capabilities";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import {
@@ -168,11 +169,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
-import {
-  getProviderDisplayName,
-  getProviderInteractionModeToggle,
-  getProviderRuntimeModeToggle,
-} from "../../providerModels";
+import { getProviderDisplayName, getProviderInteractionModeToggle } from "../../providerModels";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,

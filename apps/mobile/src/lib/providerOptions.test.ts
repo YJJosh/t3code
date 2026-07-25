@@ -1,17 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  PI_PROFILE_OPTION_ID,
-  ProviderDriverKind,
-  type ModelCapabilities,
-} from "@t3tools/contracts";
+import { PI_PROFILE_OPTION_ID, type ModelCapabilities } from "@t3tools/contracts";
 
 import {
   applyProviderOptionMenuEvent,
   buildProviderOptionMenuActions,
   buildRuntimeModeMenuActions,
   excludeProviderOptionDescriptors,
-  getProviderRuntimeModeToggle,
   providerOptionsConfigurationLabel,
   resolveProviderOptionDescriptors,
 } from "./providerOptions";
@@ -42,25 +37,6 @@ const CODEX_CAPABILITIES: ModelCapabilities = {
 };
 
 describe("mobile provider options", () => {
-  it("hides runtime access modes for Pi while honoring explicit capabilities", () => {
-    expect(
-      getProviderRuntimeModeToggle({
-        driver: ProviderDriverKind.make("pi"),
-      }),
-    ).toBe(false);
-    expect(
-      getProviderRuntimeModeToggle({
-        driver: ProviderDriverKind.make("codex"),
-        showRuntimeModeToggle: false,
-      }),
-    ).toBe(false);
-    expect(
-      getProviderRuntimeModeToggle({
-        driver: ProviderDriverKind.make("codex"),
-      }),
-    ).toBe(true);
-  });
-
   it("renders the option descriptors advertised by the selected model", () => {
     const descriptors = resolveProviderOptionDescriptors({
       capabilities: CODEX_CAPABILITIES,

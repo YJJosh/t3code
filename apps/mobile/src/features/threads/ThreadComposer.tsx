@@ -1,4 +1,5 @@
 import { isLiquidGlassSupported, LiquidGlassView } from "@callstack/liquid-glass";
+import { getProviderRuntimeModeToggle } from "@t3tools/client-runtime/provider-capabilities";
 import {
   PI_PROFILE_OPTION_ID,
   type EnvironmentId,
@@ -67,7 +68,6 @@ import {
   buildProviderOptionMenuActions,
   buildRuntimeModeMenuActions,
   excludeProviderOptionDescriptors,
-  getProviderRuntimeModeToggle,
   providerOptionsConfigurationLabel,
   resolveProviderOptionDescriptors,
 } from "../../lib/providerOptions";

@@ -35,6 +35,10 @@
       "types": "./src/platform/index.ts",
       "default": "./src/platform/index.ts"
     },
+    "./provider-capabilities": {
+      "types": "./src/providerCapabilities.ts",
+      "default": "./src/providerCapabilities.ts"
+    },
     "./relay": {
       "types": "./src/relay/index.ts",
       "default": "./src/relay/index.ts"
