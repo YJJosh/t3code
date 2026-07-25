@@ -92,7 +92,7 @@ function piModelsFromSettings(
   builtInModels: ReadonlyArray<ServerProviderModel> = [],
   profileChoices: ReadonlyArray<PiProfileChoice> = parsePiProfileChoices(undefined),
 ): ReadonlyArray<ServerProviderModel> {
-  const models = providerModelsFromSettings(builtInModels, PROVIDER, customModels ?? [], {
+  const models = providerModelsFromSettings(builtInModels, customModels ?? [], {
     optionDescriptors: [],
   });
   return withPiProfileChoices(models, profileChoices);

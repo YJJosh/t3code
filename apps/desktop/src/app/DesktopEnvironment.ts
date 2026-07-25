@@ -154,7 +154,8 @@ const make = Effect.fn("desktop.environment.make")(function* (
       : input.platform === "darwin"
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
-  const baseDir = Option.getOrElse(config.t3Home, () =>
+  const configuredBaseDir = config.t3Home;
+  const baseDir = Option.getOrElse(configuredBaseDir, () =>
     path.join(homeDirectory, isDulli ? ".t3-dulli" : ".t3"),
   );
   const rootDir = path.resolve(input.dirname, "../../..");
@@ -165,7 +166,10 @@ const make = Effect.fn("desktop.environment.make")(function* (
     isDulli,
   });
   const displayName = branding.displayName;
-  const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata");
+  const stateDir = path.join(
+    baseDir,
+    isDevelopment && Option.isNone(configuredBaseDir) ? "dev" : "userdata",
+  );
   const userDataDirName = isDevelopment ? "t3code-dev" : isDulli ? "t3-dulli" : "t3code";
   const legacyUserDataDirName = isDevelopment
     ? "T3 Code (Dev)"
