@@ -1,6 +1,7 @@
 import type {
   SubagentActivityEntry,
   SubagentRunEntry,
+  SubagentWorkflowGroup,
 } from "@t3tools/client-runtime/state/subagents";
 import type { PiSubagentRunStatus, PiSubagentUsage } from "@t3tools/contracts";
 
@@ -26,14 +27,6 @@ const STATUS_TONES: Record<PiSubagentRunStatus, SubagentStatusTone> = {
   interrupted: "error",
 };
 
-/**
- * Statuses that no longer need attention: the run finished (successfully or
- * not) and isn't waiting on anything. Kept separate from `failed`, which stays
- * in the always-visible roster since a failure is something the user should
- * notice, not just a quiet historical record.
- */
-const QUIET_STATUSES: ReadonlySet<PiSubagentRunStatus> = new Set(["done", "killed", "interrupted"]);
-
 export function subagentStatusLabel(status: PiSubagentRunStatus): string {
   return STATUS_LABELS[status];
 }
@@ -42,49 +35,117 @@ export function subagentStatusTone(status: PiSubagentRunStatus): SubagentStatusT
   return STATUS_TONES[status];
 }
 
-/** True once a run is done/killed/interrupted and can collapse out of the way. */
-export function isSubagentRunQuiet(status: PiSubagentRunStatus): boolean {
-  return QUIET_STATUSES.has(status);
-}
-
 /** Short, human title for a run row: prefer the task text, fall back to run id. */
 export function subagentRunTitle(task: string, runId: string): string {
   const trimmed = task.trim();
   return trimmed.length > 0 ? trimmed : runId;
 }
 
-/** Accessible status string, calling out when a run needs the user's input. */
-export function subagentRunAccessibleStatus(status: PiSubagentRunStatus): string {
-  const label = subagentStatusLabel(status);
-  return status === "needs_input" ? `${label} — needs your input` : label;
+/** Prefer a workflow's human agent label over its implementation prompt. */
+export function subagentRunDisplayTitle(run: SubagentRunEntry): string {
+  const workflowLabel = run.view.workflow?.label.trim();
+  return workflowLabel && workflowLabel.length > 0
+    ? workflowLabel
+    : subagentRunTitle(run.view.task, run.view.runId);
 }
 
-export interface SubagentRosterGroups {
-  /** Runs that still need visibility: spawning, running, waiting, or failed. */
-  readonly attention: ReadonlyArray<SubagentRunEntry>;
-  /** Finished runs (done/killed/interrupted) that can collapse behind a summary. */
-  readonly quiet: ReadonlyArray<SubagentRunEntry>;
+export function subagentWorkflowTitle(workflow: SubagentWorkflowGroup): string {
+  return workflow.name ?? workflow.workflowId;
 }
 
-/**
- * Split runs for the roster panel so active/waiting/failed runs stay always
- * visible while finished runs collapse behind a summary row. Spawn order is
- * preserved within each group.
- */
-export function groupSubagentRunsForRoster(
-  runs: ReadonlyArray<SubagentRunEntry>,
-): SubagentRosterGroups {
-  const attention: SubagentRunEntry[] = [];
-  const quiet: SubagentRunEntry[] = [];
-  for (const run of runs) {
-    (isSubagentRunQuiet(run.view.state) ? quiet : attention).push(run);
+export function subagentRunStatusLabel(run: SubagentRunEntry): string {
+  return run.view.workflow !== undefined && run.view.state === "needs_input"
+    ? "Stopping"
+    : subagentStatusLabel(run.view.state);
+}
+
+/** Accessible status string, with truthful workflow-specific input semantics. */
+export function subagentRunAccessibleStatus(
+  status: PiSubagentRunStatus,
+  workflowOwned = false,
+): string {
+  if (status === "needs_input") {
+    return workflowOwned
+      ? "Stopping — workflow agents cannot pause for input"
+      : "Needs input — needs your input";
   }
-  return { attention, quiet };
+  return subagentStatusLabel(status);
 }
 
-/** Label for the collapsed finished-run summary row. */
-export function subagentRosterSummaryLabel(count: number): string {
-  return `${count} finished run${count === 1 ? "" : "s"}`;
+export interface SubagentRosterStats {
+  readonly total: number;
+  /** Spawning and running agents combined, retained for activity emphasis. */
+  readonly active: number;
+  readonly spawning: number;
+  readonly running: number;
+  readonly needsInput: number;
+  readonly workflowStopping: number;
+  readonly done: number;
+  readonly failed: number;
+  readonly stopped: number;
+  readonly settled: number;
+}
+
+export function summarizeSubagentRoster(
+  runs: ReadonlyArray<SubagentRunEntry>,
+): SubagentRosterStats {
+  let spawning = 0;
+  let running = 0;
+  let needsInput = 0;
+  let workflowStopping = 0;
+  let done = 0;
+  let failed = 0;
+  let stopped = 0;
+
+  for (const run of runs) {
+    switch (run.view.state) {
+      case "spawning":
+        spawning += 1;
+        break;
+      case "running":
+        running += 1;
+        break;
+      case "needs_input":
+        if (run.view.workflow === undefined) needsInput += 1;
+        else workflowStopping += 1;
+        break;
+      case "done":
+        done += 1;
+        break;
+      case "failed":
+        failed += 1;
+        break;
+      case "killed":
+      case "interrupted":
+        stopped += 1;
+        break;
+    }
+  }
+
+  return {
+    total: runs.length,
+    active: spawning + running,
+    spawning,
+    running,
+    needsInput,
+    workflowStopping,
+    done,
+    failed,
+    stopped,
+    settled: done + failed + stopped,
+  };
+}
+
+export function subagentRosterOverviewLabel(stats: SubagentRosterStats): string {
+  const parts: string[] = [];
+  if (stats.needsInput > 0) parts.push(`${stats.needsInput} waiting`);
+  if (stats.workflowStopping > 0) parts.push(`${stats.workflowStopping} stopping`);
+  if (stats.spawning > 0) parts.push(`${stats.spawning} spawning`);
+  if (stats.running > 0) parts.push(`${stats.running} running`);
+  if (stats.done > 0) parts.push(`${stats.done} done`);
+  if (stats.failed > 0) parts.push(`${stats.failed} failed`);
+  if (stats.stopped > 0) parts.push(`${stats.stopped} stopped`);
+  return parts.join(" · ");
 }
 
 const ACTIVITY_TEXT_KEYS = [

@@ -59,6 +59,8 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
   readonly backgroundTerminalStartupEvent?: boolean;
   readonly contextCommand?: boolean;
   readonly fastCommand?: boolean;
+  /** Simulate a profile appending a custom summary during a model switch. */
+  readonly modelChangeCustomMessage?: boolean;
 }) {
   const stdoutQueue = yield* Queue.unbounded<Uint8Array>();
   const stdinQueue = yield* Queue.unbounded<Record<string, unknown>>();
@@ -93,6 +95,25 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
             written.push(command);
             yield* Queue.offer(stdinQueue, command);
             if (typeof command.id !== "string" || typeof command.type !== "string") return;
+            if (command.type === "set_model" && input?.modelChangeCustomMessage === true) {
+              const customMessage = {
+                role: "custom",
+                customType: "profile-manager-summary",
+                content: "Profile switched for the selected model.",
+                display: true,
+                timestamp: 1_752_067_200_000,
+              };
+              yield* Queue.offer(
+                stdoutQueue,
+                encoder.encode(
+                  serializeJsonlLine({ type: "message_start", message: customMessage }),
+                ),
+              );
+              yield* Queue.offer(
+                stdoutQueue,
+                encoder.encode(serializeJsonlLine({ type: "message_end", message: customMessage })),
+              );
+            }
             if (command.type === "get_state" && input?.backgroundTerminalStartupEvent === true) {
               const encodedStartupEvent = encodeUnknownJsonStringSync({
                 contractVersion: 1,
@@ -338,6 +359,58 @@ describe("makePiAdapter", () => {
       const completed = yield* takeEventOfType(events, "turn.completed");
       expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");
       expect(completed.turnId).toBe(turn.turnId);
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("ignores profile custom messages emitted while selecting a non-default model", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ modelChangeCustomMessage: true });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("13131313-1313-4313-8313-131313131313");
+      const modelSelection: ModelSelection = {
+        instanceId: INSTANCE,
+        model: "opencode-go/kimi-k3",
+      };
+
+      yield* adapter.startSession({
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection,
+      });
+
+      // A model-change profile summary is not an assistant turn. Startup must
+      // remain quiet until the adapter publishes its normal session events.
+      expect((yield* Queue.take(events)).type).toBe("session.started");
+      expect((yield* Queue.take(events)).type).toBe("session.state.changed");
+      expect((yield* Queue.take(events)).type).toBe("thread.started");
+
+      yield* adapter.sendTurn({ threadId, input: "Hello Kimi", modelSelection });
+      expect((yield* Queue.take(events)).type).toBe("turn.started");
+      const command = yield* fake.takeStdinUntil(
+        (candidate) => candidate.type === "prompt" || candidate.type === "steer",
+      );
+      expect(command.type).toBe("prompt");
+      expect(command.message).toBe("Hello Kimi");
+
+      yield* fake.pushFrame({ type: "agent_start" });
+      yield* fake.pushFrame({
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "Hi from Kimi" }] },
+      });
+      yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+
+      expect((yield* Queue.take(events)).type).toBe("item.started");
+      const delta = yield* Queue.take(events);
+      expect(delta.type === "content.delta" && delta.payload.delta).toBe("Hi from Kimi");
+      const completed = yield* takeEventOfType(events, "turn.completed");
+      expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 

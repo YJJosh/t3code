@@ -83,13 +83,25 @@ export const PiSubagentManagerRequest = Schema.Struct({
 });
 export type PiSubagentManagerRequest = typeof PiSubagentManagerRequest.Type;
 
+/** Display metadata attached to child agents launched by one Pi workflow. */
+export const PiSubagentWorkflowRef = Schema.Struct({
+  runId: TrimmedNonEmptyString,
+  name: Schema.optional(Schema.String),
+  label: TrimmedNonEmptyString,
+  phase: Schema.optional(Schema.String),
+});
+export type PiSubagentWorkflowRef = typeof PiSubagentWorkflowRef.Type;
+
 export const PiSubagentRunView = Schema.Struct({
   runId: TrimmedNonEmptyString,
   task: Schema.String,
+  createdAt: Schema.optional(NonNegativeNumber),
+  settledAt: Schema.optional(NonNegativeNumber),
   model: Schema.String,
   state: PiSubagentRunStatus,
   directory: Schema.String,
   skills: Schema.Array(Schema.String),
+  mcpServers: Schema.optional(Schema.Array(Schema.String)),
   progressNote: Schema.optional(Schema.String),
   turns: NonNegativeInt,
   activeMs: NonNegativeNumber,
@@ -100,6 +112,7 @@ export const PiSubagentRunView = Schema.Struct({
   nextCheckTokens: NonNegativeInt,
   managerCheckPending: Schema.Boolean,
   managerRequest: Schema.optional(PiSubagentManagerRequest),
+  workflow: Schema.optional(PiSubagentWorkflowRef),
 });
 export type PiSubagentRunView = typeof PiSubagentRunView.Type;
 

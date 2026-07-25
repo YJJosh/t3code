@@ -23,10 +23,18 @@ const usage = {
 const run = {
   runId: "rmre1dz89-9",
   task: "Review the provider",
+  createdAt: 1_783_612_800_000,
   model: "provider/model",
   state: "running" as const,
   directory: "/repo",
   skills: [],
+  mcpServers: ["playwright"],
+  workflow: {
+    runId: "wf_123456789abc",
+    name: "Provider review",
+    label: "Protocol audit",
+    phase: "Research",
+  },
   turns: 1,
   activeMs: 100,
   usageSoFar: usage,
@@ -58,6 +66,9 @@ describe("PiSubagentEvent", () => {
     });
     expect(snapshot.snapshot?.events?.[0]?.sequence).toBe(1);
     expect(snapshot.snapshot?.runs[0]?.runId).toBe(run.runId);
+    expect(snapshot.snapshot?.runs[0]?.workflow).toEqual(run.workflow);
+    expect(snapshot.snapshot?.runs[0]?.createdAt).toBe(run.createdAt);
+    expect(snapshot.snapshot?.runs[0]?.mcpServers).toEqual(["playwright"]);
   });
 
   it("rejects unsupported contract versions", () => {

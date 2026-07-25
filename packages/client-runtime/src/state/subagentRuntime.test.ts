@@ -17,6 +17,7 @@ import {
   selectActiveSubagentRuns,
   selectSubagentControlResult,
   selectSubagentRun,
+  selectSubagentRunGroups,
   selectSubagentRuns,
   subagentRunNeedsInput,
   type SubagentRuntimeState,
@@ -370,6 +371,54 @@ describe("applySubagentEvent", () => {
       }),
     );
     expect(selectSubagentRun(afterResume, "run-a")?.activity.at(-1)?.data["name"]).toBe("resumed");
+  });
+
+  it("groups workflow-owned children separately from standalone runs", () => {
+    let state: SubagentRuntimeState = EMPTY_SUBAGENT_RUNTIME_STATE;
+    const views = [
+      runView({ runId: "standalone", createdAt: 30 }),
+      runView({
+        runId: "workflow-b",
+        createdAt: 20,
+        workflow: {
+          runId: "wf-review",
+          name: "Review change",
+          label: "Security review",
+          phase: "Review",
+        },
+      }),
+      runView({
+        runId: "workflow-a",
+        createdAt: 10,
+        workflow: {
+          runId: "wf-review",
+          name: "Review change",
+          label: "Code audit",
+          phase: "Research",
+        },
+      }),
+    ];
+    for (const [index, view] of views.entries()) {
+      state = applySubagentEvent(
+        state,
+        event({
+          sequence: index + 1,
+          kind: "run_created",
+          runId: view.runId,
+          view,
+        }),
+      );
+    }
+
+    const groups = selectSubagentRunGroups(state);
+    expect(groups.standalone.map((run) => run.view.runId)).toEqual(["standalone"]);
+    expect(groups.workflows).toHaveLength(1);
+    expect(groups.workflows[0]?.workflowId).toBe("wf-review");
+    expect(groups.workflows[0]?.name).toBe("Review change");
+    expect(groups.workflows[0]?.runs.map((run) => run.view.runId)).toEqual([
+      "workflow-a",
+      "workflow-b",
+    ]);
   });
 
   it("separates active from terminal runs", () => {
