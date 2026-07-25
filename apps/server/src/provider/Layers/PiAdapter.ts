@@ -618,10 +618,18 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             yield* ensureActiveTurnForAgentEvent(ctx);
             return;
           case "message_start":
-            yield* ensureActiveTurnForAgentEvent(ctx);
+            // Pi also streams user, tool-result, and extension custom messages.
+            // In particular, a profile can append a custom summary while
+            // `set_model` runs during session startup. Treating that message as
+            // autonomous agent work leaves a synthetic active turn behind and
+            // makes the first real user prompt a queued steer that never runs.
+            if (isRecord(message.message) && message.message.role === "assistant") {
+              yield* ensureActiveTurnForAgentEvent(ctx);
+            }
             return;
           case "message_update":
           case "message_end":
+            if (!isRecord(message.message) || message.message.role !== "assistant") return;
             yield* ensureActiveTurnForAgentEvent(ctx);
             yield* emitAssistantDelta(ctx, message.message);
             if (message.type === "message_end") {
