@@ -42,6 +42,7 @@ export class ManagedEndpointProvisioningNotConfigured extends Schema.TaggedError
 
 const ManagedEndpointProvisioningStage = Schema.Literals([
   "derive-environment-hash",
+  "recover-release",
   "check-tunnel-limit",
   "reserve-allocation",
   "ensure-tunnel",
@@ -654,6 +655,63 @@ export const make = Effect.gen(function* () {
         environmentHash,
       );
       const requestedTunnelName = managedEndpointTunnelName(cf.namespace, environmentHash);
+      const pendingRelease = yield* allocations
+        .get({ userId: input.userId, environmentId: input.environmentId })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ManagedEndpointProvisioningFailed({
+                userId: input.userId,
+                environmentId: input.environmentId,
+                stage: "recover-release",
+                hostname: requestedHostname,
+                tunnelName: requestedTunnelName,
+                cause,
+              }),
+          ),
+        );
+      if (pendingRelease?.state === "releasing") {
+        if (pendingRelease.tunnelId !== null) {
+          yield* ignoreNotFound(tunnels.delete(pendingRelease.tunnelId)).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ManagedEndpointProvisioningFailed({
+                  userId: input.userId,
+                  environmentId: input.environmentId,
+                  stage: "recover-release",
+                  hostname: requestedHostname,
+                  tunnelName: requestedTunnelName,
+                  ...(pendingRelease.tunnelId === null
+                    ? {}
+                    : { tunnelId: pendingRelease.tunnelId }),
+                  cause,
+                }),
+            ),
+          );
+        }
+        yield* allocations
+          .completeRelease({
+            userId: input.userId,
+            environmentId: input.environmentId,
+            generation: pendingRelease.generation,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ManagedEndpointProvisioningFailed({
+                  userId: input.userId,
+                  environmentId: input.environmentId,
+                  stage: "recover-release",
+                  hostname: requestedHostname,
+                  tunnelName: requestedTunnelName,
+                  ...(pendingRelease.tunnelId === null
+                    ? {}
+                    : { tunnelId: pendingRelease.tunnelId }),
+                  cause,
+                }),
+            ),
+          );
+      }
       const allocation = yield* tunnelLimits
         .reserveCapacity(
           {

@@ -1,5 +1,5 @@
 import type { RelayManagedEndpoint } from "@t3tools/contracts/relay";
-import { and, eq, ne, or, sql } from "drizzle-orm";
+import { and, eq, ne, notInArray, or, sql } from "drizzle-orm";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -10,7 +10,12 @@ import * as RelayDb from "../db.ts";
 import { isManagedEndpointHostname, managedEndpointForHostname } from "../deploymentConfig.ts";
 import { relayManagedEndpointAllocations } from "../persistence/schema.ts";
 
-export type ManagedEndpointAllocationState = "provisioning" | "ready" | "releasing" | "offline";
+export type ManagedEndpointAllocationState =
+  | "provisioning"
+  | "ready"
+  | "releasing"
+  | "deprovisioning"
+  | "offline";
 
 export interface ManagedEndpointAllocation {
   readonly userId: string;
@@ -227,7 +232,10 @@ export const make = Effect.gen(function* () {
             generation: sql`${relayManagedEndpointAllocations.generation} + 1`,
             updatedAt: now,
           },
-          setWhere: ne(relayManagedEndpointAllocations.state, "releasing"),
+          setWhere: notInArray(relayManagedEndpointAllocations.state, [
+            "releasing",
+            "deprovisioning",
+          ]),
         })
         .returning(allocationSelection)
         .pipe(
@@ -262,7 +270,11 @@ export const make = Effect.gen(function* () {
             ),
           ));
 
-      if (allocation === undefined || allocation.state === "releasing") {
+      if (
+        allocation === undefined ||
+        allocation.state === "releasing" ||
+        allocation.state === "deprovisioning"
+      ) {
         return yield* new ManagedEndpointAllocationPersistenceError({
           operation: "reserve",
           stage: "resolve-reservation",
@@ -419,7 +431,7 @@ export const make = Effect.gen(function* () {
       return yield* db
         .update(relayManagedEndpointAllocations)
         .set({
-          state: "releasing",
+          state: "deprovisioning",
           generation: sql`${relayManagedEndpointAllocations.generation} + 1`,
           updatedAt: DateTime.formatIso(yield* DateTime.now),
         })

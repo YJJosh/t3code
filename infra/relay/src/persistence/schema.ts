@@ -94,7 +94,7 @@ export const relayManagedEndpointAllocations = pgTable(
     dnsRecordId: varchar("dns_record_id", { length: 191 }),
     readyAt: varchar("ready_at", { length: 64 }),
     state: varchar("state", { length: 32 })
-      .$type<"provisioning" | "ready" | "releasing" | "offline">()
+      .$type<"provisioning" | "ready" | "releasing" | "deprovisioning" | "offline">()
       .notNull()
       .default("ready"),
     generation: integer("generation").notNull().default(0),

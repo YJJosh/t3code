@@ -89,9 +89,9 @@ export const make = Effect.gen(function* () {
     const reservationCutoff = DateTime.formatIso(
       DateTime.subtractDuration(yield* DateTime.now, CAPACITY_RESERVATION_TTL),
     );
-    // Ready allocations count while their tunnel is live. Releasing
-    // allocations still count until destructive cleanup commits the offline
-    // state. Provisioning reservations expire if a Worker dies mid-request.
+    // Ready allocations count while their tunnel is live. Releasing and
+    // deprovisioning allocations count until destructive cleanup commits.
+    // Provisioning reservations expire if a Worker dies mid-request.
     // The current environment remains idempotent at the limit.
     const counted = yield* db
       .select({ activeTunnels: count() })
@@ -103,6 +103,7 @@ export const make = Effect.gen(function* () {
           or(
             eq(relayManagedEndpointAllocations.state, "ready"),
             eq(relayManagedEndpointAllocations.state, "releasing"),
+            eq(relayManagedEndpointAllocations.state, "deprovisioning"),
             and(
               eq(relayManagedEndpointAllocations.state, "provisioning"),
               gt(relayManagedEndpointAllocations.updatedAt, reservationCutoff),
