@@ -1,5 +1,5 @@
 import type { RelayManagedEndpoint } from "@t3tools/contracts/relay";
-import { and, eq, ne, or, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -421,10 +421,7 @@ export const make = Effect.gen(function* () {
             whereAllocation(input),
             eq(relayManagedEndpointAllocations.tunnelId, input.tunnelId),
             eq(relayManagedEndpointAllocations.generation, input.generation),
-            or(
-              eq(relayManagedEndpointAllocations.state, "ready"),
-              eq(relayManagedEndpointAllocations.state, "releasing"),
-            ),
+            eq(relayManagedEndpointAllocations.state, "ready"),
           ),
         )
         .returning({ generation: relayManagedEndpointAllocations.generation })
@@ -442,12 +439,42 @@ export const make = Effect.gen(function* () {
               }),
           ),
         );
-      return claimed;
+      if (claimed !== null) {
+        return claimed;
+      }
+      const current = yield* db
+        .select({
+          state: relayManagedEndpointAllocations.state,
+          generation: relayManagedEndpointAllocations.generation,
+          tunnelId: relayManagedEndpointAllocations.tunnelId,
+        })
+        .from(relayManagedEndpointAllocations)
+        .where(whereAllocation(input))
+        .limit(1)
+        .pipe(
+          Effect.map((rows) => rows[0]),
+          Effect.mapError(
+            (cause) =>
+              new ManagedEndpointAllocationPersistenceError({
+                operation: "claim-release",
+                stage: "database-request",
+                userId: input.userId,
+                environmentId: input.environmentId,
+                tunnelId: input.tunnelId,
+                cause,
+              }),
+          ),
+        );
+      return current !== undefined &&
+        current.tunnelId === input.tunnelId &&
+        (current.state === "releasing" || current.state === "offline")
+        ? current.generation
+        : null;
     }),
     completeRelease: Effect.fn("relay.managed_endpoint_allocations.complete_release")(function* (
       input: CompleteManagedEndpointReleaseInput,
     ) {
-      return yield* db
+      const completed = yield* db
         .update(relayManagedEndpointAllocations)
         .set({
           state: "offline",
@@ -464,6 +491,27 @@ export const make = Effect.gen(function* () {
         .returning({ userId: relayManagedEndpointAllocations.userId })
         .pipe(
           Effect.map((rows) => rows.length > 0),
+          Effect.mapError(
+            (cause) =>
+              new ManagedEndpointAllocationPersistenceError({
+                operation: "complete-release",
+                stage: "database-request",
+                userId: input.userId,
+                environmentId: input.environmentId,
+                cause,
+              }),
+          ),
+        );
+      if (completed) {
+        return true;
+      }
+      return yield* db
+        .select({ state: relayManagedEndpointAllocations.state })
+        .from(relayManagedEndpointAllocations)
+        .where(whereAllocation(input))
+        .limit(1)
+        .pipe(
+          Effect.map((rows) => rows[0]?.state === "offline"),
           Effect.mapError(
             (cause) =>
               new ManagedEndpointAllocationPersistenceError({

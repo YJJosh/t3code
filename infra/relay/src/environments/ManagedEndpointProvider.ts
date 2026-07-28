@@ -43,6 +43,7 @@ export class ManagedEndpointProvisioningNotConfigured extends Schema.TaggedError
 const ManagedEndpointProvisioningStage = Schema.Literals([
   "derive-environment-hash",
   "recover-release",
+  "recover-provision",
   "check-tunnel-limit",
   "reserve-allocation",
   "ensure-tunnel",
@@ -754,6 +755,31 @@ export const make = Effect.gen(function* () {
           ),
         );
       const { hostname, tunnelName } = allocation;
+      const staleTunnelId =
+        pendingRelease?.state === "provisioning" &&
+        pendingRelease.generation !== allocation.generation
+          ? pendingRelease.tunnelId
+          : null;
+      if (staleTunnelId !== null) {
+        // A stale lease takeover must rotate the remote tunnel too. Deleting
+        // the prior generation's tunnel fences a resumed stale fiber: its next
+        // Cloudflare mutation targets the deleted id and cannot overwrite the
+        // replacement's configuration.
+        yield* ignoreNotFound(tunnels.delete(staleTunnelId)).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ManagedEndpointProvisioningFailed({
+                userId: input.userId,
+                environmentId: input.environmentId,
+                stage: "recover-provision",
+                hostname,
+                tunnelName,
+                tunnelId: staleTunnelId,
+                cause,
+              }),
+          ),
+        );
+      }
 
       const tunnelResponse = yield* tunnels.list({ name: tunnelName, isDeleted: false }).pipe(
         Effect.map((tunnels) => tunnels.result),
