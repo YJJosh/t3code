@@ -77,6 +77,7 @@ export class ManagedEndpointProvisioningFailed extends Schema.TaggedErrorClass<M
 const ManagedEndpointDeprovisioningStage = Schema.Literals([
   "load-allocation",
   "claim-release",
+  "complete-release",
   "claim-deprovision",
   "delete-dns-record",
   "delete-tunnel",
@@ -467,11 +468,11 @@ export const make = Effect.gen(function* () {
       if (allocation === null) {
         return;
       }
-      const claimedAt = yield* allocations
+      const claimedGeneration = yield* allocations
         .claimDeprovision({
           userId: input.userId,
           environmentId: input.environmentId,
-          updatedAt: allocation.updatedAt,
+          generation: allocation.generation,
         })
         .pipe(
           Effect.mapError(
@@ -485,7 +486,7 @@ export const make = Effect.gen(function* () {
               }),
           ),
         );
-      if (claimedAt === null) {
+      if (claimedGeneration === null) {
         return;
       }
       const dnsRecordId = allocation.dnsRecordId;
@@ -520,7 +521,7 @@ export const make = Effect.gen(function* () {
         .removeClaimed({
           userId: input.userId,
           environmentId: input.environmentId,
-          updatedAt: claimedAt,
+          generation: claimedGeneration,
         })
         .pipe(
           Effect.mapError(
@@ -551,22 +552,19 @@ export const make = Effect.gen(function* () {
         ),
       );
       const tunnelId = allocation?.tunnelId ?? null;
-      if (allocation === null || tunnelId === null) {
+      if (allocation === null || tunnelId === null || allocation.state === "offline") {
         return true;
       }
-      // Claim the release against the allocation's current generation before
-      // touching Cloudflare. A provision racing this release (fast environment
-      // restart) rewrites updatedAt when it records its tunnel, so a stale
-      // claim means the recorded tunnel may already back a fresh connector and
-      // must be left alive. A provision that starts after the claim instead
-      // fails loudly on the deleted tunnel and the client-side retry
-      // provisions a replacement.
-      const claimed = yield* allocations
+      // The state transition and monotonic generation CAS serialize a fast
+      // restart against destructive cleanup: provisioning changes ready to
+      // provisioning before reuse, while a successful claim changes ready to
+      // releasing and blocks reserve until the deletion is committed offline.
+      const claimedGeneration = yield* allocations
         .claimRelease({
           userId: input.userId,
           environmentId: input.environmentId,
           tunnelId,
-          updatedAt: allocation.updatedAt,
+          generation: allocation.generation,
         })
         .pipe(
           Effect.mapError(
@@ -579,7 +577,7 @@ export const make = Effect.gen(function* () {
               }),
           ),
         );
-      if (!claimed) {
+      if (claimedGeneration === null) {
         return false;
       }
       yield* ignoreNotFound(tunnels.delete(tunnelId)).pipe(
@@ -593,13 +591,27 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
-      // The recorded tunnelId is now stale, but the allocation row is left
-      // untouched deliberately: connect/status authorization requires a fully
-      // recorded allocation, and an offline environment must keep reporting
-      // "offline" (health probe fails) rather than "not authorized". The next
-      // provision lists tunnels by name, finds none, creates a replacement and
-      // re-records the fresh id.
-      return true;
+      const completed = yield* allocations
+        .completeRelease({
+          userId: input.userId,
+          environmentId: input.environmentId,
+          generation: claimedGeneration,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ManagedEndpointDeprovisioningFailed({
+                ...input,
+                stage: "complete-release",
+                tunnelId,
+                cause,
+              }),
+          ),
+        );
+      // Tunnel metadata remains available for connect/status authorization so
+      // an offline environment reports a failed health probe rather than "not
+      // authorized". Only the explicit offline state stops it consuming quota.
+      return completed;
     }),
     provision: Effect.fn("relay.managed_endpoint_provider.provision")(function* (input) {
       yield* Effect.annotateCurrentSpan({

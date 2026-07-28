@@ -50,6 +50,7 @@ interface AllocationCall {
     | "recordDns"
     | "markReady"
     | "claimRelease"
+    | "completeRelease"
     | "claimDeprovision"
     | "remove"
     | "removeClaimed";
@@ -159,7 +160,7 @@ function makeDnsClient(
 
 function makeAllocations(calls: AllocationCall[] = []) {
   const allocations = new Map<string, ManagedEndpointAllocations.ManagedEndpointAllocation>();
-  let generation = 0;
+  let mutation = 0;
   const mutate = (
     key: string,
     change: (
@@ -168,7 +169,11 @@ function makeAllocations(calls: AllocationCall[] = []) {
   ) => {
     const allocation = allocations.get(key);
     if (allocation !== undefined) {
-      allocations.set(key, { ...change(allocation), updatedAt: `generation-${++generation}` });
+      allocations.set(key, {
+        ...change(allocation),
+        generation: allocation.generation + 1,
+        updatedAt: `mutation-${++mutation}`,
+      });
     }
   };
   return ManagedEndpointAllocations.ManagedEndpointAllocations.of({
@@ -178,17 +183,34 @@ function makeAllocations(calls: AllocationCall[] = []) {
         return allocations.get(allocationKey(input)) ?? null;
       }),
     reserve: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         calls.push({ operation: "reserve", input });
-        const allocation = allocations.get(allocationKey(input)) ?? {
+        const key = allocationKey(input);
+        const existing = allocations.get(key);
+        if (existing?.state === "releasing") {
+          return Effect.fail(
+            new ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError({
+              operation: "reserve",
+              stage: "resolve-reservation",
+              ...input,
+            }),
+          );
+        }
+        if (existing !== undefined) {
+          mutate(key, (allocation) => ({ ...allocation, state: "provisioning" }));
+          return Effect.succeed(allocations.get(key)!);
+        }
+        const allocation: ManagedEndpointAllocations.ManagedEndpointAllocation = {
           ...input,
           tunnelId: null,
           dnsRecordId: null,
           readyAt: null,
-          updatedAt: `generation-${++generation}`,
+          state: "provisioning",
+          generation: 0,
+          updatedAt: `mutation-${++mutation}`,
         };
-        allocations.set(allocationKey(input), allocation);
-        return allocation;
+        allocations.set(key, allocation);
+        return Effect.succeed(allocation);
       }),
     recordTunnel: (input) =>
       Effect.sync(() => {
@@ -212,6 +234,7 @@ function makeAllocations(calls: AllocationCall[] = []) {
         mutate(allocationKey(input), (allocation) => ({
           ...allocation,
           readyAt: "2026-06-02T00:00:00.000Z",
+          state: "ready",
         }));
       }),
     claimRelease: (input) =>
@@ -221,22 +244,41 @@ function makeAllocations(calls: AllocationCall[] = []) {
         if (
           allocation === undefined ||
           allocation.tunnelId !== input.tunnelId ||
-          allocation.updatedAt !== input.updatedAt
+          allocation.generation !== input.generation ||
+          (allocation.state !== "ready" && allocation.state !== "releasing")
+        ) {
+          return null;
+        }
+        mutate(allocationKey(input), (current) => ({ ...current, state: "releasing" }));
+        return allocations.get(allocationKey(input))?.generation ?? null;
+      }),
+    completeRelease: (input) =>
+      Effect.sync(() => {
+        calls.push({ operation: "completeRelease", input });
+        const allocation = allocations.get(allocationKey(input));
+        if (
+          allocation === undefined ||
+          allocation.state !== "releasing" ||
+          allocation.generation !== input.generation
         ) {
           return false;
         }
-        mutate(allocationKey(input), (current) => current);
+        mutate(allocationKey(input), (current) => ({ ...current, state: "offline" }));
         return true;
       }),
     claimDeprovision: (input) =>
       Effect.sync(() => {
         calls.push({ operation: "claimDeprovision", input });
         const allocation = allocations.get(allocationKey(input));
-        if (allocation === undefined || allocation.updatedAt !== input.updatedAt) {
+        if (
+          allocation === undefined ||
+          allocation.generation !== input.generation ||
+          allocation.state === "provisioning"
+        ) {
           return null;
         }
-        mutate(allocationKey(input), (current) => current);
-        return allocations.get(allocationKey(input))?.updatedAt ?? null;
+        mutate(allocationKey(input), (current) => ({ ...current, state: "releasing" }));
+        return allocations.get(allocationKey(input))?.generation ?? null;
       }),
     remove: (input) =>
       Effect.sync(() => {
@@ -247,7 +289,7 @@ function makeAllocations(calls: AllocationCall[] = []) {
       Effect.sync(() => {
         calls.push({ operation: "removeClaimed", input });
         const allocation = allocations.get(allocationKey(input));
-        if (allocation === undefined || allocation.updatedAt !== input.updatedAt) {
+        if (allocation === undefined || allocation.generation !== input.generation) {
           return false;
         }
         allocations.delete(allocationKey(input));
@@ -919,7 +961,7 @@ describe("ManagedEndpointProvider", () => {
     // longer matches what the release loaded, so the claim fails.
     const outdated = ManagedEndpointAllocations.ManagedEndpointAllocations.of({
       ...allocations,
-      claimRelease: () => Effect.succeed(false),
+      claimRelease: () => Effect.succeed(null),
     });
     const layer = providerLayer(makePersistentTunnelClient(tunnelCalls), makeDnsClient(), outdated);
 
@@ -999,6 +1041,17 @@ describe("ManagedEndpointProvider", () => {
         tunnelId: "tunnel-id",
       });
       expect(error.cause).toBe(failure);
+
+      const restartError = yield* Effect.flip(
+        provider.provision({
+          ...key,
+          origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+        }),
+      );
+      expect(restartError).toMatchObject({
+        _tag: "ManagedEndpointProvisioningFailed",
+        stage: "reserve-allocation",
+      });
     }).pipe(Effect.provide(layer));
   });
 

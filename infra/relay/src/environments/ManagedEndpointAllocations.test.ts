@@ -10,20 +10,16 @@ const layerWithDb = (db: RelayDb.RelayDb["Service"]) =>
   ManagedEndpointAllocations.layer.pipe(Layer.provide(Layer.succeed(RelayDb.RelayDb, db)));
 
 describe("ManagedEndpointAllocations", () => {
-  it.effect("returns a claim generation only when deprovision wins the allocation CAS", () => {
-    let claimedAt: string | undefined;
+  it.effect("returns a monotonic claim generation only when deprovision wins the CAS", () => {
     const fakeDb = {
       update: (table: unknown) => {
         expect(table).toBe(relayManagedEndpointAllocations);
         return {
-          set: (values: { readonly updatedAt: string }) => {
-            claimedAt = values.updatedAt;
-            return {
-              where: () => ({
-                returning: () => Effect.succeed([{ userId: "user-1" }]),
-              }),
-            };
-          },
+          set: () => ({
+            where: () => ({
+              returning: () => Effect.succeed([{ generation: 8 }]),
+            }),
+          }),
         };
       },
     } as unknown as RelayDb.RelayDb["Service"];
@@ -33,11 +29,10 @@ describe("ManagedEndpointAllocations", () => {
       const generation = yield* allocations.claimDeprovision({
         userId: "user-1",
         environmentId: "environment-1",
-        updatedAt: "captured-generation",
+        generation: 7,
       });
 
-      expect(generation).toBe(claimedAt);
-      expect(generation).not.toBeNull();
+      expect(generation).toBe(8);
     }).pipe(Effect.provide(layerWithDb(fakeDb)));
   });
 
@@ -59,7 +54,7 @@ describe("ManagedEndpointAllocations", () => {
         yield* allocations.removeClaimed({
           userId: "user-1",
           environmentId: "environment-1",
-          updatedAt: "outdated-claim-generation",
+          generation: 7,
         }),
       ).toBe(false);
     }).pipe(Effect.provide(layerWithDb(fakeDb)));

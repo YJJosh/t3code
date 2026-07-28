@@ -1,4 +1,4 @@
-import { and, count, eq, gt, isNotNull, isNull, ne, or } from "drizzle-orm";
+import { and, count, eq, gt, ne, or } from "drizzle-orm";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -8,7 +8,6 @@ import { isSqlError } from "effect/unstable/sql/SqlError";
 
 import * as RelayDb from "../db.ts";
 import {
-  relayEnvironmentLinks,
   relayManagedEndpointAllocations,
   relayManagedTunnelLimits,
 } from "../persistence/schema.ts";
@@ -90,30 +89,24 @@ export const make = Effect.gen(function* () {
     const reservationCutoff = DateTime.formatIso(
       DateTime.subtractDuration(yield* DateTime.now, CAPACITY_RESERVATION_TTL),
     );
-    // Active links count for their lifetime. A recently refreshed allocation
-    // also counts as a short-lived reservation while EnvironmentLinker is
-    // still provisioning and has not committed its link yet. This closes the
-    // first-link race without making released offline allocations consume
-    // quota forever. The current environment remains idempotent at the limit.
+    // Ready allocations count while their tunnel is live. Releasing
+    // allocations still count until destructive cleanup commits the offline
+    // state. Provisioning reservations expire if a Worker dies mid-request.
+    // The current environment remains idempotent at the limit.
     const counted = yield* db
       .select({ activeTunnels: count() })
       .from(relayManagedEndpointAllocations)
-      .leftJoin(
-        relayEnvironmentLinks,
-        and(
-          eq(relayEnvironmentLinks.userId, relayManagedEndpointAllocations.userId),
-          eq(relayEnvironmentLinks.environmentId, relayManagedEndpointAllocations.environmentId),
-          isNull(relayEnvironmentLinks.revokedAt),
-          eq(relayEnvironmentLinks.managedTunnelsEnabled, true),
-        ),
-      )
       .where(
         and(
           eq(relayManagedEndpointAllocations.userId, input.userId),
           ne(relayManagedEndpointAllocations.environmentId, input.environmentId),
           or(
-            isNotNull(relayEnvironmentLinks.userId),
-            gt(relayManagedEndpointAllocations.updatedAt, reservationCutoff),
+            eq(relayManagedEndpointAllocations.state, "ready"),
+            eq(relayManagedEndpointAllocations.state, "releasing"),
+            and(
+              eq(relayManagedEndpointAllocations.state, "provisioning"),
+              gt(relayManagedEndpointAllocations.updatedAt, reservationCutoff),
+            ),
           ),
         ),
       )

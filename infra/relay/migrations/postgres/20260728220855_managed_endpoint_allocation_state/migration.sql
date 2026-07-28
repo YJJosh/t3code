@@ -1,0 +1,2 @@
+ALTER TABLE "relay_managed_endpoint_allocations" ADD COLUMN "state" varchar(32) DEFAULT 'ready' NOT NULL;--> statement-breakpoint
+ALTER TABLE "relay_managed_endpoint_allocations" ADD COLUMN "generation" integer DEFAULT 0 NOT NULL;
