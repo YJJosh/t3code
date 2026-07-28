@@ -1,4 +1,4 @@
-import { and, count, eq, gt, ne, or } from "drizzle-orm";
+import { and, count, eq, gt, isNotNull, ne, or } from "drizzle-orm";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -91,8 +91,10 @@ export const make = Effect.gen(function* () {
     );
     // Ready allocations count while their tunnel is live. Releasing and
     // deprovisioning allocations count until destructive cleanup commits.
-    // Provisioning reservations expire if a Worker dies mid-request.
-    // The current environment remains idempotent at the limit.
+    // Provisioning reservations without a tunnel expire if a Worker dies
+    // mid-request. Once a tunnel is recorded, it remains billable and counted
+    // until recovery deletes or completes it. The current environment remains
+    // idempotent at the limit.
     const counted = yield* db
       .select({ activeTunnels: count() })
       .from(relayManagedEndpointAllocations)
@@ -106,7 +108,10 @@ export const make = Effect.gen(function* () {
             eq(relayManagedEndpointAllocations.state, "deprovisioning"),
             and(
               eq(relayManagedEndpointAllocations.state, "provisioning"),
-              gt(relayManagedEndpointAllocations.updatedAt, reservationCutoff),
+              or(
+                isNotNull(relayManagedEndpointAllocations.tunnelId),
+                gt(relayManagedEndpointAllocations.updatedAt, reservationCutoff),
+              ),
             ),
           ),
         ),
