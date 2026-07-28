@@ -1,8 +1,10 @@
-import { and, count, eq, isNull, ne } from "drizzle-orm";
+import { and, count, eq, gt, isNotNull, isNull, ne, or } from "drizzle-orm";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { isSqlError } from "effect/unstable/sql/SqlError";
 
 import * as RelayDb from "../db.ts";
 import {
@@ -16,11 +18,12 @@ import {
  * `relay_managed_tunnel_limits` overrides it for that user.
  */
 export const DEFAULT_MANAGED_TUNNEL_LIMIT = 3;
+const CAPACITY_RESERVATION_TTL = "5 minutes";
 
 export class ManagedTunnelLimitPersistenceError extends Schema.TaggedErrorClass<ManagedTunnelLimitPersistenceError>()(
   "ManagedTunnelLimitPersistenceError",
   {
-    operation: Schema.Literals(["load-limit", "count-tunnels"]),
+    operation: Schema.Literals(["load-limit", "count-tunnels", "reserve-capacity"]),
     userId: Schema.String,
     cause: Schema.Defect(),
   },
@@ -51,73 +54,118 @@ export class ManagedTunnelLimits extends Context.Service<
       readonly userId: string;
       readonly environmentId: string;
     }) => Effect.Effect<void, ManagedTunnelLimitExceeded | ManagedTunnelLimitPersistenceError>;
+    readonly reserveCapacity: <A, E, R>(
+      input: {
+        readonly userId: string;
+        readonly environmentId: string;
+      },
+      reservation: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | ManagedTunnelLimitExceeded | ManagedTunnelLimitPersistenceError, R>;
   }
 >()("t3code-relay/environments/ManagedTunnelLimits") {}
 
 export const make = Effect.gen(function* () {
   const db = yield* RelayDb.RelayDb;
 
+  const ensureCapacity: ManagedTunnelLimits["Service"]["ensureCapacity"] = Effect.fn(
+    "relay.managed_tunnel_limits.ensure_capacity",
+  )(function* (input) {
+    const overrides = yield* db
+      .select({ maxTunnels: relayManagedTunnelLimits.maxTunnels })
+      .from(relayManagedTunnelLimits)
+      .where(eq(relayManagedTunnelLimits.userId, input.userId))
+      .limit(1)
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ManagedTunnelLimitPersistenceError({
+              operation: "load-limit",
+              userId: input.userId,
+              cause,
+            }),
+        ),
+      );
+    const maxTunnels = overrides[0]?.maxTunnels ?? DEFAULT_MANAGED_TUNNEL_LIMIT;
+
+    const reservationCutoff = DateTime.formatIso(
+      DateTime.subtractDuration(yield* DateTime.now, CAPACITY_RESERVATION_TTL),
+    );
+    // Active links count for their lifetime. A recently refreshed allocation
+    // also counts as a short-lived reservation while EnvironmentLinker is
+    // still provisioning and has not committed its link yet. This closes the
+    // first-link race without making released offline allocations consume
+    // quota forever. The current environment remains idempotent at the limit.
+    const counted = yield* db
+      .select({ activeTunnels: count() })
+      .from(relayManagedEndpointAllocations)
+      .leftJoin(
+        relayEnvironmentLinks,
+        and(
+          eq(relayEnvironmentLinks.userId, relayManagedEndpointAllocations.userId),
+          eq(relayEnvironmentLinks.environmentId, relayManagedEndpointAllocations.environmentId),
+          isNull(relayEnvironmentLinks.revokedAt),
+          eq(relayEnvironmentLinks.managedTunnelsEnabled, true),
+        ),
+      )
+      .where(
+        and(
+          eq(relayManagedEndpointAllocations.userId, input.userId),
+          ne(relayManagedEndpointAllocations.environmentId, input.environmentId),
+          or(
+            isNotNull(relayEnvironmentLinks.userId),
+            gt(relayManagedEndpointAllocations.updatedAt, reservationCutoff),
+          ),
+        ),
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ManagedTunnelLimitPersistenceError({
+              operation: "count-tunnels",
+              userId: input.userId,
+              cause,
+            }),
+        ),
+      );
+    const activeTunnels = counted[0]?.activeTunnels ?? 0;
+
+    if (activeTunnels >= maxTunnels) {
+      return yield* new ManagedTunnelLimitExceeded({
+        userId: input.userId,
+        environmentId: input.environmentId,
+        maxTunnels,
+        activeTunnels,
+      });
+    }
+  });
+
+  const reserveCapacity: ManagedTunnelLimits["Service"]["reserveCapacity"] = (input, reservation) =>
+    db.$client
+      .withTransaction(
+        Effect.gen(function* () {
+          // Serialize reservations for one user across Worker instances. The
+          // lock and allocation insert share this transaction, so the next
+          // waiter observes the committed reservation before checking quota.
+          yield* db.$client`SELECT pg_advisory_xact_lock(hashtextextended(${input.userId}, 0))`;
+          yield* ensureCapacity(input);
+          return yield* reservation;
+        }),
+      )
+      .pipe(
+        Effect.catchIf(isSqlError, (cause) =>
+          Effect.fail(
+            new ManagedTunnelLimitPersistenceError({
+              operation: "reserve-capacity",
+              userId: input.userId,
+              cause,
+            }),
+          ),
+        ),
+      );
+
   return ManagedTunnelLimits.of({
-    ensureCapacity: Effect.fn("relay.managed_tunnel_limits.ensure_capacity")(function* (input) {
-      const overrides = yield* db
-        .select({ maxTunnels: relayManagedTunnelLimits.maxTunnels })
-        .from(relayManagedTunnelLimits)
-        .where(eq(relayManagedTunnelLimits.userId, input.userId))
-        .limit(1)
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ManagedTunnelLimitPersistenceError({
-                operation: "load-limit",
-                userId: input.userId,
-                cause,
-              }),
-          ),
-        );
-      const maxTunnels = overrides[0]?.maxTunnels ?? DEFAULT_MANAGED_TUNNEL_LIMIT;
-
-      // Allocations already held for this environment are excluded so that
-      // re-linking an environment the user already has a tunnel for stays
-      // idempotent even when the account is at its limit.
-      const counted = yield* db
-        .select({ activeTunnels: count() })
-        .from(relayManagedEndpointAllocations)
-        .innerJoin(
-          relayEnvironmentLinks,
-          and(
-            eq(relayEnvironmentLinks.userId, relayManagedEndpointAllocations.userId),
-            eq(relayEnvironmentLinks.environmentId, relayManagedEndpointAllocations.environmentId),
-          ),
-        )
-        .where(
-          and(
-            eq(relayManagedEndpointAllocations.userId, input.userId),
-            ne(relayManagedEndpointAllocations.environmentId, input.environmentId),
-            isNull(relayEnvironmentLinks.revokedAt),
-            eq(relayEnvironmentLinks.managedTunnelsEnabled, true),
-          ),
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ManagedTunnelLimitPersistenceError({
-                operation: "count-tunnels",
-                userId: input.userId,
-                cause,
-              }),
-          ),
-        );
-      const activeTunnels = counted[0]?.activeTunnels ?? 0;
-
-      if (activeTunnels >= maxTunnels) {
-        return yield* new ManagedTunnelLimitExceeded({
-          userId: input.userId,
-          environmentId: input.environmentId,
-          maxTunnels,
-          activeTunnels,
-        });
-      }
-    }),
+    ensureCapacity,
+    reserveCapacity,
   });
 });
 

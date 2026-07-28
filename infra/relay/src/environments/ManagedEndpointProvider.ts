@@ -642,40 +642,41 @@ export const make = Effect.gen(function* () {
         environmentHash,
       );
       const requestedTunnelName = managedEndpointTunnelName(cf.namespace, environmentHash);
-      yield* tunnelLimits
-        .ensureCapacity({
-          userId: input.userId,
-          environmentId: input.environmentId,
-        })
-        .pipe(
-          Effect.catchTags({
-            ManagedTunnelLimitPersistenceError: (cause) =>
-              Effect.fail(
-                new ManagedEndpointProvisioningFailed({
-                  userId: input.userId,
-                  environmentId: input.environmentId,
-                  stage: "check-tunnel-limit",
-                  hostname: requestedHostname,
-                  tunnelName: requestedTunnelName,
-                  cause,
-                }),
+      const allocation = yield* tunnelLimits
+        .reserveCapacity(
+          {
+            userId: input.userId,
+            environmentId: input.environmentId,
+          },
+          allocations
+            .reserve({
+              userId: input.userId,
+              environmentId: input.environmentId,
+              hostname: requestedHostname,
+              tunnelName: requestedTunnelName,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ManagedEndpointProvisioningFailed({
+                    userId: input.userId,
+                    environmentId: input.environmentId,
+                    stage: "reserve-allocation",
+                    hostname: requestedHostname,
+                    tunnelName: requestedTunnelName,
+                    cause,
+                  }),
               ),
-          }),
-        );
-      const allocation = yield* allocations
-        .reserve({
-          userId: input.userId,
-          environmentId: input.environmentId,
-          hostname: requestedHostname,
-          tunnelName: requestedTunnelName,
-        })
+            ),
+        )
         .pipe(
-          Effect.mapError(
+          Effect.catchTag(
+            "ManagedTunnelLimitPersistenceError",
             (cause) =>
               new ManagedEndpointProvisioningFailed({
                 userId: input.userId,
                 environmentId: input.environmentId,
-                stage: "reserve-allocation",
+                stage: "check-tunnel-limit",
                 hostname: requestedHostname,
                 tunnelName: requestedTunnelName,
                 cause,

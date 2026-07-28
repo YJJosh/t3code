@@ -869,6 +869,48 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("bounds captured frames before JPEG encoding", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const originalToJpeg = vi.fn(() => Buffer.from("unbounded-frame"));
+        const resizedJpeg = Buffer.from("bounded-frame");
+        const resize = vi.fn(() => ({
+          toJPEG: vi.fn(() => resizedJpeg),
+          getSize: () => ({ width: 1600, height: 900 }),
+        }));
+        const capturePage = vi.fn(async () => ({
+          toJPEG: originalToJpeg,
+          getSize: () => ({ width: 3840, height: 2160 }),
+          resize,
+        }));
+        fromId.mockReturnValue(makeTestPreviewWebContents(capturePage));
+        const frames: DesktopPreviewRecordingFrame[] = [];
+
+        yield* manager.subscribeRecordingFrames((frame) =>
+          Effect.sync(() => {
+            frames.push(frame);
+          }),
+        );
+        yield* manager.createTab("tab_large_frame");
+        yield* manager.registerWebview("tab_large_frame", 42);
+        yield* manager.startRecording("tab_large_frame");
+
+        expect(resize).toHaveBeenCalledWith({ width: 1600, height: 900, quality: "good" });
+        expect(originalToJpeg).not.toHaveBeenCalled();
+        expect(frames).toEqual([
+          expect.objectContaining({
+            tabId: "tab_large_frame",
+            data: resizedJpeg.toString("base64"),
+            width: 1600,
+            height: 900,
+          }),
+        ]);
+
+        yield* manager.stopRecording("tab_large_frame");
+      }),
+    ),
+  );
+
   effectIt.effect("drops a captured frame when the tab webview changes during capture", () =>
     withManager((manager) =>
       Effect.gen(function* () {

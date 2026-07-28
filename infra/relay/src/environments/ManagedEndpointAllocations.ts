@@ -201,7 +201,17 @@ export const make = Effect.gen(function* () {
           createdAt: now,
           updatedAt: now,
         })
-        .onConflictDoNothing()
+        .onConflictDoUpdate({
+          target: [
+            relayManagedEndpointAllocations.userId,
+            relayManagedEndpointAllocations.environmentId,
+          ],
+          set: {
+            hostname: input.hostname,
+            tunnelName: input.tunnelName,
+            updatedAt: now,
+          },
+        })
         .returning(allocationSelection)
         .pipe(
           Effect.mapError(

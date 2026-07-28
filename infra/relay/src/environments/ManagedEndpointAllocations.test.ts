@@ -103,9 +103,12 @@ describe("ManagedEndpointAllocations", () => {
         expect(table).toBe(relayManagedEndpointAllocations);
         return {
           values: () => ({
-            onConflictDoNothing: () => ({
-              returning: () => Effect.succeed([]),
-            }),
+            onConflictDoUpdate: (input: { readonly set: { readonly updatedAt: string } }) => {
+              expect(input.set.updatedAt).toBeTruthy();
+              return {
+                returning: () => Effect.succeed([]),
+              };
+            },
           }),
         };
       },

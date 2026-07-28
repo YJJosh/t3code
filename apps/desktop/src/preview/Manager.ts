@@ -100,6 +100,8 @@ const MAX_INTERACTIVE_ELEMENTS = 200;
 const MAX_SCREENSHOT_WIDTH = 1280;
 const RECORDING_FRAME_INTERVAL_MS = Math.ceil(1_000 / 12);
 const RECORDING_JPEG_QUALITY = 80;
+const RECORDING_FRAME_MAX_WIDTH = 1600;
+const RECORDING_FRAME_MAX_HEIGHT = 1200;
 const PICTURE_IN_PICTURE_INITIAL_WIDTH = 480;
 const PICTURE_IN_PICTURE_INITIAL_HEIGHT = 320;
 const PICTURE_IN_PICTURE_MIN_WIDTH = 240;
@@ -157,6 +159,14 @@ export const buildPreviewPictureInPictureDataUrl = (): string => {
   </body>
 </html>`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+};
+
+export const fitPreviewRecordingFrameSize = (
+  width: number,
+  height: number,
+): readonly [width: number, height: number] => {
+  const scale = Math.min(1, RECORDING_FRAME_MAX_WIDTH / width, RECORDING_FRAME_MAX_HEIGHT / height);
+  return [Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale))];
 };
 
 export const fitPictureInPictureContentSize = (
@@ -2037,20 +2047,32 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ) {
       return;
     }
+    const [frameWidth, frameHeight] = fitPreviewRecordingFrameSize(size.width, size.height);
+    const frameImage =
+      frameWidth === size.width && frameHeight === size.height
+        ? image
+        : yield* attempt(
+            {
+              operation: "frameCapture.resizeFrame",
+              tabId,
+              webContentsId: wc.id,
+            },
+            () => image.resize({ width: frameWidth, height: frameHeight, quality: "good" }),
+          );
     const encoded = yield* attempt(
       {
         operation: "frameCapture.encodeFrame",
         tabId,
         webContentsId: wc.id,
       },
-      () => image.toJPEG(RECORDING_JPEG_QUALITY).toString("base64"),
+      () => frameImage.toJPEG(RECORDING_JPEG_QUALITY).toString("base64"),
     );
     const receivedAt = yield* currentIso;
     const frame: DesktopPreviewRecordingFrame = {
       tabId,
       data: encoded,
-      width: size.width,
-      height: size.height,
+      width: frameWidth,
+      height: frameHeight,
       receivedAt,
     };
     const deliveries: Array<Effect.Effect<void>> = [];

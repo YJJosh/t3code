@@ -260,12 +260,17 @@ function makeTunnelLimits(
   calls: Array<{ readonly userId: string; readonly environmentId: string }> = [],
   result: ManagedTunnelLimits.ManagedTunnelLimitExceeded | null = null,
 ) {
+  const ensureCapacity: ManagedTunnelLimits.ManagedTunnelLimits["Service"]["ensureCapacity"] = (
+    input,
+  ) =>
+    Effect.suspend(() => {
+      calls.push(input);
+      return result === null ? Effect.void : Effect.fail(result);
+    });
   return ManagedTunnelLimits.ManagedTunnelLimits.of({
-    ensureCapacity: (input) =>
-      Effect.suspend(() => {
-        calls.push(input);
-        return result === null ? Effect.void : Effect.fail(result);
-      }),
+    ensureCapacity,
+    reserveCapacity: (input, reservation) =>
+      ensureCapacity(input).pipe(Effect.andThen(reservation)),
   });
 }
 

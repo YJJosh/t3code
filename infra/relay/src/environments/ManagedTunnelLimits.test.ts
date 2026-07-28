@@ -16,8 +16,22 @@ const layerWithDb = (db: RelayDb.RelayDb["Service"]) =>
 function makeFakeDb(input: {
   readonly overrideRows?: Effect.Effect<ReadonlyArray<{ readonly maxTunnels: number }>, Error>;
   readonly countRows?: Effect.Effect<ReadonlyArray<{ readonly activeTunnels: number }>, Error>;
+  readonly reservationCalls?: Array<string>;
 }) {
+  const client = Object.assign(
+    (_strings: TemplateStringsArray, userId: string) =>
+      Effect.sync(() => {
+        input.reservationCalls?.push(`lock:${userId}`);
+      }),
+    {
+      withTransaction: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.sync(() => {
+          input.reservationCalls?.push("transaction");
+        }).pipe(Effect.andThen(effect)),
+    },
+  );
   return {
+    $client: client,
     select: () => ({
       from: (table: unknown) => {
         if (table === relayManagedTunnelLimits) {
@@ -29,7 +43,7 @@ function makeFakeDb(input: {
         }
         expect(table).toBe(relayManagedEndpointAllocations);
         return {
-          innerJoin: (table: unknown, condition: unknown) => {
+          leftJoin: (table: unknown, condition: unknown) => {
             expect(table).toBe(relayEnvironmentLinks);
             expect(condition).toBeDefined();
             return {
@@ -77,6 +91,28 @@ describe("ManagedTunnelLimits", () => {
         maxTunnels: 3,
         activeTunnels: 3,
       });
+    }).pipe(Effect.provide(layerWithDb(fakeDb)));
+  });
+
+  it.effect("serializes the quota check and reservation in one user-scoped transaction", () => {
+    const calls: Array<string> = [];
+    const fakeDb = makeFakeDb({
+      countRows: Effect.succeed([{ activeTunnels: 2 }]),
+      reservationCalls: calls,
+    });
+
+    return Effect.gen(function* () {
+      const limits = yield* ManagedTunnelLimits.ManagedTunnelLimits;
+      const reserved = yield* limits.reserveCapacity(
+        { userId: "user-1", environmentId: "environment-1" },
+        Effect.sync(() => {
+          calls.push("reservation");
+          return "reserved";
+        }),
+      );
+
+      expect(reserved).toBe("reserved");
+      expect(calls).toEqual(["transaction", "lock:user-1", "reservation"]);
     }).pipe(Effect.provide(layerWithDb(fakeDb)));
   });
 
