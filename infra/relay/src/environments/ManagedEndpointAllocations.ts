@@ -1,5 +1,5 @@
 import type { RelayManagedEndpoint } from "@t3tools/contracts/relay";
-import { and, eq, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, ne, or, sql } from "drizzle-orm";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -9,6 +9,8 @@ import * as Schema from "effect/Schema";
 import * as RelayDb from "../db.ts";
 import { isManagedEndpointHostname, managedEndpointForHostname } from "../deploymentConfig.ts";
 import { relayManagedEndpointAllocations } from "../persistence/schema.ts";
+
+export const MANAGED_ENDPOINT_PROVISIONING_LEASE = "5 minutes";
 
 export type ManagedEndpointAllocationState =
   | "provisioning"
@@ -211,7 +213,11 @@ export const make = Effect.gen(function* () {
     reserve: Effect.fn("relay.managed_endpoint_allocations.reserve")(function* (
       input: ReserveManagedEndpointAllocationInput,
     ) {
-      const now = DateTime.formatIso(yield* DateTime.now);
+      const currentTime = yield* DateTime.now;
+      const now = DateTime.formatIso(currentTime);
+      const reservationCutoff = DateTime.formatIso(
+        DateTime.subtractDuration(currentTime, MANAGED_ENDPOINT_PROVISIONING_LEASE),
+      );
       const inserted = yield* db
         .insert(relayManagedEndpointAllocations)
         .values({
@@ -232,10 +238,13 @@ export const make = Effect.gen(function* () {
             generation: sql`${relayManagedEndpointAllocations.generation} + 1`,
             updatedAt: now,
           },
-          setWhere: notInArray(relayManagedEndpointAllocations.state, [
-            "releasing",
-            "deprovisioning",
-          ]),
+          setWhere: sql`(
+            ${relayManagedEndpointAllocations.state} IN ('ready', 'offline')
+            OR (
+              ${relayManagedEndpointAllocations.state} = 'provisioning'
+              AND ${relayManagedEndpointAllocations.updatedAt} < ${reservationCutoff}
+            )
+          )`,
         })
         .returning(allocationSelection)
         .pipe(
@@ -250,39 +259,35 @@ export const make = Effect.gen(function* () {
           ),
         );
 
-      const allocation =
-        inserted[0] ??
-        (yield* db
-          .select(allocationSelection)
-          .from(relayManagedEndpointAllocations)
-          .where(whereAllocation(input))
-          .limit(1)
-          .pipe(
-            Effect.map((rows) => rows[0]),
-            Effect.mapError(
-              (cause) =>
-                new ManagedEndpointAllocationPersistenceError({
-                  operation: "reserve",
-                  stage: "database-request",
-                  ...input,
-                  cause,
-                }),
-            ),
-          ));
-
-      if (
-        allocation === undefined ||
-        allocation.state === "releasing" ||
-        allocation.state === "deprovisioning"
-      ) {
-        return yield* new ManagedEndpointAllocationPersistenceError({
-          operation: "reserve",
-          stage: "resolve-reservation",
-          ...input,
-        });
+      const reservation = inserted[0];
+      if (reservation !== undefined) {
+        return reservation;
       }
 
-      return allocation;
+      // Resolve the row once for persistence diagnostics, but never reuse it:
+      // a zero-row upsert means another live provision or destructive cleanup
+      // owns this environment. The caller retries after that lease completes.
+      yield* db
+        .select(allocationSelection)
+        .from(relayManagedEndpointAllocations)
+        .where(whereAllocation(input))
+        .limit(1)
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ManagedEndpointAllocationPersistenceError({
+                operation: "reserve",
+                stage: "database-request",
+                ...input,
+                cause,
+              }),
+          ),
+        );
+      return yield* new ManagedEndpointAllocationPersistenceError({
+        operation: "reserve",
+        stage: "resolve-reservation",
+        ...input,
+      });
     }),
     recordTunnel: Effect.fn("relay.managed_endpoint_allocations.record_tunnel")(function* (
       input: RecordManagedEndpointTunnelInput,

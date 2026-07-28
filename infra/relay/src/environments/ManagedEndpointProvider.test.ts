@@ -3,8 +3,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import { describe, expect, it } from "@effect/vitest";
 import * as Alchemy from "alchemy";
+import * as Deferred from "effect/Deferred";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 
@@ -187,7 +189,11 @@ function makeAllocations(calls: AllocationCall[] = []) {
         calls.push({ operation: "reserve", input });
         const key = allocationKey(input);
         const existing = allocations.get(key);
-        if (existing?.state === "releasing" || existing?.state === "deprovisioning") {
+        if (
+          existing?.state === "provisioning" ||
+          existing?.state === "releasing" ||
+          existing?.state === "deprovisioning"
+        ) {
           return Effect.fail(
             new ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError({
               operation: "reserve",
@@ -726,6 +732,47 @@ describe("ManagedEndpointProvider", () => {
       ]);
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect("rejects an overlapping provision for the same environment", () =>
+    Effect.gen(function* () {
+      const createEntered = yield* Deferred.make<void>();
+      const releaseCreate = yield* Deferred.make<void>();
+      const tunnelCalls: TunnelCall[] = [];
+      const tunnelClient = ManagedEndpointProvider.ManagedEndpointTunnelClient.of({
+        ...makeTunnelClient(tunnelCalls),
+        create: (request) =>
+          Effect.gen(function* () {
+            tunnelCalls.push({ operation: "create", input: request });
+            yield* Deferred.succeed(createEntered, undefined);
+            yield* Deferred.await(releaseCreate);
+            return { id: "tunnel-id", name: request.name };
+          }),
+      });
+      const layer = providerLayer(tunnelClient, makeDnsClient(), makeAllocations());
+      const request = {
+        userId: "user_ABC",
+        environmentId: "env_ABC",
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      } as const;
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+        const first = yield* Effect.forkChild(provider.provision(request), {
+          startImmediately: true,
+        });
+        yield* Deferred.await(createEntered);
+
+        const overlapping = yield* Effect.flip(provider.provision(request));
+        expect(overlapping).toMatchObject({
+          _tag: "ManagedEndpointProvisioningFailed",
+          stage: "reserve-allocation",
+        });
+
+        yield* Deferred.succeed(releaseCreate, undefined);
+        yield* Fiber.join(first);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
 
   it.effect("recreates a checkpointed DNS record when it was removed externally", () => {
     const dnsCalls: DnsCall[] = [];

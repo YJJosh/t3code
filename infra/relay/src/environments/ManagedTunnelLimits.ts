@@ -11,13 +11,13 @@ import {
   relayManagedEndpointAllocations,
   relayManagedTunnelLimits,
 } from "../persistence/schema.ts";
+import { MANAGED_ENDPOINT_PROVISIONING_LEASE } from "./ManagedEndpointAllocations.ts";
 
 /**
  * Managed tunnels a user may hold at once unless a row in
  * `relay_managed_tunnel_limits` overrides it for that user.
  */
 export const DEFAULT_MANAGED_TUNNEL_LIMIT = 3;
-const CAPACITY_RESERVATION_TTL = "5 minutes";
 
 export class ManagedTunnelLimitPersistenceError extends Schema.TaggedErrorClass<ManagedTunnelLimitPersistenceError>()(
   "ManagedTunnelLimitPersistenceError",
@@ -87,7 +87,7 @@ export const make = Effect.gen(function* () {
     const maxTunnels = overrides[0]?.maxTunnels ?? DEFAULT_MANAGED_TUNNEL_LIMIT;
 
     const reservationCutoff = DateTime.formatIso(
-      DateTime.subtractDuration(yield* DateTime.now, CAPACITY_RESERVATION_TTL),
+      DateTime.subtractDuration(yield* DateTime.now, MANAGED_ENDPOINT_PROVISIONING_LEASE),
     );
     // Ready allocations count while their tunnel is live. Releasing and
     // deprovisioning allocations count until destructive cleanup commits.
