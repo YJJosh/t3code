@@ -9,6 +9,8 @@ import * as Path from "effect/Path";
 import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as WorklerWorkspaceService from "../vcs/WorklerWorkspaceService.ts";
+import { makeFakeWorklerLibrary } from "../vcs/testing/FakeWorklerLibrary.ts";
 import { detectPrTemplate } from "./PrTemplateDetection.ts";
 
 const SINGLE_TEMPLATE_PATHS = [
@@ -26,7 +28,9 @@ const TEMPLATE_DIRECTORIES = [
   "docs/PULL_REQUEST_TEMPLATE",
 ] as const;
 
-const PrTemplateDetectionTestLayer = GitVcsDriver.layer.pipe(
+const PrTemplateDetectionTestLayer = GitVcsDriver.layerWithWorkler(
+  WorklerWorkspaceService.layerFromLibrary(makeFakeWorklerLibrary()),
+).pipe(
   Layer.provide(
     ServerConfig.layerTest(process.cwd(), {
       prefix: "t3-pr-template-test-",
