@@ -170,13 +170,16 @@ function makeAllocations(calls: AllocationCall[] = []) {
     ) => ManagedEndpointAllocations.ManagedEndpointAllocation,
   ) => {
     const allocation = allocations.get(key);
-    if (allocation !== undefined) {
-      allocations.set(key, {
-        ...change(allocation),
-        generation: allocation.generation + 1,
-        updatedAt: `mutation-${++mutation}`,
-      });
+    if (allocation === undefined) {
+      return undefined;
     }
+    const updated = {
+      ...change(allocation),
+      generation: allocation.generation + 1,
+      updatedAt: `mutation-${++mutation}`,
+    };
+    allocations.set(key, updated);
+    return updated;
   };
   return ManagedEndpointAllocations.ManagedEndpointAllocations.of({
     get: (input) =>
@@ -219,29 +222,59 @@ function makeAllocations(calls: AllocationCall[] = []) {
         return Effect.succeed(allocation);
       }),
     recordTunnel: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         calls.push({ operation: "recordTunnel", input });
-        mutate(allocationKey(input), (allocation) => ({
-          ...allocation,
-          tunnelId: input.tunnelId,
-        }));
+        const key = allocationKey(input);
+        const allocation = allocations.get(key);
+        if (allocation?.state !== "provisioning" || allocation.generation !== input.generation) {
+          return Effect.fail(
+            new ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError({
+              operation: "record-tunnel",
+              stage: "resolve-reservation",
+              ...input,
+            }),
+          );
+        }
+        const updated = mutate(key, (current) => ({ ...current, tunnelId: input.tunnelId }));
+        return Effect.succeed(updated!.generation);
       }),
     recordDns: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         calls.push({ operation: "recordDns", input });
-        mutate(allocationKey(input), (allocation) => ({
-          ...allocation,
-          dnsRecordId: input.dnsRecordId,
-        }));
+        const key = allocationKey(input);
+        const allocation = allocations.get(key);
+        if (allocation?.state !== "provisioning" || allocation.generation !== input.generation) {
+          return Effect.fail(
+            new ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError({
+              operation: "record-dns",
+              stage: "resolve-reservation",
+              ...input,
+            }),
+          );
+        }
+        const updated = mutate(key, (current) => ({ ...current, dnsRecordId: input.dnsRecordId }));
+        return Effect.succeed(updated!.generation);
       }),
     markReady: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         calls.push({ operation: "markReady", input });
-        mutate(allocationKey(input), (allocation) => ({
-          ...allocation,
+        const key = allocationKey(input);
+        const allocation = allocations.get(key);
+        if (allocation?.state !== "provisioning" || allocation.generation !== input.generation) {
+          return Effect.fail(
+            new ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError({
+              operation: "mark-ready",
+              stage: "resolve-reservation",
+              ...input,
+            }),
+          );
+        }
+        const updated = mutate(key, (current) => ({
+          ...current,
           readyAt: "2026-06-02T00:00:00.000Z",
           state: "ready",
         }));
+        return Effect.succeed(updated!.generation);
       }),
     claimRelease: (input) =>
       Effect.sync(() => {

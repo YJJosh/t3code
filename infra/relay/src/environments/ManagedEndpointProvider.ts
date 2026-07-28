@@ -788,11 +788,12 @@ export const make = Effect.gen(function* () {
         });
       }
       const tunnel = { id: tunnelResponse.id, name: tunnelResponse.name };
-      yield* allocations
+      const tunnelGeneration = yield* allocations
         .recordTunnel({
           userId: input.userId,
           environmentId: input.environmentId,
           tunnelId: tunnel.id,
+          generation: allocation.generation,
         })
         .pipe(
           Effect.mapError(
@@ -857,11 +858,12 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
-      yield* allocations
+      const dnsGeneration = yield* allocations
         .recordDns({
           userId: input.userId,
           environmentId: input.environmentId,
           dnsRecordId,
+          generation: tunnelGeneration,
         })
         .pipe(
           Effect.mapError(
@@ -898,6 +900,7 @@ export const make = Effect.gen(function* () {
         .markReady({
           userId: input.userId,
           environmentId: input.environmentId,
+          generation: dnsGeneration,
         })
         .pipe(
           Effect.mapError(
