@@ -1,5 +1,5 @@
 import type { RelayManagedEndpoint } from "@t3tools/contracts/relay";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, lt, ne, or, sql } from "drizzle-orm";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -527,18 +527,25 @@ export const make = Effect.gen(function* () {
     claimDeprovision: Effect.fn("relay.managed_endpoint_allocations.claim_deprovision")(function* (
       input: ClaimManagedEndpointDeprovisionInput,
     ) {
+      const currentTime = yield* DateTime.now;
+      const reservationCutoff = DateTime.formatIso(
+        DateTime.subtractDuration(currentTime, MANAGED_ENDPOINT_PROVISIONING_LEASE),
+      );
       return yield* db
         .update(relayManagedEndpointAllocations)
         .set({
           state: "deprovisioning",
           generation: sql`${relayManagedEndpointAllocations.generation} + 1`,
-          updatedAt: DateTime.formatIso(yield* DateTime.now),
+          updatedAt: DateTime.formatIso(currentTime),
         })
         .where(
           and(
             whereAllocation(input),
             eq(relayManagedEndpointAllocations.generation, input.generation),
-            ne(relayManagedEndpointAllocations.state, "provisioning"),
+            or(
+              ne(relayManagedEndpointAllocations.state, "provisioning"),
+              lt(relayManagedEndpointAllocations.updatedAt, reservationCutoff),
+            ),
           ),
         )
         .returning({ generation: relayManagedEndpointAllocations.generation })
