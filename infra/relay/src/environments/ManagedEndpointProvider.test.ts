@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as RelayConfiguration from "../Config.ts";
 import * as ManagedEndpointAllocations from "./ManagedEndpointAllocations.ts";
@@ -806,6 +807,32 @@ describe("ManagedEndpointProvider", () => {
       }).pipe(Effect.provide(layer));
     }),
   );
+
+  it.effect("cancels provisioning before its lease can expire", () => {
+    const tunnelClient = ManagedEndpointProvider.ManagedEndpointTunnelClient.of({
+      ...makeTunnelClient(),
+      create: () => Effect.never,
+    });
+    const layer = providerLayer(tunnelClient, makeDnsClient(), makeAllocations());
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const provision = provider
+        .provision({
+          userId: "user_ABC",
+          environmentId: "env_ABC",
+          origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+        })
+        .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+      const fiber = yield* provision;
+
+      yield* TestClock.adjust("4 minutes");
+      expect(yield* Fiber.join(fiber)).toMatchObject({
+        _tag: "ManagedEndpointProvisioningFailed",
+        stage: "provision-timeout",
+      });
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("deletes a stale generation tunnel before provisioning its replacement", () => {
     const tunnelCalls: TunnelCall[] = [];

@@ -40,8 +40,11 @@ export class ManagedEndpointProvisioningNotConfigured extends Schema.TaggedError
   }
 }
 
+const MANAGED_ENDPOINT_PROVISION_TIMEOUT = "4 minutes";
+
 const ManagedEndpointProvisioningStage = Schema.Literals([
   "derive-environment-hash",
+  "provision-timeout",
   "recover-release",
   "recover-provision",
   "check-tunnel-limit",
@@ -615,87 +618,50 @@ export const make = Effect.gen(function* () {
       // authorized". Only the explicit offline state stops it consuming quota.
       return completed;
     }),
-    provision: Effect.fn("relay.managed_endpoint_provider.provision")(function* (input) {
-      yield* Effect.annotateCurrentSpan({
-        "relay.user_id": input.userId,
-        "relay.environment_id": input.environmentId,
-        "relay.managed_endpoint.origin_host": input.origin.localHttpHost,
-        "relay.managed_endpoint.origin_port": input.origin.localHttpPort,
-      });
-      if (!isLoopbackOrigin(input.origin)) {
-        return yield* new ManagedEndpointOriginNotAllowed({
-          userId: input.userId,
-          environmentId: input.environmentId,
-          host: input.origin.localHttpHost,
-          port: input.origin.localHttpPort,
+    provision: Effect.fn("relay.managed_endpoint_provider.provision")((input) =>
+      Effect.gen(function* () {
+        yield* Effect.annotateCurrentSpan({
+          "relay.user_id": input.userId,
+          "relay.environment_id": input.environmentId,
+          "relay.managed_endpoint.origin_host": input.origin.localHttpHost,
+          "relay.managed_endpoint.origin_port": input.origin.localHttpPort,
         });
-      }
-      const cf = yield* requireCloudflareSettings(config, input);
-      const environmentHash = yield* crypto
-        .digest(
-          "SHA-256",
-          new TextEncoder().encode(
-            managedEndpointDigestInput(cf.namespace, input.userId, input.environmentId),
-          ),
-        )
-        .pipe(
-          Effect.map(Encoding.encodeHex),
-          Effect.mapError(
-            (cause) =>
-              new ManagedEndpointProvisioningFailed({
-                userId: input.userId,
-                environmentId: input.environmentId,
-                stage: "derive-environment-hash",
-                cause,
-              }),
-          ),
-        );
-      const requestedHostname = managedEndpointHostname(
-        cf.namespace,
-        cf.baseDomain,
-        environmentHash,
-      );
-      const requestedTunnelName = managedEndpointTunnelName(cf.namespace, environmentHash);
-      const pendingRelease = yield* allocations
-        .get({ userId: input.userId, environmentId: input.environmentId })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ManagedEndpointProvisioningFailed({
-                userId: input.userId,
-                environmentId: input.environmentId,
-                stage: "recover-release",
-                hostname: requestedHostname,
-                tunnelName: requestedTunnelName,
-                cause,
-              }),
-          ),
-        );
-      if (pendingRelease?.state === "releasing") {
-        if (pendingRelease.tunnelId !== null) {
-          yield* ignoreNotFound(tunnels.delete(pendingRelease.tunnelId)).pipe(
+        if (!isLoopbackOrigin(input.origin)) {
+          return yield* new ManagedEndpointOriginNotAllowed({
+            userId: input.userId,
+            environmentId: input.environmentId,
+            host: input.origin.localHttpHost,
+            port: input.origin.localHttpPort,
+          });
+        }
+        const cf = yield* requireCloudflareSettings(config, input);
+        const environmentHash = yield* crypto
+          .digest(
+            "SHA-256",
+            new TextEncoder().encode(
+              managedEndpointDigestInput(cf.namespace, input.userId, input.environmentId),
+            ),
+          )
+          .pipe(
+            Effect.map(Encoding.encodeHex),
             Effect.mapError(
               (cause) =>
                 new ManagedEndpointProvisioningFailed({
                   userId: input.userId,
                   environmentId: input.environmentId,
-                  stage: "recover-release",
-                  hostname: requestedHostname,
-                  tunnelName: requestedTunnelName,
-                  ...(pendingRelease.tunnelId === null
-                    ? {}
-                    : { tunnelId: pendingRelease.tunnelId }),
+                  stage: "derive-environment-hash",
                   cause,
                 }),
             ),
           );
-        }
-        yield* allocations
-          .completeRelease({
-            userId: input.userId,
-            environmentId: input.environmentId,
-            generation: pendingRelease.generation,
-          })
+        const requestedHostname = managedEndpointHostname(
+          cf.namespace,
+          cf.baseDomain,
+          environmentHash,
+        );
+        const requestedTunnelName = managedEndpointTunnelName(cf.namespace, environmentHash);
+        const pendingRelease = yield* allocations
+          .get({ userId: input.userId, environmentId: input.environmentId })
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -705,26 +671,34 @@ export const make = Effect.gen(function* () {
                   stage: "recover-release",
                   hostname: requestedHostname,
                   tunnelName: requestedTunnelName,
-                  ...(pendingRelease.tunnelId === null
-                    ? {}
-                    : { tunnelId: pendingRelease.tunnelId }),
                   cause,
                 }),
             ),
           );
-      }
-      const allocation = yield* tunnelLimits
-        .reserveCapacity(
-          {
-            userId: input.userId,
-            environmentId: input.environmentId,
-          },
-          allocations
-            .reserve({
+        if (pendingRelease?.state === "releasing") {
+          if (pendingRelease.tunnelId !== null) {
+            yield* ignoreNotFound(tunnels.delete(pendingRelease.tunnelId)).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ManagedEndpointProvisioningFailed({
+                    userId: input.userId,
+                    environmentId: input.environmentId,
+                    stage: "recover-release",
+                    hostname: requestedHostname,
+                    tunnelName: requestedTunnelName,
+                    ...(pendingRelease.tunnelId === null
+                      ? {}
+                      : { tunnelId: pendingRelease.tunnelId }),
+                    cause,
+                  }),
+              ),
+            );
+          }
+          yield* allocations
+            .completeRelease({
               userId: input.userId,
               environmentId: input.environmentId,
-              hostname: requestedHostname,
-              tunnelName: requestedTunnelName,
+              generation: pendingRelease.generation,
             })
             .pipe(
               Effect.mapError(
@@ -732,228 +706,278 @@ export const make = Effect.gen(function* () {
                   new ManagedEndpointProvisioningFailed({
                     userId: input.userId,
                     environmentId: input.environmentId,
-                    stage: "reserve-allocation",
+                    stage: "recover-release",
                     hostname: requestedHostname,
                     tunnelName: requestedTunnelName,
+                    ...(pendingRelease.tunnelId === null
+                      ? {}
+                      : { tunnelId: pendingRelease.tunnelId }),
                     cause,
                   }),
               ),
-            ),
-        )
-        .pipe(
-          Effect.catchTag(
-            "ManagedTunnelLimitPersistenceError",
-            (cause) =>
-              new ManagedEndpointProvisioningFailed({
+            );
+        }
+        const allocation = yield* tunnelLimits
+          .reserveCapacity(
+            {
+              userId: input.userId,
+              environmentId: input.environmentId,
+            },
+            allocations
+              .reserve({
                 userId: input.userId,
                 environmentId: input.environmentId,
-                stage: "check-tunnel-limit",
                 hostname: requestedHostname,
                 tunnelName: requestedTunnelName,
-                cause,
-              }),
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ManagedEndpointProvisioningFailed({
+                      userId: input.userId,
+                      environmentId: input.environmentId,
+                      stage: "reserve-allocation",
+                      hostname: requestedHostname,
+                      tunnelName: requestedTunnelName,
+                      cause,
+                    }),
+                ),
+              ),
+          )
+          .pipe(
+            Effect.catchTag(
+              "ManagedTunnelLimitPersistenceError",
+              (cause) =>
+                new ManagedEndpointProvisioningFailed({
+                  userId: input.userId,
+                  environmentId: input.environmentId,
+                  stage: "check-tunnel-limit",
+                  hostname: requestedHostname,
+                  tunnelName: requestedTunnelName,
+                  cause,
+                }),
+            ),
+          );
+        const { hostname, tunnelName } = allocation;
+        const staleTunnelId =
+          pendingRelease?.state === "provisioning" &&
+          pendingRelease.generation !== allocation.generation
+            ? pendingRelease.tunnelId
+            : null;
+        if (staleTunnelId !== null) {
+          // A stale lease takeover must rotate the remote tunnel too. Deleting
+          // the prior generation's tunnel fences a resumed stale fiber: its next
+          // Cloudflare mutation targets the deleted id and cannot overwrite the
+          // replacement's configuration.
+          yield* ignoreNotFound(tunnels.delete(staleTunnelId)).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ManagedEndpointProvisioningFailed({
+                  userId: input.userId,
+                  environmentId: input.environmentId,
+                  stage: "recover-provision",
+                  hostname,
+                  tunnelName,
+                  tunnelId: staleTunnelId,
+                  cause,
+                }),
+            ),
+          );
+        }
+
+        const tunnelResponse = yield* tunnels.list({ name: tunnelName, isDeleted: false }).pipe(
+          Effect.map((tunnels) => tunnels.result),
+          Effect.map(Arr.findFirst((tunnel) => tunnel.name === tunnelName)),
+          Effect.flatMap(
+            Option.match({
+              onSome: (tunnel) => Effect.succeed(tunnel),
+              onNone: () => tunnels.create({ name: tunnelName, configSrc: "cloudflare" }),
+            }),
           ),
-        );
-      const { hostname, tunnelName } = allocation;
-      const staleTunnelId =
-        pendingRelease?.state === "provisioning" &&
-        pendingRelease.generation !== allocation.generation
-          ? pendingRelease.tunnelId
-          : null;
-      if (staleTunnelId !== null) {
-        // A stale lease takeover must rotate the remote tunnel too. Deleting
-        // the prior generation's tunnel fences a resumed stale fiber: its next
-        // Cloudflare mutation targets the deleted id and cannot overwrite the
-        // replacement's configuration.
-        yield* ignoreNotFound(tunnels.delete(staleTunnelId)).pipe(
           Effect.mapError(
             (cause) =>
               new ManagedEndpointProvisioningFailed({
                 userId: input.userId,
                 environmentId: input.environmentId,
-                stage: "recover-provision",
+                stage: "ensure-tunnel",
                 hostname,
                 tunnelName,
-                tunnelId: staleTunnelId,
                 cause,
               }),
           ),
         );
-      }
+        if (!tunnelResponse.id || tunnelResponse.name !== tunnelName) {
+          return yield* new ManagedEndpointProvisioningFailed({
+            userId: input.userId,
+            environmentId: input.environmentId,
+            stage: "validate-tunnel-response",
+            hostname,
+            tunnelName,
+            ...(tunnelResponse.id ? { returnedTunnelId: tunnelResponse.id } : {}),
+            ...(tunnelResponse.name ? { returnedTunnelName: tunnelResponse.name } : {}),
+          });
+        }
+        const tunnel = { id: tunnelResponse.id, name: tunnelResponse.name };
+        const tunnelGeneration = yield* allocations
+          .recordTunnel({
+            userId: input.userId,
+            environmentId: input.environmentId,
+            tunnelId: tunnel.id,
+            generation: allocation.generation,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ManagedEndpointProvisioningFailed({
+                  userId: input.userId,
+                  environmentId: input.environmentId,
+                  stage: "record-tunnel",
+                  hostname,
+                  tunnelName,
+                  tunnelId: tunnel.id,
+                  cause,
+                }),
+            ),
+          );
 
-      const tunnelResponse = yield* tunnels.list({ name: tunnelName, isDeleted: false }).pipe(
-        Effect.map((tunnels) => tunnels.result),
-        Effect.map(Arr.findFirst((tunnel) => tunnel.name === tunnelName)),
+        yield* tunnels
+          .putConfiguration(tunnel.id, {
+            ingress: [
+              {
+                hostname,
+                service: formatOriginService(input.origin),
+              },
+              { service: "http_status:404" },
+            ],
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ManagedEndpointProvisioningFailed({
+                  userId: input.userId,
+                  environmentId: input.environmentId,
+                  stage: "configure-tunnel",
+                  hostname,
+                  tunnelName,
+                  tunnelId: tunnel.id,
+                  cause,
+                }),
+            ),
+          );
+
+        const dnsRecord = {
+          type: "CNAME",
+          name: hostname,
+          content: `${tunnel.id}.cfargotunnel.com`,
+          ttl: 1,
+          proxied: true,
+        } as const;
+
+        const dnsRecordId = yield* ensureDnsRecord(
+          hostname,
+          allocation.dnsRecordId,
+          dnsRecord,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ManagedEndpointProvisioningFailed({
+                userId: input.userId,
+                environmentId: input.environmentId,
+                stage: "ensure-dns-record",
+                hostname,
+                tunnelName,
+                tunnelId: tunnel.id,
+                ...(allocation.dnsRecordId === null ? {} : { dnsRecordId: allocation.dnsRecordId }),
+                cause,
+              }),
+          ),
+        );
+        const dnsGeneration = yield* allocations
+          .recordDns({
+            userId: input.userId,
+            environmentId: input.environmentId,
+            dnsRecordId,
+            generation: tunnelGeneration,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ManagedEndpointProvisioningFailed({
+                  userId: input.userId,
+                  environmentId: input.environmentId,
+                  stage: "record-dns",
+                  hostname,
+                  tunnelName,
+                  tunnelId: tunnel.id,
+                  dnsRecordId,
+                  cause,
+                }),
+            ),
+          );
+
+        const connectorToken = yield* tunnels.getToken(tunnel.id).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ManagedEndpointProvisioningFailed({
+                userId: input.userId,
+                environmentId: input.environmentId,
+                stage: "get-tunnel-token",
+                hostname,
+                tunnelName,
+                tunnelId: tunnel.id,
+                dnsRecordId,
+                cause,
+              }),
+          ),
+        );
+        yield* allocations
+          .markReady({
+            userId: input.userId,
+            environmentId: input.environmentId,
+            generation: dnsGeneration,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ManagedEndpointProvisioningFailed({
+                  userId: input.userId,
+                  environmentId: input.environmentId,
+                  stage: "mark-allocation-ready",
+                  hostname,
+                  tunnelName,
+                  tunnelId: tunnel.id,
+                  dnsRecordId,
+                  cause,
+                }),
+            ),
+          );
+
+        return {
+          endpoint: managedEndpointForHostname(hostname),
+          runtime: {
+            providerKind: "cloudflare_tunnel",
+            connectorToken,
+            tunnelId: tunnel.id,
+            tunnelName: tunnel.name,
+          },
+        } satisfies ManagedEndpointProvisioningResult;
+      }).pipe(
+        Effect.timeoutOption(MANAGED_ENDPOINT_PROVISION_TIMEOUT),
         Effect.flatMap(
           Option.match({
-            onSome: (tunnel) => Effect.succeed(tunnel),
-            onNone: () => tunnels.create({ name: tunnelName, configSrc: "cloudflare" }),
+            onNone: () =>
+              Effect.fail(
+                new ManagedEndpointProvisioningFailed({
+                  userId: input.userId,
+                  environmentId: input.environmentId,
+                  stage: "provision-timeout",
+                }),
+              ),
+            onSome: Effect.succeed,
           }),
         ),
-        Effect.mapError(
-          (cause) =>
-            new ManagedEndpointProvisioningFailed({
-              userId: input.userId,
-              environmentId: input.environmentId,
-              stage: "ensure-tunnel",
-              hostname,
-              tunnelName,
-              cause,
-            }),
-        ),
-      );
-      if (!tunnelResponse.id || tunnelResponse.name !== tunnelName) {
-        return yield* new ManagedEndpointProvisioningFailed({
-          userId: input.userId,
-          environmentId: input.environmentId,
-          stage: "validate-tunnel-response",
-          hostname,
-          tunnelName,
-          ...(tunnelResponse.id ? { returnedTunnelId: tunnelResponse.id } : {}),
-          ...(tunnelResponse.name ? { returnedTunnelName: tunnelResponse.name } : {}),
-        });
-      }
-      const tunnel = { id: tunnelResponse.id, name: tunnelResponse.name };
-      const tunnelGeneration = yield* allocations
-        .recordTunnel({
-          userId: input.userId,
-          environmentId: input.environmentId,
-          tunnelId: tunnel.id,
-          generation: allocation.generation,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ManagedEndpointProvisioningFailed({
-                userId: input.userId,
-                environmentId: input.environmentId,
-                stage: "record-tunnel",
-                hostname,
-                tunnelName,
-                tunnelId: tunnel.id,
-                cause,
-              }),
-          ),
-        );
-
-      yield* tunnels
-        .putConfiguration(tunnel.id, {
-          ingress: [
-            {
-              hostname,
-              service: formatOriginService(input.origin),
-            },
-            { service: "http_status:404" },
-          ],
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ManagedEndpointProvisioningFailed({
-                userId: input.userId,
-                environmentId: input.environmentId,
-                stage: "configure-tunnel",
-                hostname,
-                tunnelName,
-                tunnelId: tunnel.id,
-                cause,
-              }),
-          ),
-        );
-
-      const dnsRecord = {
-        type: "CNAME",
-        name: hostname,
-        content: `${tunnel.id}.cfargotunnel.com`,
-        ttl: 1,
-        proxied: true,
-      } as const;
-
-      const dnsRecordId = yield* ensureDnsRecord(hostname, allocation.dnsRecordId, dnsRecord).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ManagedEndpointProvisioningFailed({
-              userId: input.userId,
-              environmentId: input.environmentId,
-              stage: "ensure-dns-record",
-              hostname,
-              tunnelName,
-              tunnelId: tunnel.id,
-              ...(allocation.dnsRecordId === null ? {} : { dnsRecordId: allocation.dnsRecordId }),
-              cause,
-            }),
-        ),
-      );
-      const dnsGeneration = yield* allocations
-        .recordDns({
-          userId: input.userId,
-          environmentId: input.environmentId,
-          dnsRecordId,
-          generation: tunnelGeneration,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ManagedEndpointProvisioningFailed({
-                userId: input.userId,
-                environmentId: input.environmentId,
-                stage: "record-dns",
-                hostname,
-                tunnelName,
-                tunnelId: tunnel.id,
-                dnsRecordId,
-                cause,
-              }),
-          ),
-        );
-
-      const connectorToken = yield* tunnels.getToken(tunnel.id).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ManagedEndpointProvisioningFailed({
-              userId: input.userId,
-              environmentId: input.environmentId,
-              stage: "get-tunnel-token",
-              hostname,
-              tunnelName,
-              tunnelId: tunnel.id,
-              dnsRecordId,
-              cause,
-            }),
-        ),
-      );
-      yield* allocations
-        .markReady({
-          userId: input.userId,
-          environmentId: input.environmentId,
-          generation: dnsGeneration,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ManagedEndpointProvisioningFailed({
-                userId: input.userId,
-                environmentId: input.environmentId,
-                stage: "mark-allocation-ready",
-                hostname,
-                tunnelName,
-                tunnelId: tunnel.id,
-                dnsRecordId,
-                cause,
-              }),
-          ),
-        );
-
-      return {
-        endpoint: managedEndpointForHostname(hostname),
-        runtime: {
-          providerKind: "cloudflare_tunnel",
-          connectorToken,
-          tunnelId: tunnel.id,
-          tunnelName: tunnel.name,
-        },
-      } satisfies ManagedEndpointProvisioningResult;
-    }),
+      ),
+    ),
   });
 });
 
