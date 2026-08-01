@@ -358,15 +358,31 @@ describe("makePiAdapter", () => {
       yield* fake.pushFrame({ type: "agent_start" });
       yield* fake.pushFrame({
         type: "message_update",
-        message: { role: "assistant", content: [{ type: "text", text: "Hi there" }] },
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Checking the repository first." },
+            { type: "text", text: "Hi there" },
+          ],
+        },
       });
       yield* fake.pushFrame({ type: "agent_end", willRetry: false });
       yield* fake.pushFrame({ type: "agent_settled" });
 
       expect((yield* Queue.take(events)).type).toBe("item.started");
-      const delta = yield* Queue.take(events);
-      expect(delta.type).toBe("content.delta");
-      expect(delta.type === "content.delta" && delta.payload.delta).toBe("Hi there");
+      const reasoningDelta = yield* Queue.take(events);
+      expect(reasoningDelta).toMatchObject({
+        type: "content.delta",
+        payload: {
+          streamKind: "reasoning_text",
+          delta: "Checking the repository first.",
+        },
+      });
+      const assistantDelta = yield* Queue.take(events);
+      expect(assistantDelta).toMatchObject({
+        type: "content.delta",
+        payload: { streamKind: "assistant_text", delta: "Hi there" },
+      });
 
       const completed = yield* takeEventOfType(events, "turn.completed");
       expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");

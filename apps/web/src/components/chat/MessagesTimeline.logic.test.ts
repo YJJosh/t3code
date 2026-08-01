@@ -261,6 +261,36 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("keeps thinking rows visible instead of filtering them as neutral tools", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "reasoning-entry",
+          kind: "work",
+          createdAt: "2026-08-02T00:00:00Z",
+          entry: {
+            id: "reasoning-1",
+            createdAt: "2026-08-02T00:00:00Z",
+            label: "Thinking",
+            detail: "Inspecting the provider lifecycle.",
+            tone: "thinking",
+          },
+        },
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows).toMatchObject([
+      {
+        kind: "work",
+        groupedEntries: [{ id: "reasoning-1", tone: "thinking" }],
+      },
+    ]);
+  });
+
   it("only enables assistant copy for the terminal assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

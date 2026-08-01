@@ -250,6 +250,11 @@ export function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
 }
 
 /** Tool-like row with neither clear success nor failure (empty, incomplete, in progress, etc.). */
+/** Thinking is useful progress; other neutral tool rows are incomplete lifecycle noise. */
+export function workLogEntryShouldRender(entry: WorkLogEntry): boolean {
+  return entry.tone === "thinking" || !workEntryIndicatesToolNeutralStatus(entry);
+}
+
 export function workEntryIndicatesToolNeutralStatus(entry: WorkLogEntry): boolean {
   if (!workLogEntryIsToolLike(entry)) {
     return false;
@@ -627,10 +632,12 @@ export function hasActionableProposedPlan(
 
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  options?: { readonly showAgentReasoning?: boolean },
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
+    if (activity.kind === "reasoning" && options?.showAgentReasoning === false) continue;
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
@@ -711,7 +718,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     turnId: activity.turnId,
     label: taskLabel || activity.summary,
     tone:
-      activity.kind === "task.progress"
+      activity.kind === "task.progress" || activity.kind === "reasoning"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"

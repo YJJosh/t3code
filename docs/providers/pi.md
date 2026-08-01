@@ -24,7 +24,7 @@ The composer settings control beside the model picker exposes the selected model
 
 Provider refresh also discovers user-scoped Pi extension commands, prompt templates, and skills for composer completion. Project-scoped resources remain session-local because different T3 projects can load different `.pi/` directories; typing their command explicitly still lets Pi expand it in that thread.
 
-T3 keeps the orchestration turn open across Pi's low-level `agent_end`, retry, and compaction boundaries. It finalizes only when Pi emits `agent_settled`. Tool arguments, partial output, final results, and failures remain correlated by tool-call id. Extension errors and warning/error notifications appear in the work log; successful compaction is informational rather than an error.
+T3 keeps the orchestration turn open across Pi's low-level `agent_end`, retry, and compaction boundaries. It finalizes only when Pi emits `agent_settled`. Tool arguments, partial output, final results, and failures remain correlated by tool-call id. Reasoning blocks emitted by Pi models appear as expandable Thinking rows and survive reloads; Settings → General → Agent reasoning can hide them without changing the model's reasoning level. Extension errors and warning/error notifications appear in the work log; successful compaction is informational rather than an error.
 
 Extension confirmation prompts are approved automatically for the full-access runtime. Prompts that require fabricated text input are cancelled instead.
 

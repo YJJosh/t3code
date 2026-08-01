@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo } from "react";
 
 import {
@@ -23,6 +24,7 @@ import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildThreadFeed } from "../lib/threadActivity";
 import { appAtomRegistry } from "../state/atom-registry";
+import { mobilePreferencesAtom } from "../state/preferences";
 import {
   appendComposerDraftAttachments,
   appendComposerDraftText,
@@ -76,6 +78,7 @@ export function useThreadComposerState() {
   const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
   const composerDrafts = useAtomValue(composerDraftsAtom);
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
 
   useEffect(() => {
@@ -89,9 +92,13 @@ export function useThreadComposerState() {
     () => (selectedThreadKey ? (queuedMessagesByThreadKey[selectedThreadKey] ?? []) : []),
     [queuedMessagesByThreadKey, selectedThreadKey],
   );
+  const showAgentReasoning = AsyncResult.isSuccess(preferencesResult)
+    ? preferencesResult.value.showAgentReasoning !== false
+    : true;
   const selectedThreadFeed = useMemo(
-    () => (selectedThreadDetail ? buildThreadFeed(selectedThreadDetail) : []),
-    [selectedThreadDetail],
+    () =>
+      selectedThreadDetail ? buildThreadFeed(selectedThreadDetail, { showAgentReasoning }) : [],
+    [selectedThreadDetail, showAgentReasoning],
   );
 
   const selectedDraft = selectedThreadKey ? composerDrafts[selectedThreadKey] : null;

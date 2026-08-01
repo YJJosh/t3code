@@ -740,6 +740,27 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["task-progress", "task-complete"]);
   });
 
+  it("shows provider reasoning as thinking by default and can hide it", () => {
+    const activity = makeActivity({
+      id: "reasoning-1",
+      createdAt: "2026-08-02T00:00:00.000Z",
+      kind: "reasoning",
+      summary: "Thinking",
+      tone: "info",
+      payload: { detail: "Inspecting the provider lifecycle.", reasoning: true },
+    });
+
+    expect(deriveWorkLogEntries([activity])).toMatchObject([
+      {
+        id: "reasoning-1",
+        label: "Thinking",
+        tone: "thinking",
+        detail: "Inspecting the provider lifecycle.",
+      },
+    ]);
+    expect(deriveWorkLogEntries([activity], { showAgentReasoning: false })).toEqual([]);
+  });
+
   it("uses payload summary as label for task entries when available", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

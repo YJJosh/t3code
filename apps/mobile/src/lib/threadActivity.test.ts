@@ -108,6 +108,38 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("shows provider reasoning as thinking by default and can hide it", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-reasoning"),
+      projectId: ProjectId.make("project-1"),
+      title: "Reasoning",
+      activities: [
+        makeActivity({
+          id: EventId.make("reasoning-1"),
+          kind: "reasoning",
+          summary: "Thinking",
+          createdAt: "2026-08-02T00:00:00.000Z",
+          turnId: TurnId.make("turn-reasoning"),
+          payload: { detail: "Inspecting the provider lifecycle.", reasoning: true },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toMatchObject([
+      {
+        type: "activity-group",
+        activities: [
+          {
+            summary: "Thinking",
+            detail: "Inspecting the provider lifecycle.",
+            icon: "agent",
+          },
+        ],
+      },
+    ]);
+    expect(buildThreadFeed(thread, { showAgentReasoning: false })).toEqual([]);
+  });
+
   it("collapses matching tool lifecycle rows like desktop", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-2"),

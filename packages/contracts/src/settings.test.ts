@@ -111,6 +111,13 @@ describe("ClientSettings sidebar v2", () => {
   });
 });
 
+describe("ClientSettings agent reasoning", () => {
+  it("shows provider reasoning by default and accepts visibility updates", () => {
+    expect(decodeClientSettings({}).showAgentReasoning).toBe(true);
+    expect(decodeClientSettingsPatch({ showAgentReasoning: false }).showAgentReasoning).toBe(false);
+  });
+});
+
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults to an empty record so legacy configs without the key still decode", () => {
     expect(DEFAULT_SERVER_SETTINGS.providerInstances).toEqual({});

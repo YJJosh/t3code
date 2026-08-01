@@ -528,6 +528,32 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Work Log");
   });
 
+  it("renders provider thinking rows with expandable reasoning text", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "reasoning-entry",
+            kind: "work",
+            createdAt: "2026-08-02T00:00:00.000Z",
+            entry: {
+              id: "reasoning-1",
+              createdAt: "2026-08-02T00:00:00.000Z",
+              label: "Thinking",
+              detail: "Inspecting the provider lifecycle.",
+              tone: "thinking",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Thinking");
+    expect(markup).toContain("Inspecting the provider lifecycle.");
+    expect(markup).toContain("Work Log");
+  });
+
   it("formats changed file paths from the workspace root", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
