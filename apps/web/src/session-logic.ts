@@ -739,8 +739,16 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     const data = asRecord(payload?.data);
     if (itemType === "mcp_tool_call" && data?.item !== undefined) {
       entry.toolData = data.item;
-    } else if (data !== null) {
-      entry.toolData = data;
+    } else if (
+      data !== null &&
+      (itemType === "dynamic_tool_call" || itemType === "command_execution")
+    ) {
+      const structuredToolData = Object.fromEntries(
+        ["toolCallId", "args", "partialResult", "result", "providerMetadata", "isError"].flatMap(
+          (key) => (data[key] === undefined ? [] : [[key, data[key]]]),
+        ),
+      );
+      if (Object.keys(structuredToolData).length > 0) entry.toolData = structuredToolData;
     }
   }
   if (itemType) {
