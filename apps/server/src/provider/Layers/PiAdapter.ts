@@ -470,7 +470,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               {
                 toolCallId: event.toolCallId,
                 toolName: event.toolName,
-                args: event.args,
+                ...(event.args !== undefined ? { args: event.args } : {}),
                 ...(claudeTool.phase === "end"
                   ? {
                       result:
@@ -653,6 +653,38 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         });
       });
 
+    const ensureActiveTurnForAgentStart = (ctx: PiSessionContext) =>
+      ctx.activeTurnId !== undefined
+        ? Effect.succeed(ctx.activeTurnId)
+        : ctx.sendSemaphore.withPermit(
+            Effect.gen(function* () {
+              if (ctx.activeTurnId !== undefined) return ctx.activeTurnId;
+
+              // An agent_start after the previous agent_settled is autonomous work
+              // (for example, a background subagent reporting back). Represent that
+              // run as a synthetic turn. Other late extension/message events remain
+              // ignored so startup profile notifications cannot invent turns.
+              const turnId = TurnId.make(yield* randomUUIDv4);
+              const updatedAt = yield* nowIso;
+              ctx.activeTurnId = turnId;
+              ctx.session = {
+                ...ctx.session,
+                status: "running",
+                activeTurnId: turnId,
+                updatedAt,
+              };
+              yield* emit({
+                type: "turn.started",
+                ...(yield* makeStamp()),
+                provider: PROVIDER,
+                threadId: ctx.threadId,
+                turnId,
+                payload: ctx.session.model ? { model: ctx.session.model } : {},
+              });
+              return turnId;
+            }),
+          );
+
     const toolResultSummary = (result: unknown): string | undefined => {
       if (!isRecord(result)) return undefined;
       if (typeof result.error === "string" && result.error.trim()) return result.error;
@@ -741,10 +773,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             return;
           }
           case "agent_start":
+            yield* ensureActiveTurnForAgentStart(ctx);
+            return;
           case "message_start":
-            // The turn is opened by sendTurn. Pi may emit startup/profile and
-            // late extension events outside that turn; never invent a turn for
-            // them after the previous one has settled.
+            // The turn is opened by sendTurn or an explicit agent_start. Pi may
+            // emit startup/profile and late extension messages outside a turn;
+            // those messages must not invent autonomous work on their own.
             return;
           case "message_update":
           case "message_end":
@@ -783,8 +817,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           case "agent_settled": {
             const outcome = ctx.interruptRequested
               ? { state: "cancelled" as const, stopReason: "cancelled" }
-              : (ctx.lastAgentEndOutcome ??
-                ctx.terminalFailure ?? { state: "completed" as const, stopReason: null });
+              : (ctx.terminalFailure ??
+                ctx.lastAgentEndOutcome ?? { state: "completed" as const, stopReason: null });
             yield* completeTurn(ctx, outcome.state, {
               ...(outcome.stopReason !== undefined ? { stopReason: outcome.stopReason } : {}),
               ...("errorMessage" in outcome && outcome.errorMessage

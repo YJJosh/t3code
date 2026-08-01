@@ -463,6 +463,45 @@ describe("makePiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
+  it.effect("opens a synthetic turn when Pi starts autonomous work after settlement", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("13131313-1313-4313-8313-131313131313");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* takeEventOfType(events, "thread.started");
+
+      const userTurn = yield* adapter.sendTurn({ threadId, input: "start background work" });
+      yield* takeEventOfType(events, "turn.started");
+      yield* fake.takeStdinUntil((command) => command.type === "prompt");
+      yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+      yield* fake.pushFrame({ type: "agent_settled" });
+      yield* takeEventOfType(events, "turn.completed");
+
+      yield* fake.pushFrame({ type: "agent_start" });
+      const autonomousTurn = yield* takeEventOfType(events, "turn.started");
+      expect(autonomousTurn.turnId).not.toBe(userTurn.turnId);
+      yield* fake.pushFrame({
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "Background result" }] },
+      });
+      yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+      yield* fake.pushFrame({ type: "agent_settled" });
+
+      const delta = yield* takeEventOfType(events, "content.delta");
+      expect(delta.type === "content.delta" && delta.payload.delta).toBe("Background result");
+      const completed = yield* takeEventOfType(events, "turn.completed");
+      expect(completed.turnId).toBe(autonomousTurn.turnId);
+      expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
   it.effect("synchronizes Pi context and Codex Fast service before the user prompt", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi({ contextCommand: true, fastCommand: true });
@@ -1053,12 +1092,13 @@ describe("makePiAdapter", () => {
         notifyType: "info",
         message: `${CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX}${encodeUnknownJsonStringSync({ ...base, phase: "start" })}`,
       });
+      const { args: _startOnlyArgs, ...endBase } = base;
       yield* fake.pushFrame({
         type: "extension_ui_request",
         method: "notify",
         notifyType: "info",
         message: `${CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX}${encodeUnknownJsonStringSync({
-          ...base,
+          ...endBase,
           sequence: 2,
           phase: "end",
           result: { content: "file contents" },
@@ -1082,6 +1122,7 @@ describe("makePiAdapter", () => {
       expect(completed.type === "item.completed" && completed.payload.status).toBe("completed");
       expect(completed.type === "item.completed" && completed.payload.data).toMatchObject({
         toolCallId: "claude-tool-1",
+        args: { file_path: "/tmp/app.ts" },
         result: { content: "file contents" },
         isError: false,
         providerMetadata: { durationMs: 12 },
@@ -1194,6 +1235,39 @@ describe("makePiAdapter", () => {
       const completed = lifecycle.at(-1)!;
       expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");
       expect(completed.turnId).toBe(turn.turnId);
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("prefers a terminal retry failure over an earlier successful agent_end", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("dfdfdfdf-dfdf-4fdf-8fdf-dfdfdfdfdfdf");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* takeEventOfType(events, "thread.started");
+      yield* adapter.sendTurn({ threadId, input: "retry this request" });
+      yield* takeEventOfType(events, "turn.started");
+      yield* fake.takeStdinUntil((command) => command.type === "prompt");
+
+      yield* fake.pushFrame({ type: "agent_end", willRetry: false, messages: [] });
+      yield* fake.pushFrame({
+        type: "auto_retry_end",
+        success: false,
+        finalError: "retry budget exhausted",
+      });
+      yield* fake.pushFrame({ type: "agent_settled" });
+
+      const completed = yield* takeEventOfType(events, "turn.completed");
+      expect(completed.type === "turn.completed" && completed.payload).toMatchObject({
+        state: "failed",
+        errorMessage: "retry budget exhausted",
+      });
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 

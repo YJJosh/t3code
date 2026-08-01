@@ -5,6 +5,11 @@ import type {
 } from "@t3tools/client-runtime/state/subagents";
 import type { PiSubagentRunStatus, PiSubagentUsage } from "@t3tools/contracts";
 
+export {
+  isSubagentMaxTurnReason,
+  subagentMaxTurnExplanation,
+} from "@t3tools/client-runtime/state/subagents";
+
 export type SubagentStatusTone = "info" | "warning" | "success" | "error";
 
 const STATUS_LABELS: Record<PiSubagentRunStatus, string> = {
@@ -350,27 +355,6 @@ export function formatSubagentUsageBreakdown(usage: PiSubagentUsage): string | n
     .filter(([count]) => count > 0)
     .map(([count, label]) => `${formatCompactTokenCount(count)} ${label}`);
   return parts.length > 0 ? parts.join(" · ") : null;
-}
-
-const MAX_TURN_REASON_PATTERN = /max(?:imum)?[\s_-]*turns?|turn[\s_-]*limit|too many turns/i;
-const PROVIDER_TURN_COUNT_PATTERN = /maximum number of turns\s*\((\d+)\)/i;
-
-export function isSubagentMaxTurnReason(reason: string | undefined): boolean {
-  return reason !== undefined && MAX_TURN_REASON_PATTERN.test(reason);
-}
-
-/** Explain the two counters without treating usage.turns as a provider-internal
- * count: usage.turns is the same outer Pi lifecycle shown by view.turns. */
-export function subagentMaxTurnExplanation(run: SubagentRunEntry): string | null {
-  const reason = run.view.result?.reason;
-  if (!isSubagentMaxTurnReason(reason)) {
-    return null;
-  }
-  const providerTurnCount = reason?.match(PROVIDER_TURN_COUNT_PATTERN)?.[1];
-  if (providerTurnCount) {
-    return `The provider stopped after reaching its ${providerTurnCount}-turn internal limit. Internal provider turns are separate from the Pi turn count shown in this panel.`;
-  }
-  return "The run reached its configured turn limit. For providers such as Claude, one displayed Pi turn can contain multiple internal provider turns.";
 }
 
 export function formatSubagentCost(usage: PiSubagentUsage): string {

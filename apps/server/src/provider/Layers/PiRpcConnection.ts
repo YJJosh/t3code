@@ -136,6 +136,7 @@ export const makePiRpcConnection = (
     >();
     let requestSequence = 0;
     let exitError: ProviderAdapterProcessError | undefined;
+    const currentExitError = (): ProviderAdapterProcessError | undefined => exitError;
     const processExitError = (code: number, stderr: string) =>
       new ProviderAdapterProcessError({
         provider: PROVIDER,
@@ -235,10 +236,19 @@ export const makePiRpcConnection = (
 
     const request: PiRpcConnection["request"] = (command) =>
       Effect.gen(function* () {
-        if (exitError) return yield* exitError;
+        const initialExitError = currentExitError();
+        if (initialExitError) return yield* initialExitError;
         const id = `t3-${input.threadId}-${++requestSequence}`;
         const deferred = yield* Deferred.make<PiRpcResponse, ProviderAdapterProcessError>();
         pending.set(id, { command: command.type, deferred });
+        // The exit watcher can settle between the first check and registration.
+        // Recheck after insertion so a waiter added after its pending snapshot
+        // never falls through to the full request timeout.
+        const registeredExitError = currentExitError();
+        if (registeredExitError) {
+          pending.delete(id);
+          return yield* registeredExitError;
+        }
         const result = yield* send({ ...command, id } as PiRpcCommand).pipe(
           Effect.andThen(Deferred.await(deferred)),
           Effect.timeoutOption("30 seconds"),

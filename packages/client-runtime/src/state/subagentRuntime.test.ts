@@ -313,6 +313,54 @@ describe("applySubagentEvent", () => {
     expect(activity?.[0]?.liveOnly).toBe(false);
   });
 
+  it("completes one correlated live tool without removing another concurrent tool", () => {
+    let state = applySubagentEvent(
+      EMPTY_SUBAGENT_RUNTIME_STATE,
+      event({
+        sequence: 1,
+        kind: "run_created",
+        runId: "run-a",
+        view: runView({ runId: "run-a" }),
+      }),
+    );
+    for (const [sequence, toolCallId] of [
+      [2, "call-1"],
+      [3, "call-2"],
+    ] as const) {
+      state = applySubagentEvent(
+        state,
+        event({
+          sequence,
+          kind: "child_tool",
+          runId: "run-a",
+          activity: {
+            type: "tool_execution_update",
+            data: { toolCallId, toolName: "read" },
+            liveOnly: true,
+          },
+        }),
+      );
+    }
+    state = applySubagentEvent(
+      state,
+      event({
+        sequence: 4,
+        kind: "child_tool",
+        runId: "run-a",
+        activity: {
+          type: "tool_execution_end",
+          data: { toolCallId: "call-1", toolName: "read" },
+        },
+      }),
+    );
+
+    const activity = selectSubagentRun(state, "run-a")?.activity;
+    expect(activity?.map((entry) => [entry.data["toolCallId"], entry.liveOnly])).toEqual([
+      ["call-2", true],
+      ["call-1", false],
+    ]);
+  });
+
   it("drops child activity for a run whose view has not been seen", () => {
     const next = applySubagentEvent(
       EMPTY_SUBAGENT_RUNTIME_STATE,
