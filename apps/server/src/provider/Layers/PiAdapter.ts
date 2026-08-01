@@ -639,6 +639,11 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const { activeTurnId: _drop, ...rest } = ctx.session;
         ctx.session = { ...rest, status: "ready", updatedAt };
         ctx.activeTurnId = undefined;
+        // A tool may never emit its terminal frame after cancellation or
+        // extension failure. Turn settlement is the final ownership boundary
+        // for cached arguments, so no interrupted call can leak into the next
+        // turn or accumulate for the lifetime of the Pi process.
+        ctx.toolArgsByCallId.clear();
         yield* emit({
           type: "turn.completed",
           ...(yield* makeStamp()),
@@ -819,15 +824,18 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               ? { state: "cancelled" as const, stopReason: "cancelled" }
               : (ctx.terminalFailure ??
                 ctx.lastAgentEndOutcome ?? { state: "completed" as const, stopReason: null });
+            // Clear the old turn's terminal state before completeTurn yields.
+            // Once completeTurn releases activeTurnId, a concurrent send can
+            // legitimately begin and record terminal state for the next turn.
+            ctx.lastAgentEndOutcome = undefined;
+            ctx.terminalFailure = undefined;
+            ctx.interruptRequested = false;
             yield* completeTurn(ctx, outcome.state, {
               ...(outcome.stopReason !== undefined ? { stopReason: outcome.stopReason } : {}),
               ...("errorMessage" in outcome && outcome.errorMessage
                 ? { errorMessage: outcome.errorMessage }
                 : {}),
             });
-            ctx.lastAgentEndOutcome = undefined;
-            ctx.terminalFailure = undefined;
-            ctx.interruptRequested = false;
             return;
           }
           case "auto_retry_start":

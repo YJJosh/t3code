@@ -1058,6 +1058,56 @@ describe("makePiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
+  it.effect("clears cached tool arguments when a turn settles without a tool end", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("abababab-abab-4bab-8bab-abababababab");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* takeEventOfType(events, "thread.started");
+
+      yield* adapter.sendTurn({ threadId, input: "start interrupted tool" });
+      yield* takeEventOfType(events, "turn.started");
+      yield* fake.takeStdinUntil((command) => command.type === "prompt");
+      yield* fake.pushFrame({
+        type: "tool_execution_start",
+        toolCallId: "reused-call-id",
+        toolName: "read",
+        args: { path: "stale.ts" },
+      });
+      yield* takeEventOfType(events, "item.started");
+      yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+      yield* fake.pushFrame({ type: "agent_settled" });
+      yield* takeEventOfType(events, "turn.completed");
+
+      yield* adapter.sendTurn({ threadId, input: "run a fresh tool" });
+      yield* takeEventOfType(events, "turn.started");
+      yield* fake.takeStdinUntil(
+        (command) => command.type === "prompt" && command.message === "run a fresh tool",
+      );
+      yield* fake.pushFrame({
+        type: "tool_execution_end",
+        toolCallId: "reused-call-id",
+        toolName: "read",
+        result: { content: "fresh result" },
+        isError: false,
+      });
+
+      const completed = yield* takeEventOfType(events, "item.completed");
+      expect(completed.type === "item.completed" && completed.payload.data).toEqual({
+        toolCallId: "reused-call-id",
+        result: { content: "fresh result" },
+        isError: false,
+      });
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
   it.effect("maps Claude Agent SDK native-tool notifications into canonical tool lifecycle", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi();
