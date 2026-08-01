@@ -1298,6 +1298,50 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("merges structured tool fields across collapsed lifecycle entries", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "pi-read-update",
+        createdAt: "2026-08-01T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Read",
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "inProgress",
+          data: {
+            toolCallId: "pi-tool-merge",
+            args: { path: "/tmp/source.ts" },
+            partialResult: { content: "partial" },
+          },
+        },
+      }),
+      makeActivity({
+        id: "pi-read-complete",
+        createdAt: "2026-08-01T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Read",
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "completed",
+          data: {
+            toolCallId: "pi-tool-merge",
+            result: { content: "complete" },
+            isError: false,
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.toolData).toEqual({
+      toolCallId: "pi-tool-merge",
+      args: { path: "/tmp/source.ts" },
+      partialResult: { content: "partial" },
+      result: { content: "complete" },
+      isError: false,
+    });
+  });
+
   it("does not use command stdout as the detail when Cursor omits the command input", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

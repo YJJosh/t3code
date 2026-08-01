@@ -137,13 +137,14 @@ export const makePiRpcConnection = (
     let requestSequence = 0;
     let exitError: ProviderAdapterProcessError | undefined;
     const currentExitError = (): ProviderAdapterProcessError | undefined => exitError;
+    const stderrDiagnostic = (stderr: string) =>
+      stderr.length > 0 ? ` (stderr ${stderr.length} chars)` : "";
     const processExitError = (code: number, stderr: string) =>
       new ProviderAdapterProcessError({
         provider: PROVIDER,
         threadId: input.threadId,
-        detail: `Pi RPC process exited (code ${code}) while waiting for a response.${
-          stderr.length > 0 ? ` Stderr: ${stderr}` : ""
-        }`,
+        detail: `Pi RPC process exited (code ${code}) while waiting for a response.${stderrDiagnostic(stderr)}`,
+        ...(stderr.length > 0 ? { cause: stderr } : {}),
       });
     const handleMessage = (message: unknown) =>
       Effect.gen(function* () {
@@ -207,9 +208,8 @@ export const makePiRpcConnection = (
                 new ProviderAdapterProcessError({
                   provider: PROVIDER,
                   threadId: input.threadId,
-                  detail: `Pi RPC process exited (code ${code}) while waiting for '${command}'.${
-                    stderr.length > 0 ? ` Stderr: ${stderr}` : ""
-                  }`,
+                  detail: `Pi RPC process exited (code ${code}) while waiting for '${command}'.${stderrDiagnostic(stderr)}`,
+                  ...(stderr.length > 0 ? { cause: stderr } : {}),
                 }),
               ).pipe(Effect.ignore),
             { discard: true },

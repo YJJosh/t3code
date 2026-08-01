@@ -66,6 +66,7 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
   readonly modelChangeCustomMessage?: boolean;
   /** Withhold this command's response until the fake process exits. */
   readonly noResponseFor?: string;
+  readonly stderr?: string;
 }) {
   const stdoutQueue = yield* Queue.unbounded<Uint8Array>();
   const stdinQueue = yield* Queue.unbounded<Record<string, unknown>>();
@@ -229,7 +230,8 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
           });
         }),
         stdout: Stream.fromQueue(stdoutQueue),
-        stderr: Stream.empty,
+        stderr:
+          input?.stderr !== undefined ? Stream.encodeText(Stream.make(input.stderr)) : Stream.empty,
         all: Stream.empty,
         getInputFd: () => Sink.drain,
         getOutputFd: () => Stream.empty,
@@ -1321,9 +1323,10 @@ describe("makePiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
-  it.effect("fails a pending Pi RPC request promptly when its process exits", () =>
+  it.effect("fails a pending Pi RPC request promptly without exposing raw stderr", () =>
     Effect.gen(function* () {
-      const fake = yield* makeFakePi({ noResponseFor: "prompt" });
+      const secretStderr = "credential=secret-value";
+      const fake = yield* makeFakePi({ noResponseFor: "prompt", stderr: secretStderr });
       const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
       );
@@ -1339,6 +1342,9 @@ describe("makePiAdapter", () => {
 
       expect(error._tag).toBe("ProviderAdapterProcessError");
       expect(error.message).toContain("exited (code 23) while waiting for 'prompt'");
+      expect(error.message).toContain(`stderr ${secretStderr.length} chars`);
+      expect(error.message).not.toContain(secretStderr);
+      expect(error.cause).toBe(secretStderr);
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 

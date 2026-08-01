@@ -814,6 +814,18 @@ function shouldCollapseToolLifecycleEntries(
   );
 }
 
+function mergeWorkLogToolData(previous: unknown, next: unknown): unknown {
+  const previousRecord =
+    previous !== null && typeof previous === "object" && !Array.isArray(previous)
+      ? (previous as Record<string, unknown>)
+      : null;
+  const nextRecord =
+    next !== null && typeof next === "object" && !Array.isArray(next)
+      ? (next as Record<string, unknown>)
+      : null;
+  return previousRecord && nextRecord ? { ...previousRecord, ...nextRecord } : (next ?? previous);
+}
+
 function mergeDerivedWorkLogEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
@@ -828,7 +840,7 @@ function mergeDerivedWorkLogEntries(
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
-  const toolData = next.toolData ?? previous.toolData;
+  const toolData = mergeWorkLogToolData(previous.toolData, next.toolData);
   return {
     ...previous,
     ...next,
