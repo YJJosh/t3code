@@ -1263,6 +1263,41 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("preserves structured Pi tool arguments, results, and failure status", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "pi-read-failed",
+        createdAt: "2026-08-01T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Read",
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "failed",
+          detail: "permission denied",
+          data: {
+            toolCallId: "pi-tool-1",
+            args: { path: "/root/secret" },
+            result: { error: "permission denied" },
+            isError: true,
+          },
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      id: "pi-read-failed",
+      itemType: "dynamic_tool_call",
+      toolLifecycleStatus: "failed",
+      detail: "permission denied",
+      toolData: {
+        toolCallId: "pi-tool-1",
+        args: { path: "/root/secret" },
+        result: { error: "permission denied" },
+        isError: true,
+      },
+    });
+  });
+
   it("does not use command stdout as the detail when Cursor omits the command input", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

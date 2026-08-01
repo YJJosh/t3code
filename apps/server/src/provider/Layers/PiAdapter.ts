@@ -85,6 +85,8 @@ import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+const CLAUDE_AGENT_SDK_RPC_BRIDGE_ENV = "CLAUDE_AGENT_SDK_RPC_BRIDGE";
+const CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX = "claude-agent-sdk:tool-lifecycle:v1:";
 
 export interface PiAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
@@ -104,6 +106,25 @@ interface PiSessionContext {
   assistantItemId: ProviderItemId | undefined;
   assistantText: string;
   reasoningText: string;
+  /** Pi only repeats tool args on start/update; retain them for the final result. */
+  toolArgsByCallId: Map<string, unknown>;
+  /** The most recent low-level run outcome, finalized only by agent_settled. */
+  lastAgentEndOutcome:
+    | {
+        readonly state: "completed" | "failed" | "interrupted";
+        readonly errorMessage?: string;
+        readonly stopReason: string | null;
+      }
+    | undefined;
+  /** A terminal retry/compaction outcome that Pi did not otherwise attach to agent_end. */
+  terminalFailure:
+    | {
+        readonly state: "failed" | "interrupted";
+        readonly errorMessage?: string;
+        readonly stopReason?: string;
+      }
+    | undefined;
+  interruptRequested: boolean;
   /** Cached extension-command availability and synchronized session state. */
   extensionCommandNames: ReadonlySet<string> | undefined;
   contextWindowSelectionKey: string | undefined;
@@ -123,6 +144,39 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function toolItemType(toolName: unknown): "command_execution" | "dynamic_tool_call" {
   return toolName === "bash" ? "command_execution" : "dynamic_tool_call";
+}
+
+function parseClaudeAgentSdkToolNotification(request: PiExtensionUiRequest):
+  | {
+      readonly phase: "start" | "end";
+      readonly event: Record<string, unknown>;
+    }
+  | undefined {
+  if (
+    request.method !== "notify" ||
+    typeof request.message !== "string" ||
+    !request.message.startsWith(CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX)
+  ) {
+    return undefined;
+  }
+  try {
+    const event = JSON.parse(
+      request.message.slice(CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX.length),
+    ) as unknown;
+    if (
+      !isRecord(event) ||
+      event.contractVersion !== 1 ||
+      event.provider !== "claude-agent-sdk" ||
+      (event.phase !== "start" && event.phase !== "end") ||
+      typeof event.toolCallId !== "string" ||
+      typeof event.toolName !== "string"
+    ) {
+      return undefined;
+    }
+    return { phase: event.phase, event };
+  } catch {
+    return undefined;
+  }
 }
 
 function readPiSessionId(response: PiRpcResponse): string | undefined {
@@ -149,7 +203,7 @@ function readAgentEndOutcome(message: Record<string, unknown>): {
     return {
       state: "failed",
       stopReason,
-      ...(errorMessage ? { errorMessage } : {}),
+      errorMessage: errorMessage ?? "Pi stopped with an error.",
     };
   }
   if (stopReason === "aborted") return { state: "interrupted", stopReason };
@@ -185,7 +239,13 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     const path = yield* Path.Path;
     const serverConfig = yield* Effect.service(ServerConfig);
     const crypto = yield* Crypto.Crypto;
-    const baseEnv = options?.environment ?? process.env;
+    const baseEnv = {
+      ...(options?.environment ?? process.env),
+      // Claude Code executes its native tools inside one provider call, so Pi
+      // cannot emit ordinary tool_execution events for them. Opt into the
+      // extension's structured RPC notification bridge for canonical rows.
+      [CLAUDE_AGENT_SDK_RPC_BRIDGE_ENV]: "1",
+    };
 
     const sessions = new Map<ThreadId, PiSessionContext>();
     const runtimeEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
@@ -245,6 +305,23 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       Effect.gen(function* () {
         yield* emit({
           type: "runtime.warning",
+          ...(yield* makeStamp()),
+          provider: PROVIDER,
+          threadId,
+          ...(turnId ? { turnId } : {}),
+          payload: { message, ...(detail !== undefined ? { detail } : {}) },
+        });
+      });
+
+    const emitRuntimeError = (
+      threadId: ThreadId,
+      turnId: TurnId | undefined,
+      message: string,
+      detail?: unknown,
+    ) =>
+      Effect.gen(function* () {
+        yield* emit({
+          type: "runtime.error",
           ...(yield* makeStamp()),
           provider: PROVIDER,
           threadId,
@@ -370,6 +447,58 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
 
     const handleExtensionUiRequest = (ctx: PiSessionContext, request: PiExtensionUiRequest) =>
       Effect.gen(function* () {
+        const claudeTool = parseClaudeAgentSdkToolNotification(request);
+        if (claudeTool) {
+          if (ctx.activeTurnId !== undefined) {
+            const event = claudeTool.event;
+            const providerMetadata = Object.fromEntries(
+              [
+                "provider",
+                "sequence",
+                "timestamp",
+                "piSessionId",
+                "sdkSessionId",
+                "promptId",
+                "parentToolCallId",
+                "agentId",
+                "durationMs",
+              ].flatMap((key) => (event[key] === undefined ? [] : [[key, event[key]]])),
+            );
+            yield* handleToolEvent(
+              ctx,
+              claudeTool.phase === "start" ? "item.started" : "item.completed",
+              {
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                args: event.args,
+                ...(claudeTool.phase === "end"
+                  ? {
+                      result:
+                        event.result ??
+                        (typeof event.error === "string" ? { error: event.error } : undefined),
+                      isError: event.isError === true,
+                    }
+                  : {}),
+                providerMetadata,
+              },
+            );
+          }
+          return;
+        }
+        if (
+          request.method === "notify" &&
+          (request.notifyType === "warning" || request.notifyType === "error")
+        ) {
+          const message =
+            typeof request.message === "string" && request.message.trim().length > 0
+              ? request.message
+              : `Pi extension reported a ${request.notifyType}.`;
+          if (request.notifyType === "error") {
+            yield* emitRuntimeError(ctx.threadId, ctx.activeTurnId, message, request);
+          } else {
+            yield* emitWarning(ctx.threadId, ctx.activeTurnId, message, request);
+          }
+        }
         const subagentEvent = parsePiSubagentNotification(request);
         if (subagentEvent) {
           yield* PubSub.publish(subagentEvents, { threadId: ctx.threadId, event: subagentEvent });
@@ -524,35 +653,17 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         });
       });
 
-    const ensureActiveTurnForAgentEvent = (ctx: PiSessionContext) =>
-      ctx.sendSemaphore.withPermit(
-        Effect.gen(function* () {
-          if (ctx.activeTurnId !== undefined) return ctx.activeTurnId;
-
-          // Pi extensions can resume the agent autonomously after the user turn
-          // completed (for example, when a background subagent reports back).
-          // Model that work as a synthetic turn so a concurrent user message is
-          // steered into the live agent loop instead of rejected as a new prompt.
-          const turnId = TurnId.make(yield* randomUUIDv4);
-          const updatedAt = yield* nowIso;
-          ctx.activeTurnId = turnId;
-          ctx.session = {
-            ...ctx.session,
-            status: "running",
-            activeTurnId: turnId,
-            updatedAt,
-          };
-          yield* emit({
-            type: "turn.started",
-            ...(yield* makeStamp()),
-            provider: PROVIDER,
-            threadId: ctx.threadId,
-            turnId,
-            payload: ctx.session.model ? { model: ctx.session.model } : {},
-          });
-          return turnId;
-        }),
-      );
+    const toolResultSummary = (result: unknown): string | undefined => {
+      if (!isRecord(result)) return undefined;
+      if (typeof result.error === "string" && result.error.trim()) return result.error;
+      if (typeof result.content === "string" && result.content.trim()) return result.content.trim();
+      if (!Array.isArray(result.content)) return undefined;
+      const text = result.content
+        .flatMap((part) => (isRecord(part) && typeof part.text === "string" ? [part.text] : []))
+        .join("")
+        .trim();
+      return text || undefined;
+    };
 
     const handleToolEvent = (
       ctx: PiSessionContext,
@@ -562,15 +673,17 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       Effect.gen(function* () {
         const toolCallId =
           typeof message.toolCallId === "string" ? message.toolCallId : yield* randomUUIDv4;
+        if ("args" in message) ctx.toolArgsByCallId.set(toolCallId, message.args);
+        const args = ctx.toolArgsByCallId.get(toolCallId);
+        const result = lifecycle === "item.completed" ? message.result : undefined;
+        const partialResult = lifecycle === "item.updated" ? message.partialResult : undefined;
+        const summary = toolResultSummary(partialResult) ?? toolResultSummary(result);
         const itemId = RuntimeItemId.make(toolCallId);
         const turnId = ctx.activeTurnId;
         const itemType = toolItemType((message as PiToolMeta).toolName);
+        const isError = message.isError === true;
         const status =
-          lifecycle === "item.completed"
-            ? message.isError === true
-              ? "failed"
-              : "completed"
-            : "inProgress";
+          lifecycle === "item.completed" ? (isError ? "failed" : "completed") : "inProgress";
         yield* emit({
           type: lifecycle,
           ...(yield* makeStamp()),
@@ -582,6 +695,17 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             itemType,
             status,
             ...(typeof message.toolName === "string" ? { title: message.toolName } : {}),
+            ...(summary ? { detail: summary } : {}),
+            data: {
+              toolCallId,
+              ...(args !== undefined ? { args } : {}),
+              ...(partialResult !== undefined ? { partialResult } : {}),
+              ...(result !== undefined ? { result } : {}),
+              ...(isRecord(message.providerMetadata)
+                ? { providerMetadata: message.providerMetadata }
+                : {}),
+              ...(lifecycle === "item.completed" ? { isError } : {}),
+            },
           },
         });
         yield* emit({
@@ -594,8 +718,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           payload: {
             toolUseId: toolCallId,
             ...(typeof message.toolName === "string" ? { toolName: message.toolName } : {}),
+            ...(summary ? { summary } : {}),
           },
         });
+        if (lifecycle === "item.completed") ctx.toolArgsByCallId.delete(toolCallId);
       });
 
     const handlePiMessage = (ctx: PiSessionContext) => (message: unknown) =>
@@ -615,48 +741,59 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             return;
           }
           case "agent_start":
-            yield* ensureActiveTurnForAgentEvent(ctx);
-            return;
           case "message_start":
-            // Pi also streams user, tool-result, and extension custom messages.
-            // In particular, a profile can append a custom summary while
-            // `set_model` runs during session startup. Treating that message as
-            // autonomous agent work leaves a synthetic active turn behind and
-            // makes the first real user prompt a queued steer that never runs.
-            if (isRecord(message.message) && message.message.role === "assistant") {
-              yield* ensureActiveTurnForAgentEvent(ctx);
-            }
+            // The turn is opened by sendTurn. Pi may emit startup/profile and
+            // late extension events outside that turn; never invent a turn for
+            // them after the previous one has settled.
             return;
           case "message_update":
           case "message_end":
-            if (!isRecord(message.message) || message.message.role !== "assistant") return;
-            yield* ensureActiveTurnForAgentEvent(ctx);
+            if (
+              ctx.activeTurnId === undefined ||
+              !isRecord(message.message) ||
+              message.message.role !== "assistant"
+            ) {
+              return;
+            }
             yield* emitAssistantDelta(ctx, message.message);
             if (message.type === "message_end") {
               yield* finishAssistantItem(ctx);
             }
             return;
           case "tool_execution_start":
-            yield* ensureActiveTurnForAgentEvent(ctx);
-            yield* handleToolEvent(ctx, "item.started", message);
+            if (ctx.activeTurnId !== undefined) {
+              yield* handleToolEvent(ctx, "item.started", message);
+            }
             return;
           case "tool_execution_update":
-            yield* ensureActiveTurnForAgentEvent(ctx);
-            yield* handleToolEvent(ctx, "item.updated", message);
+            if (ctx.activeTurnId !== undefined) {
+              yield* handleToolEvent(ctx, "item.updated", message);
+            }
             return;
           case "tool_execution_end":
-            yield* ensureActiveTurnForAgentEvent(ctx);
-            yield* handleToolEvent(ctx, "item.completed", message);
+            if (ctx.activeTurnId !== undefined) {
+              yield* handleToolEvent(ctx, "item.completed", message);
+            }
             return;
-          case "agent_end": {
-            // The true finalizer. `willRetry` means Pi will auto-retry, so the
-            // turn is still running — do not settle yet.
-            if (message.willRetry === true) return;
-            const outcome = readAgentEndOutcome(message);
+          case "agent_end":
+            // This is only a low-level run boundary. Pi can continue via
+            // retry, compaction, or queued input; agent_settled is canonical.
+            ctx.lastAgentEndOutcome = readAgentEndOutcome(message);
+            return;
+          case "agent_settled": {
+            const outcome = ctx.interruptRequested
+              ? { state: "cancelled" as const, stopReason: "cancelled" }
+              : (ctx.lastAgentEndOutcome ??
+                ctx.terminalFailure ?? { state: "completed" as const, stopReason: null });
             yield* completeTurn(ctx, outcome.state, {
-              stopReason: outcome.stopReason,
-              ...(outcome.errorMessage ? { errorMessage: outcome.errorMessage } : {}),
+              ...(outcome.stopReason !== undefined ? { stopReason: outcome.stopReason } : {}),
+              ...("errorMessage" in outcome && outcome.errorMessage
+                ? { errorMessage: outcome.errorMessage }
+                : {}),
             });
+            ctx.lastAgentEndOutcome = undefined;
+            ctx.terminalFailure = undefined;
+            ctx.interruptRequested = false;
             return;
           }
           case "auto_retry_start":
@@ -667,15 +804,86 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               message,
             );
             return;
-          case "compaction_start":
-          case "compaction_end":
+          case "auto_retry_end":
+            if (message.success === false) {
+              const errorMessage =
+                typeof message.finalError === "string" && message.finalError.trim()
+                  ? message.finalError
+                  : "Pi exhausted its automatic retry attempts.";
+              ctx.terminalFailure = { state: "failed", errorMessage };
+            }
             yield* emitWarning(
               ctx.threadId,
               ctx.activeTurnId,
-              `Pi context ${message.type}.`,
+              message.success === false
+                ? "Pi automatic retry failed."
+                : "Pi automatic retry recovered.",
               message,
             );
             return;
+          case "compaction_start":
+            yield* emitWarning(
+              ctx.threadId,
+              ctx.activeTurnId,
+              "Pi is compacting context.",
+              message,
+            );
+            return;
+          case "compaction_end": {
+            const errorMessage =
+              typeof message.errorMessage === "string" && message.errorMessage.trim()
+                ? message.errorMessage
+                : undefined;
+            if (message.aborted === true) {
+              ctx.terminalFailure = {
+                state: "interrupted",
+                stopReason: "compaction aborted",
+              };
+            } else if (errorMessage) {
+              ctx.terminalFailure = { state: "failed", errorMessage };
+            }
+            if (errorMessage) {
+              yield* emitRuntimeError(
+                ctx.threadId,
+                ctx.activeTurnId,
+                "Pi context compaction failed.",
+                message,
+              );
+            } else if (message.aborted === true) {
+              yield* emitWarning(
+                ctx.threadId,
+                ctx.activeTurnId,
+                "Pi context compaction was aborted.",
+                message,
+              );
+            } else {
+              yield* emit({
+                type: "thread.state.changed",
+                ...(yield* makeStamp()),
+                provider: PROVIDER,
+                threadId: ctx.threadId,
+                ...(ctx.activeTurnId ? { turnId: ctx.activeTurnId } : {}),
+                payload: { state: "compacted", detail: message.result ?? message },
+              });
+            }
+            return;
+          }
+          case "extension_error": {
+            const error =
+              typeof message.error === "string" && message.error.trim()
+                ? message.error
+                : "Pi extension failed.";
+            const event = typeof message.event === "string" ? ` during ${message.event}` : "";
+            const extensionPath =
+              typeof message.extensionPath === "string" ? ` (${message.extensionPath})` : "";
+            yield* emitRuntimeError(
+              ctx.threadId,
+              ctx.activeTurnId,
+              `Pi extension error${extensionPath}${event}: ${error}`,
+              message,
+            );
+            return;
+          }
           default:
             return;
         }
@@ -799,6 +1007,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           assistantItemId: undefined,
           assistantText: "",
           reasoningText: "",
+          toolArgsByCallId: new Map(),
+          lastAgentEndOutcome: undefined,
+          terminalFailure: undefined,
+          interruptRequested: false,
           extensionCommandNames: undefined,
           contextWindowSelectionKey: undefined,
           fastServiceEnabled: undefined,
@@ -965,6 +1177,11 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             // active turn; otherwise it opens a new turn.
             const steering = ctx.activeTurnId !== undefined;
             const turnId = ctx.activeTurnId ?? TurnId.make(yield* randomUUIDv4);
+            if (!steering) {
+              ctx.lastAgentEndOutcome = undefined;
+              ctx.terminalFailure = undefined;
+              ctx.interruptRequested = false;
+            }
             ctx.activeTurnId = turnId;
             ctx.session = {
               ...ctx.session,
@@ -1011,8 +1228,15 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const active = ctx.activeTurnId;
         if (active === undefined) return;
         if (turnId !== undefined && turnId !== active) return;
-        yield* request(ctx, { type: "abort" }).pipe(Effect.ignore);
-        yield* completeTurn(ctx, "cancelled", { stopReason: "cancelled" });
+        ctx.interruptRequested = true;
+        yield* request(ctx, { type: "abort" }).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              ctx.interruptRequested = false;
+            }),
+          ),
+          Effect.ignore,
+        );
       });
 
     const respondToRequest: PiAdapterShape["respondToRequest"] = (threadId) =>

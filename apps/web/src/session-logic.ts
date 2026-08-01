@@ -735,10 +735,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (title) {
     entry.toolTitle = title;
   }
-  if (itemType === "mcp_tool_call") {
+  if (itemType) {
     const data = asRecord(payload?.data);
-    if (data?.item !== undefined) {
+    if (itemType === "mcp_tool_call" && data?.item !== undefined) {
       entry.toolData = data.item;
+    } else if (data !== null) {
+      entry.toolData = data;
     }
   }
   if (itemType) {
@@ -1051,6 +1053,7 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
   const item = asRecord(data?.item);
   const itemResult = asRecord(item?.result);
   const itemInput = asRecord(item?.input);
+  const args = asRecord(data?.args);
   const itemType = asTrimmedString(payload?.itemType);
   const detail = asTrimmedString(payload?.detail);
   const candidates: unknown[] = [
@@ -1058,6 +1061,7 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
     itemInput?.command,
     itemResult?.command,
     data?.command,
+    args?.command,
     itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
   ];
 

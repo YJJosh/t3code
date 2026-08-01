@@ -17,7 +17,9 @@ import {
   formatSubagentActiveMs,
   formatSubagentCost,
   formatSubagentTokens,
+  formatSubagentUsageBreakdown,
   subagentActivityLabel,
+  subagentMaxTurnExplanation,
   subagentRunDisplayTitle,
   subagentRunStatusLabel,
   subagentStatusLabel,
@@ -126,6 +128,7 @@ function DetailMetadata({ run }: { run: SubagentRunEntry }) {
     ...view.skills,
     ...(view.mcpServers ?? []).map((server) => `MCP: ${server}`),
   ];
+  const usageBreakdown = formatSubagentUsageBreakdown(view.usageSoFar);
   return (
     <dl className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
       <div className="rounded-md bg-muted/35 px-2.5 py-2">
@@ -135,7 +138,7 @@ function DetailMetadata({ run }: { run: SubagentRunEntry }) {
         </dd>
       </div>
       <div className="rounded-md bg-muted/35 px-2.5 py-2">
-        <dt className="text-[9px] uppercase tracking-wide text-muted-foreground">Turns</dt>
+        <dt className="text-[9px] uppercase tracking-wide text-muted-foreground">Pi turns</dt>
         <dd className="mt-0.5 font-medium text-foreground">{view.turns}</dd>
       </div>
       <div className="rounded-md bg-muted/35 px-2.5 py-2">
@@ -149,6 +152,11 @@ function DetailMetadata({ run }: { run: SubagentRunEntry }) {
         <dd className="mt-0.5 truncate font-medium text-foreground">
           {formatSubagentTokens(view.usageSoFar)}
         </dd>
+        {usageBreakdown !== null && (
+          <dd className="text-[9px] text-muted-foreground" title={usageBreakdown}>
+            {usageBreakdown}
+          </dd>
+        )}
         <dd className="text-[9px] text-muted-foreground">{formatSubagentCost(view.usageSoFar)}</dd>
       </div>
       <div className="col-span-2 rounded-md bg-muted/35 px-2.5 py-2 sm:col-span-4">
@@ -179,6 +187,7 @@ function DetailMetadata({ run }: { run: SubagentRunEntry }) {
 function SubagentResult({ run }: { run: SubagentRunEntry }) {
   const result = run.view.result;
   if (result === undefined) return null;
+  const maxTurnExplanation = subagentMaxTurnExplanation(run);
   return (
     <section className="rounded-lg border border-border/70 px-3 py-2.5 text-xs">
       <div className="flex items-center gap-2">
@@ -195,6 +204,9 @@ function SubagentResult({ run }: { run: SubagentRunEntry }) {
       )}
       {result.reason !== undefined && (
         <p className="mt-1.5 whitespace-pre-wrap text-destructive-foreground">{result.reason}</p>
+      )}
+      {maxTurnExplanation !== null && (
+        <p className="mt-1 text-muted-foreground">{maxTurnExplanation}</p>
       )}
       {result.result !== undefined && result.result.files_changed.length > 0 && (
         <div className="mt-2 text-muted-foreground">

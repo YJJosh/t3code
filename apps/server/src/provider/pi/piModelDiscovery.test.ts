@@ -208,6 +208,83 @@ describe("discoverPiModelsWithSdk", () => {
     );
   });
 
+  it("exposes provider-scoped extension commands, prompts, and skills", async () => {
+    const userSource = {
+      path: "/home/user/.pi/agent/resources/item",
+      scope: "user" as const,
+    };
+    const projectSource = {
+      path: "/workspace/.pi/resources/item",
+      scope: "project" as const,
+    };
+    const result = await discoverPiModelsWithSdk({
+      createAgentSessionServices: async () => ({
+        modelRuntime: {
+          getAvailable: async () => [],
+          getError: () => undefined,
+        },
+        resourceLoader: {
+          getExtensions: () => ({
+            extensions: [
+              {
+                commands: new Map([
+                  ["review", { description: "Review the change", sourceInfo: userSource }],
+                  ["project-only", { sourceInfo: projectSource }],
+                ]),
+              },
+            ],
+          }),
+          getPrompts: () => ({
+            prompts: [
+              {
+                name: "fix-tests",
+                description: "Fix focused tests",
+                argumentHint: "[test path]",
+                sourceInfo: userSource,
+              },
+            ],
+          }),
+          getSkills: () => ({
+            skills: [
+              {
+                name: "brave-search",
+                description: "Search the web",
+                filePath: "/home/user/.pi/agent/skills/brave-search/SKILL.md",
+                sourceInfo: userSource,
+              },
+              {
+                name: "project-skill",
+                description: "Project only",
+                filePath: "/workspace/.pi/skills/project-skill/SKILL.md",
+                sourceInfo: projectSource,
+              },
+            ],
+          }),
+        },
+        diagnostics: [],
+      }),
+    });
+
+    expect(result.slashCommands).toEqual([
+      { name: "review", description: "Review the change" },
+      {
+        name: "fix-tests",
+        description: "Fix focused tests",
+        input: { hint: "[test path]" },
+      },
+    ]);
+    expect(result.skills).toEqual([
+      {
+        name: "brave-search",
+        description: "Search the web",
+        shortDescription: "Search the web",
+        path: "/home/user/.pi/agent/skills/brave-search/SKILL.md",
+        scope: "user",
+        enabled: true,
+      },
+    ]);
+  });
+
   it("loads extension-registered providers before enumerating available models", async () => {
     let receivedOptions:
       | Parameters<Parameters<typeof discoverPiModelsWithSdk>[0]["createAgentSessionServices"]>[0]
@@ -248,8 +325,8 @@ describe("discoverPiModelsWithSdk", () => {
       agentDir: "/tmp/pi-agent",
       cwd: "/tmp/project",
       resourceLoaderOptions: {
-        noSkills: true,
-        noPromptTemplates: true,
+        noSkills: false,
+        noPromptTemplates: false,
         noThemes: true,
         noContextFiles: true,
       },

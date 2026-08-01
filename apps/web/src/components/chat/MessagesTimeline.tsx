@@ -1845,13 +1845,27 @@ function workEntryRawCommand(
   return rawCommand === workEntry.command.trim() ? null : rawCommand;
 }
 
-function buildToolCallExpandedBody(
+export function buildToolCallExpandedBody(
   workEntry: TimelineWorkEntry,
   workspaceRoot: string | undefined,
 ): string | null {
   const blocks: string[] = [];
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
     blocks.push(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
+  } else if (
+    (workEntry.itemType === "dynamic_tool_call" || workEntry.itemType === "command_execution") &&
+    typeof workEntry.toolData === "object" &&
+    workEntry.toolData !== null &&
+    !Array.isArray(workEntry.toolData)
+  ) {
+    const data = workEntry.toolData as Record<string, unknown>;
+    for (const [label, value] of [
+      ["Arguments", data.args],
+      ["Partial result", data.partialResult],
+      [data.isError === true ? "Error result" : "Result", data.result],
+    ] as const) {
+      if (value !== undefined) blocks.push(`${label}\n${JSON.stringify(value, null, 2)}`);
+    }
   }
   const raw = workEntryRawCommand(workEntry);
   if (raw?.trim()) {
@@ -1930,7 +1944,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const [expanded, setExpanded] = useState(false);
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
-  const entryIconName = showWarningIndicator ? "x" : workEntryIconName(workEntry);
+  const entryIconName = showWarningIndicator ? "circle-alert" : workEntryIconName(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
   const rawPreview = workEntryPreview(workEntry, workspaceRoot);
   const preview =
@@ -1942,14 +1956,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const displayText = preview ? `${heading} - ${preview}` : heading;
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const canExpand = expandedBody !== null;
-  const showFailedIndicator = workEntryIndicatesToolFailure(workEntry);
+  const showFailedIndicator = !showWarningIndicator && workEntryIndicatesToolFailure(workEntry);
   const showDestructiveRowStyle =
     showFailedIndicator &&
     (workEntry.sourceActivityKind === "runtime.error" || !workLogEntryIsToolLike(workEntry));
   const iconWrapperClass = cn(
     "flex size-5 shrink-0 items-center justify-center",
     showWarningIndicator
-      ? "text-destructive"
+      ? "text-warning"
       : showDestructiveRowStyle
         ? "text-destructive"
         : workEntry.tone === "tool" || showFailedIndicator

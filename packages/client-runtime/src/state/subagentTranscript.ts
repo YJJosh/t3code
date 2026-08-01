@@ -1,3 +1,4 @@
+import { isSubagentRunTerminal } from "./subagentRuntime.ts";
 import type { SubagentActivityEntry, SubagentRunEntry } from "./subagentRuntime.ts";
 
 function activityRecord(value: unknown): Readonly<Record<string, unknown>> | null {
@@ -128,6 +129,24 @@ function withoutStructuredResult(
     : entry;
 }
 
+/** A live frame is streamable when it carries an assistant message snapshot
+ * with readable text or thinking. Delta-only frames cannot be accumulated
+ * client-side (the runtime keeps only the latest frame) and stay hidden. */
+function isStreamableAssistantSnapshot(entry: SubagentActivityEntry): boolean {
+  if (activityMessageRole(entry) !== "assistant") {
+    return false;
+  }
+  return activityMessageBlocks(entry).some((value) => {
+    const block = activityRecord(value);
+    const text = block?.["text"];
+    const thinking = block?.["thinking"];
+    return (
+      (typeof text === "string" && text.trim().length > 0) ||
+      (typeof thinking === "string" && thinking.trim().length > 0)
+    );
+  });
+}
+
 function toolCallId(entry: SubagentActivityEntry): string | null {
   const value = entry.data["toolCallId"];
   return typeof value === "string" && value.length > 0 ? value : null;
@@ -168,7 +187,10 @@ function mergeToolActivity(
  * lifecycle. Pi emits start/update/end envelopes (and repeats the completed
  * message on turn_end); this projection deliberately keeps one useful entry:
  *
- * - turn envelopes and streaming message deltas are transport noise;
+ * - turn envelopes and delta-only streaming frames are transport noise, but
+ *   while the run is not terminal the latest live assistant message snapshot is
+ *   kept as one trailing row so text streams instead of appearing only at
+ *   message_end (the completed message then replaces it);
  * - the initial user message repeats the run task already shown in the header;
  * - tool-result messages repeat the corresponding tool execution;
  * - tool start/end events collapse into one invocation row while preserving
@@ -185,7 +207,9 @@ export function selectSubagentTranscriptActivity(
 ): ReadonlyArray<SubagentActivityEntry> {
   const transcript: SubagentActivityEntry[] = [];
   const toolIndexes = new Map<string, number>();
+  const streaming = !isSubagentRunTerminal(run.view.state);
   let assistantSeen = false;
+  let pendingLive: SubagentActivityEntry | null = null;
 
   for (const entry of run.activity) {
     if (entry.kind === "child_turn") {
@@ -193,7 +217,13 @@ export function selectSubagentTranscriptActivity(
     }
 
     if (entry.kind === "child_message") {
-      if (entry.liveOnly || entry.type === "message_start" || entry.type === "message_update") {
+      if (entry.liveOnly) {
+        if (streaming && isStreamableAssistantSnapshot(entry)) {
+          pendingLive = entry;
+        }
+        continue;
+      }
+      if (entry.type === "message_start" || entry.type === "message_update") {
         continue;
       }
 
@@ -206,6 +236,8 @@ export function selectSubagentTranscriptActivity(
       }
       if (role === "assistant") {
         assistantSeen = true;
+        // The completed message supersedes any still-held live frame.
+        pendingLive = null;
         const normalized = withoutStructuredResult(entry, run);
         if (!hasReadableActivityValue(normalized.data)) {
           continue;
@@ -236,6 +268,10 @@ export function selectSubagentTranscriptActivity(
     }
 
     transcript.push(entry);
+  }
+
+  if (pendingLive !== null) {
+    transcript.push(pendingLive);
   }
 
   return transcript.filter((entry) => !repeatsCurrentProgress(entry, run));

@@ -10,6 +10,7 @@ import {
 import { PiSettings } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -32,6 +33,7 @@ const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJso
 const encodeUnknownJsonStringSync = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX = "claude-agent-sdk:tool-lifecycle:v1:";
 
 interface Captured {
   command?: string | undefined;
@@ -49,6 +51,7 @@ interface FakePi {
   readonly takeStdinUntil: (
     predicate: (command: Record<string, unknown>) => boolean,
   ) => Effect.Effect<Record<string, unknown>>;
+  readonly exit: (code: number) => Effect.Effect<void>;
   readonly killed: Effect.Effect<boolean>;
 }
 
@@ -61,6 +64,8 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
   readonly fastCommand?: boolean;
   /** Simulate a profile appending a custom summary during a model switch. */
   readonly modelChangeCustomMessage?: boolean;
+  /** Withhold this command's response until the fake process exits. */
+  readonly noResponseFor?: string;
 }) {
   const stdoutQueue = yield* Queue.unbounded<Uint8Array>();
   const stdinQueue = yield* Queue.unbounded<Record<string, unknown>>();
@@ -151,39 +156,41 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
                 ),
               );
             }
-            yield* Queue.offer(
-              stdoutQueue,
-              encoder.encode(
-                serializeJsonlLine({
-                  id: command.id,
-                  type: "response",
-                  command: command.type,
-                  success: true,
-                  ...(command.type === "get_state"
-                    ? { data: { sessionId: "pi-session-test" } }
-                    : command.type === "get_commands"
-                      ? {
-                          data: {
-                            commands: [
-                              ...(input?.subagentsCommand === false
-                                ? []
-                                : [{ name: "subagents-rpc", source: "extension" }]),
-                              ...(input?.backgroundTerminalsCommand === false
-                                ? []
-                                : [{ name: "background-terminals-rpc", source: "extension" }]),
-                              ...(input?.contextCommand === true
-                                ? [{ name: "context", source: "extension" }]
-                                : []),
-                              ...(input?.fastCommand === true
-                                ? [{ name: "fast", source: "extension" }]
-                                : []),
-                            ],
-                          },
-                        }
-                      : {}),
-                }),
-              ),
-            );
+            if (command.type !== input?.noResponseFor) {
+              yield* Queue.offer(
+                stdoutQueue,
+                encoder.encode(
+                  serializeJsonlLine({
+                    id: command.id,
+                    type: "response",
+                    command: command.type,
+                    success: true,
+                    ...(command.type === "get_state"
+                      ? { data: { sessionId: "pi-session-test" } }
+                      : command.type === "get_commands"
+                        ? {
+                            data: {
+                              commands: [
+                                ...(input?.subagentsCommand === false
+                                  ? []
+                                  : [{ name: "subagents-rpc", source: "extension" }]),
+                                ...(input?.backgroundTerminalsCommand === false
+                                  ? []
+                                  : [{ name: "background-terminals-rpc", source: "extension" }]),
+                                ...(input?.contextCommand === true
+                                  ? [{ name: "context", source: "extension" }]
+                                  : []),
+                                ...(input?.fastCommand === true
+                                  ? [{ name: "fast", source: "extension" }]
+                                  : []),
+                              ],
+                            },
+                          }
+                        : {}),
+                  }),
+                ),
+              );
+            }
             if (
               command.type === "prompt" &&
               typeof command.message === "string" &&
@@ -246,6 +253,8 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (input?: {
     pushFrame: (frame: unknown) =>
       Queue.offer(stdoutQueue, encoder.encode(`${JSON.stringify(frame)}\n`)).pipe(Effect.asVoid),
     takeStdinUntil,
+    exit: (code) =>
+      Deferred.succeed(exitDeferred, code as ChildProcessSpawner.ExitCode).pipe(Effect.asVoid),
     killed: Ref.get(killedRef),
   } satisfies FakePi;
 });
@@ -350,6 +359,7 @@ describe("makePiAdapter", () => {
         message: { role: "assistant", content: [{ type: "text", text: "Hi there" }] },
       });
       yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+      yield* fake.pushFrame({ type: "agent_settled" });
 
       expect((yield* Queue.take(events)).type).toBe("item.started");
       const delta = yield* Queue.take(events);
@@ -405,6 +415,7 @@ describe("makePiAdapter", () => {
         message: { role: "assistant", content: [{ type: "text", text: "Hi from Kimi" }] },
       });
       yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+      yield* fake.pushFrame({ type: "agent_settled" });
 
       expect((yield* Queue.take(events)).type).toBe("item.started");
       const delta = yield* Queue.take(events);
@@ -414,7 +425,7 @@ describe("makePiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
-  it.effect("steers user input into an autonomous Pi continuation turn", () =>
+  it.effect("keeps the original turn open until Pi settles queued continuation work", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi();
       const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
@@ -428,22 +439,26 @@ describe("makePiAdapter", () => {
       yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
       yield* takeEventOfType(events, "thread.started");
 
-      // A background extension wake-up starts a new agent loop without a user prompt.
-      yield* fake.pushFrame({ type: "agent_start" });
-      const autonomousTurn = yield* takeEventOfType(events, "turn.started");
-      expect(autonomousTurn.type).toBe("turn.started");
+      const turn = yield* adapter.sendTurn({ threadId, input: "start background work" });
+      yield* takeEventOfType(events, "turn.started");
+      yield* fake.takeStdinUntil((command) => command.type === "prompt");
 
+      // agent_end is only a low-level boundary: Pi can continue with queued
+      // input before agent_settled, and that work must retain this turn id.
+      yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+      yield* fake.pushFrame({ type: "agent_start" });
       const steeredTurn = yield* adapter.sendTurn({
         threadId,
         input: "correct the running background work",
       });
       const steer = yield* fake.takeStdinUntil((command) => command.type === "steer");
       expect(steer.message).toBe("correct the running background work");
-      expect(steeredTurn.turnId).toBe(autonomousTurn.turnId);
+      expect(steeredTurn.turnId).toBe(turn.turnId);
 
       yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+      yield* fake.pushFrame({ type: "agent_settled" });
       const completed = yield* takeEventOfType(events, "turn.completed");
-      expect(completed.turnId).toBe(autonomousTurn.turnId);
+      expect(completed.turnId).toBe(turn.turnId);
       expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
@@ -659,6 +674,8 @@ describe("makePiAdapter", () => {
       yield* fake.takeStdinUntil((c) => c.type === "prompt");
       yield* adapter.interruptTurn(threadId, turn.turnId);
       yield* fake.takeStdinUntil((c) => c.type === "abort");
+      yield* fake.pushFrame({ type: "agent_end", willRetry: false });
+      yield* fake.pushFrame({ type: "agent_settled" });
 
       const completed = yield* takeEventOfType(events, "turn.completed");
       expect(completed.type === "turn.completed" && completed.payload.state).toBe("cancelled");
@@ -934,6 +951,271 @@ describe("makePiAdapter", () => {
         expect(error._tag).toBe("ProviderAdapterValidationError");
         expect(fake.written.some((command) => command.type === "prompt")).toBe(false);
       }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("preserves Pi tool args, progress, final results, and failures", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("abababab-abab-4bab-8bab-abababababab");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* takeEventOfType(events, "thread.started");
+      yield* adapter.sendTurn({ threadId, input: "run the command" });
+      yield* takeEventOfType(events, "turn.started");
+      yield* fake.takeStdinUntil((command) => command.type === "prompt");
+
+      yield* fake.pushFrame({
+        type: "tool_execution_start",
+        toolCallId: "call-1",
+        toolName: "bash",
+        args: { command: "git status" },
+      });
+      yield* fake.pushFrame({
+        type: "tool_execution_update",
+        toolCallId: "call-1",
+        toolName: "bash",
+        args: { command: "git status" },
+        partialResult: { content: [{ type: "text", text: "On branch main" }] },
+      });
+      yield* fake.pushFrame({
+        type: "tool_execution_end",
+        toolCallId: "call-1",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "fatal: simulated failure" }] },
+        isError: true,
+      });
+
+      const started = yield* takeEventOfType(events, "item.started");
+      expect(started.itemId).toBe("call-1");
+      expect(started.type === "item.started" && started.payload.data).toEqual({
+        toolCallId: "call-1",
+        args: { command: "git status" },
+      });
+      const progress = yield* takeEventOfType(events, "tool.progress");
+      expect(progress.type === "tool.progress" && progress.payload.toolUseId).toBe("call-1");
+      const updated = yield* takeEventOfType(events, "item.updated");
+      expect(updated.type === "item.updated" && updated.payload.data).toEqual({
+        toolCallId: "call-1",
+        args: { command: "git status" },
+        partialResult: { content: [{ type: "text", text: "On branch main" }] },
+      });
+      const completed = yield* takeEventOfType(events, "item.completed");
+      expect(completed.type === "item.completed" && completed.payload.status).toBe("failed");
+      expect(completed.type === "item.completed" && completed.payload.detail).toBe(
+        "fatal: simulated failure",
+      );
+      expect(completed.type === "item.completed" && completed.payload.data).toEqual({
+        toolCallId: "call-1",
+        args: { command: "git status" },
+        result: { content: [{ type: "text", text: "fatal: simulated failure" }] },
+        isError: true,
+      });
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("maps Claude Agent SDK native-tool notifications into canonical tool lifecycle", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* takeEventOfType(events, "thread.started");
+      expect(fake.captured.env?.CLAUDE_AGENT_SDK_RPC_BRIDGE).toBe("1");
+      yield* adapter.sendTurn({ threadId, input: "read the file" });
+      yield* takeEventOfType(events, "turn.started");
+      yield* fake.takeStdinUntil((command) => command.type === "prompt");
+
+      const base = {
+        contractVersion: 1,
+        provider: "claude-agent-sdk",
+        sequence: 1,
+        timestamp: "2026-08-01T20:00:00.000Z",
+        toolCallId: "claude-tool-1",
+        toolName: "Read",
+        args: { file_path: "/tmp/app.ts" },
+        sdkSessionId: "sdk-session-1",
+      };
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        method: "notify",
+        notifyType: "info",
+        message: `${CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX}${encodeUnknownJsonStringSync({ ...base, phase: "start" })}`,
+      });
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        method: "notify",
+        notifyType: "info",
+        message: `${CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX}${encodeUnknownJsonStringSync({
+          ...base,
+          sequence: 2,
+          phase: "end",
+          result: { content: "file contents" },
+          isError: false,
+          durationMs: 12,
+        })}`,
+      });
+
+      const started = yield* takeEventOfType(events, "item.started");
+      expect(started.itemId).toBe("claude-tool-1");
+      expect(started.type === "item.started" && started.payload.data).toMatchObject({
+        toolCallId: "claude-tool-1",
+        args: { file_path: "/tmp/app.ts" },
+        providerMetadata: {
+          provider: "claude-agent-sdk",
+          sdkSessionId: "sdk-session-1",
+        },
+      });
+      yield* takeEventOfType(events, "tool.progress");
+      const completed = yield* takeEventOfType(events, "item.completed");
+      expect(completed.type === "item.completed" && completed.payload.status).toBe("completed");
+      expect(completed.type === "item.completed" && completed.payload.data).toMatchObject({
+        toolCallId: "claude-tool-1",
+        result: { content: "file contents" },
+        isError: false,
+        providerMetadata: { durationMs: 12 },
+      });
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("surfaces extension errors and severity-bearing extension notifications", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* takeEventOfType(events, "thread.started");
+
+      yield* fake.pushFrame({
+        type: "extension_error",
+        extensionPath: "/tmp/broken.ts",
+        event: "tool_call",
+        error: "extension exploded",
+      });
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        id: "warning-1",
+        method: "notify",
+        notifyType: "warning",
+        message: "extension warning",
+      });
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        id: "error-1",
+        method: "notify",
+        notifyType: "error",
+        message: "extension notify error",
+      });
+
+      const extensionError = yield* takeEventOfType(events, "runtime.error");
+      expect(extensionError.type === "runtime.error" && extensionError.payload.message).toContain(
+        "extension exploded",
+      );
+      const warning = yield* takeEventOfType(events, "runtime.warning");
+      expect(warning.type === "runtime.warning" && warning.payload.message).toBe(
+        "extension warning",
+      );
+      const notifyError = yield* takeEventOfType(events, "runtime.error");
+      expect(notifyError.type === "runtime.error" && notifyError.payload.message).toBe(
+        "extension notify error",
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("settles a retried and compacted turn only after agent_settled", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("dededede-dede-4ede-8ede-dededededede");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* takeEventOfType(events, "thread.started");
+      const turn = yield* adapter.sendTurn({ threadId, input: "recover this request" });
+      yield* takeEventOfType(events, "turn.started");
+      yield* fake.takeStdinUntil((command) => command.type === "prompt");
+
+      yield* fake.pushFrame({
+        type: "agent_end",
+        willRetry: true,
+        messages: [{ role: "assistant", stopReason: "error", errorMessage: "temporary overload" }],
+      });
+      yield* fake.pushFrame({ type: "auto_retry_start", attempt: 1, maxAttempts: 3 });
+      yield* fake.pushFrame({ type: "auto_retry_end", success: true, attempt: 2 });
+      yield* fake.pushFrame({ type: "compaction_start", reason: "overflow" });
+      yield* fake.pushFrame({
+        type: "compaction_end",
+        reason: "overflow",
+        result: { summary: "compacted" },
+        aborted: false,
+        willRetry: true,
+      });
+      yield* fake.pushFrame({ type: "agent_end", willRetry: false, messages: [] });
+      yield* fake.pushFrame({ type: "agent_settled" });
+
+      const lifecycle = yield* Effect.all(
+        [
+          Queue.take(events),
+          Queue.take(events),
+          Queue.take(events),
+          Queue.take(events),
+          Queue.take(events),
+        ],
+        { concurrency: 1 },
+      );
+      expect(lifecycle.map((event) => event.type)).toEqual([
+        "runtime.warning",
+        "runtime.warning",
+        "runtime.warning",
+        "thread.state.changed",
+        "turn.completed",
+      ]);
+      const completed = lifecycle.at(-1)!;
+      expect(completed.type === "turn.completed" && completed.payload.state).toBe("completed");
+      expect(completed.turnId).toBe(turn.turnId);
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("fails a pending Pi RPC request promptly when its process exits", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ noResponseFor: "prompt" });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const threadId = ThreadId.make("efefefef-efef-4fef-8fef-efefefefefef");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+      const pendingTurn = yield* adapter
+        .sendTurn({ threadId, input: "will lose Pi" })
+        .pipe(Effect.forkScoped);
+      yield* fake.takeStdinUntil((command) => command.type === "prompt");
+      yield* fake.exit(23);
+      const error = yield* Fiber.join(pendingTurn).pipe(Effect.flip);
+
+      expect(error._tag).toBe("ProviderAdapterProcessError");
+      expect(error.message).toContain("exited (code 23) while waiting for 'prompt'");
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
   it.effect("auto-confirms an extension_ui confirm request in yolo mode", () =>

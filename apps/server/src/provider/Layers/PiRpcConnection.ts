@@ -129,9 +129,21 @@ export const makePiRpcConnection = (
     const decoder = createLfJsonlDecoder();
     const pending = new Map<
       string,
-      Deferred.Deferred<PiRpcResponse, ProviderAdapterProcessError>
+      {
+        readonly command: PiRpcCommand["type"];
+        readonly deferred: Deferred.Deferred<PiRpcResponse, ProviderAdapterProcessError>;
+      }
     >();
     let requestSequence = 0;
+    let exitError: ProviderAdapterProcessError | undefined;
+    const processExitError = (code: number, stderr: string) =>
+      new ProviderAdapterProcessError({
+        provider: PROVIDER,
+        threadId: input.threadId,
+        detail: `Pi RPC process exited (code ${code}) while waiting for a response.${
+          stderr.length > 0 ? ` Stderr: ${stderr}` : ""
+        }`,
+      });
     const handleMessage = (message: unknown) =>
       Effect.gen(function* () {
         if (
@@ -141,10 +153,10 @@ export const makePiRpcConnection = (
           typeof (message as Record<string, unknown>).id === "string"
         ) {
           const response = message as unknown as PiRpcResponse;
-          const deferred = pending.get(response.id!);
-          if (deferred) {
+          const pendingRequest = pending.get(response.id!);
+          if (pendingRequest) {
             pending.delete(response.id!);
-            yield* Deferred.succeed(deferred, response).pipe(Effect.ignore);
+            yield* Deferred.succeed(pendingRequest.deferred, response).pipe(Effect.ignore);
           }
         }
         yield* input.onMessage(message);
@@ -177,6 +189,36 @@ export const makePiRpcConnection = (
       Effect.forkIn(scope),
     );
 
+    // A process exit otherwise leaves requests waiting for their timeout. Settle
+    // every waiter with its command name and the capped stderr diagnostics.
+    yield* child.exitCode.pipe(
+      Effect.map(Number),
+      Effect.orElseSucceed(() => -1),
+      Effect.flatMap((code) =>
+        Effect.gen(function* () {
+          const stderr = (yield* Ref.get(stderrRef)).trim();
+          exitError = processExitError(code, stderr);
+          yield* Effect.forEach(
+            Array.from(pending.values()),
+            ({ command, deferred }) =>
+              Deferred.fail(
+                deferred,
+                new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: `Pi RPC process exited (code ${code}) while waiting for '${command}'.${
+                    stderr.length > 0 ? ` Stderr: ${stderr}` : ""
+                  }`,
+                }),
+              ).pipe(Effect.ignore),
+            { discard: true },
+          );
+          pending.clear();
+        }),
+      ),
+      Effect.forkIn(scope),
+    );
+
     const send: PiRpcConnection["send"] = (message) =>
       Queue.offer(stdinQueue, encoder.encode(serializeJsonlLine(message))).pipe(
         Effect.asVoid,
@@ -193,9 +235,10 @@ export const makePiRpcConnection = (
 
     const request: PiRpcConnection["request"] = (command) =>
       Effect.gen(function* () {
+        if (exitError) return yield* exitError;
         const id = `t3-${input.threadId}-${++requestSequence}`;
         const deferred = yield* Deferred.make<PiRpcResponse, ProviderAdapterProcessError>();
-        pending.set(id, deferred);
+        pending.set(id, { command: command.type, deferred });
         const result = yield* send({ ...command, id } as PiRpcCommand).pipe(
           Effect.andThen(Deferred.await(deferred)),
           Effect.timeoutOption("30 seconds"),

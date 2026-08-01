@@ -314,6 +314,9 @@ export function subagentActivityLabel(entry: SubagentActivityEntry): string {
     }
     const blocks = Array.isArray(message?.["content"]) ? message["content"] : [];
     const hasText = blocks.some((value) => typeof activityRecord(value)?.["text"] === "string");
+    if (entry.liveOnly) {
+      return hasText ? "Streaming" : "Thinking";
+    }
     return hasText ? "Message" : "Thinking";
   }
   return titleCaseActivityName(entry.type);
@@ -321,6 +324,53 @@ export function subagentActivityLabel(entry: SubagentActivityEntry): string {
 
 export function formatSubagentTokens(usage: PiSubagentUsage): string {
   return `${usage.total.toLocaleString()} tokens`;
+}
+
+function formatCompactTokenCount(count: number): string {
+  if (count < 1_000) {
+    return String(count);
+  }
+  const scaled = count < 1_000_000 ? count / 1_000 : count / 1_000_000;
+  const suffix = count < 1_000_000 ? "k" : "M";
+  const rendered =
+    scaled >= 100 ? String(Math.round(scaled)) : scaled.toFixed(1).replace(/\.0$/, "");
+  return `${rendered}${suffix}`;
+}
+
+/** Input/output/cache split behind the total, omitting empty categories so the
+ * one big number stops being unexplained. Null when every category is zero. */
+export function formatSubagentUsageBreakdown(usage: PiSubagentUsage): string | null {
+  const categories: ReadonlyArray<readonly [number, string]> = [
+    [usage.input, "in"],
+    [usage.output, "out"],
+    [usage.cacheRead, "cache read"],
+    [usage.cacheWrite, "cache write"],
+  ];
+  const parts = categories
+    .filter(([count]) => count > 0)
+    .map(([count, label]) => `${formatCompactTokenCount(count)} ${label}`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+const MAX_TURN_REASON_PATTERN = /max(?:imum)?[\s_-]*turns?|turn[\s_-]*limit|too many turns/i;
+const PROVIDER_TURN_COUNT_PATTERN = /maximum number of turns\s*\((\d+)\)/i;
+
+export function isSubagentMaxTurnReason(reason: string | undefined): boolean {
+  return reason !== undefined && MAX_TURN_REASON_PATTERN.test(reason);
+}
+
+/** Explain the two counters without treating usage.turns as a provider-internal
+ * count: usage.turns is the same outer Pi lifecycle shown by view.turns. */
+export function subagentMaxTurnExplanation(run: SubagentRunEntry): string | null {
+  const reason = run.view.result?.reason;
+  if (!isSubagentMaxTurnReason(reason)) {
+    return null;
+  }
+  const providerTurnCount = reason?.match(PROVIDER_TURN_COUNT_PATTERN)?.[1];
+  if (providerTurnCount) {
+    return `The provider stopped after reaching its ${providerTurnCount}-turn internal limit. Internal provider turns are separate from the Pi turn count shown in this panel.`;
+  }
+  return "The run reached its configured turn limit. For providers such as Claude, one displayed Pi turn can contain multiple internal provider turns.";
 }
 
 export function formatSubagentCost(usage: PiSubagentUsage): string {

@@ -996,10 +996,11 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("item-tool-completed"),
       payload: {
         itemType: "dynamic_tool_call",
-        status: "completed",
+        status: "failed",
         title: "Read file",
         data: {
           toolCallId: "tool-read-1",
+          isError: true,
           kind: "read",
           rawOutput: {
             content: 'import * as Effect from "effect/Effect"\n',
@@ -1032,8 +1033,10 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activity?.kind).toBe("tool.completed");
     expect(activity?.summary).toBe("Read file");
     expect(payload?.itemType).toBe("dynamic_tool_call");
+    expect(payload?.status).toBe("failed");
     expect(payload?.detail).toBeUndefined();
     expect(data?.toolCallId).toBe("tool-read-1");
+    expect(data?.isError).toBe(true);
     expect(data?.kind).toBe("read");
     expect(rawOutput?.content).toBe('import * as Effect from "effect/Effect"\n');
   });
@@ -2741,6 +2744,7 @@ describe("ProviderRuntimeIngestion", () => {
         status: "in_progress",
         title: "Read file",
         detail: "/tmp/file.ts",
+        data: { toolCallId: "pi-call-1", args: { path: "/tmp/file.ts" } },
       },
     });
 
@@ -2755,11 +2759,18 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     expect(thread.session?.status).toBe("ready");
-    expect(
-      thread.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.started",
-      ),
-    ).toBe(true);
+    const toolStarted = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-tool-started",
+    );
+    const toolStartedPayload =
+      toolStarted?.payload && typeof toolStarted.payload === "object"
+        ? (toolStarted.payload as Record<string, unknown>)
+        : undefined;
+    expect(toolStarted?.kind).toBe("tool.started");
+    expect(toolStartedPayload?.data).toEqual({
+      toolCallId: "pi-call-1",
+      args: { path: "/tmp/file.ts" },
+    });
   });
 
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {
