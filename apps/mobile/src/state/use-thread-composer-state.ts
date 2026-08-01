@@ -94,7 +94,7 @@ export function useThreadComposerState() {
   );
   const showAgentReasoning = AsyncResult.isSuccess(preferencesResult)
     ? preferencesResult.value.showAgentReasoning !== false
-    : true;
+    : false;
   const selectedThreadFeed = useMemo(
     () =>
       selectedThreadDetail ? buildThreadFeed(selectedThreadDetail, { showAgentReasoning }) : [],

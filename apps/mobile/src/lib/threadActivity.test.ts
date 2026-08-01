@@ -125,7 +125,8 @@ describe("buildThreadFeed", () => {
       ],
     });
 
-    expect(buildThreadFeed(thread)).toMatchObject([
+    const feed = buildThreadFeed(thread);
+    expect(feed).toMatchObject([
       {
         type: "activity-group",
         activities: [
@@ -133,8 +134,18 @@ describe("buildThreadFeed", () => {
             summary: "Thinking",
             detail: "Inspecting the provider lifecycle.",
             icon: "agent",
+            toolLike: false,
           },
         ],
+      },
+    ]);
+    expect(
+      deriveThreadFeedPresentation(feed, null, new Set([TurnId.make("turn-reasoning")])),
+    ).toMatchObject([
+      { type: "turn-fold" },
+      {
+        type: "activity-group",
+        activities: [{ summary: "Thinking", detail: "Inspecting the provider lifecycle." }],
       },
     ]);
     expect(buildThreadFeed(thread, { showAgentReasoning: false })).toEqual([]);
