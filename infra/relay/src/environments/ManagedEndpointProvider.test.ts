@@ -2,13 +2,19 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import { describe, expect, it } from "@effect/vitest";
+import * as Alchemy from "alchemy";
+import * as Deferred from "effect/Deferred";
+import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as RelayConfiguration from "../Config.ts";
 import * as ManagedEndpointAllocations from "./ManagedEndpointAllocations.ts";
 import * as ManagedEndpointProvider from "./ManagedEndpointProvider.ts";
+import * as ManagedTunnelLimits from "./ManagedTunnelLimits.ts";
 
 const config = RelayConfiguration.RelayConfiguration.of({
   relayIssuer: "https://relay.example.test",
@@ -40,7 +46,17 @@ interface DnsCall {
 }
 
 interface AllocationCall {
-  readonly operation: "get" | "reserve" | "recordTunnel" | "recordDns" | "markReady" | "remove";
+  readonly operation:
+    | "get"
+    | "reserve"
+    | "recordTunnel"
+    | "recordDns"
+    | "markReady"
+    | "claimRelease"
+    | "completeRelease"
+    | "claimDeprovision"
+    | "remove"
+    | "removeClaimed";
   readonly input: unknown;
 }
 
@@ -147,6 +163,25 @@ function makeDnsClient(
 
 function makeAllocations(calls: AllocationCall[] = []) {
   const allocations = new Map<string, ManagedEndpointAllocations.ManagedEndpointAllocation>();
+  let mutation = 0;
+  const mutate = (
+    key: string,
+    change: (
+      allocation: ManagedEndpointAllocations.ManagedEndpointAllocation,
+    ) => ManagedEndpointAllocations.ManagedEndpointAllocation,
+  ) => {
+    const allocation = allocations.get(key);
+    if (allocation === undefined) {
+      return undefined;
+    }
+    const updated = {
+      ...change(allocation),
+      generation: allocation.generation + 1,
+      updatedAt: `mutation-${++mutation}`,
+    };
+    allocations.set(key, updated);
+    return updated;
+  };
   return ManagedEndpointAllocations.ManagedEndpointAllocations.of({
     get: (input) =>
       Effect.sync(() => {
@@ -154,49 +189,170 @@ function makeAllocations(calls: AllocationCall[] = []) {
         return allocations.get(allocationKey(input)) ?? null;
       }),
     reserve: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         calls.push({ operation: "reserve", input });
-        const allocation = allocations.get(allocationKey(input)) ?? {
+        const key = allocationKey(input);
+        const existing = allocations.get(key);
+        if (
+          existing?.state === "provisioning" ||
+          existing?.state === "releasing" ||
+          existing?.state === "deprovisioning"
+        ) {
+          return Effect.fail(
+            new ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError({
+              operation: "reserve",
+              stage: "resolve-reservation",
+              ...input,
+            }),
+          );
+        }
+        if (existing !== undefined) {
+          mutate(key, (allocation) => ({ ...allocation, state: "provisioning" }));
+          return Effect.succeed(allocations.get(key)!);
+        }
+        const allocation: ManagedEndpointAllocations.ManagedEndpointAllocation = {
           ...input,
           tunnelId: null,
           dnsRecordId: null,
           readyAt: null,
+          state: "provisioning",
+          generation: 0,
+          updatedAt: `mutation-${++mutation}`,
         };
-        allocations.set(allocationKey(input), allocation);
-        return allocation;
+        allocations.set(key, allocation);
+        return Effect.succeed(allocation);
       }),
     recordTunnel: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         calls.push({ operation: "recordTunnel", input });
-        const allocation = allocations.get(allocationKey(input));
-        if (allocation !== undefined) {
-          allocations.set(allocationKey(input), { ...allocation, tunnelId: input.tunnelId });
+        const key = allocationKey(input);
+        const allocation = allocations.get(key);
+        if (allocation?.state !== "provisioning" || allocation.generation !== input.generation) {
+          return Effect.fail(
+            new ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError({
+              operation: "record-tunnel",
+              stage: "resolve-reservation",
+              ...input,
+            }),
+          );
         }
+        const updated = mutate(key, (current) => ({ ...current, tunnelId: input.tunnelId }));
+        return Effect.succeed(updated!.generation);
       }),
     recordDns: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         calls.push({ operation: "recordDns", input });
-        const allocation = allocations.get(allocationKey(input));
-        if (allocation !== undefined) {
-          allocations.set(allocationKey(input), { ...allocation, dnsRecordId: input.dnsRecordId });
+        const key = allocationKey(input);
+        const allocation = allocations.get(key);
+        if (allocation?.state !== "provisioning" || allocation.generation !== input.generation) {
+          return Effect.fail(
+            new ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError({
+              operation: "record-dns",
+              stage: "resolve-reservation",
+              ...input,
+            }),
+          );
         }
+        const updated = mutate(key, (current) => ({ ...current, dnsRecordId: input.dnsRecordId }));
+        return Effect.succeed(updated!.generation);
       }),
     markReady: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         calls.push({ operation: "markReady", input });
-        const allocation = allocations.get(allocationKey(input));
-        if (allocation !== undefined) {
-          allocations.set(allocationKey(input), {
-            ...allocation,
-            readyAt: "2026-06-02T00:00:00.000Z",
-          });
+        const key = allocationKey(input);
+        const allocation = allocations.get(key);
+        if (allocation?.state !== "provisioning" || allocation.generation !== input.generation) {
+          return Effect.fail(
+            new ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError({
+              operation: "mark-ready",
+              stage: "resolve-reservation",
+              ...input,
+            }),
+          );
         }
+        const updated = mutate(key, (current) => ({
+          ...current,
+          readyAt: "2026-06-02T00:00:00.000Z",
+          state: "ready",
+        }));
+        return Effect.succeed(updated!.generation);
+      }),
+    claimRelease: (input) =>
+      Effect.sync(() => {
+        calls.push({ operation: "claimRelease", input });
+        const allocation = allocations.get(allocationKey(input));
+        if (allocation === undefined || allocation.tunnelId !== input.tunnelId) {
+          return null;
+        }
+        if (allocation.state === "releasing" || allocation.state === "offline") {
+          return allocation.generation;
+        }
+        if (allocation.state !== "ready" || allocation.generation !== input.generation) {
+          return null;
+        }
+        mutate(allocationKey(input), (current) => ({ ...current, state: "releasing" }));
+        return allocations.get(allocationKey(input))?.generation ?? null;
+      }),
+    completeRelease: (input) =>
+      Effect.sync(() => {
+        calls.push({ operation: "completeRelease", input });
+        const allocation = allocations.get(allocationKey(input));
+        if (allocation?.state === "offline") {
+          return true;
+        }
+        if (allocation?.state !== "releasing" || allocation.generation !== input.generation) {
+          return false;
+        }
+        mutate(allocationKey(input), (current) => ({ ...current, state: "offline" }));
+        return true;
+      }),
+    claimDeprovision: (input) =>
+      Effect.sync(() => {
+        calls.push({ operation: "claimDeprovision", input });
+        const allocation = allocations.get(allocationKey(input));
+        if (
+          allocation === undefined ||
+          allocation.generation !== input.generation ||
+          allocation.state === "provisioning"
+        ) {
+          return null;
+        }
+        mutate(allocationKey(input), (current) => ({ ...current, state: "deprovisioning" }));
+        return allocations.get(allocationKey(input))?.generation ?? null;
       }),
     remove: (input) =>
       Effect.sync(() => {
         calls.push({ operation: "remove", input });
         allocations.delete(allocationKey(input));
       }),
+    removeClaimed: (input) =>
+      Effect.sync(() => {
+        calls.push({ operation: "removeClaimed", input });
+        const allocation = allocations.get(allocationKey(input));
+        if (allocation === undefined || allocation.generation !== input.generation) {
+          return false;
+        }
+        allocations.delete(allocationKey(input));
+        return true;
+      }),
+  });
+}
+
+function makeTunnelLimits(
+  calls: Array<{ readonly userId: string; readonly environmentId: string }> = [],
+  result: ManagedTunnelLimits.ManagedTunnelLimitExceeded | null = null,
+) {
+  const ensureCapacity: ManagedTunnelLimits.ManagedTunnelLimits["Service"]["ensureCapacity"] = (
+    input,
+  ) =>
+    Effect.suspend(() => {
+      calls.push(input);
+      return result === null ? Effect.void : Effect.fail(result);
+    });
+  return ManagedTunnelLimits.ManagedTunnelLimits.of({
+    ensureCapacity,
+    reserveCapacity: (input, reservation) =>
+      ensureCapacity(input).pipe(Effect.andThen(reservation)),
   });
 }
 
@@ -204,6 +360,7 @@ function providerLayer(
   tunnelClient = makeTunnelClient(),
   dnsClient = makeDnsClient(),
   allocations = makeAllocations(),
+  tunnelLimits = makeTunnelLimits(),
 ) {
   return ManagedEndpointProvider.layer.pipe(
     Layer.provideMerge(NodeServices.layer),
@@ -213,6 +370,7 @@ function providerLayer(
     Layer.provide(
       Layer.succeed(ManagedEndpointAllocations.ManagedEndpointAllocations, allocations),
     ),
+    Layer.provide(Layer.succeed(ManagedTunnelLimits.ManagedTunnelLimits, tunnelLimits)),
   );
 }
 
@@ -233,6 +391,47 @@ function expectedManagedTunnelName(environmentId: string, userId = "user_ABC"): 
 }
 
 describe("ManagedEndpointProvider", () => {
+  it.effect("does not require the deployment RuntimeContext when building the Worker layer", () => {
+    const tunnelClient = {
+      list: () => Effect.succeed({ result: [] }),
+      create: (request: { readonly name: string }) =>
+        Effect.succeed({ id: "tunnel-id", name: request.name }),
+      putConfiguration: () => Effect.void,
+      getToken: () => Effect.succeed("connector-token"),
+      delete: () => Effect.void,
+    } as unknown as Cloudflare.Tunnel.ReadWriteTunnelClient;
+    const dnsClient = {
+      listDnsRecords: () => Effect.succeed({ result: [] }),
+      createDnsRecord: () => Effect.succeed({ id: "dns-record-id" }),
+      updateDnsRecord: () => Effect.void,
+      deleteDnsRecord: () => Effect.void,
+    } as unknown as Cloudflare.DNS.ReadWriteDnsClient;
+    const runtimeContext = {} as Alchemy.BaseRuntimeContext;
+    const layer = ManagedEndpointProvider.layerCloudflareBindings(
+      tunnelClient,
+      dnsClient,
+      runtimeContext,
+    ).pipe(
+      Layer.provideMerge(NodeServices.layer),
+      Layer.provide(RelayConfiguration.layer(config)),
+      Layer.provide(
+        Layer.succeed(ManagedEndpointAllocations.ManagedEndpointAllocations, makeAllocations()),
+      ),
+      Layer.provide(Layer.succeed(ManagedTunnelLimits.ManagedTunnelLimits, makeTunnelLimits())),
+    );
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const result = yield* provider.provision({
+        userId: "user_ABC",
+        environmentId: "env_ABC",
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      });
+
+      expect(result.runtime.connectorToken).toBe("connector-token");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("provisions a Cloudflare tunnel endpoint and connector token", () => {
     const tunnelCalls: TunnelCall[] = [];
     const dnsCalls: DnsCall[] = [];
@@ -295,6 +494,7 @@ describe("ManagedEndpointProvider", () => {
         isDeleted: false,
       });
       expect(allocationCalls.map((call) => call.operation)).toEqual([
+        "get",
         "reserve",
         "recordTunnel",
         "recordDns",
@@ -306,6 +506,72 @@ describe("ManagedEndpointProvider", () => {
           makeTunnelClient(tunnelCalls),
           makeDnsClient(dnsCalls),
           makeAllocations(allocationCalls),
+        ),
+      ),
+    );
+  });
+
+  it.effect("checks the managed tunnel limit before reserving an allocation", () => {
+    const limitCalls: Array<{ readonly userId: string; readonly environmentId: string }> = [];
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      yield* provider.provision({
+        userId: "user_ABC",
+        environmentId: "env_ABC",
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      });
+
+      expect(limitCalls).toEqual([{ userId: "user_ABC", environmentId: "env_ABC" }]);
+    }).pipe(
+      Effect.provide(
+        providerLayer(
+          makeTunnelClient(),
+          makeDnsClient(),
+          makeAllocations(),
+          makeTunnelLimits(limitCalls),
+        ),
+      ),
+    );
+  });
+
+  it.effect("refuses to provision past the managed tunnel limit without side effects", () => {
+    const tunnelCalls: TunnelCall[] = [];
+    const dnsCalls: DnsCall[] = [];
+    const allocationCalls: AllocationCall[] = [];
+    const exceeded = new ManagedTunnelLimits.ManagedTunnelLimitExceeded({
+      userId: "user_ABC",
+      environmentId: "env_ABC",
+      maxTunnels: 10,
+      activeTunnels: 10,
+    });
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const error = yield* Effect.flip(
+        provider.provision({
+          userId: "user_ABC",
+          environmentId: "env_ABC",
+          origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+        }),
+      );
+
+      expect(error).toBe(exceeded);
+      expect(tunnelCalls).toEqual([]);
+      expect(dnsCalls).toEqual([]);
+      expect(allocationCalls).toEqual([
+        {
+          operation: "get",
+          input: { userId: "user_ABC", environmentId: "env_ABC" },
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        providerLayer(
+          makeTunnelClient(tunnelCalls),
+          makeDnsClient(dnsCalls),
+          makeAllocations(allocationCalls),
+          makeTunnelLimits([], exceeded),
         ),
       ),
     );
@@ -487,15 +753,128 @@ describe("ManagedEndpointProvider", () => {
         "updateRecord",
       ]);
       expect(allocationCalls.map((call) => call.operation)).toEqual([
+        "get",
         "reserve",
         "recordTunnel",
         "recordDns",
         "markReady",
+        "get",
         "reserve",
         "recordTunnel",
         "recordDns",
         "markReady",
       ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("rejects an overlapping provision for the same environment", () =>
+    Effect.gen(function* () {
+      const createEntered = yield* Deferred.make<void>();
+      const releaseCreate = yield* Deferred.make<void>();
+      const tunnelCalls: TunnelCall[] = [];
+      const tunnelClient = ManagedEndpointProvider.ManagedEndpointTunnelClient.of({
+        ...makeTunnelClient(tunnelCalls),
+        create: (request) =>
+          Effect.gen(function* () {
+            tunnelCalls.push({ operation: "create", input: request });
+            yield* Deferred.succeed(createEntered, undefined);
+            yield* Deferred.await(releaseCreate);
+            return { id: "tunnel-id", name: request.name };
+          }),
+      });
+      const layer = providerLayer(tunnelClient, makeDnsClient(), makeAllocations());
+      const request = {
+        userId: "user_ABC",
+        environmentId: "env_ABC",
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      } as const;
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+        const first = yield* Effect.forkChild(provider.provision(request), {
+          startImmediately: true,
+        });
+        yield* Deferred.await(createEntered);
+
+        const overlapping = yield* Effect.flip(provider.provision(request));
+        expect(overlapping).toMatchObject({
+          _tag: "ManagedEndpointProvisioningFailed",
+          stage: "reserve-allocation",
+        });
+
+        yield* Deferred.succeed(releaseCreate, undefined);
+        yield* Fiber.join(first);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("cancels provisioning before its lease can expire", () => {
+    const tunnelClient = ManagedEndpointProvider.ManagedEndpointTunnelClient.of({
+      ...makeTunnelClient(),
+      create: () => Effect.never,
+    });
+    const layer = providerLayer(tunnelClient, makeDnsClient(), makeAllocations());
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const provision = provider
+        .provision({
+          userId: "user_ABC",
+          environmentId: "env_ABC",
+          origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+        })
+        .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+      const fiber = yield* provision;
+
+      yield* TestClock.adjust("4 minutes");
+      expect(yield* Fiber.join(fiber)).toMatchObject({
+        _tag: "ManagedEndpointProvisioningFailed",
+        stage: "provision-timeout",
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("deletes a stale generation tunnel before provisioning its replacement", () => {
+    const tunnelCalls: TunnelCall[] = [];
+    const pending: ManagedEndpointAllocations.ManagedEndpointAllocation = {
+      userId: "user_ABC",
+      environmentId: "env_ABC",
+      hostname: expectedManagedHostname("env_ABC"),
+      tunnelId: "stale-tunnel-id",
+      tunnelName: expectedManagedTunnelName("env_ABC"),
+      dnsRecordId: "dns-record-id",
+      readyAt: null,
+      state: "provisioning",
+      generation: 7,
+      updatedAt: "2026-07-28T00:00:00.000Z",
+    };
+    const baseAllocations = makeAllocations();
+    const allocations = ManagedEndpointAllocations.ManagedEndpointAllocations.of({
+      ...baseAllocations,
+      get: () => Effect.succeed(pending),
+      reserve: () => Effect.succeed({ ...pending, generation: 8 }),
+      recordTunnel: (input) => Effect.succeed(input.generation + 1),
+      recordDns: (input) => Effect.succeed(input.generation + 1),
+      markReady: (input) => Effect.succeed(input.generation + 1),
+    });
+    const layer = providerLayer(makeTunnelClient(tunnelCalls), makeDnsClient(), allocations);
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      yield* provider.provision({
+        userId: "user_ABC",
+        environmentId: "env_ABC",
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      });
+
+      expect(tunnelCalls.map((call) => call.operation)).toEqual([
+        "delete",
+        "list",
+        "create",
+        "putConfiguration",
+        "getToken",
+      ]);
+      expect(tunnelCalls[0]?.input).toBe("stale-tunnel-id");
     }).pipe(Effect.provide(layer));
   });
 
@@ -618,16 +997,321 @@ describe("ManagedEndpointProvider", () => {
           "delete",
         ]);
         expect(allocationCalls.map((call) => call.operation)).toEqual([
+          "get",
           "reserve",
           "recordTunnel",
           "recordDns",
           "markReady",
           "get",
-          "remove",
+          "claimDeprovision",
+          "removeClaimed",
         ]);
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("does not deprovision an allocation superseded by a concurrent relink", () => {
+    const tunnelCalls: TunnelCall[] = [];
+    const dnsCalls: DnsCall[] = [];
+    const allocationCalls: AllocationCall[] = [];
+    const layer = providerLayer(
+      makePersistentTunnelClient(tunnelCalls),
+      makeDnsClient(dnsCalls),
+      makeAllocations(allocationCalls),
+    );
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const key = { userId: "user_ABC", environmentId: "env_ABC" } as const;
+      const request = {
+        ...key,
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      } as const;
+      yield* provider.provision(request);
+      const unlinkTarget = yield* provider.prepareDeprovision(key);
+      expect(unlinkTarget).not.toBeNull();
+      if (unlinkTarget === null) {
+        return;
+      }
+
+      // A relink refreshes the allocation generation after unlink captured its
+      // target but before unlink begins external teardown.
+      yield* provider.provision(request);
+      const tunnelCallCount = tunnelCalls.length;
+      const dnsCallCount = dnsCalls.length;
+      const allocationCallCount = allocationCalls.length;
+
+      yield* provider.deprovision({ ...key, target: unlinkTarget });
+
+      expect(tunnelCalls).toHaveLength(tunnelCallCount);
+      expect(dnsCalls).toHaveLength(dnsCallCount);
+      expect(allocationCalls.slice(allocationCallCount).map((call) => call.operation)).toEqual([
+        "claimDeprovision",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("releases the tunnel while keeping the allocation, DNS record, and hostname", () => {
+    const tunnelCalls: TunnelCall[] = [];
+    const dnsCalls: DnsCall[] = [];
+    const allocationCalls: AllocationCall[] = [];
+    const layer = providerLayer(
+      makePersistentTunnelClient(tunnelCalls),
+      makeDnsClient(dnsCalls),
+      makeAllocations(allocationCalls),
+    );
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const key = { userId: "user_ABC", environmentId: "env_ABC" } as const;
+      const origin = { localHttpHost: "127.0.0.1", localHttpPort: 3773 } as const;
+      const first = yield* provider.provision({ ...key, origin });
+      const released = yield* provider.release(key);
+      const second = yield* provider.provision({ ...key, origin });
+
+      expect(released).toBe(true);
+      expect(second.endpoint).toEqual(first.endpoint);
+      expect(tunnelCalls.map((call) => call.operation)).toEqual([
+        // first provision
+        "list",
+        "create",
+        "putConfiguration",
+        "getToken",
+        // release deletes only the tunnel...
+        "delete",
+        // ...and the next provision recreates it under the same name
+        "list",
+        "create",
+        "putConfiguration",
+        "getToken",
+      ]);
+      // The DNS record survives the release and is repointed, never deleted.
+      expect(dnsCalls.map((call) => call.operation)).toEqual([
+        "listRecords",
+        "createRecord",
+        "updateRecord",
+      ]);
+      expect(allocationCalls.map((call) => call.operation)).not.toContain("remove");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("treats an environment without a recorded tunnel as already released", () => {
+    const tunnelCalls: TunnelCall[] = [];
+    const dnsCalls: DnsCall[] = [];
+    const layer = providerLayer(
+      makePersistentTunnelClient(tunnelCalls),
+      makeDnsClient(dnsCalls),
+      makeAllocations(),
+    );
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const released = yield* provider.release({ userId: "user_ABC", environmentId: "env_ABC" });
+
+      expect(released).toBe(true);
+      expect(tunnelCalls).toEqual([]);
+      expect(dnsCalls).toEqual([]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps the tunnel alive when a concurrent provision outdates the release claim", () => {
+    const tunnelCalls: TunnelCall[] = [];
+    const allocations = makeAllocations();
+    // Simulates a provision racing the release: the allocation generation no
+    // longer matches what the release loaded, so the claim fails.
+    const outdated = ManagedEndpointAllocations.ManagedEndpointAllocations.of({
+      ...allocations,
+      claimRelease: () => Effect.succeed(null),
+    });
+    const layer = providerLayer(makePersistentTunnelClient(tunnelCalls), makeDnsClient(), outdated);
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const key = { userId: "user_ABC", environmentId: "env_ABC" } as const;
+      yield* provider.provision({
+        ...key,
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      });
+      const released = yield* provider.release(key);
+
+      // false tells the caller its connector token is still live, so it must
+      // keep its runtime config.
+      expect(released).toBe(false);
+      expect(tunnelCalls.map((call) => call.operation)).toEqual([
+        "list",
+        "create",
+        "putConfiguration",
+        "getToken",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("treats concurrent release completion as success", () =>
+    Effect.gen(function* () {
+      const firstDeleteEntered = yield* Deferred.make<void>();
+      const releaseFirstDelete = yield* Deferred.make<void>();
+      const tunnelCalls: TunnelCall[] = [];
+      const persistentTunnels = makePersistentTunnelClient(tunnelCalls);
+      let deleteAttempts = 0;
+      const tunnelClient = ManagedEndpointProvider.ManagedEndpointTunnelClient.of({
+        ...persistentTunnels,
+        delete: (tunnelId) =>
+          Effect.gen(function* () {
+            deleteAttempts++;
+            if (deleteAttempts === 1) {
+              yield* Deferred.succeed(firstDeleteEntered, undefined);
+              yield* Deferred.await(releaseFirstDelete);
+            }
+            yield* persistentTunnels.delete(tunnelId);
+          }),
+      });
+      const layer = providerLayer(tunnelClient, makeDnsClient(), makeAllocations());
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+        const key = { userId: "user_ABC", environmentId: "env_ABC" } as const;
+        yield* provider.provision({
+          ...key,
+          origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+        });
+        const firstRelease = yield* Effect.forkChild(provider.release(key), {
+          startImmediately: true,
+        });
+        yield* Deferred.await(firstDeleteEntered);
+
+        expect(yield* provider.release(key)).toBe(true);
+        yield* Deferred.succeed(releaseFirstDelete, undefined);
+        expect(yield* Fiber.join(firstRelease)).toBe(true);
+        expect(deleteAttempts).toBe(2);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("treats an already deleted tunnel as successfully released", () => {
+    const notFound = { _tag: "NotFound" } as const;
+    const tunnelClient = ManagedEndpointProvider.ManagedEndpointTunnelClient.of({
+      ...makeTunnelClient(),
+      delete: (tunnelId) =>
+        Effect.fail(
+          new ManagedEndpointProvider.ManagedEndpointTunnelClientError({
+            operation: "delete",
+            tunnelId,
+            cause: notFound,
+          }),
+        ),
+    });
+    const layer = providerLayer(tunnelClient, makeDnsClient(), makeAllocations());
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const key = { userId: "user_ABC", environmentId: "env_ABC" } as const;
+      yield* provider.provision({
+        ...key,
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      });
+      yield* provider.release(key);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("surfaces non-not-found tunnel deletion failures when releasing", () => {
+    const failure = new ManagedEndpointProvider.ManagedEndpointTunnelClientError({
+      operation: "delete",
+      tunnelId: "tunnel-id",
+      cause: "Cloudflare tunnel deletion failed",
+    });
+    const tunnelClient = ManagedEndpointProvider.ManagedEndpointTunnelClient.of({
+      ...makeTunnelClient(),
+      delete: () => Effect.fail(failure),
+    });
+    const layer = providerLayer(tunnelClient, makeDnsClient(), makeAllocations());
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const key = { userId: "user_ABC", environmentId: "env_ABC" } as const;
+      yield* provider.provision({
+        ...key,
+        origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+      });
+      const error = yield* Effect.flip(provider.release(key));
+
+      expect(error).toMatchObject({
+        _tag: "ManagedEndpointDeprovisioningFailed",
+        stage: "delete-tunnel",
+        userId: key.userId,
+        environmentId: key.environmentId,
+        tunnelId: "tunnel-id",
+      });
+      expect(error.cause).toBe(failure);
+
+      const restartError = yield* Effect.flip(
+        provider.provision({
+          ...key,
+          origin: { localHttpHost: "127.0.0.1", localHttpPort: 3773 },
+        }),
+      );
+      expect(restartError).toMatchObject({
+        _tag: "ManagedEndpointProvisioningFailed",
+        stage: "recover-release",
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("recovers a release interrupted after tunnel deletion", () => {
+    const tunnelCalls: TunnelCall[] = [];
+    const baseAllocations = makeAllocations();
+    const completionFailure =
+      new ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError({
+        operation: "complete-release",
+        stage: "database-request",
+        userId: "user_ABC",
+        environmentId: "env_ABC",
+        cause: "database unavailable",
+      });
+    let completionAttempts = 0;
+    const allocations = ManagedEndpointAllocations.ManagedEndpointAllocations.of({
+      ...baseAllocations,
+      completeRelease: (input) => {
+        completionAttempts++;
+        return completionAttempts === 1
+          ? Effect.fail(completionFailure)
+          : baseAllocations.completeRelease(input);
+      },
+    });
+    const layer = providerLayer(
+      makePersistentTunnelClient(tunnelCalls),
+      makeDnsClient(),
+      allocations,
+    );
+
+    return Effect.gen(function* () {
+      const provider = yield* ManagedEndpointProvider.ManagedEndpointProvider;
+      const key = { userId: "user_ABC", environmentId: "env_ABC" } as const;
+      const origin = { localHttpHost: "127.0.0.1", localHttpPort: 3773 } as const;
+      yield* provider.provision({ ...key, origin });
+
+      const releaseError = yield* Effect.flip(provider.release(key));
+      expect(releaseError).toMatchObject({
+        _tag: "ManagedEndpointDeprovisioningFailed",
+        stage: "complete-release",
+      });
+
+      const restarted = yield* provider.provision({ ...key, origin });
+      expect(restarted.runtime.tunnelId).toBe("tunnel-id");
+      expect(completionAttempts).toBe(2);
+      expect(tunnelCalls.map((call) => call.operation)).toEqual([
+        "list",
+        "create",
+        "putConfiguration",
+        "getToken",
+        "delete",
+        "delete",
+        "list",
+        "create",
+        "putConfiguration",
+        "getToken",
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("treats an absent allocation as already deprovisioned", () => {
     const tunnelCalls: TunnelCall[] = [];
@@ -695,13 +1379,16 @@ describe("ManagedEndpointProvider", () => {
       yield* provider.deprovision(key);
 
       expect(allocationCalls.map((call) => call.operation)).toEqual([
+        "get",
         "reserve",
         "recordTunnel",
         "recordDns",
         "markReady",
         "get",
+        "claimDeprovision",
         "get",
-        "remove",
+        "claimDeprovision",
+        "removeClaimed",
       ]);
     }).pipe(Effect.provide(layer));
   });
@@ -742,7 +1429,7 @@ describe("ManagedEndpointProvider", () => {
       });
       yield* provider.deprovision(key);
 
-      expect(allocationCalls.map((call) => call.operation)).toContain("remove");
+      expect(allocationCalls.map((call) => call.operation)).toContain("removeClaimed");
     }).pipe(Effect.provide(layer));
   });
 
