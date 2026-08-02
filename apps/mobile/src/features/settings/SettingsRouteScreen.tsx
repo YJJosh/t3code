@@ -538,6 +538,9 @@ function GeneralSettingsSection() {
   const projectGroupingEnabled = AsyncResult.isSuccess(preferencesResult)
     ? preferencesResult.value.projectGroupingEnabled !== false
     : true;
+  const showAgentReasoning = AsyncResult.isSuccess(preferencesResult)
+    ? preferencesResult.value.showAgentReasoning !== false
+    : true;
 
   return (
     <SettingsSection title="General">
@@ -546,6 +549,12 @@ function GeneralSettingsSection() {
         label="Project Grouping"
         value={projectGroupingEnabled}
         onValueChange={(value) => savePreferences({ projectGroupingEnabled: value })}
+      />
+      <SettingsSwitchRow
+        icon="text.bubble"
+        label="Agent Reasoning"
+        value={showAgentReasoning}
+        onValueChange={(value) => savePreferences({ showAgentReasoning: value })}
       />
     </SettingsSection>
   );

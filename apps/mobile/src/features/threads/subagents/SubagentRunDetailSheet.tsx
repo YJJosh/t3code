@@ -1,4 +1,8 @@
-import { selectSubagentRun, type SubagentRunEntry } from "@t3tools/client-runtime/state/subagents";
+import {
+  selectSubagentRun,
+  subagentMaxTurnExplanation,
+  type SubagentRunEntry,
+} from "@t3tools/client-runtime/state/subagents";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { StaticScreenProps } from "@react-navigation/native";
 import { ActivityIndicator, ScrollView, View } from "react-native";
@@ -64,6 +68,7 @@ function RunDetail(props: { readonly run: SubagentRunEntry }) {
   );
   const progressNote = view.progressNote?.trim();
   const resultSummary = view.result?.result?.summary.trim();
+  const maxTurnExplanation = subagentMaxTurnExplanation(props.run);
 
   return (
     <ScrollView
@@ -92,7 +97,7 @@ function RunDetail(props: { readonly run: SubagentRunEntry }) {
         <View className="flex-row flex-wrap gap-2">
           <Fact label="Model" value={view.model || "Unknown"} />
           <Fact label="Status" value={status} />
-          <Fact label="Turns" value={String(view.turns)} />
+          <Fact label="Pi turns" value={String(view.turns)} />
           <Fact label="Active" value={formatSubagentActiveMs(view.activeMs)} />
         </View>
         {view.directory ? <Fact label="Directory" value={view.directory} /> : null}
@@ -136,6 +141,11 @@ function RunDetail(props: { readonly run: SubagentRunEntry }) {
             {view.result.reason ? (
               <Text selectable className="text-sm leading-relaxed text-foreground-secondary">
                 {view.result.reason}
+              </Text>
+            ) : null}
+            {maxTurnExplanation ? (
+              <Text selectable className="text-sm leading-relaxed text-foreground-secondary">
+                {maxTurnExplanation}
               </Text>
             ) : null}
             {view.result.result && view.result.result.files_changed.length > 0 ? (

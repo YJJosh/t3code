@@ -34,7 +34,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@t3tools/contracts";
-import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
+import { ProviderAdapterProcessError, ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -150,7 +150,7 @@ describe("ProviderCommandReactor", () => {
     readonly useConventionalBranchPrefixes?: boolean;
     readonly startSessionEffect?: (
       session: ProviderSession,
-    ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
+    ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError | ProviderAdapterProcessError>;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -530,7 +530,7 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
-  effectIt.effect("settles a failed provider startup and allows a clean retry", () =>
+  effectIt.effect("shows a readable process startup failure and allows a clean retry", () =>
     Effect.gen(function* () {
       let failStartup = true;
       const harness = yield* Effect.promise(() =>
@@ -538,10 +538,10 @@ describe("ProviderCommandReactor", () => {
           startSessionEffect: (session) =>
             failStartup
               ? Effect.fail(
-                  new ProviderAdapterRequestError({
-                    provider: "codex",
-                    method: "thread.start",
-                    detail: "deterministic startup failure",
+                  new ProviderAdapterProcessError({
+                    provider: "pi",
+                    threadId: "thread-1",
+                    detail: "Pi RPC exited while loading state.",
                   }),
                 )
               : Effect.succeed(session),
@@ -575,7 +575,8 @@ describe("ProviderCommandReactor", () => {
       );
       let readModel = yield* Effect.promise(() => harness.readModel());
       let thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      expect(thread?.session?.lastError).toContain("deterministic startup failure");
+      expect(thread?.session?.lastError).toBe("Pi RPC exited while loading state.");
+      expect(thread?.session?.lastError).not.toContain("ProviderCommandReactor");
       expect(harness.sendTurn).not.toHaveBeenCalled();
 
       failStartup = false;

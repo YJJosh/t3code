@@ -108,6 +108,25 @@ export function subagentRunNeedsInput(status: PiSubagentRunStatus): boolean {
   return status === "needs_input";
 }
 
+const MAX_TURN_REASON_PATTERN = /max(?:imum)?[\s_-]*turns?|turn[\s_-]*limit|too many turns/i;
+const PROVIDER_TURN_COUNT_PATTERN = /maximum number of turns\s*\((\d+)\)/i;
+
+export function isSubagentMaxTurnReason(reason: string | undefined): boolean {
+  return reason !== undefined && MAX_TURN_REASON_PATTERN.test(reason);
+}
+
+/** Explain the provider-internal limit without treating usage.turns as an
+ * internal count: usage.turns is the same outer Pi lifecycle as view.turns. */
+export function subagentMaxTurnExplanation(run: SubagentRunEntry): string | null {
+  const reason = run.view.result?.reason;
+  if (!isSubagentMaxTurnReason(reason)) return null;
+  const providerTurnCount = reason?.match(PROVIDER_TURN_COUNT_PATTERN)?.[1];
+  if (providerTurnCount) {
+    return `The provider stopped after reaching its ${providerTurnCount}-turn internal limit. Internal provider turns are separate from the Pi turn count shown in this panel.`;
+  }
+  return "The run reached its configured turn limit. For providers such as Claude, one displayed Pi turn can contain multiple internal provider turns.";
+}
+
 /**
  * A shared shape for both top-level events and the nested replay events carried
  * inside a snapshot. They differ structurally (replay events cannot carry a
@@ -165,6 +184,36 @@ function upsertRunView(
   return next;
 }
 
+function activityCorrelationId(entry: SubagentActivityEntry): string | undefined {
+  for (const key of ["toolCallId", "messageId", "id"] as const) {
+    const value = entry.data[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  const message = entry.data["message"];
+  if (typeof message === "object" && message !== null && !Array.isArray(message)) {
+    const id = (message as Readonly<Record<string, unknown>>)["id"];
+    if (typeof id === "string" && id.length > 0) return id;
+  }
+  return undefined;
+}
+
+function liveActivityIsSuperseded(
+  candidate: SubagentActivityEntry,
+  entry: SubagentActivityEntry,
+  requireSameType: boolean,
+): boolean {
+  if (
+    !candidate.liveOnly ||
+    candidate.kind !== entry.kind ||
+    (requireSameType && candidate.type !== entry.type)
+  ) {
+    return false;
+  }
+  const candidateId = activityCorrelationId(candidate);
+  const entryId = activityCorrelationId(entry);
+  return candidateId === undefined && entryId === undefined ? true : candidateId === entryId;
+}
+
 function appendRunActivity(
   runs: ReadonlyMap<string, SubagentRunEntry>,
   runId: string,
@@ -178,18 +227,19 @@ function appendRunActivity(
   if (existing === undefined) {
     return runs;
   }
-  // Streaming providers can emit hundreds of adjacent update/delta events for
-  // one message. Keep only the latest live frame so it cannot evict durable
-  // tool/message history from the bounded activity window. Completed events
-  // remain append-only and are reconstructed authoritatively from snapshots.
-  const previous = existing.activity.at(-1);
-  const appended =
-    entry.liveOnly &&
-    previous?.liveOnly === true &&
-    previous.kind === entry.kind &&
-    previous.type === entry.type
-      ? [...existing.activity.slice(0, -1), entry]
-      : [...existing.activity, entry];
+  // Streaming providers can emit hundreds of update/delta events for one
+  // message, and live event types can interleave (message deltas between tool
+  // progress frames). Keep at most one live frame per (kind, type) — replacing
+  // the previous frame wherever it sits and moving it to the end so ordering
+  // stays chronological — so streaming can never evict durable tool/message
+  // history from the bounded activity window. A completed event supersedes the
+  // live frames for the same correlated message/tool invocation; unrelated
+  // concurrent tools remain visible. Completed events remain append-only and
+  // are reconstructed authoritatively from snapshots.
+  const retained = existing.activity.filter(
+    (candidate) => !liveActivityIsSuperseded(candidate, entry, entry.liveOnly),
+  );
+  const appended = [...retained, entry];
   const bounded =
     maxActivity > 0 && appended.length > maxActivity
       ? appended.slice(appended.length - maxActivity)

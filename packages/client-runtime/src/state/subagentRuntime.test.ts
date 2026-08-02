@@ -226,6 +226,141 @@ describe("applySubagentEvent", () => {
     expect(activity?.[1]?.sequence).toBe(20);
   });
 
+  it("keeps one live frame per type so alternating live events cannot evict durable history", () => {
+    let state = applySubagentEvent(
+      EMPTY_SUBAGENT_RUNTIME_STATE,
+      event({
+        sequence: 1,
+        kind: "run_created",
+        runId: "run-a",
+        view: runView({ runId: "run-a" }),
+      }),
+    );
+    state = applySubagentEvent(
+      state,
+      event({
+        sequence: 2,
+        kind: "child_tool",
+        runId: "run-a",
+        activity: { type: "tool_execution_end", data: { toolName: "read" } },
+      }),
+    );
+    // Alternate two live event types; naive adjacent-only coalescing would
+    // append a new entry per alternation and push the durable row out.
+    for (let sequence = 3; sequence <= 20; sequence += 1) {
+      const isMessage = sequence % 2 === 1;
+      state = applySubagentEvent(
+        state,
+        event({
+          sequence,
+          kind: isMessage ? "child_message" : "child_tool",
+          runId: "run-a",
+          activity: {
+            type: isMessage ? "message_update" : "tool_execution_update",
+            data: { delta: String(sequence) },
+            liveOnly: true,
+          },
+        }),
+        { maxActivity: 4 },
+      );
+    }
+
+    const activity = selectSubagentRun(state, "run-a")?.activity;
+    expect(activity).toHaveLength(3);
+    expect(activity?.[0]?.type).toBe("tool_execution_end");
+    expect(activity?.map((entry) => entry.sequence)).toEqual([2, 19, 20]);
+  });
+
+  it("replaces live frames of a kind when its completed event arrives", () => {
+    let state = applySubagentEvent(
+      EMPTY_SUBAGENT_RUNTIME_STATE,
+      event({
+        sequence: 1,
+        kind: "run_created",
+        runId: "run-a",
+        view: runView({ runId: "run-a" }),
+      }),
+    );
+    state = applySubagentEvent(
+      state,
+      event({
+        sequence: 2,
+        kind: "child_message",
+        runId: "run-a",
+        activity: {
+          type: "message_update",
+          data: { message: { role: "assistant", content: [{ type: "text", text: "Part" }] } },
+          liveOnly: true,
+        },
+      }),
+    );
+    state = applySubagentEvent(
+      state,
+      event({
+        sequence: 3,
+        kind: "child_message",
+        runId: "run-a",
+        activity: {
+          type: "message_end",
+          data: { message: { role: "assistant", content: [{ type: "text", text: "Partial" }] } },
+        },
+      }),
+    );
+
+    const activity = selectSubagentRun(state, "run-a")?.activity;
+    expect(activity).toHaveLength(1);
+    expect(activity?.[0]?.type).toBe("message_end");
+    expect(activity?.[0]?.liveOnly).toBe(false);
+  });
+
+  it("completes one correlated live tool without removing another concurrent tool", () => {
+    let state = applySubagentEvent(
+      EMPTY_SUBAGENT_RUNTIME_STATE,
+      event({
+        sequence: 1,
+        kind: "run_created",
+        runId: "run-a",
+        view: runView({ runId: "run-a" }),
+      }),
+    );
+    for (const [sequence, toolCallId] of [
+      [2, "call-1"],
+      [3, "call-2"],
+    ] as const) {
+      state = applySubagentEvent(
+        state,
+        event({
+          sequence,
+          kind: "child_tool",
+          runId: "run-a",
+          activity: {
+            type: "tool_execution_update",
+            data: { toolCallId, toolName: "read" },
+            liveOnly: true,
+          },
+        }),
+      );
+    }
+    state = applySubagentEvent(
+      state,
+      event({
+        sequence: 4,
+        kind: "child_tool",
+        runId: "run-a",
+        activity: {
+          type: "tool_execution_end",
+          data: { toolCallId: "call-1", toolName: "read" },
+        },
+      }),
+    );
+
+    const activity = selectSubagentRun(state, "run-a")?.activity;
+    expect(activity?.map((entry) => [entry.data["toolCallId"], entry.liveOnly])).toEqual([
+      ["call-2", true],
+      ["call-1", false],
+    ]);
+  });
+
   it("drops child activity for a run whose view has not been seen", () => {
     const next = applySubagentEvent(
       EMPTY_SUBAGENT_RUNTIME_STATE,
@@ -626,6 +761,84 @@ describe("selectSubagentTranscriptActivity", () => {
     const transcript = selectSubagentTranscriptActivity(run);
     expect(transcript).toHaveLength(1);
     expect(transcript[0]?.data["args"]).toEqual({ note: "Earlier checkpoint" });
+  });
+
+  it("streams the latest live assistant snapshot while the run is active", () => {
+    const run: Parameters<typeof selectSubagentTranscriptActivity>[0] = {
+      view: runView({ runId: "run-a", state: "running" }),
+      activity: [
+        activity(1, "child_tool", "tool_execution_end", { toolCallId: "call-1", toolName: "read" }),
+        activity(
+          2,
+          "child_message",
+          "message_update",
+          {
+            message: { role: "assistant", content: [{ type: "text", text: "Partial answ" }] },
+          },
+          true,
+        ),
+      ],
+      lastSequence: 2,
+      updatedAt: "2026-04-01T00:00:02.000Z",
+    };
+
+    const transcript = selectSubagentTranscriptActivity(run);
+    expect(transcript.map((entry) => entry.type)).toEqual(["tool_execution_end", "message_update"]);
+    expect(transcript.at(-1)?.liveOnly).toBe(true);
+  });
+
+  it("hides delta-only live frames that carry no assistant snapshot", () => {
+    const run: Parameters<typeof selectSubagentTranscriptActivity>[0] = {
+      view: runView({ runId: "run-a", state: "running" }),
+      activity: [activity(1, "child_message", "message_update", { delta: "chunk" }, true)],
+      lastSequence: 1,
+      updatedAt: "2026-04-01T00:00:01.000Z",
+    };
+
+    expect(selectSubagentTranscriptActivity(run)).toHaveLength(0);
+  });
+
+  it("replaces the live row with the completed message and never shows both", () => {
+    const snapshot = {
+      message: { role: "assistant", content: [{ type: "text", text: "Partial answ" }] },
+    };
+    const completed = {
+      message: { role: "assistant", content: [{ type: "text", text: "Partial answer, done." }] },
+    };
+    const run: Parameters<typeof selectSubagentTranscriptActivity>[0] = {
+      view: runView({ runId: "run-a", state: "running" }),
+      activity: [
+        activity(1, "child_message", "message_update", snapshot, true),
+        activity(2, "child_message", "message_end", completed),
+      ],
+      lastSequence: 2,
+      updatedAt: "2026-04-01T00:00:02.000Z",
+    };
+
+    const transcript = selectSubagentTranscriptActivity(run);
+    expect(transcript).toHaveLength(1);
+    expect(transcript[0]?.type).toBe("message_end");
+  });
+
+  it("does not show a dangling live frame once the run is terminal", () => {
+    const run: Parameters<typeof selectSubagentTranscriptActivity>[0] = {
+      view: runView({ runId: "run-a", state: "failed" }),
+      activity: [
+        activity(
+          1,
+          "child_message",
+          "message_update",
+          {
+            message: { role: "assistant", content: [{ type: "text", text: "Partial answ" }] },
+          },
+          true,
+        ),
+      ],
+      lastSequence: 1,
+      updatedAt: "2026-04-01T00:00:01.000Z",
+    };
+
+    expect(selectSubagentTranscriptActivity(run)).toHaveLength(0);
   });
 
   it("keeps separate tool calls even when their text is identical", () => {

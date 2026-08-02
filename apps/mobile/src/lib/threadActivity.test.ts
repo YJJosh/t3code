@@ -108,6 +108,114 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("shows provider reasoning as thinking by default and can hide it", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-reasoning"),
+      projectId: ProjectId.make("project-1"),
+      title: "Reasoning",
+      activities: [
+        makeActivity({
+          id: EventId.make("reasoning-1"),
+          kind: "reasoning",
+          summary: "Thinking",
+          createdAt: "2026-08-02T00:00:00.000Z",
+          turnId: TurnId.make("turn-reasoning"),
+          payload: { detail: "Inspecting the provider lifecycle.", reasoning: true },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+    expect(feed).toMatchObject([
+      {
+        type: "activity-group",
+        activities: [
+          {
+            summary: "Thinking",
+            detail: "Inspecting the provider lifecycle.",
+            icon: "agent",
+            toolLike: false,
+            reasoning: true,
+          },
+        ],
+      },
+    ]);
+    expect(
+      deriveThreadFeedPresentation(feed, null, new Set([TurnId.make("turn-reasoning")])),
+    ).toMatchObject([
+      { type: "turn-fold" },
+      {
+        type: "activity-group",
+        activities: [{ summary: "Thinking", detail: "Inspecting the provider lifecycle." }],
+      },
+    ]);
+    expect(buildThreadFeed(thread, { showAgentReasoning: false })).toEqual([]);
+  });
+
+  it("does not present task progress as provider reasoning", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-task-progress"),
+      projectId: ProjectId.make("project-1"),
+      title: "Task progress",
+      activities: [
+        makeActivity({
+          id: EventId.make("task-progress"),
+          kind: "task.progress",
+          summary: "Inspecting lifecycle files",
+          createdAt: "2026-08-02T00:00:00.000Z",
+          turnId: TurnId.make("turn-task-progress"),
+          payload: { detail: "Reading the provider implementation." },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toMatchObject([
+      {
+        type: "activity-group",
+        activities: [{ summary: "Reading the provider implementation.", reasoning: false }],
+      },
+    ]);
+  });
+
+  it("keeps reasoning outside adjacent tool groups", () => {
+    const turnId = TurnId.make("turn-reasoning-tools");
+    const thread = makeThread({
+      id: ThreadId.make("thread-reasoning-tools"),
+      projectId: ProjectId.make("project-1"),
+      title: "Reasoning and tools",
+      activities: [
+        makeActivity({
+          id: EventId.make("reasoning-before-tool"),
+          kind: "reasoning",
+          summary: "Thinking",
+          createdAt: "2026-08-02T00:00:00.000Z",
+          turnId,
+          payload: { detail: "Inspecting the provider lifecycle.", reasoning: true },
+        }),
+        makeActivity({
+          id: EventId.make("tool-after-reasoning"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Read package.json completed",
+          createdAt: "2026-08-02T00:00:01.000Z",
+          turnId,
+          payload: { title: "Read package.json", itemType: "dynamic_tool_call" },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toMatchObject([
+      {
+        type: "activity-group",
+        activities: [{ reasoning: true }],
+      },
+      {
+        type: "activity-group",
+        activities: [{ reasoning: false }],
+      },
+    ]);
+  });
+
   it("collapses matching tool lifecycle rows like desktop", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-2"),

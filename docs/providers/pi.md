@@ -22,11 +22,19 @@ T3 keeps one long-lived `pi --mode rpc` process per active thread. It starts Pi 
 
 The composer settings control beside the model picker exposes the selected model's reasoning levels. When the configured profile provides the compatible `effort-commands` extension, the same control also exposes context-window choices and Codex Fast service for supported OpenAI Codex models. T3 applies model, reasoning, context, and service-tier changes in order before sending the user prompt. Profile selection remains available there for new drafts. Because another profile can load different extensions, T3 revalidates `/context` and `/fast` against the live session; unsupported selections are ignored with a runtime warning instead of preventing the thread from starting.
 
+Provider refresh also discovers user-scoped Pi extension commands, prompt templates, and skills for composer completion. Project-scoped resources remain session-local because different T3 projects can load different `.pi/` directories; typing their command explicitly still lets Pi expand it in that thread.
+
+T3 keeps the orchestration turn open across Pi's low-level `agent_end`, retry, and compaction boundaries. It finalizes only when Pi emits `agent_settled`. Tool arguments, partial output, final results, and failures remain correlated by tool-call id. Reasoning blocks emitted by Pi models appear as expandable Thinking rows and survive reloads; Settings → General → Agent reasoning can hide them without changing the model's reasoning level. Extension errors and warning/error notifications appear in the work log; successful compaction is informational rather than an error.
+
 Extension confirmation prompts are approved automatically for the full-access runtime. Prompts that require fabricated text input are cancelled instead.
 
 ## Subagent activity
 
-When the Pi session has a compatible `pi-subagents` extension, T3 displays compact child-run rows below the composer. On desktop and responsive web, selecting a row opens a detail drawer with status, usage, activity, results, and steer/reply/stop controls. Native mobile shows the same live run state and transcript in a read-only detail sheet. The event stream uses durable snapshots and replay after reconnects.
+When the Pi session has a compatible `pi-subagents` extension, T3 displays compact child-run rows below the composer. On desktop and responsive web, selecting a row opens a detail drawer with status, usage, activity, results, and steer/reply/stop controls. Native mobile shows the same live run state and transcript in a read-only detail sheet. Live assistant snapshots stream into the inspector and are replaced by their durable completion without replay duplicates. Usage is split into input, output, cache-read, and cache-write categories.
+
+Claude Agent SDK performs native tools inside one provider call, where Pi cannot emit its normal tool lifecycle without executing the tool twice. Compatible `claude-agent-sdk` configurations expose those operations through a structured RPC notification bridge; T3 translates the bridge back into canonical tool rows with arguments, results, errors, duration, and correlation metadata. The inspector labels outer Pi turns explicitly and preserves the provider's original internal turn-limit explanation.
+
+The event stream uses durable snapshots and replay after reconnects.
 
 Subagent integration is optional. T3 checks that the private `subagents-rpc` extension command is registered before sending a control, so a Pi setup without that extension does not receive an accidental slash-command prompt.
 

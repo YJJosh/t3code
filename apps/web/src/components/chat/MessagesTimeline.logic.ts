@@ -1,7 +1,8 @@
 import * as Equal from "effect/Equal";
 import {
   formatDuration,
-  workEntryIndicatesToolNeutralStatus,
+  workLogEntryShouldRender,
+  workLogEntryIsReasoning,
   workLogEntryIsToolLike,
   type TimelineEntry,
   type WorkLogEntry,
@@ -467,6 +468,8 @@ export function deriveMessagesTimelineRows(input: {
         if (
           !nextEntry ||
           nextEntry.kind !== "work" ||
+          workLogEntryIsReasoning(timelineEntry.entry) ||
+          workLogEntryIsReasoning(nextEntry.entry) ||
           collapsedEntryIds.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id)
         ) {
@@ -475,9 +478,7 @@ export function deriveMessagesTimelineRows(input: {
         groupedEntries.push(nextEntry.entry);
         cursor += 1;
       }
-      const visibleGroupedEntries = groupedEntries.filter(
-        (entry) => !workEntryIndicatesToolNeutralStatus(entry),
-      );
+      const visibleGroupedEntries = groupedEntries.filter(workLogEntryShouldRender);
       if (visibleGroupedEntries.length > 0) {
         if (visibleGroupedEntries.length <= MAX_VISIBLE_WORK_LOG_ENTRIES) {
           nextRows.push({
@@ -509,7 +510,9 @@ export function deriveMessagesTimelineRows(input: {
             groupId,
             hiddenCount: hiddenEntries.length,
             expanded,
-            onlyToolEntries: visibleGroupedEntries.every((entry) => workLogEntryIsToolLike(entry)),
+            onlyToolEntries: visibleGroupedEntries.every(
+              (entry) => entry.tone !== "thinking" && workLogEntryIsToolLike(entry),
+            ),
           });
         }
       }

@@ -32,6 +32,7 @@ const clientSettings: ClientSettings = {
   sidebarThreadPreviewCount: 6,
   sidebarV2Enabled: false,
   sidebarV2ConfiguredByUser: false,
+  showAgentReasoning: true,
   timestampFormat: "24-hour",
   wordWrap: true,
 };

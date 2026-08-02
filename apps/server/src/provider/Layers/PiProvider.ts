@@ -266,6 +266,8 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     enabled: true,
     checkedAt,
     models,
+    slashCommands: discovered?.slashCommands ?? [],
+    skills: discovered?.skills ?? [],
     probe: {
       installed: true,
       version,

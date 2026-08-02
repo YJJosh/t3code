@@ -5,6 +5,11 @@ import type {
 } from "@t3tools/client-runtime/state/subagents";
 import type { PiSubagentRunStatus, PiSubagentUsage } from "@t3tools/contracts";
 
+export {
+  isSubagentMaxTurnReason,
+  subagentMaxTurnExplanation,
+} from "@t3tools/client-runtime/state/subagents";
+
 export type SubagentStatusTone = "info" | "warning" | "success" | "error";
 
 const STATUS_LABELS: Record<PiSubagentRunStatus, string> = {
@@ -314,6 +319,9 @@ export function subagentActivityLabel(entry: SubagentActivityEntry): string {
     }
     const blocks = Array.isArray(message?.["content"]) ? message["content"] : [];
     const hasText = blocks.some((value) => typeof activityRecord(value)?.["text"] === "string");
+    if (entry.liveOnly) {
+      return hasText ? "Streaming" : "Thinking";
+    }
     return hasText ? "Message" : "Thinking";
   }
   return titleCaseActivityName(entry.type);
@@ -321,6 +329,32 @@ export function subagentActivityLabel(entry: SubagentActivityEntry): string {
 
 export function formatSubagentTokens(usage: PiSubagentUsage): string {
   return `${usage.total.toLocaleString()} tokens`;
+}
+
+function formatCompactTokenCount(count: number): string {
+  if (count < 1_000) {
+    return String(count);
+  }
+  const scaled = count < 1_000_000 ? count / 1_000 : count / 1_000_000;
+  const suffix = count < 1_000_000 ? "k" : "M";
+  const rendered =
+    scaled >= 100 ? String(Math.round(scaled)) : scaled.toFixed(1).replace(/\.0$/, "");
+  return `${rendered}${suffix}`;
+}
+
+/** Input/output/cache split behind the total, omitting empty categories so the
+ * one big number stops being unexplained. Null when every category is zero. */
+export function formatSubagentUsageBreakdown(usage: PiSubagentUsage): string | null {
+  const categories: ReadonlyArray<readonly [number, string]> = [
+    [usage.input, "in"],
+    [usage.output, "out"],
+    [usage.cacheRead, "cache read"],
+    [usage.cacheWrite, "cache write"],
+  ];
+  const parts = categories
+    .filter(([count]) => count > 0)
+    .map(([count, label]) => `${formatCompactTokenCount(count)} ${label}`);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export function formatSubagentCost(usage: PiSubagentUsage): string {

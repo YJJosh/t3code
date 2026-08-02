@@ -140,6 +140,10 @@ export type TimelineEntry =
       entry: WorkLogEntry;
     };
 
+export function workLogEntryIsReasoning(entry: WorkLogEntry): boolean {
+  return entry.sourceActivityKind === "reasoning";
+}
+
 export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") {
     return true;
@@ -250,6 +254,11 @@ export function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
 }
 
 /** Tool-like row with neither clear success nor failure (empty, incomplete, in progress, etc.). */
+/** Thinking is useful progress; other neutral tool rows are incomplete lifecycle noise. */
+export function workLogEntryShouldRender(entry: WorkLogEntry): boolean {
+  return entry.tone === "thinking" || !workEntryIndicatesToolNeutralStatus(entry);
+}
+
 export function workEntryIndicatesToolNeutralStatus(entry: WorkLogEntry): boolean {
   if (!workLogEntryIsToolLike(entry)) {
     return false;
@@ -627,10 +636,12 @@ export function hasActionableProposedPlan(
 
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
+  options?: { readonly showAgentReasoning?: boolean },
 ): WorkLogEntry[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
+    if (activity.kind === "reasoning" && options?.showAgentReasoning === false) continue;
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
@@ -711,7 +722,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     turnId: activity.turnId,
     label: taskLabel || activity.summary,
     tone:
-      activity.kind === "task.progress"
+      activity.kind === "task.progress" || activity.kind === "reasoning"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"
@@ -735,10 +746,20 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (title) {
     entry.toolTitle = title;
   }
-  if (itemType === "mcp_tool_call") {
+  if (itemType) {
     const data = asRecord(payload?.data);
-    if (data?.item !== undefined) {
+    if (itemType === "mcp_tool_call" && data?.item !== undefined) {
       entry.toolData = data.item;
+    } else if (
+      data !== null &&
+      (itemType === "dynamic_tool_call" || itemType === "command_execution")
+    ) {
+      const structuredToolData = Object.fromEntries(
+        ["toolCallId", "args", "partialResult", "result", "providerMetadata", "isError"].flatMap(
+          (key) => (data[key] === undefined ? [] : [[key, data[key]]]),
+        ),
+      );
+      if (Object.keys(structuredToolData).length > 0) entry.toolData = structuredToolData;
     }
   }
   if (itemType) {
@@ -804,6 +825,18 @@ function shouldCollapseToolLifecycleEntries(
   );
 }
 
+function mergeWorkLogToolData(previous: unknown, next: unknown): unknown {
+  const previousRecord =
+    previous !== null && typeof previous === "object" && !Array.isArray(previous)
+      ? (previous as Record<string, unknown>)
+      : null;
+  const nextRecord =
+    next !== null && typeof next === "object" && !Array.isArray(next)
+      ? (next as Record<string, unknown>)
+      : null;
+  return previousRecord && nextRecord ? { ...previousRecord, ...nextRecord } : (next ?? previous);
+}
+
 function mergeDerivedWorkLogEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
@@ -818,7 +851,7 @@ function mergeDerivedWorkLogEntries(
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
-  const toolData = next.toolData ?? previous.toolData;
+  const toolData = mergeWorkLogToolData(previous.toolData, next.toolData);
   return {
     ...previous,
     ...next,
@@ -1051,6 +1084,7 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
   const item = asRecord(data?.item);
   const itemResult = asRecord(item?.result);
   const itemInput = asRecord(item?.input);
+  const args = asRecord(data?.args);
   const itemType = asTrimmedString(payload?.itemType);
   const detail = asTrimmedString(payload?.detail);
   const candidates: unknown[] = [
@@ -1058,6 +1092,7 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
     itemInput?.command,
     itemResult?.command,
     data?.command,
+    args?.command,
     itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
   ];
 

@@ -437,6 +437,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Assistant output"]
         : []),
+      ...(settings.showAgentReasoning !== DEFAULT_UNIFIED_SETTINGS.showAgentReasoning
+        ? ["Agent reasoning"]
+        : []),
       ...(settings.enableProviderUpdateChecks !==
       DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks
         ? ["Provider update checks"]
@@ -496,6 +499,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
       settings.enableProviderUpdateChecks,
+      settings.showAgentReasoning,
       settings.sidebarProjectGroupingMode,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
@@ -526,6 +530,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
+      showAgentReasoning: DEFAULT_UNIFIED_SETTINGS.showAgentReasoning,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromDefaultBranch:
@@ -883,6 +888,32 @@ export function GeneralSettingsPanel() {
                 updateSettings({ enableAssistantStreaming: Boolean(checked) })
               }
               aria-label="Stream assistant messages"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Agent reasoning"
+          description="Show reasoning traces emitted by providers in the conversation work log."
+          resetAction={
+            settings.showAgentReasoning !== DEFAULT_UNIFIED_SETTINGS.showAgentReasoning ? (
+              <SettingResetButton
+                label="agent reasoning"
+                onClick={() =>
+                  updateSettings({
+                    showAgentReasoning: DEFAULT_UNIFIED_SETTINGS.showAgentReasoning,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.showAgentReasoning}
+              onCheckedChange={(checked) =>
+                updateSettings({ showAgentReasoning: Boolean(checked) })
+              }
+              aria-label="Show agent reasoning"
             />
           }
         />

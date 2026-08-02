@@ -236,11 +236,21 @@ const make = Effect.gen(function* () {
 
   const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
     const failReason = cause.reasons.find(Cause.isFailReason);
-    const providerError = isProviderAdapterRequestError(failReason?.error)
-      ? failReason.error
-      : undefined;
-    if (providerError) {
-      return providerError.detail;
+    const error = failReason?.error;
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "detail" in error &&
+      typeof error.detail === "string" &&
+      error.detail.trim()
+    ) {
+      return error.detail;
+    }
+    if (error instanceof Error && error.message.trim()) {
+      return error.message;
+    }
+    if (typeof error === "string" && error.trim()) {
+      return error;
     }
     return Cause.pretty(cause);
   };

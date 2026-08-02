@@ -29,7 +29,9 @@ import {
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
+  workLogEntryIsReasoning,
   workLogEntryIsToolLike,
+  workLogEntryShouldRender,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import {
@@ -1153,35 +1155,56 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
+  const ctx = use(TimelineRowCtx);
   const nonEmptyEntries = useMemo(
-    () => groupedEntries.filter((entry) => !workEntryIndicatesToolNeutralStatus(entry)),
+    () => groupedEntries.filter(workLogEntryShouldRender),
     [groupedEntries],
   );
-  const onlyToolEntries = nonEmptyEntries.every((entry) => workLogEntryIsToolLike(entry));
+  const onlyToolEntries = nonEmptyEntries.every(
+    (entry) => entry.tone !== "thinking" && workLogEntryIsToolLike(entry),
+  );
+  const containsGeneralWorkLogEntry = nonEmptyEntries.some(
+    (entry) =>
+      !workLogEntryIsReasoning(entry) &&
+      (entry.tone === "thinking" || !workLogEntryIsToolLike(entry)),
+  );
   const groupLabel = onlyToolEntries
     ? nonEmptyEntries.length === 1
       ? "1 tool call"
       : `${nonEmptyEntries.length} tool calls`
-    : "Work Log";
+    : nonEmptyEntries.every(workLogEntryIsReasoning)
+      ? "Agent reasoning"
+      : "Work Log";
 
   if (nonEmptyEntries.length === 0) return null;
 
   return (
     <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label={groupLabel}>
-      {!onlyToolEntries && (
+      {containsGeneralWorkLogEntry ? (
         <p className="px-0.5 pb-0.5 font-medium text-[11px] text-muted-foreground/65">
           {groupLabel}
         </p>
-      )}
+      ) : null}
       <div className="space-y-px">
-        {nonEmptyEntries.map((workEntry) => (
-          <SimpleWorkEntryRow
-            key={workEntry.id}
-            workEntry={workEntry}
-            workspaceRoot={workspaceRoot}
-          />
-        ))}
+        {nonEmptyEntries.map((workEntry) =>
+          workLogEntryIsReasoning(workEntry) ? (
+            <div key={workEntry.id} className="min-w-0 px-1 py-0.5 select-text">
+              <ChatMarkdown
+                text={workEntry.detail?.trim() || workEntry.label}
+                cwd={ctx.markdownCwd}
+                threadRef={ctx.threadRef ?? undefined}
+                skills={ctx.skills}
+                className="text-foreground/65"
+              />
+            </div>
+          ) : (
+            <SimpleWorkEntryRow
+              key={workEntry.id}
+              workEntry={workEntry}
+              workspaceRoot={ctx.workspaceRoot}
+            />
+          ),
+        )}
       </div>
     </section>
   );
@@ -1845,13 +1868,27 @@ function workEntryRawCommand(
   return rawCommand === workEntry.command.trim() ? null : rawCommand;
 }
 
-function buildToolCallExpandedBody(
+export function buildToolCallExpandedBody(
   workEntry: TimelineWorkEntry,
   workspaceRoot: string | undefined,
 ): string | null {
   const blocks: string[] = [];
   if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
     blocks.push(`MCP call\n${JSON.stringify(workEntry.toolData, null, 2)}`);
+  } else if (
+    (workEntry.itemType === "dynamic_tool_call" || workEntry.itemType === "command_execution") &&
+    typeof workEntry.toolData === "object" &&
+    workEntry.toolData !== null &&
+    !Array.isArray(workEntry.toolData)
+  ) {
+    const data = workEntry.toolData as Record<string, unknown>;
+    for (const [label, value] of [
+      ["Arguments", data.args],
+      ["Partial result", data.partialResult],
+      [data.isError === true ? "Error result" : "Result", data.result],
+    ] as const) {
+      if (value !== undefined) blocks.push(`${label}\n${JSON.stringify(value, null, 2)}`);
+    }
   }
   const raw = workEntryRawCommand(workEntry);
   if (raw?.trim()) {
@@ -1930,7 +1967,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const [expanded, setExpanded] = useState(false);
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
-  const entryIconName = showWarningIndicator ? "x" : workEntryIconName(workEntry);
+  const entryIconName = showWarningIndicator ? "circle-alert" : workEntryIconName(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
   const rawPreview = workEntryPreview(workEntry, workspaceRoot);
   const preview =
@@ -1942,14 +1979,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const displayText = preview ? `${heading} - ${preview}` : heading;
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const canExpand = expandedBody !== null;
-  const showFailedIndicator = workEntryIndicatesToolFailure(workEntry);
+  const showFailedIndicator = !showWarningIndicator && workEntryIndicatesToolFailure(workEntry);
   const showDestructiveRowStyle =
     showFailedIndicator &&
     (workEntry.sourceActivityKind === "runtime.error" || !workLogEntryIsToolLike(workEntry));
   const iconWrapperClass = cn(
     "flex size-5 shrink-0 items-center justify-center",
     showWarningIndicator
-      ? "text-destructive"
+      ? "text-warning"
       : showDestructiveRowStyle
         ? "text-destructive"
         : workEntry.tone === "tool" || showFailedIndicator

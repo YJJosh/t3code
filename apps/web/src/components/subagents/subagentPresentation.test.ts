@@ -10,8 +10,11 @@ import {
   formatSubagentActiveMs,
   formatSubagentCost,
   formatSubagentTokens,
+  formatSubagentUsageBreakdown,
+  isSubagentMaxTurnReason,
   subagentRosterOverviewLabel,
   subagentActivityLabel,
+  subagentMaxTurnExplanation,
   subagentRunAccessibleStatus,
   subagentRunDisplayTitle,
   subagentRunStatusLabel,
@@ -219,6 +222,92 @@ describe("subagentPresentation", () => {
     expect(formatSubagentActiveMs(500)).toBe("500ms");
     expect(formatSubagentActiveMs(4200)).toBe("4.2s");
     expect(formatSubagentActiveMs(95_000)).toBe("1m 35s");
+  });
+
+  it("breaks the usage total into non-zero categories", () => {
+    expect(formatSubagentUsageBreakdown(usage)).toBe("10 in · 20 out");
+    expect(
+      formatSubagentUsageBreakdown({
+        ...usage,
+        input: 1_234,
+        output: 999_499,
+        cacheRead: 2_400_000,
+        cacheWrite: 120_000,
+      }),
+    ).toBe("1.2k in · 999k out · 2.4M cache read · 120k cache write");
+    expect(
+      formatSubagentUsageBreakdown({ ...usage, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }),
+    ).toBeNull();
+  });
+
+  it("labels a live assistant frame as streaming", () => {
+    expect(
+      subagentActivityLabel(
+        activity({
+          kind: "child_message",
+          type: "message_update",
+          liveOnly: true,
+          data: {
+            message: { role: "assistant", content: [{ type: "text", text: "Partial answ" }] },
+          },
+        }),
+      ),
+    ).toBe("Streaming");
+    expect(
+      subagentActivityLabel(
+        activity({
+          kind: "child_message",
+          type: "message_update",
+          liveOnly: true,
+          data: {
+            message: { role: "assistant", content: [{ type: "thinking", thinking: "Plan" }] },
+          },
+        }),
+      ),
+    ).toBe("Thinking");
+  });
+
+  it("explains max-turn failures as the harness limit, not the Pi turn count", () => {
+    expect(isSubagentMaxTurnReason("Stopped after reaching the turn limit.")).toBe(true);
+    expect(isSubagentMaxTurnReason("Maximum turns exceeded")).toBe(true);
+    expect(isSubagentMaxTurnReason("max_turns reached")).toBe(true);
+    expect(isSubagentMaxTurnReason("Provider crashed")).toBe(false);
+    expect(isSubagentMaxTurnReason(undefined)).toBe(false);
+
+    const baseRun = runEntry("run-1", "failed");
+    const failedRun: SubagentRunEntry = {
+      ...baseRun,
+      view: {
+        ...baseRun.view,
+        result: {
+          run_id: "run-1",
+          model: "claude-sonnet-5",
+          directory: "/tmp/work",
+          status: "failed",
+          reason: "limit_exceeded:max_turns — Reached maximum number of turns (30)",
+          usage: { ...usage, turns: 1 },
+        },
+      },
+    };
+    expect(subagentMaxTurnExplanation(failedRun)).toBe(
+      "The provider stopped after reaching its 30-turn internal limit. Internal provider turns are separate from the Pi turn count shown in this panel.",
+    );
+
+    const crashedRun: SubagentRunEntry = {
+      ...baseRun,
+      view: {
+        ...baseRun.view,
+        result: {
+          run_id: "run-1",
+          model: "claude-sonnet-5",
+          directory: "/tmp/work",
+          status: "failed",
+          reason: "Provider crashed",
+          usage,
+        },
+      },
+    };
+    expect(subagentMaxTurnExplanation(crashedRun)).toBeNull();
   });
 
   it("calls out actionable input without making false claims for workflow agents", () => {

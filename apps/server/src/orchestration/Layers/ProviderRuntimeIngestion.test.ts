@@ -950,6 +950,126 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("publishes canonical reasoning live and finalizes the same thinking activity", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    for (const [index, delta] of [
+      "Inspecting the provider. ",
+      "The lifecycle is settled.",
+    ].entries()) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-reasoning-delta-${index}`),
+        provider: ProviderDriverKind.make("pi"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-reasoning"),
+        itemId: asItemId("item-reasoning"),
+        payload: {
+          streamKind: "reasoning_text",
+          delta,
+        },
+      });
+    }
+    const reasoningActivityId = "reasoning:assistant:item-reasoning";
+    const liveThread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === reasoningActivityId,
+      ),
+    );
+    expect(
+      liveThread.activities.find(
+        (entry: ProviderRuntimeTestActivity) => entry.id === reasoningActivityId,
+      ),
+    ).toMatchObject({
+      kind: "reasoning",
+      summary: "Thinking",
+      tone: "info",
+      turnId: "turn-reasoning",
+      payload: {
+        detail: "Inspecting the provider. The lifecycle is settled.",
+        reasoning: true,
+      },
+    });
+
+    const continuedReasoning = ` ${"Continuing the live reasoning. ".repeat(10)}`;
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta-continued"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("item-reasoning"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: continuedReasoning,
+      },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => {
+        if (activity.id !== reasoningActivityId || typeof activity.payload !== "object") {
+          return false;
+        }
+        return (activity.payload as { detail?: unknown }).detail
+          ?.toString()
+          .endsWith(continuedReasoning);
+      }),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta-final"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("item-reasoning"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: " Final check.",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-reasoning-completed"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("item-reasoning"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => {
+        if (activity.id !== reasoningActivityId || typeof activity.payload !== "object") {
+          return false;
+        }
+        return (activity.payload as { detail?: unknown }).detail
+          ?.toString()
+          .endsWith("Final check.");
+      }),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === reasoningActivityId,
+    );
+    expect(activity).toMatchObject({
+      kind: "reasoning",
+      summary: "Thinking",
+      tone: "info",
+      turnId: "turn-reasoning",
+      payload: {
+        detail: `Inspecting the provider. The lifecycle is settled.${continuedReasoning} Final check.`,
+        reasoning: true,
+      },
+    });
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -996,10 +1116,11 @@ describe("ProviderRuntimeIngestion", () => {
       itemId: asItemId("item-tool-completed"),
       payload: {
         itemType: "dynamic_tool_call",
-        status: "completed",
+        status: "failed",
         title: "Read file",
         data: {
           toolCallId: "tool-read-1",
+          isError: true,
           kind: "read",
           rawOutput: {
             content: 'import * as Effect from "effect/Effect"\n',
@@ -1032,8 +1153,10 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activity?.kind).toBe("tool.completed");
     expect(activity?.summary).toBe("Read file");
     expect(payload?.itemType).toBe("dynamic_tool_call");
+    expect(payload?.status).toBe("failed");
     expect(payload?.detail).toBeUndefined();
     expect(data?.toolCallId).toBe("tool-read-1");
+    expect(data?.isError).toBe(true);
     expect(data?.kind).toBe("read");
     expect(rawOutput?.content).toBe('import * as Effect from "effect/Effect"\n');
   });
@@ -2741,6 +2864,7 @@ describe("ProviderRuntimeIngestion", () => {
         status: "in_progress",
         title: "Read file",
         detail: "/tmp/file.ts",
+        data: { toolCallId: "pi-call-1", args: { path: "/tmp/file.ts" } },
       },
     });
 
@@ -2755,11 +2879,18 @@ describe("ProviderRuntimeIngestion", () => {
     );
 
     expect(thread.session?.status).toBe("ready");
-    expect(
-      thread.activities.some(
-        (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.started",
-      ),
-    ).toBe(true);
+    const toolStarted = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-tool-started",
+    );
+    const toolStartedPayload =
+      toolStarted?.payload && typeof toolStarted.payload === "object"
+        ? (toolStarted.payload as Record<string, unknown>)
+        : undefined;
+    expect(toolStarted?.kind).toBe("tool.started");
+    expect(toolStartedPayload?.data).toEqual({
+      toolCallId: "pi-call-1",
+      args: { path: "/tmp/file.ts" },
+    });
   });
 
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {

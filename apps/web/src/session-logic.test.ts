@@ -740,6 +740,27 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["task-progress", "task-complete"]);
   });
 
+  it("shows provider reasoning as thinking by default and can hide it", () => {
+    const activity = makeActivity({
+      id: "reasoning-1",
+      createdAt: "2026-08-02T00:00:00.000Z",
+      kind: "reasoning",
+      summary: "Thinking",
+      tone: "info",
+      payload: { detail: "Inspecting the provider lifecycle.", reasoning: true },
+    });
+
+    expect(deriveWorkLogEntries([activity])).toMatchObject([
+      {
+        id: "reasoning-1",
+        label: "Thinking",
+        tone: "thinking",
+        detail: "Inspecting the provider lifecycle.",
+      },
+    ]);
+    expect(deriveWorkLogEntries([activity], { showAgentReasoning: false })).toEqual([]);
+  });
+
   it("uses payload summary as label for task entries when available", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1260,6 +1281,85 @@ describe("deriveWorkLogEntries", () => {
       toolTitle: "Read File",
       detail: 'import * as Effect from "effect/Effect"',
       itemType: "dynamic_tool_call",
+    });
+  });
+
+  it("preserves structured Pi tool arguments, results, and failure status", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "pi-read-failed",
+        createdAt: "2026-08-01T00:00:01.000Z",
+        kind: "tool.completed",
+        summary: "Read",
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "failed",
+          detail: "permission denied",
+          data: {
+            toolCallId: "pi-tool-1",
+            args: { path: "/root/secret" },
+            result: { error: "permission denied" },
+            isError: true,
+          },
+        },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      id: "pi-read-failed",
+      itemType: "dynamic_tool_call",
+      toolLifecycleStatus: "failed",
+      detail: "permission denied",
+      toolData: {
+        toolCallId: "pi-tool-1",
+        args: { path: "/root/secret" },
+        result: { error: "permission denied" },
+        isError: true,
+      },
+    });
+  });
+
+  it("merges structured tool fields across collapsed lifecycle entries", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "pi-read-update",
+        createdAt: "2026-08-01T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Read",
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "inProgress",
+          data: {
+            toolCallId: "pi-tool-merge",
+            args: { path: "/tmp/source.ts" },
+            partialResult: { content: "partial" },
+          },
+        },
+      }),
+      makeActivity({
+        id: "pi-read-complete",
+        createdAt: "2026-08-01T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Read",
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "completed",
+          data: {
+            toolCallId: "pi-tool-merge",
+            result: { content: "complete" },
+            isError: false,
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.toolData).toEqual({
+      toolCallId: "pi-tool-merge",
+      args: { path: "/tmp/source.ts" },
+      partialResult: { content: "partial" },
+      result: { content: "complete" },
+      isError: false,
     });
   });
 

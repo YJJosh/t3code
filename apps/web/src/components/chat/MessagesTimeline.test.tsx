@@ -131,6 +131,7 @@ function matchMedia() {
 }
 
 let MessagesTimeline: typeof import("./MessagesTimeline").MessagesTimeline;
+let buildToolCallExpandedBody: typeof import("./MessagesTimeline").buildToolCallExpandedBody;
 
 beforeAll(async () => {
   const classList = {
@@ -164,7 +165,7 @@ beforeAll(async () => {
     },
   });
 
-  ({ MessagesTimeline } = await import("./MessagesTimeline"));
+  ({ MessagesTimeline, buildToolCallExpandedBody } = await import("./MessagesTimeline"));
 }, 30_000);
 
 const ACTIVE_THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
@@ -527,6 +528,66 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Work Log");
   });
 
+  it("renders complete provider reasoning inline without a disclosure row", () => {
+    const reasoning =
+      "Inspecting the provider lifecycle.\n\nThe complete reasoning remains visible through its final sentence.";
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "reasoning-entry",
+            kind: "work",
+            createdAt: "2026-08-02T00:00:00.000Z",
+            entry: {
+              id: "reasoning-1",
+              createdAt: "2026-08-02T00:00:00.000Z",
+              label: "Thinking",
+              detail: reasoning,
+              tone: "thinking",
+              sourceActivityKind: "reasoning",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Inspecting the provider lifecycle.");
+    expect(markup).toContain("The complete reasoning remains visible through its final sentence.");
+    expect(markup).toContain("text-foreground/65");
+    expect(markup).not.toContain("Thinking");
+    expect(markup).not.toContain("Work Log");
+    expect(markup).not.toContain("aria-expanded");
+  });
+
+  it("keeps task progress in the normal work-log presentation", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "task-progress-entry",
+            kind: "work",
+            createdAt: "2026-08-02T00:00:00.000Z",
+            entry: {
+              id: "task-progress-1",
+              createdAt: "2026-08-02T00:00:00.000Z",
+              label: "Inspecting lifecycle files",
+              detail: "Reading the provider implementation.",
+              tone: "thinking",
+              sourceActivityKind: "task.progress",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Inspecting lifecycle files");
+    expect(markup).toContain("Reading the provider implementation.");
+    expect(markup).toContain("Work Log");
+    expect(markup).not.toContain("Agent reasoning");
+  });
+
   it("formats changed file paths from the workspace root", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -628,6 +689,58 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Clarify this.");
     expect(markup).toContain("# Plan");
     expect(markup).not.toContain('data-testid="file-diff"');
+  });
+
+  it("renders runtime warnings as warnings instead of failed errors", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-warning",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-warning",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Retrying provider request",
+              tone: "error",
+              sourceActivityKind: "runtime.warning",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("lucide-circle-alert");
+    expect(markup).toContain("text-warning");
+    expect(markup).not.toContain("lucide-x");
+    expect(markup).not.toContain('aria-label="Tool call failed"');
+  });
+
+  it("renders structured Pi tool arguments and results in the expanded body", () => {
+    const body = buildToolCallExpandedBody(
+      {
+        id: "work-pi-tool",
+        createdAt: "2026-03-17T19:12:28.000Z",
+        label: "Read",
+        tone: "tool",
+        itemType: "dynamic_tool_call",
+        toolLifecycleStatus: "completed",
+        toolData: {
+          toolCallId: "call-read-1",
+          args: { path: "README.md" },
+          result: { content: [{ type: "text", text: "contents" }] },
+          isError: false,
+        },
+      },
+      undefined,
+    );
+
+    expect(body).toContain("Arguments");
+    expect(body).toContain("README.md");
+    expect(body).toContain("Result");
+    expect(body).toContain("contents");
   });
 
   it("renders a failure marker for failed tool lifecycle entries", () => {

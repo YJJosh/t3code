@@ -123,6 +123,44 @@ function summarizeToolTextOutput(value: string): string | null {
   return null;
 }
 
+interface ToolValueProjectionBudget {
+  nodes: number;
+  stringChars: number;
+}
+
+const TOOL_VALUE_MAX_DEPTH = 8;
+const TOOL_VALUE_MAX_ENTRIES = 100;
+const TOOL_VALUE_MAX_NODES = 400;
+const TOOL_VALUE_MAX_STRING_CHARS = 32_000;
+
+function projectToolValue(value: unknown, budget: ToolValueProjectionBudget, depth = 0): unknown {
+  if (budget.nodes <= 0 || depth > TOOL_VALUE_MAX_DEPTH) return "[truncated]";
+  budget.nodes -= 1;
+  if (value === null || typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value === "string") {
+    if (budget.stringChars <= 0) return "[truncated]";
+    const retained = value.slice(0, budget.stringChars);
+    budget.stringChars -= retained.length;
+    return retained.length === value.length ? retained : `${retained}…[truncated]`;
+  }
+  if (Array.isArray(value)) {
+    const entries = value
+      .slice(0, TOOL_VALUE_MAX_ENTRIES)
+      .map((entry) => projectToolValue(entry, budget, depth + 1));
+    if (value.length > TOOL_VALUE_MAX_ENTRIES) entries.push("[truncated entries]");
+    return entries;
+  }
+  const record = asRecord(value);
+  if (!record) return String(value);
+  const entries = Object.entries(record);
+  const projected: Record<string, unknown> = {};
+  for (const [key, entry] of entries.slice(0, TOOL_VALUE_MAX_ENTRIES)) {
+    projected[key] = projectToolValue(entry, budget, depth + 1);
+  }
+  if (entries.length > TOOL_VALUE_MAX_ENTRIES) projected["[truncated]"] = true;
+  return projected;
+}
+
 function projectRawOutput(value: unknown): Record<string, unknown> | undefined {
   const rawOutput = asRecord(value);
   if (!rawOutput) {
@@ -153,7 +191,9 @@ function projectRawOutput(value: unknown): Record<string, unknown> | undefined {
 
 /**
  * Removes activity payload fields that no current client reads while retaining
- * the full payload in persistence and the event store.
+ * the full payload in persistence and the event store. Structured tool args and
+ * results are retained under explicit depth/node/string budgets so details stay
+ * useful without allowing one tool response to flood snapshot/WebSocket payloads.
  */
 export function projectActivityPayload(
   activity: OrchestrationThreadActivity,
@@ -186,6 +226,14 @@ export function projectActivityPayload(
   if ("kind" in data) {
     projectedData.kind = data.kind;
   }
+  const toolValueBudget: ToolValueProjectionBudget = {
+    nodes: TOOL_VALUE_MAX_NODES,
+    stringChars: TOOL_VALUE_MAX_STRING_CHARS,
+  };
+  for (const key of ["args", "partialResult", "result", "providerMetadata"] as const) {
+    if (key in data) projectedData[key] = projectToolValue(data[key], toolValueBudget);
+  }
+  if (typeof data.isError === "boolean") projectedData.isError = data.isError;
 
   const rawOutput = projectRawOutput(data.rawOutput);
   if (rawOutput) {

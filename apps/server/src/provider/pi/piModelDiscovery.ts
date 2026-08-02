@@ -18,6 +18,8 @@ import type {
   ModelCapabilities,
   ServerProviderAuth,
   ServerProviderModel,
+  ServerProviderSkill,
+  ServerProviderSlashCommand,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
@@ -51,6 +53,8 @@ interface PiSdkModel {
 export interface PiModelDiscoveryResult {
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly auth: ServerProviderAuth;
+  readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  readonly skills: ReadonlyArray<ServerProviderSkill>;
   /** Present when the SDK failed to load or enumerate models. */
   readonly error?: string;
 }
@@ -74,13 +78,40 @@ interface PiSdkModelRuntime {
   readonly getError: PiSdkModelRuntimeShape["getError"];
 }
 
+interface PiResourceSourceInfo {
+  readonly path: string;
+  readonly scope: "user" | "project" | "temporary";
+}
+
 interface PiSdkRuntimeServices {
   readonly modelRuntime: PiSdkModelRuntime;
   readonly resourceLoader?:
     | {
         readonly getExtensions: () => {
           readonly extensions: ReadonlyArray<{
-            readonly commands: ReadonlyMap<string, unknown>;
+            readonly commands: ReadonlyMap<
+              string,
+              {
+                readonly description?: string | undefined;
+                readonly sourceInfo?: PiResourceSourceInfo | undefined;
+              }
+            >;
+          }>;
+        };
+        readonly getSkills?: () => {
+          readonly skills: ReadonlyArray<{
+            readonly name: string;
+            readonly description: string;
+            readonly filePath: string;
+            readonly sourceInfo: PiResourceSourceInfo;
+          }>;
+        };
+        readonly getPrompts?: () => {
+          readonly prompts: ReadonlyArray<{
+            readonly name: string;
+            readonly description: string;
+            readonly argumentHint?: string | undefined;
+            readonly sourceInfo: PiResourceSourceInfo;
           }>;
         };
       }
@@ -99,6 +130,71 @@ interface PiSdkModule {
 
 function piModelSlug(model: PiSdkModel): string {
   return `${model.provider}/${model.id}`;
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function isProviderScopedResource(sourceInfo: PiResourceSourceInfo | undefined): boolean {
+  return sourceInfo?.scope !== "project";
+}
+
+function piProviderResources(resourceLoader: PiSdkRuntimeServices["resourceLoader"]): {
+  readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  readonly skills: ReadonlyArray<ServerProviderSkill>;
+} {
+  if (!resourceLoader) return { slashCommands: [], skills: [] };
+
+  const commands = new Map<string, ServerProviderSlashCommand>();
+  const appendCommand = (command: ServerProviderSlashCommand) => {
+    const name = nonEmpty(command.name);
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (!commands.has(key)) commands.set(key, { ...command, name });
+  };
+
+  for (const extension of resourceLoader.getExtensions().extensions) {
+    for (const [registeredName, command] of extension.commands) {
+      if (!isProviderScopedResource(command.sourceInfo)) continue;
+      const description = nonEmpty(command.description);
+      appendCommand({
+        name: registeredName,
+        ...(description ? { description } : {}),
+      });
+    }
+  }
+
+  for (const prompt of resourceLoader.getPrompts?.().prompts ?? []) {
+    if (!isProviderScopedResource(prompt.sourceInfo)) continue;
+    const description = nonEmpty(prompt.description);
+    const argumentHint = nonEmpty(prompt.argumentHint);
+    appendCommand({
+      name: prompt.name,
+      ...(description ? { description } : {}),
+      ...(argumentHint ? { input: { hint: argumentHint } } : {}),
+    });
+  }
+
+  const skills = (resourceLoader.getSkills?.().skills ?? []).flatMap((skill) => {
+    if (!isProviderScopedResource(skill.sourceInfo)) return [];
+    const name = nonEmpty(skill.name);
+    const path = nonEmpty(skill.filePath);
+    if (!name || !path) return [];
+    const description = nonEmpty(skill.description);
+    return [
+      {
+        name,
+        path,
+        enabled: true,
+        scope: skill.sourceInfo.scope,
+        ...(description ? { description, shortDescription: description } : {}),
+      } satisfies ServerProviderSkill,
+    ];
+  });
+
+  return { slashCommands: [...commands.values()], skills };
 }
 
 /**
@@ -266,11 +362,11 @@ export async function discoverPiModelsWithSdk(
     ...(profile
       ? { extensionFlagValues: new Map<string, boolean | string>([["profile", profile]]) }
       : {}),
-    // Provider discovery needs extensions but not the heavier prompt, skill,
-    // theme, or context resources used by an actual Pi session.
+    // Commands and user-scoped skills are provider capabilities presented by
+    // the composer. Themes and project context remain unnecessary here.
     resourceLoaderOptions: {
-      noSkills: true,
-      noPromptTemplates: true,
+      noSkills: false,
+      noPromptTemplates: false,
       noThemes: true,
       noContextFiles: true,
     },
@@ -286,6 +382,7 @@ export async function discoverPiModelsWithSdk(
   const models = available.map((model) =>
     toServerProviderModel(model, { codexFastCommandAvailable, contextCommandAvailable }),
   );
+  const resources = piProviderResources(services.resourceLoader);
   const errors = [
     services.modelRuntime.getError(),
     ...services.diagnostics
@@ -294,7 +391,9 @@ export async function discoverPiModelsWithSdk(
   ].filter((message): message is string => typeof message === "string" && message.length > 0);
   const auth: ServerProviderAuth =
     available.length > 0 ? { status: "authenticated" } : { status: "unauthenticated" };
-  return errors.length > 0 ? { models, auth, error: errors.join("\n") } : { models, auth };
+  return errors.length > 0
+    ? { models, auth, ...resources, error: errors.join("\n") }
+    : { models, auth, ...resources };
 }
 
 /**
@@ -313,6 +412,8 @@ export const discoverPiModels = Effect.fn("discoverPiModels")(function* (
     catch: (cause): PiModelDiscoveryResult => ({
       models: [],
       auth: { status: "unknown" },
+      slashCommands: [],
+      skills: [],
       error: cause instanceof Error ? cause.message : String(cause),
     }),
   }).pipe(
@@ -320,6 +421,8 @@ export const discoverPiModels = Effect.fn("discoverPiModels")(function* (
       Effect.succeed<PiModelDiscoveryResult>({
         models: [],
         auth: { status: "unknown" },
+        slashCommands: [],
+        skills: [],
         error: cause instanceof Error ? cause.message : String(cause),
       }),
     ),
