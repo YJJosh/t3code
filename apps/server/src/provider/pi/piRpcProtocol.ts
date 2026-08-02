@@ -247,10 +247,10 @@ export function autoRespondToExtensionUi(
   }
 }
 
-/** Extract the plain-text delta from a Pi assistant message content array. */
+/** Extract plain text from a Pi assistant message while preserving thinking-block boundaries. */
 export function extractPiAssistantText(message: unknown): { text: string; thinking: string } {
   let text = "";
-  let thinking = "";
+  const thinkingParts: string[] = [];
   if (
     message &&
     typeof message === "object" &&
@@ -262,10 +262,14 @@ export function extractPiAssistantText(message: unknown): { text: string; thinki
       const record = part as Record<string, unknown>;
       if (record.type === "text" && typeof record.text === "string") {
         text += record.text;
-      } else if (record.type === "thinking" && typeof record.thinking === "string") {
-        thinking += record.thinking;
+      } else if (
+        record.type === "thinking" &&
+        typeof record.thinking === "string" &&
+        record.thinking.length > 0
+      ) {
+        thinkingParts.push(record.thinking);
       }
     }
   }
-  return { text, thinking };
+  return { text, thinking: thinkingParts.join("\n\n") };
 }

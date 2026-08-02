@@ -366,6 +366,17 @@ describe("makePiAdapter", () => {
           ],
         },
       });
+      yield* fake.pushFrame({
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Checking the repository first." },
+            { type: "text", text: "Hi there" },
+            { type: "thinking", thinking: "Now tracing the provider lifecycle." },
+          ],
+        },
+      });
       yield* fake.pushFrame({ type: "agent_end", willRetry: false });
       yield* fake.pushFrame({ type: "agent_settled" });
 
@@ -382,6 +393,14 @@ describe("makePiAdapter", () => {
       expect(assistantDelta).toMatchObject({
         type: "content.delta",
         payload: { streamKind: "assistant_text", delta: "Hi there" },
+      });
+      const secondReasoningDelta = yield* Queue.take(events);
+      expect(secondReasoningDelta).toMatchObject({
+        type: "content.delta",
+        payload: {
+          streamKind: "reasoning_text",
+          delta: "\n\nNow tracing the provider lifecycle.",
+        },
       });
 
       const completed = yield* takeEventOfType(events, "turn.completed");

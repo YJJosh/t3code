@@ -263,16 +263,20 @@ describe("autoRespondToExtensionUi (yolo mode)", () => {
 });
 
 describe("extractPiAssistantText", () => {
-  it("concatenates text and thinking parts of an assistant message", () => {
+  it("concatenates text and preserves paragraph boundaries between thinking blocks", () => {
     const message = {
       role: "assistant",
       content: [
-        { type: "thinking", thinking: "hmm" },
+        { type: "thinking", thinking: "First thought." },
         { type: "text", text: "Hello " },
+        { type: "thinking", thinking: "Second thought." },
         { type: "text", text: "world" },
       ],
     };
-    expect(extractPiAssistantText(message)).toEqual({ text: "Hello world", thinking: "hmm" });
+    expect(extractPiAssistantText(message)).toEqual({
+      text: "Hello world",
+      thinking: "First thought.\n\nSecond thought.",
+    });
   });
 
   it("is defensive against non-conforming payloads", () => {
