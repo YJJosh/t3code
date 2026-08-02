@@ -87,7 +87,8 @@ interface AssistantSegmentState {
 interface BufferedReasoning {
   text: string;
   createdAt: string;
-  published: boolean;
+  receivedChars: number;
+  publishedAtChars: number;
 }
 
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
@@ -101,6 +102,7 @@ const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const MAX_BUFFERED_REASONING_CHARS = 48_000;
 const MIN_LIVE_REASONING_CHARS = 32;
+const LIVE_REASONING_UPDATE_CHARS = 256;
 const OMITTED_REASONING_PREFIX = "[Earlier reasoning omitted]\n";
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -725,7 +727,8 @@ const make = Effect.gen(function* () {
   const bufferedReasoningByMessageId = yield* Cache.make<MessageId, BufferedReasoning>({
     capacity: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL,
-    lookup: () => Effect.succeed({ text: "", createdAt: "", published: false }),
+    lookup: () =>
+      Effect.succeed({ text: "", createdAt: "", receivedChars: 0, publishedAtChars: 0 }),
   });
 
   const assistantSegmentStateByTurnKey = yield* Cache.make<string, AssistantSegmentState>({
@@ -939,13 +942,17 @@ const make = Effect.gen(function* () {
           unboundedText.length <= MAX_BUFFERED_REASONING_CHARS
             ? unboundedText
             : `${OMITTED_REASONING_PREFIX}${unboundedText.slice(-retainedChars)}`;
+        const receivedChars = (existing?.receivedChars ?? 0) + delta.length;
+        const publishedAtChars = existing?.publishedAtChars ?? 0;
         const shouldPublish =
-          existing?.published !== true &&
-          (text.length >= MIN_LIVE_REASONING_CHARS || delta.includes("\n"));
+          publishedAtChars === 0
+            ? text.length >= MIN_LIVE_REASONING_CHARS || delta.includes("\n")
+            : receivedChars - publishedAtChars >= LIVE_REASONING_UPDATE_CHARS;
         const next = {
           text,
           createdAt: existing?.createdAt || createdAt,
-          published: existing?.published === true || shouldPublish,
+          receivedChars,
+          publishedAtChars: shouldPublish ? receivedChars : publishedAtChars,
         } satisfies BufferedReasoning;
         return Cache.set(bufferedReasoningByMessageId, messageId, next).pipe(
           Effect.as(shouldPublish ? next : undefined),

@@ -89,17 +89,22 @@ export function ThreadWorkLog(props: {
   const pressedBackground = colorScheme === "dark" ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.035)";
   const rows = props.activities
     .filter((activity) => !(activity.toolLike && activity.status === "neutral"))
-    .map((activity) => ({ ...activity, detail: compactActivityDetail(activity.detail) }));
+    .map((activity) => ({
+      ...activity,
+      detail: activity.reasoning
+        ? activity.detail?.trim() || null
+        : compactActivityDetail(activity.detail),
+    }));
 
   if (rows.length === 0) {
     return null;
   }
 
-  const onlyToolRows = rows.every((row) => row.toolLike);
+  const containsGeneralWorkLogRow = rows.some((row) => !row.toolLike && !row.reasoning);
 
   return (
     <View className="-mx-1 mb-1 px-1 py-0">
-      {!onlyToolRows ? (
+      {containsGeneralWorkLogRow ? (
         <Text className="px-0.5 pb-0.5 font-t3-medium text-2xs text-foreground-muted opacity-60">
           work log
         </Text>
@@ -107,6 +112,21 @@ export function ThreadWorkLog(props: {
 
       <View className="gap-px">
         {rows.map((row) => {
+          const fullReasoning = row.reasoning ? (row.getFullDetail() ?? row.detail) : null;
+          if (row.reasoning && fullReasoning) {
+            return (
+              <Animated.View
+                key={row.id}
+                {...(isFreshRow(row.createdAt) ? { entering: FadeIn.duration(200) } : {})}
+                className="min-w-0 px-1 py-1"
+              >
+                <Text selectable className="text-sm leading-relaxed text-foreground opacity-65">
+                  {fullReasoning}
+                </Text>
+              </Animated.View>
+            );
+          }
+
           const expanded = props.expandedRows[row.id] ?? false;
           const canExpand = row.canExpand;
           const fullDetail = expanded ? row.getFullDetail() : null;

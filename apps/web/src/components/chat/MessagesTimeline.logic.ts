@@ -467,6 +467,8 @@ export function deriveMessagesTimelineRows(input: {
         if (
           !nextEntry ||
           nextEntry.kind !== "work" ||
+          timelineEntry.entry.tone === "thinking" ||
+          nextEntry.entry.tone === "thinking" ||
           collapsedEntryIds.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id)
         ) {

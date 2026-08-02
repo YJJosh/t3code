@@ -993,6 +993,31 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
+    const continuedReasoning = ` ${"Continuing the live reasoning. ".repeat(10)}`;
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta-continued"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("item-reasoning"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: continuedReasoning,
+      },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => {
+        if (activity.id !== reasoningActivityId || typeof activity.payload !== "object") {
+          return false;
+        }
+        return (activity.payload as { detail?: unknown }).detail
+          ?.toString()
+          .endsWith(continuedReasoning);
+      }),
+    );
+
     harness.emit({
       type: "content.delta",
       eventId: asEventId("evt-reasoning-delta-final"),
@@ -1039,7 +1064,7 @@ describe("ProviderRuntimeIngestion", () => {
       tone: "info",
       turnId: "turn-reasoning",
       payload: {
-        detail: "Inspecting the provider. The lifecycle is settled. Final check.",
+        detail: `Inspecting the provider. The lifecycle is settled.${continuedReasoning} Final check.`,
         reasoning: true,
       },
     });

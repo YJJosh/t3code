@@ -53,6 +53,7 @@ export interface ThreadFeedActivity {
     | "wrench"
     | "zap";
   readonly toolLike: boolean;
+  readonly reasoning?: boolean;
   readonly status: "success" | "failure" | "neutral" | null;
 }
 
@@ -972,7 +973,12 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
     }
 
     const previous = grouped.at(-1);
-    if (previous?.type === "activity-group" && previous.turnId === entry.turnId) {
+    if (
+      previous?.type === "activity-group" &&
+      previous.turnId === entry.turnId &&
+      !entry.activity.reasoning &&
+      !previous.activities.some((activity) => activity.reasoning)
+    ) {
       grouped[grouped.length - 1] = {
         ...previous,
         activities: [...previous.activities, entry.activity],
@@ -1404,6 +1410,7 @@ export function buildThreadFeed(
               getCopyText,
               icon: workEntryIcon(entry),
               toolLike: entry.tone !== "thinking" && workLogEntryIsToolLike(entry),
+              reasoning: entry.tone === "thinking",
               status: workEntryStatus(entry),
             },
           };

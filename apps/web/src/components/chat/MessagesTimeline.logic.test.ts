@@ -276,6 +276,17 @@ describe("deriveMessagesTimelineRows", () => {
             tone: "thinking",
           },
         },
+        {
+          id: "tool-entry",
+          kind: "work",
+          createdAt: "2026-08-02T00:00:01Z",
+          entry: {
+            id: "tool-1",
+            createdAt: "2026-08-02T00:00:01Z",
+            label: "Read package.json",
+            tone: "tool",
+          },
+        },
       ],
       isWorking: false,
       activeTurnStartedAt: null,
@@ -287,6 +298,10 @@ describe("deriveMessagesTimelineRows", () => {
       {
         kind: "work",
         groupedEntries: [{ id: "reasoning-1", tone: "thinking" }],
+      },
+      {
+        kind: "work",
+        groupedEntries: [{ id: "tool-1", tone: "tool" }],
       },
     ]);
   });

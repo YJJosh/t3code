@@ -528,7 +528,9 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Work Log");
   });
 
-  it("renders provider thinking rows with expandable reasoning text", () => {
+  it("renders complete provider reasoning inline without a disclosure row", () => {
+    const reasoning =
+      "Inspecting the provider lifecycle.\n\nThe complete reasoning remains visible through its final sentence.";
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -541,7 +543,7 @@ describe("MessagesTimeline", () => {
               id: "reasoning-1",
               createdAt: "2026-08-02T00:00:00.000Z",
               label: "Thinking",
-              detail: "Inspecting the provider lifecycle.",
+              detail: reasoning,
               tone: "thinking",
             },
           },
@@ -549,9 +551,12 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Thinking");
     expect(markup).toContain("Inspecting the provider lifecycle.");
-    expect(markup).toContain("Work Log");
+    expect(markup).toContain("The complete reasoning remains visible through its final sentence.");
+    expect(markup).toContain("text-foreground/65");
+    expect(markup).not.toContain("Thinking");
+    expect(markup).not.toContain("Work Log");
+    expect(markup).not.toContain("aria-expanded");
   });
 
   it("formats changed file paths from the workspace root", () => {

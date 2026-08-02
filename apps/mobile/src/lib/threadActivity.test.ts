@@ -135,6 +135,7 @@ describe("buildThreadFeed", () => {
             detail: "Inspecting the provider lifecycle.",
             icon: "agent",
             toolLike: false,
+            reasoning: true,
           },
         ],
       },
@@ -149,6 +150,45 @@ describe("buildThreadFeed", () => {
       },
     ]);
     expect(buildThreadFeed(thread, { showAgentReasoning: false })).toEqual([]);
+  });
+
+  it("keeps reasoning outside adjacent tool groups", () => {
+    const turnId = TurnId.make("turn-reasoning-tools");
+    const thread = makeThread({
+      id: ThreadId.make("thread-reasoning-tools"),
+      projectId: ProjectId.make("project-1"),
+      title: "Reasoning and tools",
+      activities: [
+        makeActivity({
+          id: EventId.make("reasoning-before-tool"),
+          kind: "reasoning",
+          summary: "Thinking",
+          createdAt: "2026-08-02T00:00:00.000Z",
+          turnId,
+          payload: { detail: "Inspecting the provider lifecycle.", reasoning: true },
+        }),
+        makeActivity({
+          id: EventId.make("tool-after-reasoning"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Read package.json completed",
+          createdAt: "2026-08-02T00:00:01.000Z",
+          turnId,
+          payload: { title: "Read package.json", itemType: "dynamic_tool_call" },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toMatchObject([
+      {
+        type: "activity-group",
+        activities: [{ reasoning: true }],
+      },
+      {
+        type: "activity-group",
+        activities: [{ reasoning: false }],
+      },
+    ]);
   });
 
   it("collapses matching tool lifecycle rows like desktop", () => {

@@ -1154,7 +1154,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
+  const ctx = use(TimelineRowCtx);
   const nonEmptyEntries = useMemo(
     () => groupedEntries.filter(workLogEntryShouldRender),
     [groupedEntries],
@@ -1162,29 +1162,46 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const onlyToolEntries = nonEmptyEntries.every(
     (entry) => entry.tone !== "thinking" && workLogEntryIsToolLike(entry),
   );
+  const containsGeneralWorkLogEntry = nonEmptyEntries.some(
+    (entry) => entry.tone !== "thinking" && !workLogEntryIsToolLike(entry),
+  );
   const groupLabel = onlyToolEntries
     ? nonEmptyEntries.length === 1
       ? "1 tool call"
       : `${nonEmptyEntries.length} tool calls`
-    : "Work Log";
+    : nonEmptyEntries.every((entry) => entry.tone === "thinking")
+      ? "Agent reasoning"
+      : "Work Log";
 
   if (nonEmptyEntries.length === 0) return null;
 
   return (
     <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label={groupLabel}>
-      {!onlyToolEntries && (
+      {containsGeneralWorkLogEntry ? (
         <p className="px-0.5 pb-0.5 font-medium text-[11px] text-muted-foreground/65">
           {groupLabel}
         </p>
-      )}
+      ) : null}
       <div className="space-y-px">
-        {nonEmptyEntries.map((workEntry) => (
-          <SimpleWorkEntryRow
-            key={workEntry.id}
-            workEntry={workEntry}
-            workspaceRoot={workspaceRoot}
-          />
-        ))}
+        {nonEmptyEntries.map((workEntry) =>
+          workEntry.tone === "thinking" ? (
+            <div key={workEntry.id} className="min-w-0 px-1 py-0.5 select-text">
+              <ChatMarkdown
+                text={workEntry.detail?.trim() || workEntry.label}
+                cwd={ctx.markdownCwd}
+                threadRef={ctx.threadRef ?? undefined}
+                skills={ctx.skills}
+                className="text-foreground/65"
+              />
+            </div>
+          ) : (
+            <SimpleWorkEntryRow
+              key={workEntry.id}
+              workEntry={workEntry}
+              workspaceRoot={ctx.workspaceRoot}
+            />
+          ),
+        )}
       </div>
     </section>
   );
