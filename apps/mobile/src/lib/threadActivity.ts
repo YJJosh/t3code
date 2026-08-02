@@ -1410,7 +1410,7 @@ export function buildThreadFeed(
               getCopyText,
               icon: workEntryIcon(entry),
               toolLike: entry.tone !== "thinking" && workLogEntryIsToolLike(entry),
-              reasoning: entry.tone === "thinking",
+              reasoning: entry.activityKind === "reasoning",
               status: workEntryStatus(entry),
             },
           };

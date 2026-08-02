@@ -29,6 +29,7 @@ import {
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
+  workLogEntryIsReasoning,
   workLogEntryIsToolLike,
   workLogEntryShouldRender,
 } from "../../session-logic";
@@ -1163,13 +1164,15 @@ const WorkGroupSection = memo(function WorkGroupSection({
     (entry) => entry.tone !== "thinking" && workLogEntryIsToolLike(entry),
   );
   const containsGeneralWorkLogEntry = nonEmptyEntries.some(
-    (entry) => entry.tone !== "thinking" && !workLogEntryIsToolLike(entry),
+    (entry) =>
+      !workLogEntryIsReasoning(entry) &&
+      (entry.tone === "thinking" || !workLogEntryIsToolLike(entry)),
   );
   const groupLabel = onlyToolEntries
     ? nonEmptyEntries.length === 1
       ? "1 tool call"
       : `${nonEmptyEntries.length} tool calls`
-    : nonEmptyEntries.every((entry) => entry.tone === "thinking")
+    : nonEmptyEntries.every(workLogEntryIsReasoning)
       ? "Agent reasoning"
       : "Work Log";
 
@@ -1184,7 +1187,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
       ) : null}
       <div className="space-y-px">
         {nonEmptyEntries.map((workEntry) =>
-          workEntry.tone === "thinking" ? (
+          workLogEntryIsReasoning(workEntry) ? (
             <div key={workEntry.id} className="min-w-0 px-1 py-0.5 select-text">
               <ChatMarkdown
                 text={workEntry.detail?.trim() || workEntry.label}

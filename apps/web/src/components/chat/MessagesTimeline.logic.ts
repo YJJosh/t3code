@@ -2,6 +2,7 @@ import * as Equal from "effect/Equal";
 import {
   formatDuration,
   workLogEntryShouldRender,
+  workLogEntryIsReasoning,
   workLogEntryIsToolLike,
   type TimelineEntry,
   type WorkLogEntry,
@@ -467,8 +468,8 @@ export function deriveMessagesTimelineRows(input: {
         if (
           !nextEntry ||
           nextEntry.kind !== "work" ||
-          timelineEntry.entry.tone === "thinking" ||
-          nextEntry.entry.tone === "thinking" ||
+          workLogEntryIsReasoning(timelineEntry.entry) ||
+          workLogEntryIsReasoning(nextEntry.entry) ||
           collapsedEntryIds.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id)
         ) {

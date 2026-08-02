@@ -140,6 +140,10 @@ export type TimelineEntry =
       entry: WorkLogEntry;
     };
 
+export function workLogEntryIsReasoning(entry: WorkLogEntry): boolean {
+  return entry.sourceActivityKind === "reasoning";
+}
+
 export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") {
     return true;

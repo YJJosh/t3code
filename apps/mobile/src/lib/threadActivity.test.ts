@@ -152,6 +152,31 @@ describe("buildThreadFeed", () => {
     expect(buildThreadFeed(thread, { showAgentReasoning: false })).toEqual([]);
   });
 
+  it("does not present task progress as provider reasoning", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-task-progress"),
+      projectId: ProjectId.make("project-1"),
+      title: "Task progress",
+      activities: [
+        makeActivity({
+          id: EventId.make("task-progress"),
+          kind: "task.progress",
+          summary: "Inspecting lifecycle files",
+          createdAt: "2026-08-02T00:00:00.000Z",
+          turnId: TurnId.make("turn-task-progress"),
+          payload: { detail: "Reading the provider implementation." },
+        }),
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toMatchObject([
+      {
+        type: "activity-group",
+        activities: [{ summary: "Reading the provider implementation.", reasoning: false }],
+      },
+    ]);
+  });
+
   it("keeps reasoning outside adjacent tool groups", () => {
     const turnId = TurnId.make("turn-reasoning-tools");
     const thread = makeThread({

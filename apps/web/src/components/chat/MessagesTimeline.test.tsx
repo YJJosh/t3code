@@ -545,6 +545,7 @@ describe("MessagesTimeline", () => {
               label: "Thinking",
               detail: reasoning,
               tone: "thinking",
+              sourceActivityKind: "reasoning",
             },
           },
         ]}
@@ -557,6 +558,34 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Thinking");
     expect(markup).not.toContain("Work Log");
     expect(markup).not.toContain("aria-expanded");
+  });
+
+  it("keeps task progress in the normal work-log presentation", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "task-progress-entry",
+            kind: "work",
+            createdAt: "2026-08-02T00:00:00.000Z",
+            entry: {
+              id: "task-progress-1",
+              createdAt: "2026-08-02T00:00:00.000Z",
+              label: "Inspecting lifecycle files",
+              detail: "Reading the provider implementation.",
+              tone: "thinking",
+              sourceActivityKind: "task.progress",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Inspecting lifecycle files");
+    expect(markup).toContain("Reading the provider implementation.");
+    expect(markup).toContain("Work Log");
+    expect(markup).not.toContain("Agent reasoning");
   });
 
   it("formats changed file paths from the workspace root", () => {

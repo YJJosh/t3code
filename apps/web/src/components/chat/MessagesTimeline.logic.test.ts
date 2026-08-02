@@ -274,6 +274,7 @@ describe("deriveMessagesTimelineRows", () => {
             label: "Thinking",
             detail: "Inspecting the provider lifecycle.",
             tone: "thinking",
+            sourceActivityKind: "reasoning",
           },
         },
         {
