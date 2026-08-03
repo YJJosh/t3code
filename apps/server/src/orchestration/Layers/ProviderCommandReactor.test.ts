@@ -306,6 +306,7 @@ describe("ProviderCommandReactor", () => {
     ];
 
     const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
+    const namedThreadSessions: Array<{ threadId: ThreadId; name: string }> = [];
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
@@ -338,6 +339,7 @@ describe("ProviderCommandReactor", () => {
         });
       },
       rollbackConversation: () => unsupported(),
+      nameThreadSession: (input) => Effect.sync(() => namedThreadSessions.push(input)),
       controlSubagent: () => unsupported(),
       controlBackgroundTerminal: () => unsupported(),
       streamSubagentEvents: Stream.empty,
@@ -447,6 +449,7 @@ describe("ProviderCommandReactor", () => {
       generateBranchName,
       generateThreadTitle,
       runtimeSessions,
+      namedThreadSessions,
       stateDir,
       drain,
     };
@@ -491,6 +494,60 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
+
+  effectIt.effect("labels the provider session with the thread title on start and rename", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const now = "2026-01-01T00:00:00.000Z";
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-label"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-label"),
+          role: "user",
+          text: "hello reactor",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      });
+
+      // The harness thread already carries a real title, so the freshly
+      // started session is labeled immediately.
+      yield* Effect.promise(() => waitFor(() => harness.startSession.mock.calls.length === 1));
+      yield* Effect.promise(() => waitFor(() => harness.namedThreadSessions.length === 1));
+      expect(harness.namedThreadSessions[0]).toEqual({
+        threadId: ThreadId.make("thread-1"),
+        name: "Thread",
+      });
+
+      yield* harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-rename-label"),
+        threadId: ThreadId.make("thread-1"),
+        title: "Investigate flaky login",
+      });
+
+      yield* Effect.promise(() => waitFor(() => harness.namedThreadSessions.length === 2));
+      expect(harness.namedThreadSessions[1]).toEqual({
+        threadId: ThreadId.make("thread-1"),
+        name: "Investigate flaky login",
+      });
+
+      // A rename to the placeholder title must not relabel the provider session.
+      yield* harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-rename-default"),
+        threadId: ThreadId.make("thread-1"),
+        title: "New thread",
+      });
+      yield* Effect.promise(() => harness.drain());
+      expect(harness.namedThreadSessions).toHaveLength(2);
+    }),
+  );
 
   effectIt.effect("projects starting before a slow provider session finishes", () =>
     Effect.gen(function* () {

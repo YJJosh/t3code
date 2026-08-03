@@ -794,6 +794,31 @@ describe("makePiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
+  it.effect("nameSession labels the live Pi session via set_session_name", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const threadId = ThreadId.make("55555555-5555-4555-8555-555555555555");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+
+      yield* adapter.nameSession!(threadId, "  Fix login flow  ");
+      expect(fake.written).toContainEqual(
+        expect.objectContaining({ type: "set_session_name", name: "Fix login flow" }),
+      );
+
+      const emptyName = yield* adapter.nameSession!(threadId, "   ").pipe(Effect.flip);
+      expect(emptyName._tag).toBe("ProviderAdapterValidationError");
+
+      const unknownThread = yield* adapter.nameSession!(
+        ThreadId.make("66666666-6666-4666-8666-666666666666"),
+        "Untracked",
+      ).pipe(Effect.flip);
+      expect(unknownThread._tag).toBe("ProviderAdapterSessionNotFoundError");
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
   it.effect("streams structured subagent events and sends direct replay controls", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi();

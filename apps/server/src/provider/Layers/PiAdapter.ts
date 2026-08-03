@@ -1454,6 +1454,20 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }
       });
 
+    const nameSession: NonNullable<PiAdapterShape["nameSession"]> = (threadId, name) =>
+      Effect.gen(function* () {
+        const trimmed = name.trim();
+        if (!trimmed) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "nameSession",
+            issue: "Session name must be non-empty.",
+          });
+        }
+        const ctx = yield* requireSession(threadId);
+        yield* request(ctx, { type: "set_session_name", name: trimmed });
+      });
+
     const stopAll: PiAdapterShape["stopAll"] = () =>
       Effect.forEach(Array.from(sessions.values()), stopSessionInternal, { discard: true });
 
@@ -1488,6 +1502,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       hasSession,
       readThread,
       rollbackThread,
+      nameSession,
       stopAll,
       streamEvents,
     } satisfies PiAdapterShape;

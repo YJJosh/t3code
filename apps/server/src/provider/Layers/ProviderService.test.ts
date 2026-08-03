@@ -200,11 +200,16 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       }),
   );
 
+  const nameSession = vi.fn(
+    (_threadId: ThreadId, _name: string): Effect.Effect<void, ProviderAdapterError> => Effect.void,
+  );
+
   const adapter: ProviderAdapterShape<ProviderAdapterError> = {
     provider,
     capabilities: {
       sessionModelSwitch: "in-session",
     },
+    nameSession,
     startSession,
     sendTurn,
     interruptTurn,
@@ -251,6 +256,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     readThread,
     rollbackThread,
     stopAll,
+    nameSession,
   };
 }
 
@@ -925,6 +931,39 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, session.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("labels only live sessions via nameThreadSession and never recovers for it", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      routing.codex.nameSession.mockClear();
+
+      // Unknown thread: no persisted binding to route through.
+      const unbound = yield* provider
+        .nameThreadSession({ threadId: asThreadId("thread-name-unbound"), name: "Orphan" })
+        .pipe(Effect.flip);
+      assert.equal(unbound._tag, "ProviderValidationError");
+
+      const session = yield* provider.startSession(asThreadId("thread-name-1"), {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        threadId: asThreadId("thread-name-1"),
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      yield* provider.nameThreadSession({ threadId: session.threadId, name: "Fix login flow" });
+      assert.deepEqual(routing.codex.nameSession.mock.calls, [
+        [session.threadId, "Fix login flow"],
+      ]);
+
+      // A stopped session is skipped instead of recovered just for a label.
+      yield* provider.stopSession({ threadId: session.threadId });
+      routing.codex.startSession.mockClear();
+      routing.codex.nameSession.mockClear();
+      yield* provider.nameThreadSession({ threadId: session.threadId, name: "Renamed later" });
+      assert.equal(routing.codex.nameSession.mock.calls.length, 0);
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
     }),
   );
 

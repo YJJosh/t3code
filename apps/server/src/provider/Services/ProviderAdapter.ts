@@ -80,6 +80,14 @@ export interface ProviderAdapterShape<TError> {
   readonly backgroundTerminals?: ProviderBackgroundTerminalAdapter<TError>;
 
   /**
+   * Optionally label the provider-native session backing a thread (e.g. Pi's
+   * `set_session_name`) so the conversation stays recognizable in the
+   * provider's own tooling outside T3. Adapters whose providers have no native
+   * session label omit this.
+   */
+  readonly nameSession?: (threadId: ThreadId, name: string) => Effect.Effect<void, TError>;
+
+  /**
    * Start a provider-backed session.
    */
   readonly startSession: (

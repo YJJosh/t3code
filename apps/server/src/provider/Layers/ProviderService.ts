@@ -1068,6 +1068,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const nameThreadSession: ProviderServiceMethod<"nameThreadSession"> = Effect.fn(
+    "nameThreadSession",
+  )(function* (input) {
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.nameThreadSession",
+      allowRecovery: false,
+    });
+    // Naming is a label sync, never a reason to spin up or recover a session;
+    // callers re-apply the label when the next session starts.
+    if (!routed.isActive || routed.adapter.nameSession === undefined) {
+      return;
+    }
+    yield* routed.adapter.nameSession(routed.threadId, input.name);
+  });
+
   const controlSubagent: ProviderServiceMethod<"controlSubagent"> = Effect.fn("controlSubagent")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1183,6 +1199,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
+    nameThreadSession,
     controlSubagent,
     get streamSubagentEvents(): ProviderServiceMethod<"streamSubagentEvents"> {
       return Stream.fromPubSub(subagentEventPubSub);
