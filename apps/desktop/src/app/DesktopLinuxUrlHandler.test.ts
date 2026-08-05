@@ -22,6 +22,7 @@ const makeEnvironment = (overrides: Record<string, unknown> = {}) =>
     platform: "linux",
     isPackaged: true,
     isDevelopment: false,
+    isDulli: false,
     displayName: "T3 Code (Alpha)",
     linuxWmClass: "t3code",
     linuxApplicationsDir: "/home/alice/.local/share/applications",
@@ -190,15 +191,17 @@ describe("DesktopLinuxUrlHandler", () => {
     });
   });
 
-  it.effect("does nothing on other platforms or unpackaged builds", () => {
+  it.effect("does nothing on other platforms, unpackaged builds, or Dulli builds", () => {
     const nonLinux = emptyRecording();
     const unpackaged = emptyRecording();
+    const dulli = emptyRecording();
 
     return Effect.gen(function* () {
       yield* runRegister(nonLinux, { environment: { platform: "darwin" } });
       yield* runRegister(unpackaged, { environment: { isPackaged: false } });
+      yield* runRegister(dulli, { environment: { isDulli: true } });
 
-      for (const recorded of [nonLinux, unpackaged]) {
+      for (const recorded of [nonLinux, unpackaged, dulli]) {
         assert.deepEqual(recorded.directories, []);
         assert.deepEqual(recorded.files, []);
         assert.deepEqual(recorded.commands, []);
