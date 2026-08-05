@@ -10,13 +10,13 @@
  */
 import { PiSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { makePiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
@@ -44,7 +44,6 @@ import {
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
 const DRIVER_KIND = ProviderDriverKind.make("pi");
-const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 const UPDATE = makeStaticProviderMaintenanceResolver(
   makeManualOnlyProviderMaintenanceCapabilities({
     provider: DRIVER_KIND,
@@ -53,6 +52,7 @@ const UPDATE = makeStaticProviderMaintenanceResolver(
 );
 
 export type PiDriverEnv =
+  | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
@@ -129,7 +129,6 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         initialSnapshot: (settings) =>
           buildInitialPiProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity)),
         checkProvider,
-        refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
         Effect.mapError(
           (cause) =>

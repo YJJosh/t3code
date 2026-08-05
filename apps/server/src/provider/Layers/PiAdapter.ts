@@ -85,7 +85,7 @@ import {
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
-const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const CLAUDE_AGENT_SDK_RPC_BRIDGE_ENV = "CLAUDE_AGENT_SDK_RPC_BRIDGE";
 const CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX = "claude-agent-sdk:tool-lifecycle:v1:";
 const TOOL_UPDATE_MIN_INTERVAL_NANOS = 1_000_000_000n;
