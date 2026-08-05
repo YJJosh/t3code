@@ -136,21 +136,25 @@ jobs:
             platform: mac
             target: dmg
             arch: arm64
+            rust_target: aarch64-apple-darwin
           - label: macOS x64
             runner: macos-14
             platform: mac
             target: dmg
             arch: x64
+            rust_target: x86_64-apple-darwin
           - label: Linux x64
             runner: ubuntu-24.04
             platform: linux
             target: AppImage
             arch: x64
+            rust_target: x86_64-unknown-linux-gnu
           - label: Windows x64
             runner: windows-2025
             platform: win
             target: nsis
             arch: x64
+            rust_target: x86_64-pc-windows-msvc
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       T3CODE_DESKTOP_UPDATE_REPOSITORY: YJJosh/t3code
@@ -167,6 +171,11 @@ jobs:
           node-version-file: package.json
           cache: true
           run-install: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Align package versions
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"

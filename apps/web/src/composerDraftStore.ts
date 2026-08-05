@@ -1342,8 +1342,8 @@ function createDraftThreadState(
 ): DraftThreadState {
   // A project change (including switching environments within a logical
   // project) invalidates machine-specific context: the branch may not exist
-  // there and the worktree path certainly doesn't. The user's intent — env
-  // mode and start-from-origin — is machine-independent and carries.
+  // there and the worktree path certainly doesn't. The user's *intent* —
+  // env mode and start-from-origin — is machine-independent and carries.
   const projectChanged =
     existingThread !== undefined &&
     (existingThread.environmentId !== projectRef.environmentId ||
@@ -2341,8 +2341,8 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return state;
             }
             // Mirrors createDraftThreadState: a project/environment change
-            // drops machine-specific context (branch, worktree path) but keeps
-            // the user's env mode and start-from-origin intent.
+            // drops machine-specific context (branch, worktree path) but
+            // keeps the user's env mode and start-from-origin intent.
             const projectChanged =
               nextProjectRef.environmentId !== existing.environmentId ||
               nextProjectRef.projectId !== existing.projectId;

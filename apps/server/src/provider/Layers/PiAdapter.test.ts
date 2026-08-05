@@ -28,9 +28,10 @@ import {
 import { makePiAdapter, splitPiModelSlug } from "./PiAdapter.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
-const decodeUnknownJsonString = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
-const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
-const encodeUnknownJsonStringSync = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
+const decodeUnknownJsonString = Schema.decodeUnknownSync(UnknownFromJsonString);
+const encodeUnknownJsonString = Schema.encodeUnknownEffect(UnknownFromJsonString);
+const encodeUnknownJsonStringSync = Schema.encodeUnknownSync(UnknownFromJsonString);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX = "claude-agent-sdk:tool-lifecycle:v1:";
