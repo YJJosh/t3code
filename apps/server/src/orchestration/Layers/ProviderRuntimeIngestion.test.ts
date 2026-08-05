@@ -121,6 +121,7 @@ function createProviderServiceHarness() {
       });
     },
     rollbackConversation: () => unsupported(),
+    nameThreadSession: () => Effect.void,
     controlSubagent: () => unsupported(),
     controlBackgroundTerminal: () => unsupported(),
     streamSubagentEvents: Stream.empty,

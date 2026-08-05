@@ -56,7 +56,8 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
-      | "thread.session-stop-requested";
+      | "thread.session-stop-requested"
+      | "thread.meta-updated";
   }
 >;
 
@@ -344,6 +345,28 @@ const make = Effect.gen(function* () {
     });
   });
 
+  // Keep the provider-native session label (e.g. Pi's session name shown by
+  // `pi -r`) in sync with the T3 thread title, so conversations stay
+  // recognizable in the provider's own tooling. Always best-effort: a thread
+  // without a live session or a label-less provider is not an error.
+  const syncThreadTitleToProviderSession = Effect.fn("syncThreadTitleToProviderSession")(function* (
+    threadId: ThreadId,
+    title: string,
+  ) {
+    const trimmed = title.trim();
+    if (!trimmed || trimmed === DEFAULT_THREAD_TITLE) {
+      return;
+    }
+    yield* providerService.nameThreadSession({ threadId, name: trimmed }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logDebug("provider command reactor could not label the provider session", {
+          threadId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+  });
+
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
@@ -590,11 +613,13 @@ const make = Effect.gen(function* () {
         cwd: restartedSession.cwd,
       });
       yield* bindSessionToThread(restartedSession);
+      yield* syncThreadTitleToProviderSession(threadId, thread.title);
       return restartedSession.threadId;
     }
 
     const startedSession = yield* startProviderSession(undefined);
     yield* bindSessionToThread(startedSession);
+    yield* syncThreadTitleToProviderSession(threadId, thread.title);
     return startedSession.threadId;
   });
 
@@ -1066,6 +1091,11 @@ const make = Effect.gen(function* () {
       case "thread.session-stop-requested":
         yield* processSessionStopRequested(event);
         return;
+      case "thread.meta-updated":
+        if (event.payload.title !== undefined) {
+          yield* syncThreadTitleToProviderSession(event.payload.threadId, event.payload.title);
+        }
+        return;
     }
   });
 
@@ -1092,7 +1122,8 @@ const make = Effect.gen(function* () {
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
-        event.type === "thread.session-stop-requested"
+        event.type === "thread.session-stop-requested" ||
+        event.type === "thread.meta-updated"
       ) {
         return yield* worker.enqueue(event);
       }

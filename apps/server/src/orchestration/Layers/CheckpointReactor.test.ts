@@ -123,6 +123,7 @@ function createProviderServiceHarness(
         },
       }),
     rollbackConversation,
+    nameThreadSession: () => Effect.void,
     controlSubagent: () => unsupported(),
     streamSubagentEvents: Stream.empty,
     controlBackgroundTerminal: () => unsupported(),

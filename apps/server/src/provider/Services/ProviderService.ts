@@ -111,6 +111,17 @@ export interface ProviderServiceShape {
     readonly numTurns: number;
   }) => Effect.Effect<void, ProviderServiceError>;
 
+  /**
+   * Label the provider-native session backing a thread.
+   *
+   * No-op when the bound adapter has no native session label or when the
+   * thread has no live session (the label is re-applied on the next start).
+   */
+  readonly nameThreadSession: (input: {
+    readonly threadId: ThreadId;
+    readonly name: string;
+  }) => Effect.Effect<void, ProviderServiceError>;
+
   /** Route an immediate control to the child-agent integration for a thread. */
   readonly controlSubagent: (
     input: PiSubagentControlInput,
