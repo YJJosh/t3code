@@ -34,6 +34,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -87,6 +88,9 @@ const PROVIDER = ProviderDriverKind.make("pi");
 const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 const CLAUDE_AGENT_SDK_RPC_BRIDGE_ENV = "CLAUDE_AGENT_SDK_RPC_BRIDGE";
 const CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX = "claude-agent-sdk:tool-lifecycle:v1:";
+const TOOL_UPDATE_MIN_INTERVAL_NANOS = 1_000_000_000n;
+const TOOL_UPDATE_SUMMARY_MAX_CHARS = 4_000;
+const TOOL_UPDATE_TRUNCATION_MARKER = "…[truncated]\n";
 
 export interface PiAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
@@ -108,6 +112,8 @@ interface PiSessionContext {
   reasoningText: string;
   /** Pi only repeats tool args on start/update; retain them for the final result. */
   toolArgsByCallId: Map<string, unknown>;
+  /** Last persisted progress time per tool; Pi progress payloads are cumulative. */
+  toolUpdateEmittedAtByCallId: Map<string, bigint>;
   /** The most recent low-level run outcome, finalized only by agent_settled. */
   lastAgentEndOutcome:
     | {
@@ -644,6 +650,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // for cached arguments, so no interrupted call can leak into the next
         // turn or accumulate for the lifetime of the Pi process.
         ctx.toolArgsByCallId.clear();
+        ctx.toolUpdateEmittedAtByCallId.clear();
         yield* emit({
           type: "turn.completed",
           ...(yield* makeStamp()),
@@ -690,16 +697,60 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             }),
           );
 
+    const boundedToolUpdateTail = (
+      value: string,
+      omittedEarlierText = false,
+    ): string | undefined => {
+      const contentBudget = omittedEarlierText
+        ? TOOL_UPDATE_SUMMARY_MAX_CHARS - TOOL_UPDATE_TRUNCATION_MARKER.length
+        : TOOL_UPDATE_SUMMARY_MAX_CHARS;
+      const start = Math.max(0, value.length - contentBudget);
+      const truncated = omittedEarlierText || start > 0;
+      let tail = value.slice(start).trim();
+      if (!tail) return undefined;
+      if (!truncated) return tail;
+      const truncatedContentBudget =
+        TOOL_UPDATE_SUMMARY_MAX_CHARS - TOOL_UPDATE_TRUNCATION_MARKER.length;
+      if (tail.length > truncatedContentBudget) {
+        tail = tail.slice(tail.length - truncatedContentBudget);
+      }
+      return `${TOOL_UPDATE_TRUNCATION_MARKER}${tail}`;
+    };
+
     const toolResultSummary = (result: unknown): string | undefined => {
       if (!isRecord(result)) return undefined;
-      if (typeof result.error === "string" && result.error.trim()) return result.error;
-      if (typeof result.content === "string" && result.content.trim()) return result.content.trim();
+      if (typeof result.error === "string") {
+        return boundedToolUpdateTail(result.error);
+      }
+      if (typeof result.content === "string") {
+        return boundedToolUpdateTail(result.content);
+      }
       if (!Array.isArray(result.content)) return undefined;
-      const text = result.content
-        .flatMap((part) => (isRecord(part) && typeof part.text === "string" ? [part.text] : []))
-        .join("")
-        .trim();
-      return text || undefined;
+
+      const chunks: string[] = [];
+      let remaining = TOOL_UPDATE_SUMMARY_MAX_CHARS;
+      let index = result.content.length - 1;
+      for (; index >= 0 && remaining > 0; index -= 1) {
+        const part = result.content[index];
+        if (!isRecord(part) || typeof part.text !== "string" || part.text.length === 0) continue;
+        if (part.text.length > remaining) {
+          chunks.push(part.text.slice(part.text.length - remaining));
+          remaining = 0;
+          break;
+        }
+        chunks.push(part.text);
+        remaining -= part.text.length;
+      }
+      let omittedEarlierText = false;
+      for (; index >= 0; index -= 1) {
+        const part = result.content[index];
+        if (isRecord(part) && typeof part.text === "string" && part.text.length > 0) {
+          omittedEarlierText = true;
+          break;
+        }
+      }
+      if (chunks.length === 0) return undefined;
+      return boundedToolUpdateTail(chunks.toReversed().join(""), omittedEarlierText);
     };
 
     const handleToolEvent = (
@@ -708,19 +759,43 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       message: Record<string, unknown>,
     ) =>
       Effect.gen(function* () {
-        const toolCallId =
-          typeof message.toolCallId === "string" ? message.toolCallId : yield* randomUUIDv4;
+        const suppliedToolCallId =
+          typeof message.toolCallId === "string" ? message.toolCallId : undefined;
+        // A random fallback would let every malformed progress frame bypass the
+        // per-call throttle. Starts/completions remain observable, but an
+        // uncorrelatable intermediate update is not useful.
+        if (lifecycle === "item.updated" && suppliedToolCallId === undefined) return;
+        const toolCallId = suppliedToolCallId ?? (yield* randomUUIDv4);
         if ("args" in message) ctx.toolArgsByCallId.set(toolCallId, message.args);
+        if (lifecycle === "item.updated") {
+          const now = yield* Clock.currentTimeNanos;
+          const lastEmittedAt = ctx.toolUpdateEmittedAtByCallId.get(toolCallId);
+          if (lastEmittedAt !== undefined && now - lastEmittedAt < TOOL_UPDATE_MIN_INTERVAL_NANOS) {
+            return;
+          }
+          ctx.toolUpdateEmittedAtByCallId.set(toolCallId, now);
+        }
         const args = ctx.toolArgsByCallId.get(toolCallId);
         const result = lifecycle === "item.completed" ? message.result : undefined;
         const partialResult = lifecycle === "item.updated" ? message.partialResult : undefined;
         const summary = toolResultSummary(partialResult) ?? toolResultSummary(result);
+        // Pi sends the entire accumulated tool result on every progress frame.
+        // Persist only the bounded display summary for intermediate updates;
+        // the final item.completed event retains the structured result once.
+        const projectedPartialResult =
+          partialResult === undefined ? undefined : (summary ?? "Tool output updated.");
         const itemId = RuntimeItemId.make(toolCallId);
         const turnId = ctx.activeTurnId;
         const itemType = toolItemType((message as PiToolMeta).toolName);
         const isError = message.isError === true;
         const status =
           lifecycle === "item.completed" ? (isError ? "failed" : "completed") : "inProgress";
+        if (lifecycle === "item.completed") {
+          // Capture args/result above, then release per-call state before the
+          // first publish yield so interruption cannot strand this call's data.
+          ctx.toolArgsByCallId.delete(toolCallId);
+          ctx.toolUpdateEmittedAtByCallId.delete(toolCallId);
+        }
         yield* emit({
           type: lifecycle,
           ...(yield* makeStamp()),
@@ -736,7 +811,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             data: {
               toolCallId,
               ...(args !== undefined ? { args } : {}),
-              ...(partialResult !== undefined ? { partialResult } : {}),
+              ...(projectedPartialResult !== undefined
+                ? { partialResult: projectedPartialResult }
+                : {}),
               ...(result !== undefined ? { result } : {}),
               ...(isRecord(message.providerMetadata)
                 ? { providerMetadata: message.providerMetadata }
@@ -758,7 +835,6 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             ...(summary ? { summary } : {}),
           },
         });
-        if (lifecycle === "item.completed") ctx.toolArgsByCallId.delete(toolCallId);
       });
 
     const handlePiMessage = (ctx: PiSessionContext) => (message: unknown) =>
@@ -1050,6 +1126,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           assistantText: "",
           reasoningText: "",
           toolArgsByCallId: new Map(),
+          toolUpdateEmittedAtByCallId: new Map(),
           lastAgentEndOutcome: undefined,
           terminalFailure: undefined,
           interruptRequested: false,

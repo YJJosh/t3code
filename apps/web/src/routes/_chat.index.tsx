@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { LinkIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
@@ -15,8 +16,10 @@ import {
   useThreadShells,
 } from "../state/entities";
 import { useEnvironments } from "../state/environments";
+import { primaryServerConfigAtom } from "../state/server";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
+import { canAutoStartIndexDraft } from "~/lib/indexDraftLanding";
 import { cn } from "~/lib/utils";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 
@@ -40,16 +43,21 @@ function IndexDraftLanding() {
   const projects = useProjects();
   const threads = useThreadShells();
   const bootstrapped = useAllEnvironmentShellsBootstrapped();
+  const primaryServerConfigReady = useAtomValue(primaryServerConfigAtom) !== null;
+  const readyToCreateDraft = canAutoStartIndexDraft({
+    shellsBootstrapped: bootstrapped,
+    primaryServerConfigReady,
+  });
   const handleNewThread = useNewThreadHandler();
   const startingRef = useRef(false);
   const [startState, setStartState] = useState({ failed: false, retryRequest: 0 });
 
   const mostRecentProject = useMemo(
     () =>
-      bootstrapped
+      readyToCreateDraft
         ? (sortScopedProjectsForSidebar(projects, threads, "updated_at")[0] ?? null)
         : null,
-    [bootstrapped, projects, threads],
+    [projects, readyToCreateDraft, threads],
   );
 
   useEffect(() => {
@@ -65,7 +73,7 @@ function IndexDraftLanding() {
     });
   }, [handleNewThread, mostRecentProject, startState.retryRequest]);
 
-  if (!bootstrapped) {
+  if (!bootstrapped || (projects.length > 0 && !primaryServerConfigReady)) {
     return null;
   }
   if (mostRecentProject !== null) {

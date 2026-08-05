@@ -28,7 +28,7 @@ import {
   resolveNewDraftStartFromOrigin,
   resolveNewWorktreeDefaultBranch,
 } from "../lib/chatThreadActions";
-import { primaryServerSettingsAtom } from "../state/server";
+import { primaryServerConfigAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
@@ -55,7 +55,7 @@ export function useNewThreadHandler() {
   // environment's own settings here would silently reset remote projects to
   // the decoded defaults ("local" mode, current branch), since nothing can
   // set those values on a remote server.
-  const primaryServerSettings = useAtomValue(primaryServerSettingsAtom);
+  const primaryServerConfig = useAtomValue(primaryServerConfigAtom);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const listRefs = useAtomCommand(vcsEnvironment.listRefsOnce, {
     label: "resolve new workspace default branch",
@@ -78,6 +78,14 @@ export function useNewThreadHandler() {
         replace?: boolean;
       },
     ): Promise<void> => {
+      // The shell/project snapshot can arrive before the primary server config
+      // on a cold connection. Never bake schema defaults into a persistent
+      // draft while the user's real workspace settings are still loading.
+      const primaryServerSettings = primaryServerConfig?.settings ?? null;
+      if (primaryServerSettings === null) {
+        throw new Error("Cannot create a thread before primary server settings are available.");
+      }
+
       const {
         getComposerDraft,
         getDraftSessionByLogicalProjectKey,
@@ -262,8 +270,7 @@ export function useNewThreadHandler() {
           // The workspace context must also ride along here: when projectRef
           // targets a different physical member of the logical project,
           // createDraftThreadState treats the remap as a project change and
-          // would otherwise wipe branch/worktree and force "local" mode,
-          // undoing the write above.
+          // would otherwise wipe branch/worktree, undoing the write above.
           setLogicalProjectDraftThreadId(
             logicalProjectKey,
             projectRef,
@@ -341,7 +348,7 @@ export function useNewThreadHandler() {
     [
       getCurrentRouteTarget,
       listRefs,
-      primaryServerSettings,
+      primaryServerConfig,
       projectGroupingSettings,
       projects,
       router,
