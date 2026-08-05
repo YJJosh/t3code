@@ -1104,7 +1104,7 @@ describe("makePiAdapter", () => {
       expect(updated.type === "item.updated" && updated.payload.data).toEqual({
         toolCallId: "call-1",
         args: { command: "git status" },
-        partialResult: { content: [{ type: "text", text: "On branch main" }] },
+        partialResult: "On branch main",
       });
       const completed = yield* takeEventOfType(events, "item.completed");
       expect(completed.type === "item.completed" && completed.payload.status).toBe("failed");
@@ -1116,6 +1116,78 @@ describe("makePiAdapter", () => {
         args: { command: "git status" },
         result: { content: [{ type: "text", text: "fatal: simulated failure" }] },
         isError: true,
+      });
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("throttles and bounds cumulative Pi tool progress", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      const threadId = ThreadId.make("acacacac-acac-4cac-8cac-acacacacacac");
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* takeEventOfType(events, "thread.started");
+      yield* adapter.sendTurn({ threadId, input: "stream output" });
+      yield* takeEventOfType(events, "turn.started");
+      yield* fake.takeStdinUntil((command) => command.type === "prompt");
+
+      yield* fake.pushFrame({
+        type: "tool_execution_start",
+        toolCallId: "cumulative-call",
+        toolName: "bash",
+        args: { command: "print output" },
+      });
+      for (let index = 1; index <= 5; index += 1) {
+        yield* fake.pushFrame({
+          type: "tool_execution_update",
+          toolCallId: "cumulative-call",
+          toolName: "bash",
+          args: { command: "print output" },
+          partialResult: {
+            content: [
+              {
+                type: "text",
+                text: `${`older-output-${index}-`.repeat(index * 1_000)}LATEST-${index}`,
+              },
+            ],
+          },
+        });
+      }
+      yield* fake.pushFrame({
+        type: "tool_execution_end",
+        toolCallId: "cumulative-call",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "finished" }] },
+        isError: false,
+      });
+
+      const updates: Array<Extract<ProviderRuntimeEvent, { type: "item.updated" }>> = [];
+      let completed: Extract<ProviderRuntimeEvent, { type: "item.completed" }> | undefined;
+      while (!completed) {
+        const event = yield* Queue.take(events);
+        if (event.type === "item.updated") updates.push(event);
+        if (event.type === "item.completed") completed = event;
+      }
+
+      expect(updates).toHaveLength(1);
+      const progressData = updates[0]?.payload.data as Record<string, unknown> | undefined;
+      expect(progressData).toMatchObject({
+        toolCallId: "cumulative-call",
+        args: { command: "print output" },
+      });
+      const partialResult = progressData?.partialResult;
+      expect(typeof partialResult === "string" ? partialResult.length : 0).toBe(4_000);
+      expect(partialResult).toMatch(/^…\[truncated\]\n/);
+      expect(partialResult).toMatch(/LATEST-1$/);
+      expect(completed.payload.data).toMatchObject({
+        toolCallId: "cumulative-call",
+        result: { content: [{ type: "text", text: "finished" }] },
       });
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
@@ -1144,6 +1216,14 @@ describe("makePiAdapter", () => {
         args: { path: "stale.ts" },
       });
       yield* takeEventOfType(events, "item.started");
+      yield* fake.pushFrame({
+        type: "tool_execution_update",
+        toolCallId: "reused-call-id",
+        toolName: "read",
+        args: { path: "stale.ts" },
+        partialResult: { content: "stale progress" },
+      });
+      yield* takeEventOfType(events, "item.updated");
       yield* fake.pushFrame({ type: "agent_end", willRetry: false });
       yield* fake.pushFrame({ type: "agent_settled" });
       yield* takeEventOfType(events, "turn.completed");
@@ -1153,6 +1233,17 @@ describe("makePiAdapter", () => {
       yield* fake.takeStdinUntil(
         (command) => command.type === "prompt" && command.message === "run a fresh tool",
       );
+      yield* fake.pushFrame({
+        type: "tool_execution_update",
+        toolCallId: "reused-call-id",
+        toolName: "read",
+        partialResult: { content: "fresh progress" },
+      });
+      const updated = yield* takeEventOfType(events, "item.updated");
+      expect(updated.type === "item.updated" && updated.payload.data).toEqual({
+        toolCallId: "reused-call-id",
+        partialResult: "fresh progress",
+      });
       yield* fake.pushFrame({
         type: "tool_execution_end",
         toolCallId: "reused-call-id",
