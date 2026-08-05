@@ -1,4 +1,3 @@
-import { useAtomValue } from "@effect/atom-react";
 import {
   scopedProjectKey,
   scopeProjectRef,
@@ -28,7 +27,7 @@ import {
   resolveNewDraftStartFromOrigin,
   resolveNewWorktreeDefaultBranch,
 } from "../lib/chatThreadActions";
-import { primaryServerConfigAtom } from "../state/server";
+import { waitForPrimaryServerConfig } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
@@ -55,7 +54,6 @@ export function useNewThreadHandler() {
   // environment's own settings here would silently reset remote projects to
   // the decoded defaults ("local" mode, current branch), since nothing can
   // set those values on a remote server.
-  const primaryServerConfig = useAtomValue(primaryServerConfigAtom);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const listRefs = useAtomCommand(vcsEnvironment.listRefsOnce, {
     label: "resolve new workspace default branch",
@@ -79,12 +77,10 @@ export function useNewThreadHandler() {
       },
     ): Promise<void> => {
       // The shell/project snapshot can arrive before the primary server config
-      // on a cold connection. Never bake schema defaults into a persistent
-      // draft while the user's real workspace settings are still loading.
-      const primaryServerSettings = primaryServerConfig?.settings ?? null;
-      if (primaryServerSettings === null) {
-        throw new Error("Cannot create a thread before primary server settings are available.");
-      }
+      // on a cold connection. Pause every entry point until the user's real
+      // workspace settings arrive instead of rejecting or baking schema
+      // defaults into a persistent draft.
+      const primaryServerSettings = (await waitForPrimaryServerConfig()).settings;
 
       const {
         getComposerDraft,
@@ -345,14 +341,7 @@ export function useNewThreadHandler() {
         await resolveAndApplyDefaultBranch(draftId);
       })();
     },
-    [
-      getCurrentRouteTarget,
-      listRefs,
-      primaryServerConfig,
-      projectGroupingSettings,
-      projects,
-      router,
-    ],
+    [getCurrentRouteTarget, listRefs, projectGroupingSettings, projects, router],
   );
 }
 

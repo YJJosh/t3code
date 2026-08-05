@@ -15,6 +15,8 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { waitForAtomValue } from "./atomReadiness";
 import { primaryEnvironmentIdAtom } from "./primaryEnvironment";
 import { environmentSession } from "./session";
 
@@ -62,6 +64,14 @@ export const primaryServerStateAtom = Atom.make((get): PrimaryServerState => {
 export const primaryServerConfigAtom = Atom.make(
   (get): ServerConfig | null => get(primaryServerStateAtom).config,
 ).pipe(Atom.withLabel("web-primary-server-config"));
+
+export function waitForPrimaryServerConfig(): Promise<ServerConfig> {
+  return waitForAtomValue(
+    appAtomRegistry,
+    primaryServerConfigAtom,
+    (config): config is ServerConfig => config !== null,
+  );
+}
 
 export const primaryServerConfigEventAtom = Atom.make(
   (get): ServerConfigStreamEvent | null => get(primaryServerStateAtom).latestEvent,
