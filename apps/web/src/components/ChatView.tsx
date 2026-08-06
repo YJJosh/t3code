@@ -5978,6 +5978,16 @@ function ChatViewContent(props: ChatViewProps) {
                   ) : (
                     <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   )}
+                  <BackgroundTerminalRuns
+                    environmentId={subagentEnvironmentId}
+                    threadId={activeThreadId}
+                    enabled={backgroundTerminalsEnabled}
+                  />
+                  <SubagentRuns
+                    environmentId={subagentEnvironmentId}
+                    threadId={activeThreadId}
+                    enabled={subagentsEnabled}
+                  />
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
                   ) : null}
