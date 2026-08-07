@@ -8,7 +8,11 @@ import { Platform, View } from "react-native";
 import { AppText as Text } from "./AppText";
 import { T3Wordmark } from "./T3Wordmark";
 import { IPAD_HOME_TITLE_OFFSET } from "../lib/layoutMetrics";
-import { resolveMobileStageLabel } from "../lib/mobileBranding";
+import {
+  resolveMobileBrandName,
+  resolveMobileBrandWord,
+  resolveMobileStageLabel,
+} from "../lib/mobileBranding";
 import { useThemeColor } from "../lib/useThemeColor";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../native/native-glass";
 
@@ -27,6 +31,9 @@ export function CompactBrandTitle(
   const iconColor = useThemeColor("--color-icon");
   const mutedColor = useThemeColor("--color-foreground-muted");
   const subtleColor = useThemeColor("--color-subtle");
+  const appBrand = Constants.expoConfig?.extra?.appBrand;
+  const appName = resolveMobileBrandName(appBrand);
+  const brandWord = resolveMobileBrandWord(appBrand);
   const stageLabel = resolveMobileStageLabel(Constants.expoConfig?.extra?.appVariant);
   const titleOffset =
     Platform.OS !== "ios"
@@ -42,7 +49,7 @@ export function CompactBrandTitle(
   return (
     <View
       aria-level={1}
-      accessibilityLabel="T3 Code, Threads"
+      accessibilityLabel={`${appName}, Threads`}
       accessible
       role="heading"
       style={{
@@ -61,7 +68,7 @@ export function CompactBrandTitle(
           letterSpacing: -0.5,
         }}
       >
-        Code
+        {brandWord}
       </Text>
       <View
         style={{

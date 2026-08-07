@@ -46,8 +46,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${RAW_VERSION#v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then
-            echo "Fork desktop releases require a prerelease version such as 0.0.29-pi.1." >&2
+          if [[ ! "$version" =~ ^0\.0\.(0|[1-9][0-9]*)-pi\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Fork releases require the 0.0.<patch>-pi.<build> sequence, such as 0.0.29-pi.1." >&2
             exit 1
           fi
           tag="v$version"
@@ -421,9 +421,191 @@ jobs:
           path: release-publish/*
           if-no-files-found: error
 
+  publish_cli:
+    name: Publish CLI to npm
+    # npm versions are immutable, so publish only after the GitHub release and
+    # every desktop/Android artifact have completed successfully.
+    needs: [preflight, release]
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # npm trusted publishing exchanges the workflow's OIDC token for publish
+      # access; no NPM_TOKEN secret is involved. The @yjosh/t3 package must be
+      # published manually once before the trusted publisher can be configured.
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=t3...
+              - --filter=@t3tools/web...
+              - --filter=@t3tools/scripts...
+
+      - name: Align package versions
+        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
+
+      - name: Build web package
+        run: vp run --filter @t3tools/web build
+
+      - name: Build CLI package
+        run: vp run --filter t3 build
+
+      - name: Publish CLI package
+        run: |
+          node apps/server/scripts/cli.ts publish \
+            --package-name "@yjosh/t3" \
+            --repository-url "https://github.com/${{ github.repository }}" \
+            --brand dulli \
+            --tag latest \
+            --app-version "${{ needs.preflight.outputs.version }}" \
+            --provenance \
+            --verbose
+
+  build_android:
+    name: Build Android APK
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      APP_VARIANT: production
+      EXPO_PUBLIC_T3CODE_MOBILE_BRAND: dulli
+      MOBILE_VERSION_POLICY: appVersion
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=8192
+      T3CODE_MOBILE_FORK_BRAND: dulli
+      T3CODE_MOBILE_FORK_VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/mobile...
+
+      - name: Expose pnpm
+        run: |
+          pnpm_version="$(node --print "require('./package.json').packageManager.split('@').pop()")"
+          vp_pnpm_bin="$HOME/.vite-plus/package_manager/pnpm/$pnpm_version/pnpm/bin"
+          echo "$vp_pnpm_bin" >> "$GITHUB_PATH"
+          "$vp_pnpm_bin/pnpm" --version
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Import Android release keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.DULLI_ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.DULLI_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.DULLI_ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.DULLI_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "DULLI_ANDROID_KEYSTORE_BASE64, DULLI_ANDROID_KEYSTORE_PASSWORD, DULLI_ANDROID_KEY_ALIAS, and DULLI_ANDROID_KEY_PASSWORD must be configured as repository secrets." >&2
+            exit 1
+          fi
+          keystore_path="$RUNNER_TEMP/t3-dulli-release.keystore"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+          keytool -list -keystore "$keystore_path" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          {
+            echo "T3CODE_ANDROID_RELEASE_KEYSTORE=$keystore_path"
+            echo "T3CODE_ANDROID_RELEASE_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "T3CODE_ANDROID_RELEASE_KEY_ALIAS=$KEY_ALIAS"
+            echo "T3CODE_ANDROID_RELEASE_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Prebuild Android project
+        working-directory: apps/mobile
+        env:
+          EXPO_NO_GIT_STATUS: "1"
+        run: pnpm exec expo prebuild --platform android --no-install
+
+      - name: Build release APK
+        working-directory: apps/mobile/android
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Verify APK identity and signature
+        shell: bash
+        env:
+          EXPECTED_CERT_SHA256: ${{ vars.DULLI_ANDROID_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$EXPECTED_CERT_SHA256" ]]; then
+            echo "DULLI_ANDROID_CERT_SHA256 must be configured as a repository variable." >&2
+            exit 1
+          fi
+          apk="apps/mobile/android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$apk"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)"
+          badging="$("$build_tools/aapt2" dump badging "$apk")"
+          printf '%s\n' "$badging" | grep -F "package: name='com.yjjosh.t3dulli'"
+          printf '%s\n' "$badging" | grep -F "versionName='${{ needs.preflight.outputs.version }}'"
+          certs="$("$build_tools/apksigner" verify --verbose --print-certs "$apk")"
+          printf '%s\n' "$certs"
+          actual_cert_sha256="$(
+            printf '%s\n' "$certs" |
+              sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+              head -1 |
+              tr -d ':' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          expected_cert_sha256="$(
+            printf '%s' "$EXPECTED_CERT_SHA256" |
+              sed 's/^[[:space:]]*SHA256:[[:space:]]*//I' |
+              tr -d ':[:space:]' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          if [[ -z "$actual_cert_sha256" || "$actual_cert_sha256" != "$expected_cert_sha256" ]]; then
+            echo "Android signer fingerprint mismatch." >&2
+            echo "Expected: $expected_cert_sha256" >&2
+            echo "Actual:   ${actual_cert_sha256:-missing}" >&2
+            exit 1
+          fi
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-publish
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk \
+            "release-publish/T3-Dulli-${{ needs.preflight.outputs.version }}-android.apk"
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: mobile-android
+          path: release-publish/*.apk
+          if-no-files-found: error
+
   release:
     name: Publish community desktop release
-    needs: [preflight, build]
+    needs: [preflight, build, build_android]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -448,6 +630,12 @@ jobs:
         with:
           pattern: desktop-*
           merge-multiple: true
+          path: release-assets
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: mobile-android
           path: release-assets
 
       - name: Merge macOS updater manifests
@@ -479,6 +667,13 @@ jobs:
             - Pi as a first-class coding-agent provider, including extension-provided models
             - Live Pi subagent activity and controls on desktop/web, with read-only mobile visibility
             - Workler clones for isolated workspaces, with a Git-worktree fallback setting
+            - Sideloadable Android APK (`T3-Dulli-*-android.apk`) for controlling T3 Dulli servers remotely
+            - Headless CLI on npm: `npx @yjosh/t3` runs the server plus web UI on any machine
+
+            The Android APK is signed with the persistent Dulli community keystore but is not
+            distributed through Google Play, so Android requires enabling installs from unknown
+            sources and may show a Play Protect warning. It has OTA updates disabled; install
+            newer releases manually.
 
             The macOS app has a persistent self-signed community signature but is not
             Apple-notarized, so macOS displays an unverified-developer warning on first launch.
@@ -493,6 +688,7 @@ jobs:
             release-assets/*.zip
             release-assets/*.AppImage
             release-assets/*.exe
+            release-assets/*.apk
             release-assets/*.blockmap
             release-assets/*.yml
           fail_on_unmatched_files: true

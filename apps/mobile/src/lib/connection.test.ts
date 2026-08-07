@@ -22,8 +22,13 @@ vi.mock("react-native", () => ({
 
 describe("mobile remote connection records", () => {
   it("identifies mobile token exchanges for authorized-client presentation", () => {
-    expect(authClientMetadata()).toEqual({
+    expect(authClientMetadata("t3code")).toEqual({
       label: "T3 Code Mobile",
+      deviceType: "mobile",
+      os: "iOS",
+    });
+    expect(authClientMetadata("dulli")).toEqual({
+      label: "T3 Dulli Mobile",
       deviceType: "mobile",
       os: "iOS",
     });

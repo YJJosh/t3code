@@ -1,8 +1,22 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveMobileStageLabel } from "./mobileBranding";
+import {
+  resolveMobileBrand,
+  resolveMobileBrandName,
+  resolveMobileBrandWord,
+  resolveMobileStageLabel,
+} from "./mobileBranding";
 
-describe("resolveMobileStageLabel", () => {
+describe("mobile branding", () => {
+  it("resolves Dulli presentation without changing the default brand", () => {
+    expect(resolveMobileBrand("dulli")).toBe("dulli");
+    expect(resolveMobileBrandName("dulli")).toBe("T3 Dulli");
+    expect(resolveMobileBrandWord("dulli")).toBe("Dulli");
+    expect(resolveMobileBrand(undefined)).toBe("t3code");
+    expect(resolveMobileBrandName(undefined)).toBe("T3 Code");
+    expect(resolveMobileBrandWord(undefined)).toBe("Code");
+  });
+
   it.each([
     ["development", "Dev"],
     ["preview", "Nightly"],

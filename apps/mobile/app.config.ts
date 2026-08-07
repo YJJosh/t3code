@@ -2,6 +2,7 @@ import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { resolveDulliForkVersion } from "./scripts/dulli-fork-version.ts";
 
 type AppVariant = "development" | "preview" | "production";
 
@@ -97,7 +98,37 @@ function resolveAppVariant(value: string | undefined): AppVariant {
   }
 }
 
+// The T3 Dulli fork release builds a sideloadable APK with its own identity so
+// it can coexist with the official Play Store app. Enabled by the fork release
+// workflow via T3CODE_MOBILE_FORK_BRAND=dulli plus the release version.
+const forkBrand = repoEnv.T3CODE_MOBILE_FORK_BRAND?.trim();
+if (forkBrand !== undefined && forkBrand !== "" && forkBrand !== "dulli") {
+  throw new Error(`Unknown T3CODE_MOBILE_FORK_BRAND '${forkBrand}'; only 'dulli' is supported.`);
+}
+
+const dulliFork =
+  forkBrand === "dulli"
+    ? {
+        appName: "T3 Dulli",
+        scheme: "t3dulli",
+        androidPackage: "com.yjjosh.t3dulli",
+        ...resolveDulliForkVersion(repoEnv.T3CODE_MOBILE_FORK_VERSION),
+      }
+    : undefined;
+
+const DULLI_ASSETS = {
+  appIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
+  iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
+  splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
+  androidAdaptiveForeground: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
+  androidAdaptiveBackgroundColor: "#000000",
+  androidMonochromeIcon: "./assets/android-icon-mark.png",
+  androidNotificationIcon: "./assets/android-notification-icon.png",
+  androidNotificationColor: "#FFFFFF",
+} as const;
+
 const variant = VARIANT_CONFIG[APP_VARIANT];
+const assets = dulliFork === undefined ? variant.assets : DULLI_ASSETS;
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
   : variant.iosBundleIdentifier;
@@ -157,11 +188,11 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
 // family names without waiting for runtime font loading.
 
 const config: ExpoConfig = {
-  name: variant.appName,
+  name: dulliFork?.appName ?? variant.appName,
   slug: "t3-code",
   platforms: ["ios", "android"],
-  scheme: variant.scheme,
-  version: "1.0.1",
+  scheme: dulliFork?.scheme ?? variant.scheme,
+  version: dulliFork?.versionName ?? "1.0.1",
   runtimeVersion: {
     // Fingerprint (not appVersion) so an OTA only reaches binaries whose native
     // project — native deps, config plugins, AND patches/ — matches the update.
@@ -170,16 +201,17 @@ const config: ExpoConfig = {
     policy: process.env.MOBILE_VERSION_POLICY ?? "fingerprint",
   },
   orientation: "portrait",
-  icon: variant.assets.appIcon,
+  icon: assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: true,
+    // Fork builds must not pull OTA updates from upstream's EAS project.
+    enabled: dulliFork === undefined,
     url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
   ios: {
-    icon: variant.assets.iosIcon,
+    icon: assets.iosIcon,
     supportsTablet: true,
     // Multitasking-capable iPad apps cannot rotate programmatically, so the
     // showcase capture build requires full screen (see infoPlist below).
@@ -218,12 +250,13 @@ const config: ExpoConfig = {
     },
   },
   android: {
-    icon: variant.assets.appIcon,
-    package: variant.androidPackage,
+    icon: assets.appIcon,
+    package: dulliFork?.androidPackage ?? variant.androidPackage,
+    ...(dulliFork === undefined ? {} : { versionCode: dulliFork.versionCode }),
     adaptiveIcon: {
-      backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
-      foregroundImage: variant.assets.androidAdaptiveForeground,
-      monochromeImage: variant.assets.androidMonochromeIcon,
+      backgroundColor: assets.androidAdaptiveBackgroundColor,
+      foregroundImage: assets.androidAdaptiveForeground,
+      monochromeImage: assets.androidMonochromeIcon,
     },
     // Opts into OnBackInvokedCallback-based back dispatch (Android 13+).
     // JS back handling survives it via react-native's Android 16 shim plus
@@ -231,7 +264,7 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: true,
   },
   web: {
-    favicon: variant.assets.appIcon,
+    favicon: assets.appIcon,
   },
   plugins: [
     "expo-asset",
@@ -267,8 +300,8 @@ const config: ExpoConfig = {
     [
       "expo-notifications",
       {
-        icon: variant.assets.androidNotificationIcon,
-        color: variant.assets.androidNotificationColor,
+        icon: assets.androidNotificationIcon,
+        color: assets.androidNotificationColor,
         mode: APP_VARIANT === "development" ? "development" : "production",
       },
     ],
@@ -283,8 +316,8 @@ const config: ExpoConfig = {
         // the shortcut items set in src/features/shortcuts.
         androidIcons: {
           shortcut_icon: {
-            foregroundImage: variant.assets.androidAdaptiveForeground,
-            backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
+            foregroundImage: assets.androidAdaptiveForeground,
+            backgroundColor: assets.androidAdaptiveBackgroundColor,
           },
         },
       },
@@ -302,12 +335,12 @@ const config: ExpoConfig = {
     [
       "expo-splash-screen",
       {
-        image: variant.assets.splashIcon,
+        image: assets.splashIcon,
         resizeMode: "contain",
         backgroundColor: "#ffffff",
         imageWidth: 220,
         dark: {
-          image: variant.assets.splashIcon,
+          image: assets.splashIcon,
           backgroundColor: "#0a0a0a",
         },
       },
@@ -334,6 +367,7 @@ const config: ExpoConfig = {
     ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
     "./plugins/withIosSceneLifecycle.cjs",
     "./plugins/withAndroidCleartextTraffic.cjs",
+    "./plugins/withAndroidReleaseSigning.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
     "./plugins/withAndroidModernPopupMenu.cjs",
     "./plugins/withAndroidModernAlertDialog.cjs",
@@ -342,6 +376,7 @@ const config: ExpoConfig = {
   ],
   extra: {
     appVariant: APP_VARIANT,
+    appBrand: dulliFork === undefined ? "t3code" : "dulli",
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,

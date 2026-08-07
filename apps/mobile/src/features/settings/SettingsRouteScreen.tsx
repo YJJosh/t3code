@@ -34,6 +34,7 @@ import { useClerkSettingsSheetDetent } from "../cloud/ClerkSettingsSheetDetent";
 import { hasCloudPublicConfig, resolveRelayClerkTokenOptions } from "../cloud/publicConfig";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { WorkspaceSidebarToolbar } from "../layout/workspace-sidebar-toolbar";
+import { resolveMobileBrandName } from "../../lib/mobileBranding";
 import { runtime } from "../../lib/runtime";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
@@ -50,6 +51,8 @@ import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 
 type NotificationStatus = "checking" | "enabled" | "disabled" | "unsupported";
 type LiveActivityStatus = "checking" | "enabled" | "disabled" | "signed-out" | "linking";
+
+const MOBILE_APP_NAME = resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand);
 
 // Reflects whether the relay actually accepted this device's registration.
 // The notification and Live Activity switches are gated on this so they can
@@ -466,7 +469,7 @@ function ConfiguredSettingsRouteScreen() {
             />
           </SettingsSection>
           <Text className="px-2 text-sm text-foreground-muted">
-            T3 Code works locally without signing in. Cloud features are optional.
+            {MOBILE_APP_NAME} works locally without signing in. Cloud features are optional.
           </Text>
         </View>
 
