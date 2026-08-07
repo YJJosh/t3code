@@ -165,10 +165,48 @@ Existing ad-hoc releases cannot accept the first self-signed release because the
 - runs on GitHub-hosted `ubuntu-24.04`, `windows-2025`, and `macos-14` runners;
 - builds all targets with `--brand dulli`;
 - imports the persistent community certificate for both macOS architectures;
-- publishes installers, blockmaps, and updater manifests to a GitHub prerelease;
+- publishes the headless CLI to npm as `@yjosh/t3` via trusted publishing;
+- builds a Dulli-branded Android APK signed with the community keystore;
+- publishes installers, the APK, blockmaps, and updater manifests to a GitHub prerelease;
 - creates the tag only after preflight and builds succeed.
 
-Run it from GitHub Actions with a version that does not already have a tag. Verify that the release contains `T3-Dulli-*` installers for every platform, `latest*.yml` updater manifests, macOS ZIP update payloads, and blockmaps before announcing it.
+Run it from GitHub Actions with a version that does not already have a tag. Verify that the release contains `T3-Dulli-*` installers for every platform, the `T3-Dulli-*-android.apk`, `latest*.yml` updater manifests, macOS ZIP update payloads, and blockmaps before announcing it. The npm job runs in parallel with the GitHub release and does not block it; if only the npm publish fails, fix the cause and re-run that job.
+
+### npm CLI package
+
+The `publish_cli` job publishes `apps/server` (the `npx t3` server bundle with the built web client) to npm as `@yjosh/t3`, tagged `latest`, with provenance. `npx @yjosh/t3` then runs a T3 Dulli server plus web UI on any machine — the fork's cloud/headless runner path. Fork builds have no relay configuration, so `t3 connect` stays unavailable; reach remote servers over the pairing URL, a tailnet (`--share`), or your own reverse proxy.
+
+Authentication uses npm trusted publishing (GitHub OIDC), so no npm token is stored in the repository. One-time setup:
+
+1. Publish the first version manually from a checkout while logged into npm as the scope owner:
+
+   ```sh
+   vp run --filter @t3tools/web build
+   vp run --filter t3 build
+   node apps/server/scripts/cli.ts publish \
+     --package-name "@yjosh/t3" \
+     --repository-url "https://github.com/YJJosh/t3code" \
+     --tag latest --app-version <version> --verbose
+   ```
+
+2. On npmjs.com, open the package's settings and add a trusted publisher: repository `YJJosh/t3code`, workflow `fork-desktop-release.yml`, no environment.
+
+After that, the release workflow publishes without credentials. Fork versions are prereleases but are still tagged `latest` deliberately, so `npx @yjosh/t3` resolves without an explicit version.
+
+### Android APK
+
+The `build_android` job runs `expo prebuild` with `T3CODE_MOBILE_FORK_BRAND=dulli`, which gives the app the T3 Dulli name and icon, the `com.yjjosh.t3dulli` application id (so it can coexist with the Play Store app), a version code derived from the release version, and OTA updates disabled. `plugins/withAndroidReleaseSigning.cjs` swaps the Expo debug-keystore fallback for a release signing config that reads the `T3CODE_ANDROID_RELEASE_*` environment variables, and Gradle produces a signed `assembleRelease` APK that is verified (application id, version, non-debug signature) and attached to the release.
+
+Signing uses a persistent self-managed keystore. One-time setup:
+
+```sh
+keytool -genkeypair -v -keystore t3-dulli-release.keystore \
+  -alias t3dulli -keyalg RSA -keysize 4096 -validity 10950 \
+  -dname "CN=T3 Dulli Community Android Signing"
+base64 -w0 t3-dulli-release.keystore   # value for DULLI_ANDROID_KEYSTORE_BASE64
+```
+
+Configure repository secrets `DULLI_ANDROID_KEYSTORE_BASE64`, `DULLI_ANDROID_KEYSTORE_PASSWORD`, `DULLI_ANDROID_KEY_ALIAS` (`t3dulli` above), and `DULLI_ANDROID_KEY_PASSWORD`, then keep the keystore backed up offline: Android only installs an update over an existing app when both are signed with the same key, so losing it forces users to uninstall and reinstall. Upstream's Play Store pipeline (`mobile-eas-preview.yml` / `mobile-eas-production.yml`) builds through Expo's EAS cloud with upstream's Expo project and store credentials; the fork does not use EAS.
 
 The upstream `.github/workflows/release.yml` workflow has no scheduled trigger in this fork. Do not restore its nightly cron: Dulli releases are created manually through **Fork Desktop Release** and the upstream workflow requires production infrastructure that is not configured here.
 

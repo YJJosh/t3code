@@ -184,13 +184,17 @@ interface PublishCommandConfig {
   readonly tag: string;
   readonly provenance: boolean;
   readonly dryRun: boolean;
+  readonly otp: Option.Option<string>;
 }
 
-const createVpPmPublishArgs = (config: PublishCommandConfig): ReadonlyArray<string> => {
+const createVpPmPublishArgs = (
+  config: PublishCommandConfig,
+  packageName: string,
+): ReadonlyArray<string> => {
   const args = [
     "publish",
     "--filter",
-    "t3",
+    packageName,
     "--access",
     config.access,
     "--tag",
@@ -200,6 +204,7 @@ const createVpPmPublishArgs = (config: PublishCommandConfig): ReadonlyArray<stri
 
   if (config.provenance) args.push("--provenance");
   if (config.dryRun) args.push("--dry-run");
+  if (Option.isSome(config.otp)) args.push("--otp", config.otp.value);
 
   return args;
 };
@@ -210,8 +215,11 @@ const publishCmd = Command.make(
     tag: Flag.string("tag").pipe(Flag.withDefault("latest")),
     access: Flag.string("access").pipe(Flag.withDefault("public")),
     appVersion: Flag.string("app-version").pipe(Flag.optional),
+    packageName: Flag.string("package-name").pipe(Flag.optional),
+    repositoryUrl: Flag.string("repository-url").pipe(Flag.optional),
     provenance: Flag.boolean("provenance").pipe(Flag.withDefault(false)),
     dryRun: Flag.boolean("dry-run").pipe(Flag.withDefault(false)),
+    otp: Flag.string("otp").pipe(Flag.optional),
     verbose: Flag.boolean("verbose").pipe(Flag.withDefault(false)),
   },
   (config) =>
@@ -238,12 +246,19 @@ const publishCmd = Command.make(
         // Acquire: resolve publish metadata and read every original before mutation.
         Effect.gen(function* () {
           const version = Option.getOrElse(config.appVersion, () => serverPackageJson.version);
+          const packageName = Option.getOrElse(config.packageName, () => serverPackageJson.name);
           const workspaceConfig = yield* readWorkspaceConfig();
           const workspaceCatalog = workspaceConfig.catalog ?? {};
           const workspaceOverrides = workspaceConfig.overrides ?? {};
           const pkg: PackageJson = {
-            name: serverPackageJson.name,
-            repository: serverPackageJson.repository,
+            name: packageName,
+            repository: {
+              ...serverPackageJson.repository,
+              url: Option.getOrElse(
+                config.repositoryUrl,
+                () => serverPackageJson.repository.url,
+              ),
+            },
             bin: serverPackageJson.bin,
             type: serverPackageJson.type,
             version,
@@ -262,6 +277,7 @@ const publishCmd = Command.make(
           };
 
           return {
+            packageName,
             packageJsonString: yield* encodePackageJson(pkg),
             originalPackageJson: yield* fs.readFile(packageJsonPath),
             icons: yield* preparePublishIcons(repoRoot, serverDir, version),
@@ -277,13 +293,16 @@ const publishCmd = Command.make(
             }
             yield* Effect.log("[cli] Applied package metadata and publish icon overrides");
 
-            const args = createVpPmPublishArgs(config);
+            const args = createVpPmPublishArgs(config, resource.packageName);
             const spawnCommand = yield* resolveSpawnCommand("vp", ["pm", ...args]);
 
             yield* Effect.log(`[cli] Running: vp pm ${args.join(" ")}`);
             yield* runCommand(
               ChildProcess.make(spawnCommand.command, spawnCommand.args, {
                 cwd: repoRoot,
+                // pnpm prompts for npm 2FA (OTP or web auth) on publish; it
+                // needs the parent terminal to do so.
+                stdin: "inherit",
                 stdout: config.verbose ? "inherit" : "ignore",
                 stderr: "inherit",
                 shell: spawnCommand.shell,
