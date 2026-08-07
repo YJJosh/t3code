@@ -46,8 +46,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${RAW_VERSION#v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then
-            echo "Fork desktop releases require a prerelease version such as 0.0.29-pi.1." >&2
+          if [[ ! "$version" =~ ^0\.0\.(0|[1-9][0-9]*)-pi\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Fork releases require the 0.0.<patch>-pi.<build> sequence, such as 0.0.29-pi.1." >&2
             exit 1
           fi
           tag="v$version"
@@ -423,8 +423,10 @@ jobs:
 
   publish_cli:
     name: Publish CLI to npm
-    needs: [preflight, build]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' }}
+    # npm versions are immutable, so publish only after the GitHub release and
+    # every desktop/Android artifact have completed successfully.
+    needs: [preflight, release]
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -468,6 +470,7 @@ jobs:
           node apps/server/scripts/cli.ts publish \
             --package-name "@yjosh/t3" \
             --repository-url "https://github.com/${{ github.repository }}" \
+            --brand dulli \
             --tag latest \
             --app-version "${{ needs.preflight.outputs.version }}" \
             --provenance \
@@ -480,7 +483,9 @@ jobs:
     timeout-minutes: 60
     env:
       APP_VARIANT: production
+      EXPO_PUBLIC_T3CODE_MOBILE_BRAND: dulli
       MOBILE_VERSION_POLICY: appVersion
+      NODE_ENV: production
       NODE_OPTIONS: --max-old-space-size=8192
       T3CODE_MOBILE_FORK_BRAND: dulli
       T3CODE_MOBILE_FORK_VERSION: ${{ needs.preflight.outputs.version }}
@@ -547,18 +552,39 @@ jobs:
 
       - name: Verify APK identity and signature
         shell: bash
+        env:
+          EXPECTED_CERT_SHA256: ${{ vars.DULLI_ANDROID_CERT_SHA256 }}
         run: |
           set -euo pipefail
+          if [[ -z "$EXPECTED_CERT_SHA256" ]]; then
+            echo "DULLI_ANDROID_CERT_SHA256 must be configured as a repository variable." >&2
+            exit 1
+          fi
           apk="apps/mobile/android/app/build/outputs/apk/release/app-release.apk"
           test -s "$apk"
           build_tools="$(find "$ANDROID_HOME/build-tools" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)"
           badging="$("$build_tools/aapt2" dump badging "$apk")"
           printf '%s\n' "$badging" | grep -F "package: name='com.yjjosh.t3dulli'"
           printf '%s\n' "$badging" | grep -F "versionName='${{ needs.preflight.outputs.version }}'"
-          certs="$("$build_tools/apksigner" verify --print-certs "$apk")"
+          certs="$("$build_tools/apksigner" verify --verbose --print-certs "$apk")"
           printf '%s\n' "$certs"
-          if printf '%s\n' "$certs" | grep -qi "Android Debug"; then
-            echo "The release APK is signed with the debug keystore." >&2
+          actual_cert_sha256="$(
+            printf '%s\n' "$certs" |
+              sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+              head -1 |
+              tr -d ':' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          expected_cert_sha256="$(
+            printf '%s' "$EXPECTED_CERT_SHA256" |
+              sed 's/^[[:space:]]*SHA256:[[:space:]]*//I' |
+              tr -d ':[:space:]' |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          if [[ -z "$actual_cert_sha256" || "$actual_cert_sha256" != "$expected_cert_sha256" ]]; then
+            echo "Android signer fingerprint mismatch." >&2
+            echo "Expected: $expected_cert_sha256" >&2
+            echo "Actual:   ${actual_cert_sha256:-missing}" >&2
             exit 1
           fi
 

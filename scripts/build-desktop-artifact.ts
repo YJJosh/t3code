@@ -13,6 +13,7 @@ import serverPackageJson from "../apps/server/package.json" with { type: "json" 
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
   BRAND_ASSET_PATHS,
+  brandDulliClientText,
   resolveWebAssetBrandForChannel,
   resolveWebIconOverrides,
   type WebAssetBrand,
@@ -34,6 +35,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Command, Flag } from "effect/unstable/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+
+export { brandDulliClientText } from "./lib/brand-assets.ts";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3tools.t3code";
@@ -1494,10 +1497,6 @@ const brandDulliClientAssets = Effect.fn("brandDulliClientAssets")(function* (
     }
   }
 });
-
-export function brandDulliClientText(contents: string): string {
-  return contents.replaceAll("T3 Code", "T3 Dulli");
-}
 
 export function resolveDesktopRuntimeDependencies(
   dependencies: Record<string, string> | undefined,

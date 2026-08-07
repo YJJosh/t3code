@@ -21,6 +21,32 @@ const RELEASE_SIGNING_CONFIG = `signingConfigs {
             keyPassword System.getenv("T3CODE_ANDROID_RELEASE_KEY_PASSWORD")
         }`;
 
+function applyAndroidReleaseSigning(contents) {
+  const releaseBuildTypeFallback =
+    /(buildTypes\s*\{[\s\S]*?\brelease\s*\{[\s\S]*?)signingConfig signingConfigs\.debug/;
+  const releaseBuildTypeConfigured =
+    /(buildTypes\s*\{[\s\S]*?\brelease\s*\{[\s\S]*?)signingConfig signingConfigs\.release/.test(
+      contents,
+    );
+  if (releaseBuildTypeFallback.test(contents)) {
+    contents = contents.replace(releaseBuildTypeFallback, "$1signingConfig signingConfigs.release");
+  } else if (!releaseBuildTypeConfigured) {
+    throw new Error(
+      "Could not find the release build type's signing configuration in android/app/build.gradle.",
+    );
+  }
+
+  if (!contents.includes('System.getenv("T3CODE_ANDROID_RELEASE_KEYSTORE")')) {
+    const signingConfigsBlock = /signingConfigs\s*\{/;
+    if (!signingConfigsBlock.test(contents)) {
+      throw new Error("Could not find the signingConfigs block in android/app/build.gradle.");
+    }
+    contents = contents.replace(signingConfigsBlock, RELEASE_SIGNING_CONFIG);
+  }
+
+  return contents;
+}
+
 module.exports = function withAndroidReleaseSigning(config) {
   if (!process.env.T3CODE_ANDROID_RELEASE_KEYSTORE?.trim()) {
     return config;
@@ -34,23 +60,9 @@ module.exports = function withAndroidReleaseSigning(config) {
   }
 
   return withAppBuildGradle(config, (nextConfig) => {
-    let contents = nextConfig.modResults.contents;
-
-    const releaseBuildTypeFallback = /(release\s*\{[\s\S]*?)signingConfig signingConfigs\.debug/;
-    if (!releaseBuildTypeFallback.test(contents)) {
-      throw new Error(
-        "Could not find the release build type's debug signing fallback in android/app/build.gradle.",
-      );
-    }
-    contents = contents.replace(releaseBuildTypeFallback, "$1signingConfig signingConfigs.release");
-
-    const signingConfigsBlock = /signingConfigs\s*\{/;
-    if (!signingConfigsBlock.test(contents)) {
-      throw new Error("Could not find the signingConfigs block in android/app/build.gradle.");
-    }
-    contents = contents.replace(signingConfigsBlock, RELEASE_SIGNING_CONFIG);
-
-    nextConfig.modResults.contents = contents;
+    nextConfig.modResults.contents = applyAndroidReleaseSigning(nextConfig.modResults.contents);
     return nextConfig;
   });
 };
+
+module.exports.applyAndroidReleaseSigning = applyAndroidReleaseSigning;

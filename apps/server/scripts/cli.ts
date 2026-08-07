@@ -12,8 +12,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   DEVELOPMENT_ICON_OVERRIDES,
+  brandDulliClientText,
   resolveWebAssetBrandForPackageVersion,
   resolveWebIconOverrides,
+  type WebAssetBrand,
 } from "../../../scripts/lib/brand-assets.ts";
 import { resolveCatalogDependencies } from "../../../scripts/lib/resolve-catalog.ts";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
@@ -67,7 +69,10 @@ const readWorkspaceConfig = Effect.fn("readWorkspaceConfig")(function* () {
   return yield* decodeWorkspaceConfig(workspaceYaml);
 });
 
-const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.StandardCommand) {
+const runCommand = Effect.fn("runCommand")(function* (
+  command: ChildProcess.StandardCommand,
+  errorArgs: ReadonlyArray<string> = command.args,
+) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* spawner.spawn(command);
   const exitCode = yield* child.exitCode;
@@ -75,7 +80,7 @@ const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Stan
   if (exitCode !== 0) {
     return yield* new ServerCliCommandExitError({
       command: command.command,
-      args: command.args,
+      args: errorArgs,
       cwd: command.options.cwd,
       exitCode,
     });
@@ -85,11 +90,10 @@ const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Stan
 const preparePublishIcons = Effect.fn("preparePublishIcons")(function* (
   repoRoot: string,
   serverDir: string,
-  version: string,
+  brand: WebAssetBrand,
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
-  const brand = resolveWebAssetBrandForPackageVersion(version);
   const icons = resolveWebIconOverrides(brand, "dist/client").map((override) => ({
     sourcePath: path.join(repoRoot, override.sourceRelativePath),
     targetPath: path.join(serverDir, override.targetRelativePath),
@@ -110,6 +114,40 @@ const preparePublishIcons = Effect.fn("preparePublishIcons")(function* (
       publish: fs.readFile(icon.sourcePath),
     }).pipe(Effect.map((contents) => ({ ...icon, ...contents }))),
   );
+});
+
+const DULLI_BRANDABLE_CLIENT_FILE_PATTERN = /\.(?:html|js|json|css|map)$/u;
+
+const preparePublishClientBrand = Effect.fn("preparePublishClientBrand")(function* (
+  serverDir: string,
+  brand: WebAssetBrand,
+) {
+  if (brand !== "dulli") return [];
+
+  const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
+  const pendingDirectories = [path.join(serverDir, "dist/client")];
+  const files: Array<{ path: string; original: string; publish: string }> = [];
+
+  while (pendingDirectories.length > 0) {
+    const directory = pendingDirectories.pop();
+    if (directory === undefined) continue;
+    for (const entry of yield* fs.readDirectory(directory)) {
+      const filePath = path.join(directory, entry);
+      const stat = yield* fs.stat(filePath);
+      if (stat.type === "Directory") {
+        pendingDirectories.push(filePath);
+        continue;
+      }
+      if (stat.type !== "File" || !DULLI_BRANDABLE_CLIENT_FILE_PATTERN.test(entry)) continue;
+
+      const original = yield* fs.readFileString(filePath);
+      const publish = brandDulliClientText(original);
+      if (publish !== original) files.push({ path: filePath, original, publish });
+    }
+  }
+
+  return files;
 });
 
 const applyDevelopmentIconOverrides = Effect.fn("applyDevelopmentIconOverrides")(function* (
@@ -179,7 +217,14 @@ const buildCmd = Command.make(
 // publish subcommand
 // ---------------------------------------------------------------------------
 
-interface PublishCommandConfig {
+const WEB_ASSET_BRANDS = [
+  "development",
+  "nightly",
+  "production",
+  "dulli",
+] as const satisfies ReadonlyArray<WebAssetBrand>;
+
+export interface PublishCommandConfig {
   readonly access: string;
   readonly tag: string;
   readonly provenance: boolean;
@@ -187,7 +232,7 @@ interface PublishCommandConfig {
   readonly otp: Option.Option<string>;
 }
 
-const createVpPmPublishArgs = (
+export const createVpPmPublishArgs = (
   config: PublishCommandConfig,
   packageName: string,
 ): ReadonlyArray<string> => {
@@ -209,6 +254,33 @@ const createVpPmPublishArgs = (
   return args;
 };
 
+export function redactOtpArgs(args: ReadonlyArray<string>): ReadonlyArray<string> {
+  return args.map((arg, index) => {
+    if (index > 0 && args[index - 1] === "--otp") return "***";
+    if (arg.startsWith("--otp=")) return "--otp=***";
+    return arg;
+  });
+}
+
+export function resolvePublishIdentity(
+  config: {
+    readonly appVersion: Option.Option<string>;
+    readonly packageName: Option.Option<string>;
+    readonly repositoryUrl: Option.Option<string>;
+  },
+  defaults: {
+    readonly version: string;
+    readonly packageName: string;
+    readonly repositoryUrl: string;
+  },
+) {
+  return {
+    version: Option.getOrElse(config.appVersion, () => defaults.version),
+    packageName: Option.getOrElse(config.packageName, () => defaults.packageName),
+    repositoryUrl: Option.getOrElse(config.repositoryUrl, () => defaults.repositoryUrl),
+  };
+}
+
 const publishCmd = Command.make(
   "publish",
   {
@@ -217,6 +289,7 @@ const publishCmd = Command.make(
     appVersion: Flag.string("app-version").pipe(Flag.optional),
     packageName: Flag.string("package-name").pipe(Flag.optional),
     repositoryUrl: Flag.string("repository-url").pipe(Flag.optional),
+    brand: Flag.choice("brand", WEB_ASSET_BRANDS).pipe(Flag.optional),
     provenance: Flag.boolean("provenance").pipe(Flag.withDefault(false)),
     dryRun: Flag.boolean("dry-run").pipe(Flag.withDefault(false)),
     otp: Flag.string("otp").pipe(Flag.optional),
@@ -245,23 +318,26 @@ const publishCmd = Command.make(
       yield* Effect.acquireUseRelease(
         // Acquire: resolve publish metadata and read every original before mutation.
         Effect.gen(function* () {
-          const version = Option.getOrElse(config.appVersion, () => serverPackageJson.version);
-          const packageName = Option.getOrElse(config.packageName, () => serverPackageJson.name);
+          const identity = resolvePublishIdentity(config, {
+            version: serverPackageJson.version,
+            packageName: serverPackageJson.name,
+            repositoryUrl: serverPackageJson.repository.url,
+          });
+          const publishBrand = Option.getOrElse(config.brand, () =>
+            resolveWebAssetBrandForPackageVersion(identity.version),
+          );
           const workspaceConfig = yield* readWorkspaceConfig();
           const workspaceCatalog = workspaceConfig.catalog ?? {};
           const workspaceOverrides = workspaceConfig.overrides ?? {};
           const pkg: PackageJson = {
-            name: packageName,
+            name: identity.packageName,
             repository: {
               ...serverPackageJson.repository,
-              url: Option.getOrElse(
-                config.repositoryUrl,
-                () => serverPackageJson.repository.url,
-              ),
+              url: identity.repositoryUrl,
             },
             bin: serverPackageJson.bin,
             type: serverPackageJson.type,
-            version,
+            version: identity.version,
             engines: serverPackageJson.engines,
             files: serverPackageJson.files,
             dependencies: resolveCatalogDependencies(
@@ -277,10 +353,11 @@ const publishCmd = Command.make(
           };
 
           return {
-            packageName,
+            packageName: identity.packageName,
             packageJsonString: yield* encodePackageJson(pkg),
             originalPackageJson: yield* fs.readFile(packageJsonPath),
-            icons: yield* preparePublishIcons(repoRoot, serverDir, version),
+            icons: yield* preparePublishIcons(repoRoot, serverDir, publishBrand),
+            clientBrandFiles: yield* preparePublishClientBrand(serverDir, publishBrand),
           };
         }),
         // Use: pnpm publish from the workspace root so pnpm-only workspace
@@ -291,12 +368,16 @@ const publishCmd = Command.make(
             for (const icon of resource.icons) {
               yield* fs.writeFile(icon.targetPath, icon.publish);
             }
-            yield* Effect.log("[cli] Applied package metadata and publish icon overrides");
+            for (const file of resource.clientBrandFiles) {
+              yield* fs.writeFileString(file.path, file.publish);
+            }
+            yield* Effect.log("[cli] Applied package metadata and client branding");
 
             const args = createVpPmPublishArgs(config, resource.packageName);
+            const safeArgs = redactOtpArgs(args);
             const spawnCommand = yield* resolveSpawnCommand("vp", ["pm", ...args]);
 
-            yield* Effect.log(`[cli] Running: vp pm ${args.join(" ")}`);
+            yield* Effect.log(`[cli] Running: vp pm ${safeArgs.join(" ")}`);
             yield* runCommand(
               ChildProcess.make(spawnCommand.command, spawnCommand.args, {
                 cwd: repoRoot,
@@ -307,6 +388,7 @@ const publishCmd = Command.make(
                 stderr: "inherit",
                 shell: spawnCommand.shell,
               }),
+              ["pm", ...safeArgs],
             );
           }),
         // Release: restore every file even if applying overrides or publishing fails.
@@ -315,6 +397,9 @@ const publishCmd = Command.make(
             yield* fs.writeFile(packageJsonPath, resource.originalPackageJson);
             for (const icon of resource.icons) {
               yield* fs.writeFile(icon.targetPath, icon.original);
+            }
+            for (const file of resource.clientBrandFiles) {
+              yield* fs.writeFileString(file.path, file.original);
             }
             if (config.verbose) yield* Effect.log("[cli] Restored original publish assets");
           }),
@@ -331,8 +416,10 @@ const cli = Command.make("cli").pipe(
   Command.withSubcommands([buildCmd, publishCmd]),
 );
 
-Command.run(cli, { version: "0.0.0" }).pipe(
-  Effect.scoped,
-  Effect.provide([Logger.layer([Logger.consolePretty()]), NodeServices.layer]),
-  NodeRuntime.runMain,
-);
+if (import.meta.main) {
+  Command.run(cli, { version: "0.0.0" }).pipe(
+    Effect.scoped,
+    Effect.provide([Logger.layer([Logger.consolePretty()]), NodeServices.layer]),
+    NodeRuntime.runMain,
+  );
+}

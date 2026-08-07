@@ -1,9 +1,13 @@
 import type { AuthClientPresentationMetadata } from "@t3tools/contracts";
 import { Platform } from "react-native";
 
-export function authClientMetadata(): AuthClientPresentationMetadata {
+import { resolveMobileBrandName } from "./mobileBranding";
+
+export function authClientMetadata(
+  appBrand: unknown = process.env.EXPO_PUBLIC_T3CODE_MOBILE_BRAND,
+): AuthClientPresentationMetadata {
   return {
-    label: "T3 Code Mobile",
+    label: `${resolveMobileBrandName(appBrand)} Mobile`,
     deviceType: "mobile",
     ...(Platform.OS === "ios" ? { os: "iOS" } : Platform.OS === "android" ? { os: "Android" } : {}),
   };

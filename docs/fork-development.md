@@ -170,7 +170,7 @@ Existing ad-hoc releases cannot accept the first self-signed release because the
 - publishes installers, the APK, blockmaps, and updater manifests to a GitHub prerelease;
 - creates the tag only after preflight and builds succeed.
 
-Run it from GitHub Actions with a version that does not already have a tag. Verify that the release contains `T3-Dulli-*` installers for every platform, the `T3-Dulli-*-android.apk`, `latest*.yml` updater manifests, macOS ZIP update payloads, and blockmaps before announcing it. The npm job runs in parallel with the GitHub release and does not block it; if only the npm publish fails, fix the cause and re-run that job.
+Run it from GitHub Actions with a version that does not already have a tag. Verify that the release contains `T3-Dulli-*` installers for every platform, the `T3-Dulli-*-android.apk`, `latest*.yml` updater manifests, macOS ZIP update payloads, and blockmaps before announcing it. The npm job runs after the GitHub release so an immutable npm version is never published before all artifacts are green; if only the npm publish fails, fix the cause and re-run that job.
 
 ### npm CLI package
 
@@ -186,7 +186,7 @@ Authentication uses npm trusted publishing (GitHub OIDC), so no npm token is sto
    node apps/server/scripts/cli.ts publish \
      --package-name "@yjosh/t3" \
      --repository-url "https://github.com/YJJosh/t3code" \
-     --tag latest --app-version <version> --verbose
+     --brand dulli --tag latest --app-version <version> --verbose
    ```
 
 2. On npmjs.com, open the package's settings and add a trusted publisher: repository `YJJosh/t3code`, workflow `fork-desktop-release.yml`, no environment.
@@ -206,7 +206,14 @@ keytool -genkeypair -v -keystore t3-dulli-release.keystore \
 base64 -w0 t3-dulli-release.keystore   # value for DULLI_ANDROID_KEYSTORE_BASE64
 ```
 
-Configure repository secrets `DULLI_ANDROID_KEYSTORE_BASE64`, `DULLI_ANDROID_KEYSTORE_PASSWORD`, `DULLI_ANDROID_KEY_ALIAS` (`t3dulli` above), and `DULLI_ANDROID_KEY_PASSWORD`, then keep the keystore backed up offline: Android only installs an update over an existing app when both are signed with the same key, so losing it forces users to uninstall and reinstall. Upstream's Play Store pipeline (`mobile-eas-preview.yml` / `mobile-eas-production.yml`) builds through Expo's EAS cloud with upstream's Expo project and store credentials; the fork does not use EAS.
+Configure repository secrets `DULLI_ANDROID_KEYSTORE_BASE64`, `DULLI_ANDROID_KEYSTORE_PASSWORD`, `DULLI_ANDROID_KEY_ALIAS` (`t3dulli` above), and `DULLI_ANDROID_KEY_PASSWORD`. Also record the certificate's SHA-256 fingerprint as the repository variable `DULLI_ANDROID_CERT_SHA256` so CI rejects an APK signed by the wrong key:
+
+```sh
+keytool -list -v -keystore t3-dulli-release.keystore -alias t3dulli \
+  | sed -n 's/.*SHA256: //p'
+```
+
+Keep the keystore backed up offline: Android only installs an update over an existing app when both are signed with the same key, so losing it forces users to uninstall and reinstall. Upstream's Play Store pipeline (`mobile-eas-preview.yml` / `mobile-eas-production.yml`) builds through Expo's EAS cloud with upstream's Expo project and store credentials; the fork does not use EAS.
 
 The upstream `.github/workflows/release.yml` workflow has no scheduled trigger in this fork. Do not restore its nightly cron: Dulli releases are created manually through **Fork Desktop Release** and the upstream workflow requires production infrastructure that is not configured here.
 

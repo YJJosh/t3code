@@ -2,6 +2,7 @@ import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { resolveDulliForkVersion } from "./scripts/dulli-fork-version.ts";
 
 type AppVariant = "development" | "preview" | "production";
 
@@ -103,28 +104,6 @@ function resolveAppVariant(value: string | undefined): AppVariant {
 const forkBrand = repoEnv.T3CODE_MOBILE_FORK_BRAND?.trim();
 if (forkBrand !== undefined && forkBrand !== "" && forkBrand !== "dulli") {
   throw new Error(`Unknown T3CODE_MOBILE_FORK_BRAND '${forkBrand}'; only 'dulli' is supported.`);
-}
-
-function resolveDulliForkVersion(raw: string | undefined) {
-  const value = raw?.trim();
-  const match = value === undefined ? null : /^(\d+)\.(\d+)\.(\d+)-[0-9A-Za-z.-]*?(\d+)$/.exec(value);
-  if (value === undefined || value === "" || match === null) {
-    throw new Error(
-      "T3CODE_MOBILE_FORK_VERSION must be a prerelease version such as 0.0.31-pi.4 when T3CODE_MOBILE_FORK_BRAND=dulli.",
-    );
-  }
-  const [, major, minor, patch, prerelease] = match;
-  // Android versionCode must grow across sideloaded releases. The fork tracks
-  // upstream's 0.0.x line; revisit this scheme before a major/minor bump.
-  if (major !== "0" || minor !== "0" || Number(prerelease) > 9_999) {
-    throw new Error(
-      `Cannot derive an Android versionCode from '${value}'; extend the scheme in app.config.ts.`,
-    );
-  }
-  return {
-    versionName: value,
-    versionCode: Number(patch) * 10_000 + Number(prerelease),
-  };
 }
 
 const dulliFork =
@@ -397,6 +376,7 @@ const config: ExpoConfig = {
   ],
   extra: {
     appVariant: APP_VARIANT,
+    appBrand: dulliFork === undefined ? "t3code" : "dulli",
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
