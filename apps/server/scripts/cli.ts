@@ -116,18 +116,19 @@ const preparePublishIcons = Effect.fn("preparePublishIcons")(function* (
   );
 });
 
-const DULLI_BRANDABLE_CLIENT_FILE_PATTERN = /\.(?:html|js|json|css|map)$/u;
+const DULLI_BRANDABLE_CLIENT_FILE_PATTERN = /\.(?:html|js|json|css)$/u;
 
 const preparePublishClientBrand = Effect.fn("preparePublishClientBrand")(function* (
   serverDir: string,
   brand: WebAssetBrand,
 ) {
-  if (brand !== "dulli") return [];
+  if (brand !== "dulli") return { textFiles: [], sourceMaps: [] };
 
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
   const pendingDirectories = [path.join(serverDir, "dist/client")];
-  const files: Array<{ path: string; original: string; publish: string }> = [];
+  const textFiles: Array<{ path: string; original: string; publish: string }> = [];
+  const sourceMaps: Array<{ path: string; original: Uint8Array }> = [];
 
   while (pendingDirectories.length > 0) {
     const directory = pendingDirectories.pop();
@@ -139,15 +140,20 @@ const preparePublishClientBrand = Effect.fn("preparePublishClientBrand")(functio
         pendingDirectories.push(filePath);
         continue;
       }
-      if (stat.type !== "File" || !DULLI_BRANDABLE_CLIENT_FILE_PATTERN.test(entry)) continue;
+      if (stat.type !== "File") continue;
+      if (entry.endsWith(".map")) {
+        sourceMaps.push({ path: filePath, original: yield* fs.readFile(filePath) });
+        continue;
+      }
+      if (!DULLI_BRANDABLE_CLIENT_FILE_PATTERN.test(entry)) continue;
 
       const original = yield* fs.readFileString(filePath);
       const publish = brandDulliClientText(original);
-      if (publish !== original) files.push({ path: filePath, original, publish });
+      if (publish !== original) textFiles.push({ path: filePath, original, publish });
     }
   }
 
-  return files;
+  return { textFiles, sourceMaps };
 });
 
 const applyDevelopmentIconOverrides = Effect.fn("applyDevelopmentIconOverrides")(function* (
@@ -357,7 +363,7 @@ const publishCmd = Command.make(
             packageJsonString: yield* encodePackageJson(pkg),
             originalPackageJson: yield* fs.readFile(packageJsonPath),
             icons: yield* preparePublishIcons(repoRoot, serverDir, publishBrand),
-            clientBrandFiles: yield* preparePublishClientBrand(serverDir, publishBrand),
+            clientBrand: yield* preparePublishClientBrand(serverDir, publishBrand),
           };
         }),
         // Use: pnpm publish from the workspace root so pnpm-only workspace
@@ -368,8 +374,11 @@ const publishCmd = Command.make(
             for (const icon of resource.icons) {
               yield* fs.writeFile(icon.targetPath, icon.publish);
             }
-            for (const file of resource.clientBrandFiles) {
+            for (const file of resource.clientBrand.textFiles) {
               yield* fs.writeFileString(file.path, file.publish);
+            }
+            for (const sourceMap of resource.clientBrand.sourceMaps) {
+              yield* fs.remove(sourceMap.path, { force: true });
             }
             yield* Effect.log("[cli] Applied package metadata and client branding");
 
@@ -398,8 +407,11 @@ const publishCmd = Command.make(
             for (const icon of resource.icons) {
               yield* fs.writeFile(icon.targetPath, icon.original);
             }
-            for (const file of resource.clientBrandFiles) {
+            for (const file of resource.clientBrand.textFiles) {
               yield* fs.writeFileString(file.path, file.original);
+            }
+            for (const sourceMap of resource.clientBrand.sourceMaps) {
+              yield* fs.writeFile(sourceMap.path, sourceMap.original);
             }
             if (config.verbose) yield* Effect.log("[cli] Restored original publish assets");
           }),
