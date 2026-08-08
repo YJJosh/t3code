@@ -15,7 +15,7 @@ if (import.meta.main) {
 
   const digest = extractAndroidCertificateSha256(output);
   if (digest === undefined) {
-    console.error("Could not find the Android signer certificate SHA-256 digest.");
+    process.stderr.write("Could not find the Android signer certificate SHA-256 digest.\n");
     process.exitCode = 1;
   } else {
     process.stdout.write(digest);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { extractAndroidCertificateSha256 } from "./extract-android-cert-sha256";
+import { extractAndroidCertificateSha256 } from "./extract-android-cert-sha256.ts";
 
 const DIGEST =
   "FE:2C:E6:5A:A7:EB:34:81:B1:F0:A0:0B:17:A5:0B:F2:04:E4:62:E6:B4:40:BE:01:75:6E:50:F0:70:AC:EB:DE";
