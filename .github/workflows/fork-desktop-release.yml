@@ -570,10 +570,7 @@ jobs:
           printf '%s\n' "$certs"
           actual_cert_sha256="$(
             printf '%s\n' "$certs" |
-              sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
-              head -1 |
-              tr -d ':' |
-              tr '[:upper:]' '[:lower:]'
+              node scripts/extract-android-cert-sha256.ts
           )"
           expected_cert_sha256="$(
             printf '%s' "$EXPECTED_CERT_SHA256" |
