@@ -1,5 +1,5 @@
-import { isSubagentRunTerminal } from "./subagentRuntime.ts";
-import type { SubagentActivityEntry, SubagentRunEntry } from "./subagentRuntime.ts";
+import { isSubagentRunTerminal } from "./piSubagentRuntime.ts";
+import type { SubagentActivityEntry, SubagentRunEntry } from "./piSubagentRuntime.ts";
 
 function activityRecord(value: unknown): Readonly<Record<string, unknown>> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)

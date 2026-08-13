@@ -28,12 +28,13 @@ export interface Preferences {
   readonly projectGroupingMode?: SidebarProjectGroupingMode;
   readonly showAgentReasoning?: boolean;
   /**
-   * Device-local mirror of the web beta's `sidebarV2Enabled`. Mobile has no
-   * client-settings sync, so the flat v2 thread list is opted out of per
-   * device. Undefined means the user has never chosen, which resolves to on —
-   * see `resolveThreadListV2Enabled`.
+   * Device-local mirror of the web `legacySidebarEnabled` setting. Mobile has
+   * no client-settings sync, so the legacy grouped thread list is opted into
+   * per device. Deliberately a fresh key (was `threadListV2Enabled`, an
+   * opt-out): sanitizing drops the old key, so every device resets to the
+   * default flat list — see `resolveThreadListV2Enabled`.
    */
-  readonly threadListV2Enabled?: boolean;
+  readonly legacyThreadListEnabled?: boolean;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -86,7 +87,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     projectGroupingEnabled?: boolean;
     projectGroupingMode?: SidebarProjectGroupingMode;
     showAgentReasoning?: boolean;
-    threadListV2Enabled?: boolean;
+    legacyThreadListEnabled?: boolean;
   } = {};
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
@@ -126,8 +127,8 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (typeof parsed.showAgentReasoning === "boolean") {
     preferences.showAgentReasoning = parsed.showAgentReasoning;
   }
-  if (typeof parsed.threadListV2Enabled === "boolean") {
-    preferences.threadListV2Enabled = parsed.threadListV2Enabled;
+  if (typeof parsed.legacyThreadListEnabled === "boolean") {
+    preferences.legacyThreadListEnabled = parsed.legacyThreadListEnabled;
   }
   return preferences;
 }
