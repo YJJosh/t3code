@@ -2141,97 +2141,6 @@ export function GeneralSettingsPanel() {
           }
         />
 
-        {settings.defaultThreadEnvMode === "worktree" ? (
-          <>
-            <SettingsRow
-              className="bg-muted/20 sm:pl-9"
-              title="Use Workler"
-              description="Create new isolated workspaces as ordinary Workler clones under the repository's .worktrees directory. Turn this off to create Git worktrees instead. Existing workspaces remain available either way."
-              resetAction={
-                settings.useWorklerForNewWorkspaces !==
-                DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces ? (
-                  <SettingResetButton
-                    label="Workler workspace creation"
-                    onClick={() =>
-                      updateSettings({
-                        useWorklerForNewWorkspaces:
-                          DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
-                      })
-                    }
-                  />
-                ) : null
-              }
-              control={
-                <Switch
-                  checked={settings.useWorklerForNewWorkspaces}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ useWorklerForNewWorkspaces: Boolean(checked) })
-                  }
-                  aria-label="Use Workler for new workspaces"
-                />
-              }
-            />
-
-            <SettingsRow
-              className="bg-muted/20 sm:pl-9"
-              title="Default branch"
-              description="Start new workspace threads from the repository's default branch instead of inheriting a branch or using the current checkout."
-              resetAction={
-                settings.newWorktreesStartFromDefaultBranch !==
-                DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch ? (
-                  <SettingResetButton
-                    label="new workspaces start from the default branch"
-                    onClick={() =>
-                      updateSettings({
-                        newWorktreesStartFromDefaultBranch:
-                          DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch,
-                      })
-                    }
-                  />
-                ) : null
-              }
-              control={
-                <Switch
-                  checked={settings.newWorktreesStartFromDefaultBranch}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ newWorktreesStartFromDefaultBranch: Boolean(checked) })
-                  }
-                  aria-label="Start new workspaces from the default branch"
-                />
-              }
-            />
-
-            <SettingsRow
-              className="bg-muted/20 sm:pl-9"
-              title={searchableSetting("start-from-origin").title}
-              description="Creates the workspace from the latest matching branch on origin instead of your local branch."
-              resetAction={
-                settings.newWorktreesStartFromOrigin !==
-                DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
-                  <SettingResetButton
-                    label="new workspaces start from origin"
-                    onClick={() =>
-                      updateSettings({
-                        newWorktreesStartFromOrigin:
-                          DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
-                      })
-                    }
-                  />
-                ) : null
-              }
-              control={
-                <Switch
-                  checked={settings.newWorktreesStartFromOrigin}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ newWorktreesStartFromOrigin: Boolean(checked) })
-                  }
-                  aria-label="Start new workspaces from origin by default"
-                />
-              }
-            />
-          </>
-        ) : null}
-
         <SettingsRow
           {...searchableSetting("add-project-starts-in")}
           description='Leave empty to use "~/" when the Add Project browser opens.'
@@ -2383,6 +2292,148 @@ export function GeneralSettingsPanel() {
                 }}
               />
             </div>
+          }
+        />
+      </SettingsSection>
+
+      {/* Settings introduced by the T3 Dulli fork, grouped so upstream General
+          stays recognizable and sync merges keep a single insertion point. */}
+      <SettingsSection title="Fork features">
+        <SettingsRow
+          {...searchableSetting("use-workler")}
+          description="Create new isolated workspaces as ordinary Workler clones under the repository's .worktrees directory. Turn this off to create Git worktrees instead. Existing workspaces remain available either way."
+          resetAction={
+            settings.useWorklerForNewWorkspaces !==
+            DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces ? (
+              <SettingResetButton
+                label="Workler workspace creation"
+                onClick={() =>
+                  updateSettings({
+                    useWorklerForNewWorkspaces: DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.useWorklerForNewWorkspaces}
+              onCheckedChange={(checked) =>
+                updateSettings({ useWorklerForNewWorkspaces: Boolean(checked) })
+              }
+              aria-label="Use Workler for new workspaces"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("default-branch")}
+          description="Start new workspace threads from the repository's default branch instead of inheriting a branch or using the current checkout."
+          resetAction={
+            settings.newWorktreesStartFromDefaultBranch !==
+            DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch ? (
+              <SettingResetButton
+                label="new workspaces start from the default branch"
+                onClick={() =>
+                  updateSettings({
+                    newWorktreesStartFromDefaultBranch:
+                      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.newWorktreesStartFromDefaultBranch}
+              onCheckedChange={(checked) =>
+                updateSettings({ newWorktreesStartFromDefaultBranch: Boolean(checked) })
+              }
+              aria-label="Start new workspaces from the default branch"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("start-from-origin")}
+          description="Creates the workspace from the latest matching branch on origin instead of your local branch."
+          resetAction={
+            settings.newWorktreesStartFromOrigin !==
+            DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
+              <SettingResetButton
+                label="new workspaces start from origin"
+                onClick={() =>
+                  updateSettings({
+                    newWorktreesStartFromOrigin:
+                      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.newWorktreesStartFromOrigin}
+              onCheckedChange={(checked) =>
+                updateSettings({ newWorktreesStartFromOrigin: Boolean(checked) })
+              }
+              aria-label="Start new workspaces from origin by default"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("t3code-branch-prefix")}
+          description="Prefix agent-generated worktree branches with t3code/."
+          resetAction={
+            settings.includeT3CodeBranchPrefix !==
+            DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix ? (
+              <SettingResetButton
+                label="T3 Code branch prefix"
+                onClick={() =>
+                  updateSettings({
+                    includeT3CodeBranchPrefix: DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.includeT3CodeBranchPrefix}
+              onCheckedChange={(checked) =>
+                updateSettings({ includeT3CodeBranchPrefix: Boolean(checked) })
+              }
+              aria-label="Prefix agent-generated branches with t3code"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("branch-category-prefixes")}
+          description="Require agent-generated names to start with a category such as feature/, fix/, chore/, or refactor/."
+          resetAction={
+            settings.useConventionalBranchPrefixes !==
+            DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes ? (
+              <SettingResetButton
+                label="branch category prefixes"
+                onClick={() =>
+                  updateSettings({
+                    useConventionalBranchPrefixes:
+                      DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.useConventionalBranchPrefixes}
+              onCheckedChange={(checked) =>
+                updateSettings({ useConventionalBranchPrefixes: Boolean(checked) })
+              }
+              aria-label="Require category prefixes on agent-generated branches"
+            />
           }
         />
       </SettingsSection>

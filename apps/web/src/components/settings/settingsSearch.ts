@@ -129,12 +129,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
   },
   {
-    id: "start-from-origin",
-    title: "Start from origin",
-    to: "/settings/general",
-    targetId: "new-threads",
-  },
-  {
     id: "add-project-starts-in",
     title: "Add project starts in",
     to: "/settings/general",
@@ -172,6 +166,32 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "legacy-sidebar",
     title: "Sidebar (legacy)",
+    to: "/settings/general",
+  },
+  // Fork features section on the General page.
+  {
+    id: "use-workler",
+    title: "Use Workler",
+    to: "/settings/general",
+  },
+  {
+    id: "default-branch",
+    title: "Default branch",
+    to: "/settings/general",
+  },
+  {
+    id: "start-from-origin",
+    title: "Start from origin",
+    to: "/settings/general",
+  },
+  {
+    id: "t3code-branch-prefix",
+    title: "T3 Code branch prefix",
+    to: "/settings/general",
+  },
+  {
+    id: "branch-category-prefixes",
+    title: "Branch category prefixes",
     to: "/settings/general",
   },
   {
