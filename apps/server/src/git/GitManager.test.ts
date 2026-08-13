@@ -4123,6 +4123,10 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         mode: "worktree",
       });
       const worktreePath = created.worktreePath as string;
+      // Workler clones can temporarily track the source repository's local PR branch even when
+      // that branch does not exist on the host remote. Remove it to model a reused checkout whose
+      // only refreshable head is the provider's pull-request ref.
+      yield* runGit(worktreePath, ["branch", "--unset-upstream"]);
       expect(
         (yield* runGit(worktreePath, ["rev-parse", "--abbrev-ref", "@{upstream}"], true)).exitCode,
       ).not.toBe(0);
