@@ -41,6 +41,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
+import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
@@ -99,7 +100,7 @@ const resolveClaudeTranscriptDir = Effect.fn("UsageService.resolveClaudeTranscri
 
 /** Resolves and deduplicates transcript directories from every configured instance. */
 export const resolveUsageTranscriptDirs = Effect.fn("UsageService.resolveUsageTranscriptDirs")(
-  function* (settings: ServerSettingsValue) {
+  function* (settings: ServerSettingsValue, baseEnvironment: NodeJS.ProcessEnv = process.env) {
     const path = yield* Path.Path;
     const directories = new Map<string, TranscriptDir>();
     const addDirectory = (provider: UsageProviderKind, dir: string) => {
@@ -112,7 +113,13 @@ export const resolveUsageTranscriptDirs = Effect.fn("UsageService.resolveUsageTr
           Effect.orElseSucceed(() => null),
         );
         if (config === null) continue;
-        const home = yield* resolveClaudeHomePath(config);
+        const environment = mergeProviderInstanceEnvironment(instance.environment, baseEnvironment);
+        const inheritedHome = environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
+        const effectiveConfig =
+          config.homePath.trim().length > 0 || inheritedHome.length === 0
+            ? config
+            : { ...config, homePath: inheritedHome };
+        const home = yield* resolveClaudeHomePath(effectiveConfig);
         addDirectory("claude", yield* resolveClaudeTranscriptDir(home));
         continue;
       }
@@ -131,15 +138,26 @@ export const resolveUsageTranscriptDirs = Effect.fn("UsageService.resolveUsageTr
   },
 );
 
-export const resolveUsageSourceReadCoverage = (
-  unreadableFiles: number,
-): Pick<UsageSource, "status" | "message"> =>
-  unreadableFiles > 0
-    ? {
-        status: "partial",
-        message: `${unreadableFiles} transcript ${unreadableFiles === 1 ? "file" : "files"} could not be read.`,
-      }
+export const resolveUsageSourceReadCoverage = (input: {
+  readonly unreadableFiles: number;
+  readonly unreadableDirectories: number;
+}): Pick<UsageSource, "status" | "message"> => {
+  const failures = [
+    ...(input.unreadableDirectories > 0
+      ? [
+          `${input.unreadableDirectories} transcript ${input.unreadableDirectories === 1 ? "directory" : "directories"} could not be read`,
+        ]
+      : []),
+    ...(input.unreadableFiles > 0
+      ? [
+          `${input.unreadableFiles} transcript ${input.unreadableFiles === 1 ? "file" : "files"} could not be read`,
+        ]
+      : []),
+  ];
+  return failures.length > 0
+    ? { status: "partial", message: `${failures.join("; ")}.` }
     : { status: "ok", message: null };
+};
 
 /** On-disk shape of the rate snapshot. */
 const RatesCacheFile = Schema.Struct({
@@ -294,7 +312,11 @@ export const make = Effect.gen(function* () {
     size: number,
     mtimeMs: number,
     provider: UsageProviderKind,
-  ): Effect.Effect<{ readonly records: readonly UsageRecord[]; readonly readFailed: boolean }> =>
+  ): Effect.Effect<{
+    readonly records: readonly UsageRecord[];
+    readonly malformedRecords: number;
+    readonly readFailed: boolean;
+  }> =>
     Effect.gen(function* () {
       const cached = fileCache.get(filePath);
       // Provider is part of the identity: if both providers were ever pointed
@@ -305,20 +327,30 @@ export const make = Effect.gen(function* () {
         cached.mtimeMs === mtimeMs &&
         cached.provider === provider
       ) {
-        return { records: cached.records, readFailed: false };
+        return {
+          records: cached.records,
+          malformedRecords: cached.malformedRecords,
+          readFailed: false,
+        };
       }
 
       const parsed = yield* Effect.promise(() => readTranscriptRecords(filePath, provider));
       // A read failure is not an empty transcript: caching it under this
       // (size, mtime) would silently drop the file's usage until it changes.
-      if (parsed === null) return { records: [], readFailed: true };
+      if (parsed === null) return { records: [], malformedRecords: 0, readFailed: true };
       // Stored already de-duplicated within the file, which is 99% of all
       // duplicates. The aggregator still runs the cross-file dedupe pass.
-      const records = dedupeWithinFile(parsed);
+      const records = dedupeWithinFile(parsed.records);
 
-      fileCache.set(filePath, { size, mtimeMs, provider, records });
+      fileCache.set(filePath, {
+        size,
+        mtimeMs,
+        provider,
+        records,
+        malformedRecords: parsed.malformedRecords,
+      });
       cacheDirty = true;
-      return { records, readFailed: false };
+      return { records, malformedRecords: parsed.malformedRecords, readFailed: false };
     });
 
   const readSummary = Effect.fn("UsageService.readSummary")(function* (input: UsageSummaryInput) {
@@ -418,19 +450,22 @@ export const make = Effect.gen(function* () {
         continue;
       }
 
-      walkedRoots.push(dir);
-      const files = yield* Effect.promise(() => listTranscriptFiles(dir, windowStartMs));
+      const listing = yield* Effect.promise(() => listTranscriptFiles(dir, windowStartMs));
+      // Only a complete walk proves an absent cached file was deleted.
+      if (listing.unreadableDirectories === 0) walkedRoots.push(dir);
       let scannedFiles = 0;
       let skippedFiles = 0;
       let unreadableFiles = 0;
+      let malformedRecords = 0;
       // Distinct per directory. Buckets carry per-cell session counts, but a
       // session spans days and models, so clients total this figure instead.
       const sessionIds = new Set<string>();
 
-      for (const file of files) {
+      for (const file of listing.files) {
         livePaths.add(file.path);
         const read = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
         if (read.readFailed) unreadableFiles += 1;
+        malformedRecords += read.malformedRecords;
         if (read.records.length === 0) {
           skippedFiles += 1;
           continue;
@@ -447,10 +482,13 @@ export const make = Effect.gen(function* () {
 
       sources.push({
         fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
-        ...resolveUsageSourceReadCoverage(unreadableFiles),
+        ...resolveUsageSourceReadCoverage({
+          unreadableFiles,
+          unreadableDirectories: listing.unreadableDirectories,
+        }),
         scannedFiles,
         skippedFiles,
-        malformedRecords: 0,
+        malformedRecords,
         distinctSessions: sessionIds.size,
       });
     }

@@ -18,15 +18,15 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 
 import type { UsageRecord } from "./usageTranscripts.ts";
 
-// v2: Codex fork-copy suppression changed what a file parses to, so v1
-// entries would keep serving double-counted records forever.
-export const USAGE_SCAN_CACHE_VERSION = 2 as const;
+// v3: Persist malformed-record counts so warm scans retain honest diagnostics.
+export const USAGE_SCAN_CACHE_VERSION = 3 as const;
 
 export interface CachedFile {
   readonly size: number;
   readonly mtimeMs: number;
   readonly provider: UsageProviderKind;
   readonly records: readonly UsageRecord[];
+  readonly malformedRecords: number;
 }
 
 export type ScanCache = Map<string, CachedFile>;
@@ -53,6 +53,7 @@ interface SerializedFile {
   readonly s: number;
   readonly m: number;
   readonly p: UsageProviderKind;
+  readonly x: number;
   readonly r: readonly SerializedRecord[];
 }
 
@@ -85,6 +86,7 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
       s: entry.size,
       m: entry.mtimeMs,
       p: entry.provider,
+      x: entry.malformedRecords,
       r: entry.records.map((record) => [
         record.timestampMs,
         intern(models, modelIndex, record.model),
@@ -135,6 +137,7 @@ export function decodeScanCache(document: unknown): ScanCache {
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
     if (entry.p !== "claude" && entry.p !== "codex") continue;
+    if (typeof entry.x !== "number" || !Number.isSafeInteger(entry.x) || entry.x < 0) continue;
     if (!isRecordArray(entry.r)) continue;
 
     const provider: UsageProviderKind = entry.p;
@@ -194,7 +197,13 @@ export function decodeScanCache(document: unknown): ScanCache {
     }
 
     if (corrupt) continue;
-    cache.set(path, { size: entry.s, mtimeMs: entry.m, provider, records });
+    cache.set(path, {
+      size: entry.s,
+      mtimeMs: entry.m,
+      provider,
+      records,
+      malformedRecords: entry.x,
+    });
   }
 
   return cache;

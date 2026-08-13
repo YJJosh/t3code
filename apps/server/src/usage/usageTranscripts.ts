@@ -8,6 +8,10 @@
  */
 import type { UsageProviderKind, UsageTokenTotals } from "@t3tools/contracts";
 
+export interface UsageParseDiagnostics {
+  malformedRecords: number;
+}
+
 export interface UsageRecord {
   readonly provider: UsageProviderKind;
   readonly timestampMs: number;
@@ -83,11 +87,15 @@ export function mightCarryUsage(line: string, provider: UsageProviderKind): bool
  * message. Summing them overcounts by roughly 2.4x on a real workload, so the
  * caller must drop repeats by `dedupeKey` and keep the first.
  */
-export function parseClaudeLine(line: string): UsageRecord | null {
+export function parseClaudeLine(
+  line: string,
+  diagnostics?: UsageParseDiagnostics,
+): UsageRecord | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
   } catch {
+    if (diagnostics) diagnostics.malformedRecords += 1;
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
@@ -197,11 +205,16 @@ function isForkedSessionMeta(payload: Record<string, unknown>): boolean {
  * reconciles with the session's final `total_token_usage`, provided
  * consecutive duplicate events are dropped, which this does.
  */
-export function parseCodexLine(line: string, state: CodexScanState): UsageRecord | null {
+export function parseCodexLine(
+  line: string,
+  state: CodexScanState,
+  diagnostics?: UsageParseDiagnostics,
+): UsageRecord | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
   } catch {
+    if (diagnostics) diagnostics.malformedRecords += 1;
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
