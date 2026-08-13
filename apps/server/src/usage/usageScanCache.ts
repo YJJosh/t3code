@@ -168,12 +168,19 @@ export function decodeScanCache(document: unknown): ScanCache {
       if (
         typeof timestampMs !== "number" ||
         !Number.isFinite(timestampMs) ||
+        typeof sessionIndex !== "number" ||
+        !Number.isSafeInteger(sessionIndex) ||
+        sessionIndex < 0 ||
+        sessionIndex >= sessions.length ||
         model === undefined ||
         !Number.isFinite(uncached) ||
         !Number.isFinite(cached) ||
         !Number.isFinite(cacheCreation) ||
         !Number.isFinite(output) ||
-        !Number.isFinite(reasoning)
+        !Number.isFinite(reasoning) ||
+        (dedupeKey !== null && typeof dedupeKey !== "string") ||
+        (reportedCostUsd !== null &&
+          (typeof reportedCostUsd !== "number" || !Number.isFinite(reportedCostUsd)))
       ) {
         corrupt = true;
         break;
@@ -183,7 +190,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         provider,
         timestampMs,
         model,
-        sessionId: (typeof sessionIndex === "number" ? sessions[sessionIndex] : undefined) ?? "",
+        sessionId: sessions[sessionIndex] as string,
         totals: {
           uncachedInputTokens: uncached,
           cachedInputTokens: cached,
@@ -191,8 +198,8 @@ export function decodeScanCache(document: unknown): ScanCache {
           outputTokens: output,
           reasoningTokens: reasoning,
         },
-        reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
-        dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
+        reportedCostUsd,
+        dedupeKey,
       });
     }
 

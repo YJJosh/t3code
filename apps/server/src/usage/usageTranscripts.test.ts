@@ -210,6 +210,20 @@ describe("parseCodexLine", () => {
       expect(next).not.toBeNull();
     });
 
+    it("counts the first genuine event when it repeats the final copied totals", () => {
+      const state = initialCodexScanState();
+      const forkInstant = "2026-08-01T05:00:00.000Z";
+      parseCodexLine(meta({ id: "child", timestamp: forkInstant, forkedFromId: "parent" }), state);
+      parseCodexLine(stamped(forkInstant, turnContext), state);
+      const repeatedTotals = tokenCount(100, 0, 10, 0);
+
+      expect(parseCodexLine(stamped("2026-08-01T05:00:00.001Z", repeatedTotals), state)).toBeNull();
+
+      const real = parseCodexLine(stamped("2026-08-01T05:00:06.000Z", repeatedTotals), state);
+      expect(real).not.toBeNull();
+      expect(real?.totals.outputTokens).toBe(10);
+    });
+
     it("recognizes subagent spawns without forked_from_id", () => {
       const state = initialCodexScanState();
       const spawnInstant = "2026-08-01T05:00:00.000Z";

@@ -112,6 +112,27 @@ describe("scan cache round trip", () => {
     const restored = decodeScanCache(JSON.parse(JSON.stringify(poisoned)));
     expect(restored.has("/a.jsonl")).toBe(false);
   });
+
+  it.each([
+    ["out-of-range session index", 2, 99],
+    ["non-string dedupe key", 8, 42],
+    ["non-numeric reported cost", 9, "bad-cost"],
+  ])("rejects %s instead of warming a lossy cache entry", (_label, index, invalidValue) => {
+    const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record()]]]));
+    const row = [...encoded.files["/a.jsonl"]!.r[0]!] as unknown[];
+    row[index as number] = invalidValue;
+    const poisoned = {
+      ...encoded,
+      files: {
+        "/a.jsonl": {
+          ...encoded.files["/a.jsonl"]!,
+          r: [row],
+        },
+      },
+    };
+
+    expect(decodeScanCache(JSON.parse(JSON.stringify(poisoned))).has("/a.jsonl")).toBe(false);
+  });
 });
 
 describe("pruneScanCache", () => {

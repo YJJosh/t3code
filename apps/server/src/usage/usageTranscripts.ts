@@ -262,22 +262,27 @@ export function parseCodexLine(
   if (timestampMs === null) return null;
   if (state.model.length === 0) return null;
 
-  // Codex re-emits an unchanged token_count on some stream boundaries. Summing
-  // those would double count, so identical consecutive payloads are skipped.
   const signature = JSON.stringify(lastRecord);
-  if (signature === state.lastUsageSignature) return null;
-  state.lastUsageSignature = signature;
 
   // In a forked rollout the copied parent history was already counted from the
   // parent's own file. Drop the leading burst; the first usage event separated
-  // from its predecessor by a real turn's worth of time ends it for good.
+  // from its predecessor by a real turn's worth of time ends it for good. End
+  // suppression before duplicate filtering because the first genuine event can
+  // legitimately repeat the final copied totals.
   if (state.suppressingForkCopies) {
     if (timestampMs - state.forkCopyAnchorMs < FORK_COPY_MAX_GAP_MS) {
       state.forkCopyAnchorMs = timestampMs;
+      state.lastUsageSignature = signature;
       return null;
     }
     state.suppressingForkCopies = false;
+    state.lastUsageSignature = null;
   }
+
+  // Codex re-emits an unchanged token_count on some stream boundaries. Summing
+  // those would double count, so identical consecutive payloads are skipped.
+  if (signature === state.lastUsageSignature) return null;
+  state.lastUsageSignature = signature;
 
   const inputTokens = int(lastRecord["input_tokens"]);
   const cachedInputTokens = int(lastRecord["cached_input_tokens"]);
