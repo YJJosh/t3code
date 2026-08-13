@@ -14,7 +14,10 @@
 import * as NodeOS from "node:os";
 
 import {
+  ClaudeSettings,
+  CodexSettings,
   USAGE_CONTRACT_VERSION,
+  type ServerSettings as ServerSettingsValue,
   type UsageProviderKind,
   type UsageSource,
   type UsageSummary,
@@ -37,6 +40,7 @@ import { ServerConfig } from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
+import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
@@ -68,6 +72,74 @@ const MAX_HOURLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** Longest window the UI offers, plus slack. Older entries are pruned. */
 const CACHE_RETENTION_DAYS = 90;
+
+interface TranscriptDir {
+  readonly provider: UsageProviderKind;
+  readonly dir: string;
+}
+
+const decodeClaudeSettings = Schema.decodeUnknownEffect(ClaudeSettings);
+const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
+
+/**
+ * Claude's config dir is the home itself when overridden, but a default
+ * install nests transcripts under `~/.claude/projects`. Probe both.
+ */
+const resolveClaudeTranscriptDir = Effect.fn("UsageService.resolveClaudeTranscriptDir")(function* (
+  homePath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const nested = path.join(homePath, ".claude", "projects");
+  const nestedExists = yield* fileSystem
+    .exists(nested)
+    .pipe(Effect.catchCause(() => Effect.succeed(false)));
+  return nestedExists ? nested : path.join(homePath, "projects");
+});
+
+/** Resolves and deduplicates transcript directories from every configured instance. */
+export const resolveUsageTranscriptDirs = Effect.fn("UsageService.resolveUsageTranscriptDirs")(
+  function* (settings: ServerSettingsValue) {
+    const path = yield* Path.Path;
+    const directories = new Map<string, TranscriptDir>();
+    const addDirectory = (provider: UsageProviderKind, dir: string) => {
+      directories.set(`${provider}\0${dir}`, { provider, dir });
+    };
+
+    for (const instance of Object.values(deriveProviderInstanceConfigMap(settings))) {
+      if (instance.driver === "claudeAgent") {
+        const config = yield* decodeClaudeSettings(instance.config ?? {}).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        if (config === null) continue;
+        const home = yield* resolveClaudeHomePath(config);
+        addDirectory("claude", yield* resolveClaudeTranscriptDir(home));
+        continue;
+      }
+
+      if (instance.driver === "codex") {
+        const config = yield* decodeCodexSettings(instance.config ?? {}).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        if (config === null) continue;
+        const layout = yield* resolveCodexHomeLayout(config);
+        addDirectory("codex", path.join(layout.sharedHomePath, "sessions"));
+      }
+    }
+
+    return [...directories.values()];
+  },
+);
+
+export const resolveUsageSourceReadCoverage = (
+  unreadableFiles: number,
+): Pick<UsageSource, "status" | "message"> =>
+  unreadableFiles > 0
+    ? {
+        status: "partial",
+        message: `${unreadableFiles} transcript ${unreadableFiles === 1 ? "file" : "files"} could not be read.`,
+      }
+    : { status: "ok", message: null };
 
 /** On-disk shape of the rate snapshot. */
 const RatesCacheFile = Schema.Struct({
@@ -185,47 +257,6 @@ export const make = Effect.gen(function* () {
   });
 
   /**
-   * Claude's config dir is the home itself when overridden, but a default
-   * install nests transcripts under `~/.claude/projects`. Probe both.
-   */
-  const resolveClaudeTranscriptDir = (homePath: string) =>
-    Effect.gen(function* () {
-      const nested = path.join(homePath, ".claude", "projects");
-      const nestedExists = yield* fileSystem
-        .exists(nested)
-        .pipe(Effect.catchCause(() => Effect.succeed(false)));
-      return nestedExists ? nested : path.join(homePath, "projects");
-    });
-
-  /** Resolves the transcript directory for each provider. */
-  const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* () {
-    // A settings failure must surface as an error: swallowing it here would
-    // present "zero usage from every provider" as a valid answer.
-    const settings = yield* settingsService.getSettings.pipe(
-      Effect.catchCause(
-        (cause) =>
-          new UsageReadError({
-            reason: "scanFailed",
-            // Bounded description; the squashed failure travels as the cause.
-            // Squashed, not the Cause tree: a full tree in a Defect field is
-            // the unbounded wire payload the bounded detail exists to avoid.
-            detail: "Server settings could not be read.",
-            cause: Cause.squash(cause),
-          }),
-      ),
-    );
-
-    const claudeHome = yield* resolveClaudeHomePath(settings.providers.claudeAgent);
-    const claudeDir = yield* resolveClaudeTranscriptDir(claudeHome);
-    const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
-
-    return [
-      { provider: "claude" as const, dir: claudeDir },
-      { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
-    ];
-  });
-
-  /**
    * Loads the persisted scan cache exactly once per process.
    *
    * `Effect.cached` makes concurrent first readers await the same load rather
@@ -263,7 +294,7 @@ export const make = Effect.gen(function* () {
     size: number,
     mtimeMs: number,
     provider: UsageProviderKind,
-  ): Effect.Effect<readonly UsageRecord[]> =>
+  ): Effect.Effect<{ readonly records: readonly UsageRecord[]; readonly readFailed: boolean }> =>
     Effect.gen(function* () {
       const cached = fileCache.get(filePath);
       // Provider is part of the identity: if both providers were ever pointed
@@ -274,20 +305,20 @@ export const make = Effect.gen(function* () {
         cached.mtimeMs === mtimeMs &&
         cached.provider === provider
       ) {
-        return cached.records;
+        return { records: cached.records, readFailed: false };
       }
 
       const parsed = yield* Effect.promise(() => readTranscriptRecords(filePath, provider));
       // A read failure is not an empty transcript: caching it under this
       // (size, mtime) would silently drop the file's usage until it changes.
-      if (parsed === null) return [];
+      if (parsed === null) return { records: [], readFailed: true };
       // Stored already de-duplicated within the file, which is 99% of all
       // duplicates. The aggregator still runs the cross-file dedupe pass.
       const records = dedupeWithinFile(parsed);
 
       fileCache.set(filePath, { size, mtimeMs, provider, records });
       cacheDirty = true;
-      return records;
+      return { records, readFailed: false };
     });
 
   const readSummary = Effect.fn("UsageService.readSummary")(function* (input: UsageSummaryInput) {
@@ -327,9 +358,24 @@ export const make = Effect.gen(function* () {
     yield* ensureScanCacheLoaded;
 
     const hostId = NodeOS.hostname();
-    // The home resolvers ask for `Path` themselves; satisfy them from the
-    // instance we already hold so `readSummary` stays context-free.
-    const dirs = yield* resolveTranscriptDirs().pipe(Effect.provideService(Path.Path, path));
+    // A settings failure must surface as an error: swallowing it here would
+    // present "zero usage from every provider" as a valid answer.
+    const settings = yield* settingsService.getSettings.pipe(
+      Effect.catchCause(
+        (cause) =>
+          new UsageReadError({
+            reason: "scanFailed",
+            detail: "Server settings could not be read.",
+            cause: Cause.squash(cause),
+          }),
+      ),
+    );
+    // The home resolvers ask for filesystem services themselves; satisfy them
+    // from the instances already held by this service so readSummary stays context-free.
+    const dirs = yield* resolveUsageTranscriptDirs(settings).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
     const windowStart = DateTime.make(`${input.sinceDay}T00:00:00Z`);
     if (Option.isNone(windowStart)) {
       return yield* new UsageReadError({
@@ -376,19 +422,21 @@ export const make = Effect.gen(function* () {
       const files = yield* Effect.promise(() => listTranscriptFiles(dir, windowStartMs));
       let scannedFiles = 0;
       let skippedFiles = 0;
+      let unreadableFiles = 0;
       // Distinct per directory. Buckets carry per-cell session counts, but a
       // session spans days and models, so clients total this figure instead.
       const sessionIds = new Set<string>();
 
       for (const file of files) {
         livePaths.add(file.path);
-        const records = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
-        if (records.length === 0) {
+        const read = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
+        if (read.readFailed) unreadableFiles += 1;
+        if (read.records.length === 0) {
           skippedFiles += 1;
           continue;
         }
         scannedFiles += 1;
-        for (const record of records) {
+        for (const record of read.records) {
           // Only sessions that contributed in-window count: the mtime slack
           // admits boundary files whose records fall outside the range.
           if (aggregator.add(record) && record.sessionId.length > 0) {
@@ -399,12 +447,11 @@ export const make = Effect.gen(function* () {
 
       sources.push({
         fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
-        status: "ok",
+        ...resolveUsageSourceReadCoverage(unreadableFiles),
         scannedFiles,
         skippedFiles,
         malformedRecords: 0,
         distinctSessions: sessionIds.size,
-        message: null,
       });
     }
 
