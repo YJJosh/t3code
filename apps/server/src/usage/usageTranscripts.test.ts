@@ -2,8 +2,10 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   initialCodexScanState,
+  initialPiScanState,
   parseClaudeLine,
   parseCodexLine,
+  parsePiLine,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -64,6 +66,90 @@ describe("parseClaudeLine", () => {
   it("ignores records that are not assistant messages", () => {
     expect(parseClaudeLine(JSON.stringify({ type: "user", message: {} }))).toBeNull();
     expect(parseClaudeLine("not json")).toBeNull();
+  });
+});
+
+describe("parsePiLine", () => {
+  it("extracts Pi token classes, reported cost, and the underlying model", () => {
+    const state = initialPiScanState();
+    parsePiLine(
+      JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "pi-session-1",
+        timestamp: "2026-08-07T04:00:00.000Z",
+        cwd: "/work/project",
+      }),
+      state,
+    );
+    expect(state.projectPath).toBe("/work/project");
+
+    const record = parsePiLine(
+      JSON.stringify({
+        type: "message",
+        timestamp: "2026-08-07T04:05:13.944Z",
+        message: {
+          role: "assistant",
+          provider: "openai-codex",
+          model: "gpt-5.6-sol",
+          usage: {
+            input: 25,
+            output: 300,
+            cacheRead: 6205,
+            cacheWrite: 384,
+            totalTokens: 6914,
+            cost: { total: 0.128 },
+          },
+        },
+      }),
+      state,
+    );
+
+    expect(record).toMatchObject({
+      provider: "pi",
+      model: "openai-codex/gpt-5.6-sol",
+      sessionId: "pi-session-1",
+      totals: {
+        uncachedInputTokens: 25,
+        cachedInputTokens: 6205,
+        cacheCreationTokens: 384,
+        outputTokens: 300,
+        reasoningTokens: 0,
+      },
+      reportedCostUsd: 0.128,
+    });
+  });
+
+  it("attributes compaction usage to the active model", () => {
+    const state = initialPiScanState();
+    parsePiLine(
+      JSON.stringify({
+        type: "model_change",
+        provider: "anthropic",
+        modelId: "claude-opus-5",
+      }),
+      state,
+    );
+
+    const record = parsePiLine(
+      JSON.stringify({
+        type: "compaction",
+        timestamp: "2026-08-07T05:00:00.000Z",
+        usage: {
+          input: 100,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          reasoning: 8,
+          cost: { total: 0.05 },
+        },
+      }),
+      state,
+    );
+
+    expect(record?.model).toBe("anthropic/claude-opus-5");
+    expect(record?.totals.reasoningTokens).toBe(8);
+    expect(record?.reportedCostUsd).toBe(0.05);
   });
 });
 

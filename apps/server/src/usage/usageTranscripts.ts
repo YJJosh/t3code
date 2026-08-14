@@ -1,8 +1,8 @@
 /**
  * Pure parsers for the provider CLIs' on-disk session transcripts.
  *
- * Both parsers are line-at-a-time reducers so callers can stream large files
- * without materialising them. Neither touches the filesystem.
+ * The parsers are line-at-a-time reducers so callers can stream large files
+ * without materialising them. None touches the filesystem.
  *
  * @module usageTranscripts
  */
@@ -72,7 +72,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
  * an order of magnitude.
  */
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
-  return provider === "claude" ? line.includes('"usage"') : line.includes('"token_count"');
+  return provider === "codex" ? line.includes('"token_count"') : line.includes('"usage"');
 }
 
 /* -------------------------------------------------------------------------- */
@@ -141,6 +141,93 @@ export function parseClaudeLine(
     },
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     dedupeKey,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Pi                                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** Rolling identity needed for Pi usage entries that do not repeat model metadata. */
+export interface PiScanState {
+  sessionId: string;
+  projectPath: string;
+  provider: string;
+  model: string;
+}
+
+export function initialPiScanState(): PiScanState {
+  return { sessionId: "", projectPath: "", provider: "", model: "" };
+}
+
+/** Parses one line from Pi's native session JSONL format. */
+export function parsePiLine(
+  line: string,
+  state: PiScanState,
+  diagnostics?: UsageParseDiagnostics,
+): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    if (diagnostics) diagnostics.malformedRecords += 1;
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+
+  const entry = parsed as Record<string, unknown>;
+  if (entry["type"] === "session") {
+    if (typeof entry["id"] === "string") state.sessionId = entry["id"];
+    if (typeof entry["cwd"] === "string") state.projectPath = entry["cwd"];
+    return null;
+  }
+  if (entry["type"] === "model_change") {
+    if (typeof entry["provider"] === "string") state.provider = entry["provider"];
+    if (typeof entry["modelId"] === "string") state.model = entry["modelId"];
+    return null;
+  }
+
+  let usage: unknown = entry["usage"];
+  if (entry["type"] === "message") {
+    const message = entry["message"];
+    if (typeof message !== "object" || message === null) return null;
+    const messageRecord = message as Record<string, unknown>;
+    const role = messageRecord["role"];
+    if (role !== "assistant" && role !== "toolResult") return null;
+    if (role === "assistant") {
+      if (typeof messageRecord["provider"] === "string") state.provider = messageRecord["provider"];
+      if (typeof messageRecord["model"] === "string") state.model = messageRecord["model"];
+    }
+    usage = messageRecord["usage"];
+  } else if (entry["type"] !== "compaction" && entry["type"] !== "branch_summary") {
+    return null;
+  }
+
+  if (typeof usage !== "object" || usage === null || state.model.length === 0) return null;
+  const usageRecord = usage as Record<string, unknown>;
+  const timestampMs = parseTimestampMs(entry["timestamp"]);
+  if (timestampMs === null) return null;
+
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: int(usageRecord["input"]),
+    cachedInputTokens: int(usageRecord["cacheRead"]),
+    cacheCreationTokens: int(usageRecord["cacheWrite"]),
+    outputTokens: int(usageRecord["output"]),
+    reasoningTokens: Math.min(int(usageRecord["output"]), int(usageRecord["reasoning"])),
+  };
+  if (totalTokens(totals) === 0) return null;
+
+  const cost = usageRecord["cost"];
+  const totalCost =
+    typeof cost === "object" && cost !== null ? (cost as Record<string, unknown>)["total"] : null;
+  return {
+    provider: "pi",
+    timestampMs,
+    model: state.provider.length > 0 ? `${state.provider}/${state.model}` : state.model,
+    sessionId: state.sessionId,
+    totals,
+    reportedCostUsd: typeof totalCost === "number" && Number.isFinite(totalCost) ? totalCost : null,
+    dedupeKey: null,
   };
 }
 

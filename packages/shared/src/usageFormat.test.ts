@@ -47,6 +47,16 @@ describe("hourly usage formatting", () => {
     ).toBe("6 PM yesterday");
   });
 
+  it("builds an inclusive 30-day calendar request", () => {
+    const window = makeWindow(30, new Date(2026, 7, 14, 12, 0, 0), "day");
+
+    expect(window.resolution).toBe("day");
+    expect(window.sinceDay).toBe("2026-07-16");
+    expect(window.untilDay).toBe("2026-08-14");
+    expect(window.sinceTime).toBeUndefined();
+    expect(window.untilTime).toBeUndefined();
+  });
+
   it("builds an exact minute-aligned 24-hour request", () => {
     const window = makeWindow(1, new Date("2026-08-11T12:37:42.123Z"), "hour");
 

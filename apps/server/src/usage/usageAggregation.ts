@@ -14,7 +14,7 @@
  */
 import type { UsageBucket, UsageDay, UsageResolution, UsageTokenTotals } from "@t3tools/contracts";
 
-import { addTotals, EMPTY_TOTALS, type UsageRecord } from "./usageTranscripts.ts";
+import { addTotals, EMPTY_TOTALS, totalTokens, type UsageRecord } from "./usageTranscripts.ts";
 import { cacheSavingsUsd, priceUsage, type RateTable } from "./usagePricing.ts";
 
 /**
@@ -112,6 +112,11 @@ export class UsageAggregator {
    * that landed rather than everything the mtime prefilter happened to admit.
    */
   add(record: UsageRecord): boolean {
+    // Locally generated placeholders such as Claude's `<synthetic>` model can
+    // carry a structurally valid but entirely empty usage object. They are not
+    // provider activity and should not create zero-value rows in the UI.
+    if (totalTokens(record.totals) === 0 && (record.reportedCostUsd ?? 0) === 0) return false;
+
     if (record.dedupeKey !== null) {
       if (this.#seen.has(record.dedupeKey)) {
         this.#duplicatesDropped += 1;

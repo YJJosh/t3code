@@ -16,6 +16,7 @@ import * as NodeOS from "node:os";
 import {
   ClaudeSettings,
   CodexSettings,
+  PiSettings,
   USAGE_CONTRACT_VERSION,
   type ServerSettings as ServerSettingsValue,
   type UsageProviderKind,
@@ -81,6 +82,7 @@ interface TranscriptDir {
 
 const decodeClaudeSettings = Schema.decodeUnknownEffect(ClaudeSettings);
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
+const decodePiSettings = Schema.decodeUnknownEffect(PiSettings);
 
 /**
  * Claude's config dir is the home itself when overridden, but a default
@@ -96,6 +98,54 @@ const resolveClaudeTranscriptDir = Effect.fn("UsageService.resolveClaudeTranscri
     .exists(nested)
     .pipe(Effect.catchCause(() => Effect.succeed(false)));
   return nestedExists ? nested : path.join(homePath, "projects");
+});
+
+function expandPiHomePath(value: string, homePath: string, path: Path.Path): string {
+  if (value === "~") return homePath;
+  const usesHomePrefix = value.startsWith("~/") || value.startsWith("~\\");
+  return usesHomePrefix ? path.join(homePath, value.slice(2)) : value;
+}
+
+/** Resolves Pi's session root using the same configuration precedence as its RPC process. */
+export function resolvePiTranscriptDir(
+  config: PiSettings,
+  environment: NodeJS.ProcessEnv,
+  path: Path.Path,
+): string {
+  const homePath = environment.HOME?.trim() || environment.USERPROFILE?.trim() || NodeOS.homedir();
+  const sessionOverride = environment.PI_CODING_AGENT_SESSION_DIR?.trim();
+  if (sessionOverride) return expandPiHomePath(sessionOverride, homePath, path);
+
+  const configuredAgentDir = config.agentDir.trim();
+  const inheritedAgentDir = environment.PI_CODING_AGENT_DIR?.trim();
+  const agentDir = configuredAgentDir || inheritedAgentDir || path.join(homePath, ".pi", "agent");
+  return path.join(expandPiHomePath(agentDir, homePath, path), "sessions");
+}
+
+/** Finds pi-subagents child-session roots reachable from Pi session project paths. */
+export const resolvePiSubagentTranscriptDirs = Effect.fn(
+  "UsageService.resolvePiSubagentTranscriptDirs",
+)(function* (projectPaths: Iterable<string>) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const roots = new Set<string>();
+
+  for (const projectPath of projectPaths) {
+    let current = path.resolve(projectPath);
+    while (true) {
+      const runs = path.join(current, ".pi-subagents", "runs");
+      const exists = yield* fileSystem
+        .exists(runs)
+        .pipe(Effect.catchCause(() => Effect.succeed(false)));
+      if (exists) roots.add(runs);
+
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+
+  return [...roots];
 });
 
 /** Resolves and deduplicates transcript directories from every configured instance. */
@@ -131,6 +181,16 @@ export const resolveUsageTranscriptDirs = Effect.fn("UsageService.resolveUsageTr
         if (config === null) continue;
         const layout = yield* resolveCodexHomeLayout(config);
         addDirectory("codex", path.join(layout.sharedHomePath, "sessions"));
+        continue;
+      }
+
+      if (instance.driver === "pi") {
+        const config = yield* decodePiSettings(instance.config ?? {}).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        if (config === null) continue;
+        const environment = mergeProviderInstanceEnvironment(instance.environment, baseEnvironment);
+        addDirectory("pi", resolvePiTranscriptDir(config, environment, path));
       }
     }
 
@@ -315,12 +375,13 @@ export const make = Effect.gen(function* () {
   ): Effect.Effect<{
     readonly records: readonly UsageRecord[];
     readonly malformedRecords: number;
+    readonly projectPaths: readonly string[];
     readonly readFailed: boolean;
   }> =>
     Effect.gen(function* () {
       const cached = fileCache.get(filePath);
-      // Provider is part of the identity: if both providers were ever pointed
-      // at one directory, a hit parsed by the other parser must not be reused.
+      // Provider is part of the identity: if multiple providers were ever pointed
+      // at one directory, a hit parsed by another parser must not be reused.
       if (
         cached &&
         cached.size === size &&
@@ -330,6 +391,7 @@ export const make = Effect.gen(function* () {
         return {
           records: cached.records,
           malformedRecords: cached.malformedRecords,
+          projectPaths: cached.projectPaths,
           readFailed: false,
         };
       }
@@ -337,7 +399,9 @@ export const make = Effect.gen(function* () {
       const parsed = yield* Effect.promise(() => readTranscriptRecords(filePath, provider));
       // A read failure is not an empty transcript: caching it under this
       // (size, mtime) would silently drop the file's usage until it changes.
-      if (parsed === null) return { records: [], malformedRecords: 0, readFailed: true };
+      if (parsed === null) {
+        return { records: [], malformedRecords: 0, projectPaths: [], readFailed: true };
+      }
       // Stored already de-duplicated within the file, which is 99% of all
       // duplicates. The aggregator still runs the cross-file dedupe pass.
       const records = dedupeWithinFile(parsed.records);
@@ -348,9 +412,15 @@ export const make = Effect.gen(function* () {
         provider,
         records,
         malformedRecords: parsed.malformedRecords,
+        projectPaths: parsed.projectPaths,
       });
       cacheDirty = true;
-      return { records, malformedRecords: parsed.malformedRecords, readFailed: false };
+      return {
+        records,
+        malformedRecords: parsed.malformedRecords,
+        projectPaths: parsed.projectPaths,
+        readFailed: false,
+      };
     });
 
   const readSummary = Effect.fn("UsageService.readSummary")(function* (input: UsageSummaryInput) {
@@ -404,10 +474,18 @@ export const make = Effect.gen(function* () {
     );
     // The home resolvers ask for filesystem services themselves; satisfy them
     // from the instances already held by this service so readSummary stays context-free.
-    const dirs = yield* resolveUsageTranscriptDirs(settings).pipe(
+    const initialDirs = yield* resolveUsageTranscriptDirs(settings).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
     );
+    const dirs = [...initialDirs];
+    const knownDirs = new Set(dirs.map(({ provider, dir }) => `${provider}\0${dir}`));
+    const enqueueDir = (provider: UsageProviderKind, dir: string) => {
+      const key = `${provider}\0${dir}`;
+      if (knownDirs.has(key)) return;
+      knownDirs.add(key);
+      dirs.push({ provider, dir });
+    };
     const windowStart = DateTime.make(`${input.sinceDay}T00:00:00Z`);
     if (Option.isNone(windowStart)) {
       return yield* new UsageReadError({
@@ -431,7 +509,10 @@ export const make = Effect.gen(function* () {
     const livePaths = new Set<string>();
     const walkedRoots: string[] = [];
 
-    for (const { provider, dir } of dirs) {
+    for (let dirIndex = 0; dirIndex < dirs.length; dirIndex += 1) {
+      const transcriptDir = dirs[dirIndex];
+      if (transcriptDir === undefined) continue;
+      const { provider, dir } = transcriptDir;
       const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
       const exists = yield* fileSystem
         .exists(dir)
@@ -460,10 +541,12 @@ export const make = Effect.gen(function* () {
       // Distinct per directory. Buckets carry per-cell session counts, but a
       // session spans days and models, so clients total this figure instead.
       const sessionIds = new Set<string>();
+      const projectPaths = new Set<string>();
 
       for (const file of listing.files) {
         livePaths.add(file.path);
         const read = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
+        for (const projectPath of read.projectPaths) projectPaths.add(projectPath);
         if (read.readFailed) unreadableFiles += 1;
         malformedRecords += read.malformedRecords;
         if (read.records.length === 0) {
@@ -491,6 +574,14 @@ export const make = Effect.gen(function* () {
         malformedRecords,
         distinctSessions: sessionIds.size,
       });
+
+      if (provider === "pi" && projectPaths.size > 0) {
+        const subagentDirs = yield* resolvePiSubagentTranscriptDirs(projectPaths).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
+        for (const subagentDir of subagentDirs) enqueueDir("pi", subagentDir);
+      }
     }
 
     const pruned = pruneScanCache(fileCache, {

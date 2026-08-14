@@ -34,9 +34,10 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
     cache.set(path, {
       size: records.length * 10,
       mtimeMs,
-      provider: "claude",
+      provider: records[0]?.provider ?? "claude",
       records,
       malformedRecords: 0,
+      projectPaths: [],
     });
   }
   return cache;
@@ -47,13 +48,30 @@ describe("scan cache round trip", () => {
     const original = cacheWith([
       ["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:", model: "claude-opus-5" })]],
       ["/b.jsonl", 200, [record({ sessionId: "session-b", reportedCostUsd: 1.5 })]],
+      [
+        "/pi.jsonl",
+        300,
+        [record({ provider: "pi", model: "openai-codex/gpt-5.6-sol", dedupeKey: null })],
+      ],
     ]);
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
 
-    expect(restored.size).toBe(2);
+    expect(restored.size).toBe(3);
     expect(restored.get("/a.jsonl")).toEqual(original.get("/a.jsonl"));
     expect(restored.get("/b.jsonl")).toEqual(original.get("/b.jsonl"));
+    expect(restored.get("/pi.jsonl")).toEqual(original.get("/pi.jsonl"));
+  });
+
+  it("retains Pi project roots used for child-session discovery", () => {
+    const original = cacheWith([["/pi.jsonl", 100, [record({ provider: "pi" })]]]);
+    const piEntry = original.get("/pi.jsonl");
+    if (piEntry === undefined) throw new Error("missing fixture entry");
+    original.set("/pi.jsonl", { ...piEntry, projectPaths: ["/work/project"] });
+
+    const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
+
+    expect(restored.get("/pi.jsonl")?.projectPaths).toEqual(["/work/project"]);
   });
 
   it("interns repeated model and session strings", () => {

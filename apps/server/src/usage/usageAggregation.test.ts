@@ -179,6 +179,22 @@ describe("UsageAggregator", () => {
     expect(result.buckets).toHaveLength(0);
   });
 
+  it("omits zero-value synthetic records", () => {
+    const synthetic = record({
+      model: "<synthetic>",
+      totals: {
+        uncachedInputTokens: 0,
+        cachedInputTokens: 0,
+        cacheCreationTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+      },
+      reportedCostUsd: 0,
+    });
+
+    expect(aggregate([synthetic]).buckets).toEqual([]);
+  });
+
   it("reports whether a record contributed", () => {
     const aggregator = new UsageAggregator({
       timeZone: "UTC",

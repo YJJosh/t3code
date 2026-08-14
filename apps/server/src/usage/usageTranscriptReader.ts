@@ -19,9 +19,11 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 
 import {
   initialCodexScanState,
+  initialPiScanState,
   mightCarryUsage,
   parseClaudeLine,
   parseCodexLine,
+  parsePiLine,
   type UsageRecord,
 } from "./usageTranscripts.ts";
 
@@ -39,6 +41,8 @@ export interface TranscriptFileListing {
 export interface TranscriptReadResult {
   readonly records: readonly UsageRecord[];
   readonly malformedRecords: number;
+  /** Project roots declared by Pi session headers, used to discover child-agent sessions. */
+  readonly projectPaths: readonly string[];
 }
 
 /**
@@ -120,6 +124,7 @@ export async function readTranscriptRecords(
   const records: UsageRecord[] = [];
   const diagnostics = { malformedRecords: 0 };
   const codexState = initialCodexScanState();
+  const piState = initialPiScanState();
 
   try {
     const lines = NodeReadline.createInterface({
@@ -141,6 +146,20 @@ export async function readTranscriptRecords(
         continue;
       }
 
+      if (provider === "pi") {
+        if (
+          !mightCarryUsage(line, provider) &&
+          !line.includes('"type":"session"') &&
+          !line.includes('"type": "session"') &&
+          !line.includes('"model_change"')
+        ) {
+          continue;
+        }
+        const record = parsePiLine(line, piState, diagnostics);
+        if (record !== null) records.push(record);
+        continue;
+      }
+
       if (!mightCarryUsage(line, provider)) continue;
       const record = parseClaudeLine(line, diagnostics);
       if (record !== null) records.push(record);
@@ -149,5 +168,9 @@ export async function readTranscriptRecords(
     return null;
   }
 
-  return { records, malformedRecords: diagnostics.malformedRecords };
+  return {
+    records,
+    malformedRecords: diagnostics.malformedRecords,
+    projectPaths: piState.projectPath.length > 0 ? [piState.projectPath] : [],
+  };
 }

@@ -18,8 +18,8 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 
 import type { UsageRecord } from "./usageTranscripts.ts";
 
-// v3: Persist malformed-record counts so warm scans retain honest diagnostics.
-export const USAGE_SCAN_CACHE_VERSION = 3 as const;
+// v4: Invalidate entries created before Pi sessions had their own parser.
+export const USAGE_SCAN_CACHE_VERSION = 4 as const;
 
 export interface CachedFile {
   readonly size: number;
@@ -27,6 +27,7 @@ export interface CachedFile {
   readonly provider: UsageProviderKind;
   readonly records: readonly UsageRecord[];
   readonly malformedRecords: number;
+  readonly projectPaths: readonly string[];
 }
 
 export type ScanCache = Map<string, CachedFile>;
@@ -54,6 +55,7 @@ interface SerializedFile {
   readonly m: number;
   readonly p: UsageProviderKind;
   readonly x: number;
+  readonly d: readonly string[];
   readonly r: readonly SerializedRecord[];
 }
 
@@ -87,6 +89,7 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
       m: entry.mtimeMs,
       p: entry.provider,
       x: entry.malformedRecords,
+      d: entry.projectPaths,
       r: entry.records.map((record) => [
         record.timestampMs,
         intern(models, modelIndex, record.model),
@@ -136,8 +139,9 @@ export function decodeScanCache(document: unknown): ScanCache {
     if (typeof raw !== "object" || raw === null) continue;
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
-    if (entry.p !== "claude" && entry.p !== "codex") continue;
+    if (entry.p !== "claude" && entry.p !== "codex" && entry.p !== "pi") continue;
     if (typeof entry.x !== "number" || !Number.isSafeInteger(entry.x) || entry.x < 0) continue;
+    if (!isRecordArray(entry.d) || !entry.d.every((value) => typeof value === "string")) continue;
     if (!isRecordArray(entry.r)) continue;
 
     const provider: UsageProviderKind = entry.p;
@@ -210,6 +214,7 @@ export function decodeScanCache(document: unknown): ScanCache {
       provider,
       records,
       malformedRecords: entry.x,
+      projectPaths: entry.d as readonly string[],
     });
   }
 
