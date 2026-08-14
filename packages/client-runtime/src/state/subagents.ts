@@ -6,7 +6,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom } from "effect/unstable/reactivity";
 
 import { createEnvironmentRpcCommand, createEnvironmentSubscriptionAtomFamily } from "./runtime.ts";
-import { applySubagentEvent, EMPTY_SUBAGENT_RUNTIME_STATE } from "./subagentRuntime.ts";
+import { applySubagentEvent, EMPTY_SUBAGENT_RUNTIME_STATE } from "./piSubagentRuntime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import { request, subscribe, type EnvironmentRpcInput } from "../rpc/client.ts";
@@ -80,5 +80,5 @@ export function createSubagentEnvironmentAtoms<R, E>(
   };
 }
 
-export * from "./subagentRuntime.ts";
+export * from "./piSubagentRuntime.ts";
 export * from "./subagentTranscript.ts";
