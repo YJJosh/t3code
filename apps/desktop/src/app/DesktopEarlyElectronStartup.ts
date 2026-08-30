@@ -49,6 +49,7 @@ const isDulliApp = (appName: string | undefined, env: NodeJS.ProcessEnv): boolea
   !isDevelopmentEnvironment(env) && appName?.trim() === "T3 Dulli";
 
 function resolveEarlyDesktopSettingsPath(input: {
+  readonly appName?: string;
   readonly env: NodeJS.ProcessEnv;
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
