@@ -26,10 +26,10 @@ import {
 } from "./subagentPresentation";
 
 const STATUS_PILL_CLASS = {
-  info: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
-  warning: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
-  success: "bg-green-500/15 text-green-700 dark:text-green-300",
-  error: "bg-red-500/15 text-red-700 dark:text-red-300",
+  info: "bg-adaptive-blue-50-blue-400-a14 text-adaptive-blue-600-400",
+  warning: "bg-adaptive-amber-500-a12-a16 text-adaptive-amber-700-300",
+  success: "bg-adaptive-emerald-500-a12-a16 text-adaptive-emerald-700-300",
+  error: "bg-danger text-danger-foreground",
   muted: "bg-foreground-muted/15 text-foreground-muted",
 } as const;
 
@@ -156,7 +156,7 @@ function RunDetail(props: {
             selectable
             className={cn(
               "rounded-2xl border bg-card px-4 py-3 text-sm leading-relaxed",
-              agent.error ? "border-red-500/25 text-red-700 dark:text-red-300" : "border-border",
+              agent.error ? "border-danger-border text-danger-foreground" : "border-border",
             )}
           >
             {agent.error ?? agent.result ?? agent.progress}
@@ -189,7 +189,7 @@ function RunDetail(props: {
           <View className="overflow-hidden rounded-2xl border border-border bg-card">
             {agent.recentActivity.map((entry, index) => (
               <View
-                key={`${entry.at}:${index}`}
+                key={`${entry.at}:${entry.summary}`}
                 className={
                   index === 0 ? "gap-1 px-4 py-3" : "gap-1 border-t border-border px-4 py-3"
                 }

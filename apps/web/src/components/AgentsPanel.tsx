@@ -720,8 +720,8 @@ function AgentDetailsDialog({
                 Recent activity
               </h3>
               <ol className="space-y-1 border-l border-border/60 pl-3 text-xs">
-                {agent.recentActivity.map((entry, index) => (
-                  <li key={`${entry.at}-${index}`}>
+                {agent.recentActivity.map((entry) => (
+                  <li key={`${entry.at}:${entry.summary}`}>
                     <span className="mr-2 font-mono text-[.65rem] text-muted-foreground">
                       {entry.at}
                     </span>

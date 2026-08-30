@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - workflow fixtures are plain YAML files outside the Effect runtime.
-import fs from "node:fs";
-import path from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import { describe, expect, it } from "vite-plus/test";
 import YAML from "yaml";
@@ -15,10 +15,10 @@ interface Workflow {
   readonly jobs: Readonly<Record<string, WorkflowJob>>;
 }
 
-const workflowsDir = path.resolve(import.meta.dirname, "../.github/workflows");
+const workflowsDir = NodePath.resolve(import.meta.dirname, "../.github/workflows");
 
 function readWorkflow(name: string): Workflow {
-  return YAML.parse(fs.readFileSync(path.join(workflowsDir, name), "utf8")) as Workflow;
+  return YAML.parse(NodeFS.readFileSync(NodePath.join(workflowsDir, name), "utf8")) as Workflow;
 }
 
 const hardDisabledWorkflows = {
@@ -52,7 +52,10 @@ describe("fork release workflow safety", () => {
 
   it("allows Dulli publishing only through manual fork release dispatch", () => {
     const workflow = readWorkflow("fork-desktop-release.yml");
-    const source = fs.readFileSync(path.join(workflowsDir, "fork-desktop-release.yml"), "utf8");
+    const source = NodeFS.readFileSync(
+      NodePath.join(workflowsDir, "fork-desktop-release.yml"),
+      "utf8",
+    );
 
     expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
     expect(workflow.jobs.release?.needs).toEqual(["preflight", "build", "build_android"]);

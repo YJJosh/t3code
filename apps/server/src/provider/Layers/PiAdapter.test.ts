@@ -11,7 +11,6 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
-import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
