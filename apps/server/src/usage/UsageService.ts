@@ -41,6 +41,7 @@ import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
+import { resolvePiAgentDir as resolveConfiguredPiAgentDir } from "../provider/pi/piPaths.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -73,7 +74,6 @@ const MAX_HOURLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const CACHE_RETENTION_DAYS = 90;
 
 /** Pi's predecessor Tau derives the same overrides from its application name. */
-const PI_AGENT_DIR_ENV_NAMES = ["PI_CODING_AGENT_DIR", "TAU_CODING_AGENT_DIR"] as const;
 const PI_SESSION_DIR_ENV_NAMES = [
   "PI_CODING_AGENT_SESSION_DIR",
   "TAU_CODING_AGENT_SESSION_DIR",
@@ -112,11 +112,15 @@ function firstDefinedEnvironmentPath(
   return undefined;
 }
 
-/** Resolves Pi's agent directory, including the predecessor's dynamic env name. */
-export function resolvePiAgentDir(environment: NodeJS.ProcessEnv, path: Path.Path): string {
-  const homePath = environment.HOME?.trim() || environment.USERPROFILE?.trim() || NodeOS.homedir();
-  const agentOverride = firstDefinedEnvironmentPath(environment, PI_AGENT_DIR_ENV_NAMES);
-  return resolvePiPath(agentOverride ?? path.join(homePath, ".pi", "agent"), homePath, path);
+/** Resolves Pi's configured agent directory, including Pi/Tau environment overrides. */
+export function resolvePiAgentDir(
+  environment: NodeJS.ProcessEnv,
+  path: Path.Path,
+  configuredAgentDir?: string,
+): string {
+  return path.resolve(
+    resolveConfiguredPiAgentDir(path, { agentDir: configuredAgentDir, environment }),
+  );
 }
 
 /**
@@ -124,11 +128,15 @@ export function resolvePiAgentDir(environment: NodeJS.ProcessEnv, path: Path.Pat
  * an explicit session-dir override, then `<agentDir>/sessions`. Pi derives its
  * env names from its app name, so accept Tau's legacy names after Pi's.
  */
-export function resolvePiTranscriptDir(environment: NodeJS.ProcessEnv, path: Path.Path): string {
+export function resolvePiTranscriptDir(
+  environment: NodeJS.ProcessEnv,
+  path: Path.Path,
+  configuredAgentDir?: string,
+): string {
   const homePath = environment.HOME?.trim() || environment.USERPROFILE?.trim() || NodeOS.homedir();
   const sessionOverride = firstDefinedEnvironmentPath(environment, PI_SESSION_DIR_ENV_NAMES);
   if (sessionOverride !== undefined) return resolvePiPath(sessionOverride, homePath, path);
-  return path.join(resolvePiAgentDir(environment, path), "sessions");
+  return path.join(resolvePiAgentDir(environment, path, configuredAgentDir), "sessions");
 }
 
 /** Finds bounded, de-duplicated Pi subagent roots reachable from project paths. */
@@ -329,12 +337,12 @@ export const make = Effect.gen(function* () {
         ? path.resolve(expandHomePath(grokHomeEnv))
         : path.join(NodeOS.homedir(), ".grok");
 
-    // Pi resolves purely from environment and default, mirroring Grok: the Pi
-    // provider core is not part of this slice, so there is no configured home
-    // to consult yet. Scan its normal layout, the v0.30 direct-file layout,
-    // and any subagent runs rooted in the agent directory.
-    const piAgentDir = resolvePiAgentDir(hostEnvironment, path);
-    const piDir = resolvePiTranscriptDir(hostEnvironment, path);
+    // Scan Pi's configured/env/default layout, the v0.30 direct-file layout,
+    // and any subagent runs rooted in the agent directory. A dedicated session
+    // directory environment override still wins over the configured agent dir.
+    const configuredPiAgentDir = settings.providers.pi.agentDir;
+    const piAgentDir = resolvePiAgentDir(hostEnvironment, path, configuredPiAgentDir);
+    const piDir = resolvePiTranscriptDir(hostEnvironment, path, configuredPiAgentDir);
 
     return [
       { provider: "claude" as const, dir: claudeDir },

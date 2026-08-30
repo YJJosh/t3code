@@ -1149,6 +1149,13 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                 payload: { exitKind: code === 0 ? "graceful" : "error" },
               });
               sessions.delete(ctx.threadId);
+              ctx.stopped = true;
+              // The session scope is independent from startSession's request
+              // scope. Close it on spontaneous exit as well as explicit stop,
+              // otherwise its queues and transport fibers survive after the
+              // context is removed from `sessions` and can never be reached by
+              // the adapter finalizer.
+              yield* Scope.close(ctx.scope, Exit.void).pipe(Effect.ignore);
             }),
           ),
           Effect.forkIn(ctx.scope),
@@ -1367,36 +1374,41 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             yield* syncFastService(ctx, fastServiceEnabled);
 
             const text = input.input?.trim();
-            const images = yield* Effect.forEach(input.attachments ?? [], (attachment) =>
-              Effect.gen(function* () {
-                const attachmentPath = resolveAttachmentPath({
-                  attachmentsDir: serverConfig.attachmentsDir,
-                  attachment,
-                });
-                if (!attachmentPath) {
-                  return yield* new ProviderAdapterRequestError({
-                    provider: PROVIDER,
-                    method: "prompt",
-                    detail: `Invalid attachment id '${attachment.id}'.`,
+            // Pi's RPC transport accepts image payloads only. Generic files
+            // are represented by the path text ProviderService adds to the
+            // prompt, matching the other image-only adapters.
+            const images = yield* Effect.forEach(
+              (input.attachments ?? []).filter((attachment) => attachment.type === "image"),
+              (attachment) =>
+                Effect.gen(function* () {
+                  const attachmentPath = resolveAttachmentPath({
+                    attachmentsDir: serverConfig.attachmentsDir,
+                    attachment,
                   });
-                }
-                const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderAdapterRequestError({
-                        provider: PROVIDER,
-                        method: "prompt",
-                        detail: cause.message,
-                        cause,
-                      }),
-                  ),
-                );
-                return {
-                  type: "image" as const,
-                  data: Buffer.from(bytes).toString("base64"),
-                  mimeType: attachment.mimeType,
-                };
-              }),
+                  if (!attachmentPath) {
+                    return yield* new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "prompt",
+                      detail: `Invalid attachment id '${attachment.id}'.`,
+                    });
+                  }
+                  const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderAdapterRequestError({
+                          provider: PROVIDER,
+                          method: "prompt",
+                          detail: cause.message,
+                          cause,
+                        }),
+                    ),
+                  );
+                  return {
+                    type: "image" as const,
+                    data: Buffer.from(bytes).toString("base64"),
+                    mimeType: attachment.mimeType,
+                  };
+                }),
             );
 
             if (!text && images.length === 0) {

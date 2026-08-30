@@ -26,7 +26,10 @@ export function resolvePiAgentDir(
     process.env.HOME?.trim() ||
     process.env.USERPROFILE?.trim() ||
     ".";
-  const configuredAgentDir = options.agentDir?.trim();
+  const configuredAgentDir =
+    options.agentDir?.trim() ||
+    environment.PI_CODING_AGENT_DIR?.trim() ||
+    environment.TAU_CODING_AGENT_DIR?.trim();
   if (!configuredAgentDir) {
     return paths.join(home, ".pi", "agent");
   }

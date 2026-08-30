@@ -15,12 +15,29 @@ it.effect("defaults to ~/.pi/agent under the environment home", () =>
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect("keeps an absolute configured agent dir as-is", () =>
+it.effect("honors Pi and legacy Tau environment overrides", () =>
   Effect.gen(function* () {
     const paths = yield* Path.Path;
-    expect(resolvePiAgentDir(paths, { agentDir: "/opt/pi/agent", environment: ENV })).toBe(
-      "/opt/pi/agent",
-    );
+    expect(
+      resolvePiAgentDir(paths, {
+        environment: { ...ENV, PI_CODING_AGENT_DIR: "~/pi-env", TAU_CODING_AGENT_DIR: "~/tau" },
+      }),
+    ).toBe(paths.join(HOME, "pi-env"));
+    expect(
+      resolvePiAgentDir(paths, { environment: { ...ENV, TAU_CODING_AGENT_DIR: "~/tau" } }),
+    ).toBe(paths.join(HOME, "tau"));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("prefers an explicit configured agent dir over environment overrides", () =>
+  Effect.gen(function* () {
+    const paths = yield* Path.Path;
+    expect(
+      resolvePiAgentDir(paths, {
+        agentDir: "/opt/pi/agent",
+        environment: { ...ENV, PI_CODING_AGENT_DIR: "/tmp/pi-env" },
+      }),
+    ).toBe("/opt/pi/agent");
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 

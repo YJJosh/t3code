@@ -32,6 +32,20 @@ it.layer(NodeServices.layer)("Pi transcript roots", (it) => {
         ),
       ).toBe("/pi-agent");
       expect(
+        resolvePiAgentDir(
+          { HOME: "/home/pi", PI_CODING_AGENT_DIR: "/pi-agent" },
+          path,
+          "~/configured-agent",
+        ),
+      ).toBe("/home/pi/configured-agent");
+      expect(
+        resolvePiTranscriptDir(
+          { HOME: "/home/pi", PI_CODING_AGENT_DIR: "/pi-agent" },
+          path,
+          "~/configured-agent",
+        ),
+      ).toBe("/home/pi/configured-agent/sessions");
+      expect(
         resolvePiTranscriptDir(
           { HOME: "/home/pi", TAU_CODING_AGENT_SESSION_DIR: "~/tau-sessions" },
           path,

@@ -37,6 +37,17 @@ describe("ProviderSettingsForm helpers", () => {
     });
   });
 
+  it("exposes Pi's binary, profile, and agent-directory settings", () => {
+    const pi = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("pi")];
+    expect(pi).toBeDefined();
+
+    expect(deriveProviderSettingsFields(pi!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "profile",
+      "agentDir",
+    ]);
+  });
+
   it("shows the auto-compaction threshold for Claude providers", () => {
     const claude = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("claudeAgent")];
     expect(claude).toBeDefined();
