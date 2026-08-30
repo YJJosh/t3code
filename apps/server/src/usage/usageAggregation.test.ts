@@ -94,6 +94,26 @@ describe("UsageAggregator", () => {
     expect(result.buckets[0]?.totals.outputTokens).toBe(100);
   });
 
+  it("drops Pi history copied into a fork by its durable entry id", () => {
+    const result = aggregate([
+      record({
+        provider: "pi",
+        model: "openai/gpt-5.6",
+        sessionId: "parent-session",
+        dedupeKey: "pi:entry-1",
+      }),
+      record({
+        provider: "pi",
+        model: "openai/gpt-5.6",
+        sessionId: "fork-session",
+        dedupeKey: "pi:entry-1",
+      }),
+    ]);
+
+    expect(result.duplicatesDropped).toBe(1);
+    expect(result.buckets[0]?.totals.outputTokens).toBe(50);
+  });
+
   it("buckets by the day in the requested time zone", () => {
     const utc = aggregate([record()], "UTC");
     const losAngeles = aggregate([record()], "America/Los_Angeles");

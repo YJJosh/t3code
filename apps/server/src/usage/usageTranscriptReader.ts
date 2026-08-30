@@ -19,10 +19,12 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 
 import {
   initialCodexScanState,
+  initialPiScanState,
   mightCarryUsage,
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parsePiLine,
   type UsageRecord,
 } from "./usageTranscripts.ts";
 
@@ -30,6 +32,28 @@ export interface TranscriptFile {
   readonly path: string;
   readonly size: number;
   readonly mtimeMs: number;
+}
+
+export interface TranscriptFileListing {
+  readonly files: readonly TranscriptFile[];
+}
+
+export interface TranscriptFileOptions {
+  /** Restricts the walk to one basename (Grok's `updates.jsonl`). */
+  readonly fileName?: string;
+  /** Maximum directory depth below the root to descend into. */
+  readonly maxDepth?: number;
+  /**
+   * Restricts a Pi subagent runs root to `runs/<run>/session/*.jsonl`.
+   * This deliberately excludes the sibling event journal and workflow logs.
+   */
+  readonly piSubagentSessionsOnly?: boolean;
+}
+
+export interface TranscriptReadResult {
+  readonly records: readonly UsageRecord[];
+  /** Project roots declared by Pi session headers, used to discover subagent sessions. */
+  readonly projectPaths: readonly string[];
 }
 
 /**
@@ -42,16 +66,21 @@ export interface TranscriptFile {
  * `fileName` restricts the walk to a single basename (Grok's `updates.jsonl`).
  * Grok sessions also ship multi-megabyte `chat_history` and `events` logs that
  * never carry usage, so the basename filter keeps a cold scan off those files.
+ *
+ * Pi's normal session root is at most `<sessions>/<project>/<file>`. Its
+ * subagent extension stores transcripts at `runs/<run>/session/<file>` beside
+ * large event journals. Callers bound both walks to those layouts rather than
+ * recursively treating arbitrary JSONL files as Pi sessions.
  */
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string },
-): Promise<readonly TranscriptFile[]> {
+  options?: TranscriptFileOptions,
+): Promise<TranscriptFileListing> {
   const found: TranscriptFile[] = [];
   const fileName = options?.fileName;
 
-  const walk = async (dir: string): Promise<void> => {
+  const walk = async (dir: string, depth: number): Promise<void> => {
     let entries;
     try {
       entries = await NodeFSP.readdir(dir, { withFileTypes: true });
@@ -61,9 +90,16 @@ export async function listTranscriptFiles(
     for (const entry of entries) {
       const child = NodePath.join(dir, entry.name);
       if (entry.isDirectory()) {
-        await walk(child);
+        const isPiSubagentSessionDirectory = depth === 1 && entry.name === "session";
+        const mayDescendForPiSubagents =
+          !options?.piSubagentSessionsOnly || depth === 0 || isPiSubagentSessionDirectory;
+        const mayDescendForDepth = options?.maxDepth === undefined || depth < options.maxDepth;
+        if (mayDescendForPiSubagents && mayDescendForDepth) await walk(child, depth + 1);
         continue;
       }
+      // A Pi subagent's only transcript is directly inside its run's `session`
+      // directory; journals such as `events.v1.jsonl` must never reach the parser.
+      if (options?.piSubagentSessionsOnly && depth !== 2) continue;
       if (fileName !== undefined) {
         if (entry.name !== fileName) continue;
       } else if (!entry.name.endsWith(".jsonl")) {
@@ -80,8 +116,8 @@ export async function listTranscriptFiles(
     }
   };
 
-  await walk(root);
-  return found;
+  await walk(root, 0);
+  return { files: found };
 }
 
 /**
@@ -101,24 +137,25 @@ export async function readDirectoryVolumeId(path: string): Promise<string> {
 }
 
 /**
- * Streams one transcript and returns the usage records it contains, or `null`
- * when the file could not be read.
- *
- * The distinction matters to the caller's cache: a genuinely empty transcript
- * is a stable fact worth memoising, while a transient read failure memoised
- * under the same `(size, mtime)` key would silently drop that file's usage
- * until the file next changes.
+ * Streams one transcript and returns its usage records plus any Pi project
+ * roots, or `null` when the file could not be read. The read-failure distinction
+ * matters to the caller's cache: a genuinely empty transcript is a stable fact
+ * worth memoising, while a transient read failure memoised under the same
+ * `(size, mtime)` key would silently drop that file's usage until it next changes.
  *
  * Codex carries the active model on `turn_context` lines that hold no usage of
- * their own, so those still have to pass through the reducer to keep model
- * attribution correct.
+ * their own, and Pi carries session identity and the active model on `session`
+ * and `model_change` lines, so those still have to pass through the reducer to
+ * keep attribution correct. Pi candidate files are constrained by the caller;
+ * do not relax that filter to parse subagent event journals.
  */
 export async function readTranscriptRecords(
   filePath: string,
   provider: UsageProviderKind,
-): Promise<readonly UsageRecord[] | null> {
+): Promise<TranscriptReadResult | null> {
   const records: UsageRecord[] = [];
   const codexState = initialCodexScanState();
+  const piState = initialPiScanState();
 
   try {
     const lines = NodeReadline.createInterface({
@@ -146,6 +183,20 @@ export async function readTranscriptRecords(
         continue;
       }
 
+      if (provider === "pi") {
+        if (
+          !mightCarryUsage(line, provider) &&
+          !line.includes('"type":"session"') &&
+          !line.includes('"type": "session"') &&
+          !line.includes('"model_change"')
+        ) {
+          continue;
+        }
+        const record = parsePiLine(line, piState);
+        if (record !== null) records.push(record);
+        continue;
+      }
+
       if (!mightCarryUsage(line, provider)) continue;
       const record = parseClaudeLine(line);
       if (record !== null) records.push(record);
@@ -154,5 +205,8 @@ export async function readTranscriptRecords(
     return null;
   }
 
-  return records;
+  return {
+    records,
+    projectPaths: piState.projectPath.length > 0 ? [piState.projectPath] : [],
+  };
 }

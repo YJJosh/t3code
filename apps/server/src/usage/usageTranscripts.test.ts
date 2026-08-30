@@ -3,9 +3,11 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   GROK_COST_USD_TICKS_PER_DOLLAR,
   initialCodexScanState,
+  initialPiScanState,
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parsePiLine,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -66,6 +68,135 @@ describe("parseClaudeLine", () => {
   it("ignores records that are not assistant messages", () => {
     expect(parseClaudeLine(JSON.stringify({ type: "user", message: {} }))).toBeNull();
     expect(parseClaudeLine("not json")).toBeNull();
+  });
+});
+
+describe("parsePiLine", () => {
+  const sessionHeader = JSON.stringify({
+    type: "session",
+    id: "pi-session-1",
+    cwd: "/home/theo/project",
+    timestamp: "2026-08-14T10:00:00.000Z",
+  });
+  const modelChange = JSON.stringify({
+    type: "model_change",
+    provider: "anthropic",
+    modelId: "claude-fable-5",
+    timestamp: "2026-08-14T10:00:01.000Z",
+  });
+  const assistantMessage = (
+    usage: Record<string, unknown>,
+    timestamp = "2026-08-14T10:00:05.000Z",
+  ) =>
+    JSON.stringify({
+      type: "message",
+      timestamp,
+      message: { role: "assistant", usage },
+    });
+
+  it("carries session id and model forward onto usage-bearing messages", () => {
+    const state = initialPiScanState();
+    expect(parsePiLine(sessionHeader, state)).toBeNull();
+    expect(parsePiLine(modelChange, state)).toBeNull();
+
+    const record = parsePiLine(
+      assistantMessage({
+        input: 100,
+        cacheRead: 20,
+        cacheWrite: 5,
+        output: 40,
+        reasoning: 10,
+        cost: { total: 0.42 },
+      }),
+      state,
+    );
+
+    expect(record).not.toBeNull();
+    expect(record?.provider).toBe("pi");
+    expect(record?.model).toBe("anthropic/claude-fable-5");
+    expect(record?.sessionId).toBe("pi-session-1");
+    expect(record?.totals).toEqual({
+      uncachedInputTokens: 100,
+      cachedInputTokens: 20,
+      cacheCreationTokens: 5,
+      outputTokens: 40,
+      reasoningTokens: 10,
+    });
+    expect(record?.reportedCostUsd).toBe(0.42);
+    expect(record?.dedupeKey).toBeNull();
+    expect(state.projectPath).toBe("/home/theo/project");
+  });
+
+  it("prefers the model declared inline on an assistant message", () => {
+    const state = initialPiScanState();
+    parsePiLine(sessionHeader, state);
+    const record = parsePiLine(
+      JSON.stringify({
+        type: "message",
+        id: "message-1",
+        timestamp: "2026-08-14T10:00:05.000Z",
+        message: { role: "assistant", provider: "openai", model: "gpt-5.6", usage: { output: 12 } },
+      }),
+      state,
+    );
+
+    expect(record?.model).toBe("openai/gpt-5.6");
+    expect(record?.dedupeKey).toBe("pi:message-1");
+  });
+
+  it("accepts historical flat message entries", () => {
+    const state = initialPiScanState();
+    parsePiLine(sessionHeader, state);
+    const record = parsePiLine(
+      JSON.stringify({
+        type: "message",
+        id: "flat-message",
+        timestamp: "2026-08-14T10:00:05.000Z",
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.6",
+        usage: { input: 10, cacheRead: 20, output: 3 },
+      }),
+      state,
+    );
+
+    expect(record).toMatchObject({
+      model: "openai/gpt-5.6",
+      dedupeKey: "pi:flat-message",
+      totals: { uncachedInputTokens: 10, cachedInputTokens: 20, outputTokens: 3 },
+    });
+  });
+
+  it("drops usage lines until a model is known", () => {
+    const state = initialPiScanState();
+    parsePiLine(sessionHeader, state);
+    // No model seen yet: a usage-bearing line cannot be attributed.
+    expect(parsePiLine(assistantMessage({ output: 5 }), state)).toBeNull();
+  });
+
+  it("counts toolResult usage and drops zero-token and non-usage lines", () => {
+    const state = initialPiScanState();
+    parsePiLine(sessionHeader, state);
+    parsePiLine(modelChange, state);
+
+    const toolResult = parsePiLine(
+      JSON.stringify({
+        type: "message",
+        timestamp: "2026-08-14T10:00:06.000Z",
+        message: { role: "toolResult", usage: { input: 7 } },
+      }),
+      state,
+    );
+    expect(toolResult?.totals.uncachedInputTokens).toBe(7);
+
+    expect(parsePiLine(assistantMessage({ output: 0, input: 0 }), state)).toBeNull();
+    expect(
+      parsePiLine(JSON.stringify({ type: "message", message: { role: "user" } }), state),
+    ).toBeNull();
+  });
+
+  it("ignores malformed Pi lines", () => {
+    expect(parsePiLine("{not json", initialPiScanState())).toBeNull();
   });
 });
 

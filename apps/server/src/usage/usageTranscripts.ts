@@ -68,7 +68,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
  * an order of magnitude.
  */
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
-  if (provider === "claude") return line.includes('"usage"');
+  if (provider === "claude" || provider === "pi") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
   return line.includes('"token_count"');
 }
@@ -146,6 +146,110 @@ export function parseClaudeLine(line: string): UsageRecord | null {
     },
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     dedupeKey,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Pi                                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Rolling identity for one Pi session file. Pi records the session id and cwd
+ * once in a `session` header and the active model in `model_change` events, so
+ * the usage-bearing message lines carry neither and must inherit both.
+ */
+export interface PiScanState {
+  sessionId: string;
+  projectPath: string;
+  provider: string;
+  model: string;
+}
+
+export function initialPiScanState(): PiScanState {
+  return { sessionId: "", projectPath: "", provider: "", model: "" };
+}
+
+/**
+ * Parses one line of a Pi native session JSONL file.
+ *
+ * Usage lands on assistant/toolResult `message` lines (and `compaction` /
+ * `branch_summary` lines) as a `usage` object; `session` and `model_change`
+ * lines only update rolling state and yield no record. Pi's historical session
+ * formats put the message either under `entry.message` or directly on the
+ * entry, so both are accepted. Records with no usable tokens, no known model,
+ * or no timestamp are dropped so malformed or placeholder lines never create
+ * phantom rows.
+ */
+export function parsePiLine(line: string, state: PiScanState): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+
+  const entry = parsed as Record<string, unknown>;
+  if (entry["type"] === "session") {
+    if (typeof entry["id"] === "string") state.sessionId = entry["id"];
+    if (typeof entry["cwd"] === "string") state.projectPath = entry["cwd"];
+    return null;
+  }
+  if (entry["type"] === "model_change") {
+    if (typeof entry["provider"] === "string") state.provider = entry["provider"];
+    if (typeof entry["modelId"] === "string") state.model = entry["modelId"];
+    return null;
+  }
+
+  let usage: unknown = entry["usage"];
+  if (entry["type"] === "message") {
+    const nestedMessage = entry["message"];
+    const messageRecord =
+      typeof nestedMessage === "object" && nestedMessage !== null
+        ? (nestedMessage as Record<string, unknown>)
+        : entry;
+    const role = messageRecord["role"];
+    if (role !== "assistant" && role !== "toolResult") return null;
+    if (role === "assistant") {
+      if (typeof messageRecord["provider"] === "string") state.provider = messageRecord["provider"];
+      if (typeof messageRecord["model"] === "string") state.model = messageRecord["model"];
+    }
+    usage = messageRecord["usage"];
+  } else if (entry["type"] !== "compaction" && entry["type"] !== "branch_summary") {
+    return null;
+  }
+
+  if (typeof usage !== "object" || usage === null || state.model.length === 0) return null;
+  const usageRecord = usage as Record<string, unknown>;
+  const timestampMs = parseTimestampMs(entry["timestamp"]);
+  if (timestampMs === null) return null;
+
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: int(usageRecord["input"]),
+    cachedInputTokens: int(usageRecord["cacheRead"]),
+    cacheCreationTokens: int(usageRecord["cacheWrite"]),
+    outputTokens: int(usageRecord["output"]),
+    // Pi folds reasoning into output; clamp so it never exceeds the total it is a subset of.
+    reasoningTokens: Math.min(int(usageRecord["output"]), int(usageRecord["reasoning"])),
+  };
+  if (totalTokens(totals) === 0) return null;
+
+  const cost = usageRecord["cost"];
+  const totalCost =
+    typeof cost === "object" && cost !== null ? (cost as Record<string, unknown>)["total"] : null;
+  return {
+    provider: "pi",
+    timestampMs,
+    // Pi models are provider-scoped; qualify with the provider when known so
+    // two providers' same-named models never collapse into one row.
+    model: state.provider.length > 0 ? `${state.provider}/${state.model}` : state.model,
+    sessionId: state.sessionId,
+    totals,
+    reportedCostUsd: typeof totalCost === "number" && Number.isFinite(totalCost) ? totalCost : null,
+    // Pi copies prior entries (including their ids) into forked sessions. The
+    // entry id is therefore the durable cross-file identity; branch siblings
+    // have their own ids and remain correctly counted as separate API calls.
+    dedupeKey: typeof entry["id"] === "string" ? `pi:${entry["id"]}` : null,
   };
 }
 

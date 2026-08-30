@@ -87,6 +87,7 @@ describe("buildDayColumns", () => {
       { provider: "codex", value: 10 },
       { provider: "claude", value: 20 },
       { provider: "grok", value: 0 },
+      { provider: "pi", value: 0 },
     ]);
   });
 
@@ -104,8 +105,9 @@ describe("providersWithUsage", () => {
       providersWithUsage([
         { provider: "codex", costUsd: 0, totalTokens: 0 },
         { provider: "claude", costUsd: 0, totalTokens: 200 },
+        { provider: "pi", costUsd: 2, totalTokens: 0 },
       ]),
-    ).toEqual(["claude"]);
+    ).toEqual(["claude", "pi"]);
   });
 });
 

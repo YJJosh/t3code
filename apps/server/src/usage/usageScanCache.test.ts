@@ -31,7 +31,13 @@ function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
 function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][]): ScanCache {
   const cache: ScanCache = new Map();
   for (const [path, mtimeMs, records] of entries) {
-    cache.set(path, { size: records.length * 10, mtimeMs, provider: "claude", records });
+    cache.set(path, {
+      size: records.length * 10,
+      mtimeMs,
+      provider: "claude",
+      records,
+      projectPaths: [],
+    });
   }
   return cache;
 }
@@ -49,14 +55,25 @@ describe("scan cache round trip", () => {
       records: [
         record({ provider: "grok", model: "grok-4.5-build", dedupeKey: "s:p:grok-4.5-build" }),
       ],
+      projectPaths: [],
+    });
+    original.set("/pi.jsonl", {
+      size: 50,
+      mtimeMs: 400,
+      provider: "pi",
+      records: [record({ provider: "pi", model: "anthropic/claude-fable-5", dedupeKey: null })],
+      projectPaths: ["/home/theo/project"],
     });
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
 
-    expect(restored.size).toBe(3);
+    expect(restored.size).toBe(4);
     expect(restored.get("/a.jsonl")).toEqual(original.get("/a.jsonl"));
     expect(restored.get("/b.jsonl")).toEqual(original.get("/b.jsonl"));
     expect(restored.get("/grok.jsonl")).toEqual(original.get("/grok.jsonl"));
+    // Pi project paths survive the round trip so warm scans can still reach
+    // subagent sessions without reparsing unchanged primary transcripts.
+    expect(restored.get("/pi.jsonl")).toEqual(original.get("/pi.jsonl"));
   });
 
   it("interns repeated model and session strings", () => {
@@ -114,6 +131,16 @@ describe("scan cache round trip", () => {
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(poisoned)));
     expect(restored.has("/a.jsonl")).toBe(false);
+  });
+
+  it("rejects an entry whose project paths are corrupt", () => {
+    const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record()]]]));
+    const badPaths = {
+      ...encoded,
+      files: { "/a.jsonl": { ...encoded.files["/a.jsonl"]!, d: [7] } },
+    };
+
+    expect(decodeScanCache(JSON.parse(JSON.stringify(badPaths))).has("/a.jsonl")).toBe(false);
   });
 });
 

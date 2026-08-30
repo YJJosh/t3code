@@ -1,8 +1,8 @@
 /**
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
- * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
- * Grok Build) rather than T3 Code's orchestration projections, so usage covers
+ * The scan reads the provider CLIs' own session files (Claude Code, Codex,
+ * Grok Build, and Pi) rather than T3 Code's orchestration projections, so usage covers
  * turns driven outside T3 Code too. This is the approach `ccusage` takes.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
@@ -45,6 +45,7 @@ import {
   listTranscriptFiles,
   readDirectoryVolumeId,
   readTranscriptRecords,
+  type TranscriptFileOptions,
 } from "./usageTranscriptReader.ts";
 import {
   decodeScanCache,
@@ -70,6 +71,97 @@ const MAX_HOURLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** Longest window the UI offers, plus slack. Older entries are pruned. */
 const CACHE_RETENTION_DAYS = 90;
+
+/** Pi's predecessor Tau derives the same overrides from its application name. */
+const PI_AGENT_DIR_ENV_NAMES = ["PI_CODING_AGENT_DIR", "TAU_CODING_AGENT_DIR"] as const;
+const PI_SESSION_DIR_ENV_NAMES = [
+  "PI_CODING_AGENT_SESSION_DIR",
+  "TAU_CODING_AGENT_SESSION_DIR",
+] as const;
+
+/** Pi's standard sessions layout is `<sessions>/<project>/<transcript>`. */
+const PI_SESSION_SCAN_OPTIONS: TranscriptFileOptions = { maxDepth: 1 };
+/** Pi v0.30 mistakenly wrote sessions directly under the agent directory. */
+const PI_LEGACY_SESSION_SCAN_OPTIONS: TranscriptFileOptions = { maxDepth: 0 };
+/** The subagent extension keeps sessions beside non-transcript event journals. */
+const PI_SUBAGENT_SESSION_SCAN_OPTIONS: TranscriptFileOptions = {
+  maxDepth: 2,
+  piSubagentSessionsOnly: true,
+};
+const MAX_PI_PROJECT_ANCESTOR_DEPTH = 32;
+
+/** Expands a leading `~` and resolves relative paths as Pi's `normalizePath` does. */
+function resolvePiPath(value: string, homePath: string, path: Path.Path): string {
+  const expanded =
+    value === "~"
+      ? homePath
+      : value.startsWith("~/") || value.startsWith("~\\")
+        ? path.join(homePath, value.slice(2))
+        : value;
+  return path.resolve(expanded);
+}
+
+function firstDefinedEnvironmentPath(
+  environment: NodeJS.ProcessEnv,
+  names: readonly string[],
+): string | undefined {
+  for (const name of names) {
+    const value = environment[name]?.trim();
+    if (value !== undefined && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+/** Resolves Pi's agent directory, including the predecessor's dynamic env name. */
+export function resolvePiAgentDir(environment: NodeJS.ProcessEnv, path: Path.Path): string {
+  const homePath = environment.HOME?.trim() || environment.USERPROFILE?.trim() || NodeOS.homedir();
+  const agentOverride = firstDefinedEnvironmentPath(environment, PI_AGENT_DIR_ENV_NAMES);
+  return resolvePiPath(agentOverride ?? path.join(homePath, ".pi", "agent"), homePath, path);
+}
+
+/**
+ * Resolves Pi's session root using the same precedence Pi's own process uses:
+ * an explicit session-dir override, then `<agentDir>/sessions`. Pi derives its
+ * env names from its app name, so accept Tau's legacy names after Pi's.
+ */
+export function resolvePiTranscriptDir(environment: NodeJS.ProcessEnv, path: Path.Path): string {
+  const homePath = environment.HOME?.trim() || environment.USERPROFILE?.trim() || NodeOS.homedir();
+  const sessionOverride = firstDefinedEnvironmentPath(environment, PI_SESSION_DIR_ENV_NAMES);
+  if (sessionOverride !== undefined) return resolvePiPath(sessionOverride, homePath, path);
+  return path.join(resolvePiAgentDir(environment, path), "sessions");
+}
+
+/** Finds bounded, de-duplicated Pi subagent roots reachable from project paths. */
+export const resolvePiSubagentTranscriptDirs = Effect.fn(
+  "UsageService.resolvePiSubagentTranscriptDirs",
+)(function* (projectPaths: Iterable<string>) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const roots = new Set<string>();
+  const checkedDirectories = new Set<string>();
+
+  for (const projectPath of projectPaths) {
+    let current = path.resolve(projectPath);
+    for (let depth = 0; depth < MAX_PI_PROJECT_ANCESTOR_DEPTH; depth += 1) {
+      // A previously traversed ancestor already implies every parent was
+      // checked too, which bounds repeated filesystem work across sessions.
+      if (checkedDirectories.has(current)) break;
+      checkedDirectories.add(current);
+
+      const runs = path.join(current, ".pi-subagents", "runs");
+      const exists = yield* fileSystem
+        .exists(runs)
+        .pipe(Effect.catchCause(() => Effect.succeed(false)));
+      if (exists) roots.add(runs);
+
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+
+  return [...roots];
+});
 
 /** On-disk shape of the rate snapshot. */
 const RatesCacheFile = Schema.Struct({
@@ -200,6 +292,14 @@ export const make = Effect.gen(function* () {
       return nestedExists ? nested : path.join(homePath, "projects");
     });
 
+  interface TranscriptDirectory {
+    readonly provider: UsageProviderKind;
+    readonly dir: string;
+    readonly scanOptions?: TranscriptFileOptions;
+    /** False when the scan only covers direct files and cannot prove descendant deletion. */
+    readonly completeForCachePruning?: boolean;
+  }
+
   /** Resolves the transcript directory for each provider. */
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* () {
     // A settings failure must surface as an error: swallowing it here would
@@ -229,15 +329,36 @@ export const make = Effect.gen(function* () {
         ? path.resolve(expandHomePath(grokHomeEnv))
         : path.join(NodeOS.homedir(), ".grok");
 
+    // Pi resolves purely from environment and default, mirroring Grok: the Pi
+    // provider core is not part of this slice, so there is no configured home
+    // to consult yet. Scan its normal layout, the v0.30 direct-file layout,
+    // and any subagent runs rooted in the agent directory.
+    const piAgentDir = resolvePiAgentDir(hostEnvironment, path);
+    const piDir = resolvePiTranscriptDir(hostEnvironment, path);
+
     return [
       { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
       {
         provider: "grok" as const,
         dir: path.join(grokHome, "sessions"),
-        fileName: "updates.jsonl",
+        scanOptions: { fileName: "updates.jsonl" },
       },
-    ];
+      { provider: "pi" as const, dir: piDir, scanOptions: PI_SESSION_SCAN_OPTIONS },
+      {
+        provider: "pi" as const,
+        dir: piAgentDir,
+        scanOptions: PI_LEGACY_SESSION_SCAN_OPTIONS,
+        // This root only lists direct files, so it cannot establish that
+        // cached descendants such as `<agent>/sessions/**` disappeared.
+        completeForCachePruning: false,
+      },
+      {
+        provider: "pi" as const,
+        dir: path.join(piAgentDir, ".pi-subagents", "runs"),
+        scanOptions: PI_SUBAGENT_SESSION_SCAN_OPTIONS,
+      },
+    ] satisfies readonly TranscriptDirectory[];
   });
 
   /**
@@ -278,31 +399,41 @@ export const make = Effect.gen(function* () {
     size: number,
     mtimeMs: number,
     provider: UsageProviderKind,
-  ): Effect.Effect<readonly UsageRecord[]> =>
+  ): Effect.Effect<{
+    readonly records: readonly UsageRecord[];
+    readonly projectPaths: readonly string[];
+  }> =>
     Effect.gen(function* () {
       const cached = fileCache.get(filePath);
-      // Provider is part of the identity: if both providers were ever pointed
-      // at one directory, a hit parsed by the other parser must not be reused.
+      // Provider is part of the identity: if multiple providers were ever
+      // pointed at one directory, a hit parsed by another parser must not be
+      // reused.
       if (
         cached &&
         cached.size === size &&
         cached.mtimeMs === mtimeMs &&
         cached.provider === provider
       ) {
-        return cached.records;
+        return { records: cached.records, projectPaths: cached.projectPaths };
       }
 
       const parsed = yield* Effect.promise(() => readTranscriptRecords(filePath, provider));
       // A read failure is not an empty transcript: caching it under this
       // (size, mtime) would silently drop the file's usage until it changes.
-      if (parsed === null) return [];
+      if (parsed === null) return { records: [], projectPaths: [] };
       // Stored already de-duplicated within the file, which is 99% of all
       // duplicates. The aggregator still runs the cross-file dedupe pass.
-      const records = dedupeWithinFile(parsed);
+      const records = dedupeWithinFile(parsed.records);
 
-      fileCache.set(filePath, { size, mtimeMs, provider, records });
+      fileCache.set(filePath, {
+        size,
+        mtimeMs,
+        provider,
+        records,
+        projectPaths: parsed.projectPaths,
+      });
       cacheDirty = true;
-      return records;
+      return { records, projectPaths: parsed.projectPaths };
     });
 
   const readSummary = Effect.fn("UsageService.readSummary")(function* (input: UsageSummaryInput) {
@@ -344,7 +475,17 @@ export const make = Effect.gen(function* () {
     const hostId = NodeOS.hostname();
     // The home resolvers ask for `Path` themselves; satisfy them from the
     // instance we already hold so `readSummary` stays context-free.
-    const dirs = yield* resolveTranscriptDirs().pipe(Effect.provideService(Path.Path, path));
+    const initialDirs = yield* resolveTranscriptDirs().pipe(Effect.provideService(Path.Path, path));
+    // Pi subagent roots are discovered mid-scan from the project paths the Pi
+    // sessions declare, so the work list grows as those directories are found.
+    const dirs: TranscriptDirectory[] = [...initialDirs];
+    const knownDirs = new Set(dirs.map(({ provider, dir }) => `${provider}\0${dir}`));
+    const enqueuePiSubagentDir = (dir: string) => {
+      const key = `pi\0${dir}`;
+      if (knownDirs.has(key)) return;
+      knownDirs.add(key);
+      dirs.push({ provider: "pi", dir, scanOptions: PI_SUBAGENT_SESSION_SCAN_OPTIONS });
+    };
     const windowStart = DateTime.make(`${input.sinceDay}T00:00:00Z`);
     if (Option.isNone(windowStart)) {
       return yield* new UsageReadError({
@@ -368,7 +509,11 @@ export const make = Effect.gen(function* () {
     const livePaths = new Set<string>();
     const walkedRoots: string[] = [];
 
-    for (const { provider, dir, fileName } of dirs) {
+    // Index-based: discovered Pi subagent roots can extend the work list while we iterate.
+    for (let dirIndex = 0; dirIndex < dirs.length; dirIndex += 1) {
+      const transcriptDir = dirs[dirIndex];
+      if (transcriptDir === undefined) continue;
+      const { provider, dir, scanOptions } = transcriptDir;
       const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
       const exists = yield* fileSystem
         .exists(dir)
@@ -387,25 +532,29 @@ export const make = Effect.gen(function* () {
         continue;
       }
 
-      walkedRoots.push(dir);
-      const files = yield* Effect.promise(() =>
-        listTranscriptFiles(dir, windowStartMs, fileName === undefined ? undefined : { fileName }),
+      const listing = yield* Effect.promise(() =>
+        listTranscriptFiles(dir, windowStartMs, scanOptions),
       );
+      // The v0.30 compatibility root intentionally lists direct files only,
+      // so it cannot establish that cached descendants disappeared.
+      if (transcriptDir.completeForCachePruning !== false) walkedRoots.push(dir);
       let scannedFiles = 0;
       let skippedFiles = 0;
       // Distinct per directory. Buckets carry per-cell session counts, but a
       // session spans days and models, so clients total this figure instead.
       const sessionIds = new Set<string>();
+      const projectPaths = new Set<string>();
 
-      for (const file of files) {
+      for (const file of listing.files) {
         livePaths.add(file.path);
-        const records = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
-        if (records.length === 0) {
+        const read = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
+        for (const projectPath of read.projectPaths) projectPaths.add(projectPath);
+        if (read.records.length === 0) {
           skippedFiles += 1;
           continue;
         }
         scannedFiles += 1;
-        for (const record of records) {
+        for (const record of read.records) {
           // Only sessions that contributed in-window count: the mtime slack
           // admits boundary files whose records fall outside the range.
           if (aggregator.add(record) && record.sessionId.length > 0) {
@@ -423,6 +572,14 @@ export const make = Effect.gen(function* () {
         distinctSessions: sessionIds.size,
         message: null,
       });
+
+      if (provider === "pi" && projectPaths.size > 0) {
+        const subagentDirs = yield* resolvePiSubagentTranscriptDirs(projectPaths).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
+        for (const subagentDir of subagentDirs) enqueuePiSubagentDir(subagentDir);
+      }
     }
 
     const pruned = pruneScanCache(fileCache, {
