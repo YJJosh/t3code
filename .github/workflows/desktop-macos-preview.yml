@@ -1,8 +1,9 @@
 name: Desktop macOS Preview
 
+# T3 Dulli publishes only through fork-desktop-release.yml. Keep this upstream
+# preview implementation for reference, without PR triggers or runnable jobs.
 on:
-  pull_request:
-    types: [labeled, unlabeled, synchronize, reopened, closed]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,13 +23,8 @@ jobs:
   # Builds run PR code, so this job keeps a read-only token. Publishing to the
   # release happens in the publish job below, which never checks out PR code.
   build:
-    name: Build macOS Apple Silicon preview
-    if: >-
-      github.event.action != 'closed' &&
-      github.event.action != 'unlabeled' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(github.event.pull_request.labels.*.name, 'preview:mac') &&
-      (github.event.action != 'labeled' || github.event.label.name == 'preview:mac')
+    name: Build macOS Apple Silicon preview (disabled in Dulli fork)
+    if: ${{ false }}
     runs-on: macos-26
     timeout-minutes: 30
     outputs:
@@ -123,8 +119,9 @@ jobs:
   # build never notifies release watchers. This job holds the write token and
   # only handles the artifact the build job produced; it never runs PR code.
   publish:
-    name: Publish anonymous download
+    name: Publish anonymous download (disabled in Dulli fork)
     needs: build
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -284,11 +281,8 @@ jobs:
   # The way out: closing the PR or removing the label deletes its DMG from the
   # rolling release and updates the PR comment to say so.
   cleanup:
-    name: Remove preview download
-    if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      ((github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'preview:mac')) ||
-      (github.event.action == 'unlabeled' && github.event.label.name == 'preview:mac'))
+    name: Remove preview download (disabled in Dulli fork)
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

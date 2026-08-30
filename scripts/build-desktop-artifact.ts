@@ -1115,6 +1115,29 @@ function escapeXml(value: string): string {
     .replaceAll("'", "&apos;");
 }
 
+export function resolveMacCommunitySigningIdentity(
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const identity = env.T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY?.trim();
+  return identity && identity.length > 0 ? identity : undefined;
+}
+
+export function renderMacCommunityEntitlements(): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>
+`;
+}
+
 export function renderMacPasskeyEntitlements(
   configuration: MacPasskeySigningConfiguration,
 ): string {
@@ -2223,6 +2246,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   // whose source file was never written fails the electron-builder step.
   wslRuntimeBundled = false,
   brand: DesktopBuildBrand = "t3code",
+  macCommunitySigning:
+    | {
+        readonly identity: string;
+        readonly entitlementsPath: string;
+      }
+    | undefined = undefined,
 ) {
   const brandMetadata = resolveDesktopBuildBrandMetadata(brand, version);
   const buildConfig: Record<string, unknown> = {
@@ -2243,6 +2272,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
       ...(platform === "win" && wslRuntimeBundled ? WSL_RUNTIME_EXTRA_RESOURCES : []),
     ],
+    ...(platform === "mac" && macCommunitySigning ? { forceCodeSigning: true } : {}),
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   if (!isDesktopPreviewVersion(version)) {
@@ -2281,7 +2311,16 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
             ],
           }
         : {}),
-      ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      ...(signed
+        ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") }
+        : macCommunitySigning
+          ? {
+              identity: macCommunitySigning.identity,
+              entitlements: macCommunitySigning.entitlementsPath,
+              entitlementsInherit: macCommunitySigning.entitlementsPath,
+              notarize: false,
+            }
+          : {}),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,
@@ -3218,13 +3257,17 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
+  const repoEnv = loadRepoEnv({ repoRoot });
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
-          try: () =>
-            resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot }), brandMetadata.appId),
+          try: () => resolveMacPasskeySigningConfiguration(repoEnv, brandMetadata.appId),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
+      : undefined;
+  const macCommunitySigningIdentity =
+    options.platform === "mac" && !options.signed
+      ? resolveMacCommunitySigningIdentity(repoEnv)
       : undefined;
   const macPasskeySigning = configuredMacPasskeySigning
     ? {
@@ -3235,9 +3278,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         ),
       }
     : undefined;
-  const macEntitlementsPath = macPasskeySigning
-    ? path.join(stageAppDir, "entitlements.mac.plist")
-    : undefined;
+  const macEntitlementsPath =
+    macPasskeySigning || macCommunitySigningIdentity
+      ? path.join(stageAppDir, "entitlements.mac.plist")
+      : undefined;
   if (macPasskeySigning && macEntitlementsPath) {
     if (!(yield* fs.exists(macPasskeySigning.provisioningProfilePath))) {
       return yield* new MacProvisioningProfileNotFoundError({
@@ -3245,6 +3289,8 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       });
     }
     yield* fs.writeFileString(macEntitlementsPath, renderMacPasskeyEntitlements(macPasskeySigning));
+  } else if (macCommunitySigningIdentity && macEntitlementsPath) {
+    yield* fs.writeFileString(macEntitlementsPath, renderMacCommunityEntitlements());
   }
 
   // Windows splits dependencies per process: app.asar carries only the
@@ -3305,6 +3351,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         : undefined,
       bundlesWslRuntime({ arch: options.arch, prebuildPath: options.wslPrebuild }),
       options.brand,
+      macCommunitySigningIdentity && macEntitlementsPath
+        ? {
+            identity: macCommunitySigningIdentity,
+            entitlementsPath: macEntitlementsPath,
+          }
+        : undefined,
     ),
     dependencies: stageDependencies,
     devDependencies: {

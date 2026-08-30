@@ -1,7 +1,7 @@
 name: Deploy T3 Connect relay
 
 # The fork does not currently operate T3 Connect infrastructure. Keep this
-# workflow manual-only until production relay deployment is configured.
+# workflow manual-only for upstream reference. Its job is hard-disabled.
 on:
   workflow_dispatch:
 
@@ -16,7 +16,8 @@ concurrency:
 
 jobs:
   deploy_relay:
-    name: Deploy production relay
+    name: Deploy production relay (disabled in Dulli fork)
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:

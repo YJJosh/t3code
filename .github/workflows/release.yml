@@ -3,6 +3,8 @@ name: Release
 # The fork never publishes upstream releases: no nightly schedule and no tag
 # trigger (syncing upstream tags must not start a publish). Manual dispatch is
 # kept only so the workflow stays valid; fork releases get their own workflow.
+# Every job below is hard-disabled so dispatching this reference workflow
+# cannot publish upstream packages or infrastructure.
 on:
   workflow_dispatch:
     inputs:
@@ -36,8 +38,8 @@ permissions:
 
 jobs:
   check_changes:
-    name: Check for changes since last nightly
-    if: github.event_name == 'schedule'
+    name: Check for changes since last nightly (disabled in Dulli fork)
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     outputs:
       has_changes: ${{ steps.check.outputs.has_changes }}
@@ -73,11 +75,9 @@ jobs:
           fi
 
   preflight:
-    name: Preflight
+    name: Preflight (disabled in Dulli fork)
     needs: [check_changes]
-    if: |
-      !failure() && !cancelled() &&
-      (github.event_name != 'schedule' || needs.check_changes.outputs.has_changes == 'true')
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -171,9 +171,9 @@ jobs:
             --github-output
 
   quality:
-    name: Release quality checks
+    name: Release quality checks (disabled in Dulli fork)
     needs: [preflight]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' }}
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -206,15 +206,9 @@ jobs:
         run: vp run test
 
   relay_public_config:
-    name: Resolve T3 Connect public config
-    # Consumes only the commit SHA, not preflight's resolved version, so it runs
-    # alongside preflight instead of after it. The condition mirrors preflight's:
-    # check_changes is skipped on non-schedule events (skipped is neither failure
-    # nor success, so success() would be wrong here).
+    name: Resolve T3 Connect public config (disabled in Dulli fork)
     needs: [check_changes]
-    if: |
-      !failure() && !cancelled() &&
-      (github.event_name != 'schedule' || needs.check_changes.outputs.has_changes == 'true')
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment:
@@ -308,13 +302,9 @@ jobs:
   # cross-compiling and no first-launch compiler/node-gyp/network on the user's
   # machine. node-pty is N-API, so one binary works across all WSL Node versions.
   build_wsl_node_pty:
-    name: Build WSL node-pty (linux-x64)
-    # Same gating as relay_public_config: only the commit SHA is needed, so this
-    # runs alongside preflight. See the condition comment there.
+    name: Build WSL node-pty (disabled in Dulli fork)
     needs: [check_changes]
-    if: |
-      !failure() && !cancelled() &&
-      (github.event_name != 'schedule' || needs.check_changes.outputs.has_changes == 'true')
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -358,16 +348,9 @@ jobs:
           if-no-files-found: error
 
   build:
-    name: Build ${{ matrix.label }}
-    # build_wsl_node_pty stays in `needs` so it runs first and its artifact is
-    # available to download, but only the Windows matrix entry consumes it. We
-    # therefore gate the job on preflight + relay (must succeed) WITHOUT requiring
-    # build_wsl_node_pty, so a failed Linux prebuild doesn't skip the macOS/Linux
-    # builds. `!cancelled()` (not `!failure()`) lets the job run even when
-    # build_wsl_node_pty failed; the Windows-only download step below then fails
-    # that single platform if the prebuild is missing.
+    name: Build desktop artifacts (disabled in Dulli fork)
     needs: [preflight, relay_public_config, build_wsl_node_pty]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' }}
+    if: ${{ false }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:
@@ -725,9 +708,9 @@ jobs:
           if-no-files-found: error
 
   publish_cli:
-    name: Publish CLI to npm
+    name: Publish CLI to npm (disabled in Dulli fork)
     needs: [preflight, relay_public_config, quality, build]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.quality.result == 'success' && needs.build.result == 'success' }}
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -803,9 +786,9 @@ jobs:
         run: node apps/server/scripts/cli.ts publish --tag "${{ needs.preflight.outputs.cli_dist_tag }}" --app-version "${{ needs.preflight.outputs.version }}" --verbose
 
   release:
-    name: Publish GitHub Release
+    name: Publish GitHub Release (disabled in Dulli fork)
     needs: [preflight, build, publish_cli]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && needs.publish_cli.result == 'success' }}
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -918,9 +901,9 @@ jobs:
           token: ${{ github.token }}
 
   publish_aur:
-    name: Publish AUR package
+    name: Publish AUR package (disabled in Dulli fork)
     needs: [preflight, release]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' }}
+    if: ${{ false }}
     uses: ./.github/workflows/publish-aur.yml
     with:
       release_tag: ${{ needs.preflight.outputs.tag }}
@@ -928,9 +911,9 @@ jobs:
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
 
   deploy_web:
-    name: Deploy hosted web app
+    name: Deploy hosted web app (disabled in Dulli fork)
     needs: [preflight, relay_public_config, release]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.release.result == 'success' }}
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -1047,8 +1030,8 @@ jobs:
           fi
 
   finalize:
-    name: Finalize release
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' && needs.preflight.outputs.release_channel == 'stable' }}
+    name: Finalize release (disabled in Dulli fork)
+    if: ${{ false }}
     needs: [preflight, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -1126,14 +1109,8 @@ jobs:
           git push origin HEAD:main
 
   announce_discord:
-    name: Announce release on Discord
-    if: |
-      always() && !cancelled() &&
-      needs.preflight.result == 'success' &&
-      needs.relay_public_config.result == 'success' &&
-      needs.release.result == 'success' &&
-      needs.deploy_web.result == 'success' &&
-      (needs.finalize.result == 'success' || needs.finalize.result == 'skipped')
+    name: Announce release on Discord (disabled in Dulli fork)
+    if: ${{ false }}
     needs: [preflight, relay_public_config, release, deploy_web, finalize]
     runs-on: ubuntu-24.04
     timeout-minutes: 10

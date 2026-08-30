@@ -14,6 +14,7 @@ import {
   DEVELOPMENT_ICON_OVERRIDES,
   resolveWebAssetBrandForPackageVersion,
   resolveWebIconOverrides,
+  type WebAssetBrand,
 } from "../../../scripts/lib/brand-assets.ts";
 import { resolveCatalogDependencies } from "../../../scripts/lib/resolve-catalog.ts";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
@@ -47,6 +48,12 @@ interface PackageJson {
 
 const PackageJsonPrettyJson = fromJsonStringPretty(Schema.Unknown);
 const encodePackageJson = Schema.encodeEffect(PackageJsonPrettyJson);
+const WEB_ASSET_BRANDS = [
+  "development",
+  "nightly",
+  "production",
+  "dulli",
+] as const satisfies ReadonlyArray<WebAssetBrand>;
 
 const WorkspaceConfig = Schema.Struct({
   catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -85,11 +92,10 @@ const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Stan
 const preparePublishIcons = Effect.fn("preparePublishIcons")(function* (
   repoRoot: string,
   serverDir: string,
-  version: string,
+  brand: WebAssetBrand,
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
-  const brand = resolveWebAssetBrandForPackageVersion(version);
   const icons = resolveWebIconOverrides(brand, "dist/client").map((override) => ({
     sourcePath: path.join(repoRoot, override.sourceRelativePath),
     targetPath: path.join(serverDir, override.targetRelativePath),
@@ -186,11 +192,37 @@ interface PublishCommandConfig {
   readonly dryRun: boolean;
 }
 
-const createVpPmPublishArgs = (config: PublishCommandConfig): ReadonlyArray<string> => {
+interface PublishIdentityConfig {
+  readonly appVersion: Option.Option<string>;
+  readonly packageName: Option.Option<string>;
+  readonly repositoryUrl: Option.Option<string>;
+}
+
+interface PublishIdentity {
+  readonly version: string;
+  readonly packageName: string;
+  readonly repositoryUrl: string;
+}
+
+export function resolvePublishIdentity(
+  config: PublishIdentityConfig,
+  defaults: PublishIdentity,
+): PublishIdentity {
+  return {
+    version: Option.getOrElse(config.appVersion, () => defaults.version),
+    packageName: Option.getOrElse(config.packageName, () => defaults.packageName),
+    repositoryUrl: Option.getOrElse(config.repositoryUrl, () => defaults.repositoryUrl),
+  };
+}
+
+export const createVpPmPublishArgs = (
+  config: PublishCommandConfig,
+  packageName: string,
+): ReadonlyArray<string> => {
   const args = [
     "publish",
     "--filter",
-    "t3",
+    packageName,
     "--access",
     config.access,
     "--tag",
@@ -210,6 +242,9 @@ const publishCmd = Command.make(
     tag: Flag.string("tag").pipe(Flag.withDefault("latest")),
     access: Flag.string("access").pipe(Flag.withDefault("public")),
     appVersion: Flag.string("app-version").pipe(Flag.optional),
+    packageName: Flag.string("package-name").pipe(Flag.optional),
+    repositoryUrl: Flag.string("repository-url").pipe(Flag.optional),
+    brand: Flag.choice("brand", WEB_ASSET_BRANDS).pipe(Flag.optional),
     provenance: Flag.boolean("provenance").pipe(Flag.withDefault(false)),
     dryRun: Flag.boolean("dry-run").pipe(Flag.withDefault(false)),
     verbose: Flag.boolean("verbose").pipe(Flag.withDefault(false)),
@@ -237,16 +272,26 @@ const publishCmd = Command.make(
       yield* Effect.acquireUseRelease(
         // Acquire: resolve publish metadata and read every original before mutation.
         Effect.gen(function* () {
-          const version = Option.getOrElse(config.appVersion, () => serverPackageJson.version);
+          const identity = resolvePublishIdentity(config, {
+            version: serverPackageJson.version,
+            packageName: serverPackageJson.name,
+            repositoryUrl: serverPackageJson.repository.url,
+          });
+          const publishBrand = Option.getOrElse(config.brand, () =>
+            resolveWebAssetBrandForPackageVersion(identity.version),
+          );
           const workspaceConfig = yield* readWorkspaceConfig();
           const workspaceCatalog = workspaceConfig.catalog ?? {};
           const workspaceOverrides = workspaceConfig.overrides ?? {};
           const pkg: PackageJson = {
-            name: serverPackageJson.name,
-            repository: serverPackageJson.repository,
+            name: identity.packageName,
+            repository: {
+              ...serverPackageJson.repository,
+              url: identity.repositoryUrl,
+            },
             bin: serverPackageJson.bin,
             type: serverPackageJson.type,
-            version,
+            version: identity.version,
             engines: serverPackageJson.engines,
             files: serverPackageJson.files,
             dependencies: resolveCatalogDependencies(
@@ -262,9 +307,10 @@ const publishCmd = Command.make(
           };
 
           return {
+            packageName: identity.packageName,
             packageJsonString: yield* encodePackageJson(pkg),
             originalPackageJson: yield* fs.readFile(packageJsonPath),
-            icons: yield* preparePublishIcons(repoRoot, serverDir, version),
+            icons: yield* preparePublishIcons(repoRoot, serverDir, publishBrand),
           };
         }),
         // Use: pnpm publish from the workspace root so pnpm-only workspace
@@ -277,7 +323,7 @@ const publishCmd = Command.make(
             }
             yield* Effect.log("[cli] Applied package metadata and publish icon overrides");
 
-            const args = createVpPmPublishArgs(config);
+            const args = createVpPmPublishArgs(config, resource.packageName);
             const spawnCommand = yield* resolveSpawnCommand("vp", ["pm", ...args]);
 
             yield* Effect.log(`[cli] Running: vp pm ${args.join(" ")}`);

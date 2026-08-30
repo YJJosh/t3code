@@ -35,8 +35,10 @@ import {
   MacPasskeySigningConfigurationResolutionError,
   MissingMacPasskeyProvisioningProfileError,
   packWindowsServerAsar,
+  renderMacCommunityEntitlements,
   renderMacPasskeyEntitlements,
   resolveClerkPasskeyNativeArtifacts,
+  resolveMacCommunitySigningIdentity,
   resolveMacPasskeySigningConfiguration,
   resolveDesktopRuntimeDependencies,
   resolveMacStageDependencies,
@@ -1376,6 +1378,32 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
   });
 
+  it("resolves an optional persistent macOS community signing identity", () => {
+    assert.equal(
+      resolveMacCommunitySigningIdentity({
+        T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY: " 0123456789ABCDEF0123456789ABCDEF01234567 ",
+      }),
+      "0123456789ABCDEF0123456789ABCDEF01234567",
+    );
+    assert.isUndefined(
+      resolveMacCommunitySigningIdentity({
+        T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY: "   ",
+      }),
+    );
+  });
+
+  it("renders the runtime entitlements required by community Electron signatures", () => {
+    const entitlements = renderMacCommunityEntitlements();
+
+    assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
+    assert.include(
+      entitlements,
+      "<key>com.apple.security.cs.allow-unsigned-executable-memory</key>",
+    );
+    assert.include(entitlements, "<key>com.apple.security.cs.disable-library-validation</key>");
+    assert.notInclude(entitlements, "com.apple.developer.team-identifier");
+  });
+
   it("normalizes explicit macOS passkey RP domains and renders required entitlements", () => {
     const configuration = resolveMacPasskeySigningConfiguration({
       T3CODE_APPLE_TEAM_ID: "ABC1234567",
@@ -1491,6 +1519,35 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual(mac.protocols, [
         { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
       ]);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect("pins persistent community signing for Dulli macOS builds", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.36-pi.1",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "dulli",
+        {
+          identity: "0123456789ABCDEF0123456789ABCDEF01234567",
+          entitlementsPath: "/tmp/entitlements.mac.plist",
+        },
+      );
+
+      const mac = config.mac as Record<string, unknown>;
+      assert.equal(config.forceCodeSigning, true);
+      assert.equal(mac.identity, "0123456789ABCDEF0123456789ABCDEF01234567");
+      assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
+      assert.equal(mac.entitlementsInherit, "/tmp/entitlements.mac.plist");
+      assert.equal(mac.notarize, false);
+      assert.notProperty(mac, "sign");
+      assert.notProperty(mac, "protocols");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 

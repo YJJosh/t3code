@@ -1,6 +1,7 @@
 name: Publish AUR package
 
-# See packaging/aur/README.md.
+# See packaging/aur/README.md. T3 Dulli does not publish upstream's AUR
+# package, so the retained reference job is hard-disabled.
 
 on:
   workflow_call:
@@ -36,7 +37,8 @@ concurrency:
 
 jobs:
   publish:
-    name: Validate and publish
+    name: Validate and publish (disabled in Dulli fork)
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:

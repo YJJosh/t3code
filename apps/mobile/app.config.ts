@@ -403,11 +403,18 @@ const config: ExpoConfig = {
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
-    eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-    },
+    ...(dulliFork === undefined
+      ? {
+          eas: {
+            projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+          },
+        }
+      : {}),
   },
-  owner: "pingdotgg",
+  // Fork artifacts are built directly by the Dulli workflow. Omitting the
+  // upstream EAS owner/project prevents an accidental fork build or submit
+  // from targeting T3 Code's Expo project.
+  ...(dulliFork === undefined ? { owner: "pingdotgg" } : {}),
 };
 
 export default config;
