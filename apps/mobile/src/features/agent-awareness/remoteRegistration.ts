@@ -19,6 +19,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 
 import type { SavedRemoteConnection } from "../../lib/connection";
+import { resolveMobileBrandName } from "../../lib/mobileBranding";
 import { runtime } from "../../lib/runtime";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentServerConfigsAtom } from "../../state/server";
@@ -502,7 +503,7 @@ function armAgentAwarenessLiveActivityForLocalWorkNow(input: {
     }
     const nowIso = new Date(Date.now()).toISOString();
     const activity = AgentActivity.start({
-      title: "T3 Code",
+      title: resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand),
       subtitle: "Agent work in progress",
       activeCount: 1,
       updatedAt: nowIso,

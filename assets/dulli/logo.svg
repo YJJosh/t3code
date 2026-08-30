@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>T3 Dulli :D</title>
+  <rect width="1024" height="1024" rx="80" fill="#000000"/>
+  <g fill="#ffffff">
+    <rect x="212" y="356" width="88" height="88" rx="16"/>
+    <rect x="212" y="580" width="88" height="88" rx="16"/>
+    <path fill-rule="evenodd" d="M376 250H578C760 250 870 350 870 512S760 774 578 774H376V250ZM466 330V694H580C715 694 790 628 790 512S715 330 580 330H466Z"/>
+  </g>
+</svg>

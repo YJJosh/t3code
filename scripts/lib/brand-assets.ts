@@ -1,4 +1,8 @@
 export const BRAND_ASSET_PATHS = {
+  // T3 Dulli fork ships a single universal mark reused across the mobile
+  // launcher, splash, and adaptive foreground (see apps/mobile/app.config.ts).
+  dulliLinuxIconPng: "assets/dulli/dulli-universal-1024.png",
+
   developmentIconComposerProject: "assets/dev/app-icon.icon",
   developmentIosIconPng: "assets/dev/blueprint-ios-1024.png",
   developmentUniversalIconPng: "assets/dev/blueprint-universal-1024.png",
