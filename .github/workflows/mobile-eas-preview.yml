@@ -1,8 +1,10 @@
 name: Mobile EAS Preview
 
+# The fork must never run upstream EAS preview deployments, so the label-gated
+# pull_request trigger is removed. Manual dispatch only keeps the workflow
+# valid; the job's PR-label gate never matches, so it stays inert.
 on:
-  pull_request:
-    types: [opened, reopened, synchronize, labeled]
+  workflow_dispatch:
 
 jobs:
   preview:
@@ -10,7 +12,7 @@ jobs:
     if: |
       contains(github.event.pull_request.labels.*.name, '🚀 Mobile Continuous Deployment') &&
       (github.event.action != 'labeled' || github.event.label.name == '🚀 Mobile Continuous Deployment')
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     concurrency:
       group: mobile-eas-preview-${{ github.event.pull_request.number }}
       cancel-in-progress: true
