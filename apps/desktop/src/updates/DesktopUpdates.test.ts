@@ -23,6 +23,7 @@ import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
 
 interface UpdatesHarnessOptions {
+  readonly appName?: string;
   readonly checkForUpdates?: Effect.Effect<
     void,
     ElectronUpdater.ElectronUpdaterCheckForUpdatesError
@@ -39,7 +40,9 @@ const flushCallbacks = Effect.yieldNow;
 function makeHarness(options: UpdatesHarnessOptions = {}) {
   let checkCount = 0;
   let allowDowngrade = false;
+  let allowPrerelease = false;
   let fullChangelog = false;
+  let updaterChannel: string | null = "latest";
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
   const sentStates: DesktopUpdateState[] = [];
@@ -68,8 +71,14 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
       }),
     setAutoDownload: () => Effect.void,
     setAutoInstallOnAppQuit: () => Effect.void,
-    setChannel: () => Effect.void,
-    setAllowPrerelease: () => Effect.void,
+    setChannel: (channel) =>
+      Effect.sync(() => {
+        updaterChannel = channel;
+      }),
+    setAllowPrerelease: (value) =>
+      Effect.sync(() => {
+        allowPrerelease = value;
+      }),
     allowDowngrade: Effect.sync(() => allowDowngrade),
     setAllowDowngrade: (value) =>
       Effect.sync(() => {
@@ -131,6 +140,7 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
   const backendLayer = DesktopBackendPool.layerTest([stubBackendInstance]);
 
   const environmentLayer = DesktopEnvironment.layer({
+    ...(options.appName === undefined ? {} : { appName: options.appName }),
     dirname: "/repo/apps/desktop/src",
     homeDirectory: `/tmp/t3-desktop-updates-home-${process.pid}`,
     platform: "darwin",
@@ -210,9 +220,12 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
 
   return {
     layer,
+    allowPrerelease: () => allowPrerelease,
+    allowDowngrade: () => allowDowngrade,
     checkCount: () => checkCount,
     feedUrls: () => feedUrls,
     fullChangelog: () => fullChangelog,
+    updaterChannel: () => updaterChannel,
     listenerCount: () =>
       Array.from(listeners.values()).reduce(
         (total, eventListeners) => total + eventListeners.size,
@@ -292,6 +305,23 @@ describe("DesktopUpdates", () => {
 
       assert.equal(harness.listenerCount(), 0);
     }).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("follows Dulli prereleases on its normal latest channel", () => {
+    const harness = makeHarness({ appName: "T3 Dulli" });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        const state = yield* updates.getState;
+        assert.equal(state.channel, "latest");
+        assert.equal(harness.updaterChannel(), null);
+        assert.equal(harness.allowPrerelease(), true);
+        assert.equal(harness.allowDowngrade(), false);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
   it.effect("updates and broadcasts state from updater events", () => {

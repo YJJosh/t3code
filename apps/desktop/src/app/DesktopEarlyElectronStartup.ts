@@ -16,6 +16,7 @@ import {
 } from "./DesktopStatePaths.ts";
 
 interface EarlyDesktopSettingsInput {
+  readonly appName?: string;
   readonly env: NodeJS.ProcessEnv;
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
@@ -44,6 +45,9 @@ const decodeEarlyDesktopSettingsJson = Schema.decodeSync(EarlyDesktopSettingsJso
 const isDevelopmentEnvironment = (env: NodeJS.ProcessEnv): boolean =>
   trimNonEmpty(env.VITE_DEV_SERVER_URL) !== null;
 
+const isDulliApp = (appName: string | undefined, env: NodeJS.ProcessEnv): boolean =>
+  !isDevelopmentEnvironment(env) && appName?.trim() === "T3 Dulli";
+
 function resolveEarlyDesktopSettingsPath(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly homeDirectory: string;
@@ -51,6 +55,7 @@ function resolveEarlyDesktopSettingsPath(input: {
 }): string {
   const t3Home = Option.fromUndefinedOr(input.env.T3CODE_HOME);
   const baseDir = resolveDesktopBaseDir({
+    defaultBaseDirName: isDulliApp(input.appName, input.env) ? ".t3-dulli" : ".t3",
     homeDirectory: input.homeDirectory,
     joinPath: input.joinPath,
     t3Home,
@@ -81,7 +86,11 @@ export function resolveEarlyLinuxElectronOptions(
 ): EarlyLinuxElectronOptions {
   const preference = resolveEarlyLinuxPasswordStorePreference(input);
   return {
-    linuxWmClass: isDevelopmentEnvironment(input.env) ? "t3code-dev" : "t3code",
+    linuxWmClass: isDevelopmentEnvironment(input.env)
+      ? "t3code-dev"
+      : isDulliApp(input.appName, input.env)
+        ? "t3-dulli"
+        : "t3code",
     passwordStore: resolveLinuxPasswordStoreSwitch({
       preference,
       env: input.env,

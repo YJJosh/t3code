@@ -49,6 +49,10 @@ Verify every result is 1024×1024 and has the classic macOS safe area: an 824×8
 
 Do not edit the generated PNG or ICO files directly.
 
+## T3 Dulli exports
+
+`dulli/logo.svg` is the editable source for the Dulli desktop and bundled-web icon family. The committed PNG and ICO files keep branded builds independent of host image tooling. After changing the SVG, run `scripts/dulli/generate-assets.sh` and review every derived asset.
+
 ## Android adaptive foreground
 
 `apps/mobile/assets/android-icon-foreground.svg` is the source of truth for the foreground used by

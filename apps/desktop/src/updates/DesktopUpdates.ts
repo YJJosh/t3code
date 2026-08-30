@@ -335,15 +335,24 @@ export const make = Effect.gen(function* () {
     channel: DesktopUpdateChannel,
   ) {
     yield* Effect.annotateCurrentSpan({ channel });
-    const allowsPrerelease = channel === "nightly";
-    yield* electronUpdater.setChannel(channel);
+    const allowsPrerelease = channel === "nightly" || environment.allowsPrereleaseUpdates;
+    // Nightly re-publishes the same version repeatedly, so it needs downgrade to
+    // re-land the current tag. Dulli follows prereleases forward-only: it accepts
+    // prereleases but never moves an install to a lower version.
+    const allowsDowngrade = channel === "nightly";
+    // Leaving the normal channel unset lets electron-updater derive Dulli's
+    // prerelease identifier from versions such as 0.0.36-pi.1 while the UI
+    // continues to present its regular "latest" choice.
+    const updaterChannel = environment.isDulli && channel === "latest" ? null : channel;
+    yield* electronUpdater.setChannel(updaterChannel);
     yield* electronUpdater.setAllowPrerelease(allowsPrerelease);
-    yield* electronUpdater.setAllowDowngrade(allowsPrerelease);
+    yield* electronUpdater.setAllowDowngrade(allowsDowngrade);
     yield* electronUpdater.setFullChangelog(allowsPrerelease);
     yield* logUpdaterInfo("using update channel", {
       channel,
+      updaterChannel,
       allowPrerelease: allowsPrerelease,
-      allowDowngrade: allowsPrerelease,
+      allowDowngrade: allowsDowngrade,
       fullChangelog: allowsPrerelease,
     });
   });

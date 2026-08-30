@@ -42,6 +42,7 @@ import {
   resolveMacStageDependencies,
   resolveFffNativeDependencies,
   resolveBuildOptions,
+  resolveDesktopBuildBrandMetadata,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
@@ -249,9 +250,26 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
   });
 
-  it("switches desktop packaging product names to nightly for nightly builds", () => {
+  it("switches desktop packaging product names to nightly and Dulli brands", () => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+    assert.equal(resolveDesktopProductName("0.0.36-pi.1", "dulli"), "T3 Dulli");
+  });
+
+  it("resolves the complete isolated Dulli package identity", () => {
+    assert.deepStrictEqual(resolveDesktopBuildBrandMetadata("dulli", "0.0.36-pi.1"), {
+      appId: "com.yjjosh.t3dulli",
+      artifactName: "T3-Dulli-${version}-${arch}.${ext}",
+      author: "YJJosh",
+      description: "T3 Dulli desktop build",
+      executableName: "t3-dulli-clean",
+      linuxDesktopEntryName: "t3-dulli-clean.desktop",
+      linuxWmClass: "t3-dulli",
+      packageName: "t3-dulli",
+      productName: "T3 Dulli",
+      updateRepository: "YJJosh/t3code",
+      usesPrereleaseFeed: true,
+    });
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -265,6 +283,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
       linuxIconPng: BRAND_ASSET_PATHS.nightlyLinuxIconPng,
       windowsIconIco: BRAND_ASSET_PATHS.nightlyWindowsIconIco,
+    });
+    assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.36-pi.1", "dulli"), {
+      macIconPng: BRAND_ASSET_PATHS.dulliMacIconPng,
+      linuxIconPng: BRAND_ASSET_PATHS.dulliLinuxIconPng,
+      windowsIconIco: BRAND_ASSET_PATHS.dulliWindowsIconIco,
     });
   });
 
@@ -310,6 +333,17 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         repo: "t3code",
         releaseType: "prerelease",
         channel: "nightly",
+      });
+
+      const dulliConfig = yield* resolveGitHubPublishConfig("latest", {
+        defaultRepository: "YJJosh/t3code",
+        releaseType: "prerelease",
+      }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))));
+      assert.deepStrictEqual(dulliConfig, {
+        provider: "github",
+        owner: "YJJosh",
+        repo: "t3code",
+        releaseType: "prerelease",
       });
     }),
   );
@@ -658,6 +692,64 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.deepStrictEqual(config.files, DESKTOP_FILE_EXCLUSIONS);
       }
       assert.deepStrictEqual(mac.electronLanguages, DESKTOP_ELECTRON_LANGUAGES);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect("builds Dulli artifacts with isolated identity and a prerelease feed", () =>
+    Effect.gen(function* () {
+      const linux = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "0.0.36-pi.1",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "dulli",
+      );
+      const mac = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.36-pi.1",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "dulli",
+      );
+
+      assert.equal(linux.appId, "com.yjjosh.t3dulli");
+      assert.equal(linux.productName, "T3 Dulli");
+      assert.equal(linux.artifactName, "T3-Dulli-${version}-${arch}.${ext}");
+      assert.deepStrictEqual(linux.publish, [
+        {
+          provider: "github",
+          owner: "YJJosh",
+          repo: "t3code",
+          releaseType: "prerelease",
+        },
+      ]);
+      assert.deepStrictEqual(linux.linux, {
+        target: ["AppImage"],
+        executableName: "t3-dulli-clean",
+        icon: "icons",
+        category: "Development",
+        desktop: { entry: { StartupWMClass: "t3-dulli" } },
+      });
+      assert.deepStrictEqual(mac.dmg, {
+        title: "T3 Dulli 0.0.36-pi.1 Installer",
+        background: "dmg/dmg-background-dulli.png",
+        window: { width: 540, height: 412 },
+        contents: [
+          { x: 130, y: 220, type: "file" },
+          { x: 410, y: 220, type: "link", path: "/Applications" },
+        ],
+        iconSize: 80,
+        iconTextSize: 12,
+      });
+      assert.notProperty(mac.mac as Record<string, unknown>, "protocols");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
@@ -1263,7 +1355,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
 
         assert.instanceOf(error, DesktopDmgBackgroundSourceMissingError);
-        assert.equal(error.channel, "latest");
+        assert.equal(error.brand, "latest");
         assert.include(error.sourcePath, "dmg-background-latest.svg");
       }),
     ),
@@ -1755,6 +1847,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it.effect("resolves default platform and architecture from host references", () =>
     Effect.gen(function* () {
       const resolved = yield* resolveBuildOptions({
+        brand: Option.none(),
         platform: Option.none(),
         target: Option.none(),
         arch: Option.none(),
@@ -1795,6 +1888,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       for (const platform of ["linux", "win"] as const) {
         const error = yield* Effect.flip(
           resolveBuildOptions({
+            brand: Option.none(),
             platform: Option.some(platform),
             target: Option.none(),
             arch: Option.some("universal"),
@@ -1819,6 +1913,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it.effect("preserves explicit false boolean flags over true env defaults", () =>
     Effect.gen(function* () {
       const resolved = yield* resolveBuildOptions({
+        brand: Option.none(),
         platform: Option.some("mac"),
         target: Option.none(),
         arch: Option.some("arm64"),
@@ -1836,6 +1931,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                T3CODE_DESKTOP_BRAND: "dulli",
                 T3CODE_DESKTOP_SKIP_BUILD: "true",
                 T3CODE_DESKTOP_KEEP_STAGE: "true",
                 T3CODE_DESKTOP_SIGNED: "true",
@@ -1847,6 +1943,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       );
 
+      assert.equal(resolved.brand, "dulli");
       assert.equal(resolved.skipBuild, false);
       assert.equal(resolved.keepStage, false);
       assert.equal(resolved.signed, false);

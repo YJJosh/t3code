@@ -16,6 +16,7 @@ const { appendSwitchMock, getSwitchValueMock, hasSwitchMock, registerSchemesMock
 
 vi.mock("electron", () => ({
   app: {
+    name: "T3 Code",
     commandLine: {
       appendSwitch: appendSwitchMock,
       getSwitchValue: getSwitchValueMock,
@@ -124,6 +125,12 @@ describe("DesktopPreReadyPlatform", () => {
         });
         assert.deepEqual(events, ["pre-ready", "clerk"]);
         assert.equal(registerSchemesMock.mock.calls.length, 1);
+        assert.deepEqual(
+          registerSchemesMock.mock.calls[0]?.[0].map(
+            (registration: { readonly scheme: string }) => registration.scheme,
+          ),
+          ["t3code", "t3code-dev", "t3dulli"],
+        );
         assert.equal(appendSwitchMock.mock.calls.length, 0);
       }),
   );

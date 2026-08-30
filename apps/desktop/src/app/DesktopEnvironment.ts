@@ -17,6 +17,7 @@ import { resolveDesktopBaseDir, resolveDesktopStateDir } from "./DesktopStatePat
 import { isNightlyDesktopVersion } from "../updates/updateChannels.ts";
 
 export interface MakeDesktopEnvironmentInput {
+  readonly appName?: string;
   readonly dirname: string;
   readonly homeDirectory: string;
   readonly platform: NodeJS.Platform;
@@ -76,6 +77,8 @@ export class DesktopEnvironment extends Context.Service<
     readonly linuxWmClass: string;
     readonly linuxApplicationsDir: string;
     readonly appImagePath: Option.Option<string>;
+    readonly isDulli: boolean;
+    readonly allowsPrereleaseUpdates: boolean;
     readonly userDataDirName: string;
     readonly legacyUserDataDirName: string;
     readonly defaultDesktopSettings: DesktopAppSettings.DesktopSettings;
@@ -85,7 +88,8 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "T3 Code";
+const T3_CODE_APP_BASE_NAME = "T3 Code";
+const DULLI_APP_BASE_NAME = "T3 Dulli";
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -101,12 +105,14 @@ function resolveDesktopAppStageLabel(input: {
 function resolveDesktopAppBranding(input: {
   readonly isDevelopment: boolean;
   readonly appVersion: string;
+  readonly isDulli: boolean;
 }): DesktopAppBranding {
   const stageLabel = resolveDesktopAppStageLabel(input);
+  const baseName = input.isDulli ? DULLI_APP_BASE_NAME : T3_CODE_APP_BASE_NAME;
   return {
-    baseName: APP_BASE_NAME,
+    baseName,
     stageLabel,
-    displayName: `${APP_BASE_NAME} (${stageLabel})`,
+    displayName: input.isDulli && !input.isDevelopment ? baseName : `${baseName} (${stageLabel})`,
   };
 }
 
@@ -146,6 +152,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const path = yield* Path.Path;
   const config = yield* DesktopConfig.DesktopConfig;
   const homeDirectory = input.homeDirectory;
+  const isDulli = input.isPackaged && input.appName?.trim() === DULLI_APP_BASE_NAME;
   const devServerUrl = config.devServerUrl;
   const isDevelopment = Option.isSome(devServerUrl);
   const appDataDirectory =
@@ -157,6 +164,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
         ? path.join(homeDirectory, "Library", "Application Support")
         : Option.getOrElse(config.xdgConfigHome, () => path.join(homeDirectory, ".config"));
   const baseDir = resolveDesktopBaseDir({
+    defaultBaseDirName: isDulli ? ".t3-dulli" : ".t3",
     homeDirectory,
     joinPath: path.join,
     t3Home: config.t3Home,
@@ -170,6 +178,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const branding = resolveDesktopAppBranding({
     isDevelopment,
     appVersion: input.appVersion,
+    isDulli,
   });
   const displayName = branding.displayName;
   const stateDir = resolveDesktopStateDir({
@@ -178,8 +187,12 @@ const make = Effect.fn("desktop.environment.make")(function* (
     joinPath: path.join,
     t3Home: config.t3Home,
   });
-  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
-  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+  const userDataDirName = isDevelopment ? "t3code-dev" : isDulli ? "t3-dulli" : "t3code";
+  const legacyUserDataDirName = isDevelopment
+    ? "T3 Code (Dev)"
+    : isDulli
+      ? userDataDirName
+      : "T3 Code (Alpha)";
   const linuxApplicationsDir = path.join(
     Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
     "applications",
@@ -224,12 +237,22 @@ const make = Effect.fn("desktop.environment.make")(function* (
     branding,
     displayName,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+      isDevelopment
+        ? "com.t3tools.t3code.dev"
+        : isDulli
+          ? "com.yjjosh.t3dulli"
+          : "com.t3tools.t3code",
     ),
-    linuxDesktopEntryName: isDevelopment ? "t3code-dev.desktop" : "t3code.desktop",
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    linuxDesktopEntryName: isDevelopment
+      ? "t3code-dev.desktop"
+      : isDulli
+        ? "t3-dulli-clean.desktop"
+        : "t3code.desktop",
+    linuxWmClass: isDevelopment ? "t3code-dev" : isDulli ? "t3-dulli" : "t3code",
     linuxApplicationsDir,
     appImagePath: config.appImagePath,
+    isDulli,
+    allowsPrereleaseUpdates: isDulli,
     userDataDirName,
     legacyUserDataDirName,
     defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),

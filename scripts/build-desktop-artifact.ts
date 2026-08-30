@@ -53,10 +53,14 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3tools.t3code";
+const DULLI_DESKTOP_APP_ID = "com.yjjosh.t3dulli";
+const DULLI_UPDATE_REPOSITORY = "YJJosh/t3code";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
+export const DesktopBuildBrand = Schema.Literals(["t3code", "dulli"]);
+export type DesktopBuildBrand = typeof DesktopBuildBrand.Type;
 
 const WorkspaceConfig = Schema.Struct({
   catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -151,6 +155,7 @@ const PLATFORM_CONFIG: Record<typeof BuildPlatform.Type, PlatformConfig> = {
 };
 
 interface BuildCliInput {
+  readonly brand: Option.Option<DesktopBuildBrand>;
   readonly platform: Option.Option<typeof BuildPlatform.Type>;
   readonly target: Option.Option<string>;
   readonly arch: Option.Option<typeof BuildArch.Type>;
@@ -319,15 +324,18 @@ export class DesktopIconSourceMissingError extends Schema.TaggedErrorClass<Deskt
   }
 }
 
+const DesktopDmgBackgroundBrand = Schema.Literals(["latest", "nightly", "dulli"]);
+type DesktopDmgBackgroundBrand = typeof DesktopDmgBackgroundBrand.Type;
+
 export class DesktopDmgBackgroundSourceMissingError extends Schema.TaggedErrorClass<DesktopDmgBackgroundSourceMissingError>()(
   "DesktopDmgBackgroundSourceMissingError",
   {
-    channel: Schema.Literals(["latest", "nightly"]),
+    brand: DesktopDmgBackgroundBrand,
     sourcePath: Schema.String,
   },
 ) {
   override get message(): string {
-    return `Desktop ${this.channel} DMG background source is missing at ${this.sourcePath}`;
+    return `Desktop ${this.brand} DMG background source is missing at ${this.sourcePath}`;
   }
 }
 
@@ -761,6 +769,7 @@ const resolvePythonForNodeGyp = Effect.fn("resolvePythonForNodeGyp")(function* (
 });
 
 interface ResolvedBuildOptions {
+  readonly brand: DesktopBuildBrand;
   readonly platform: typeof BuildPlatform.Type;
   readonly target: string;
   readonly arch: typeof BuildArch.Type;
@@ -777,6 +786,7 @@ interface ResolvedBuildOptions {
 
 interface StagePackageJson {
   readonly name: string;
+  readonly productName?: string;
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
@@ -1053,6 +1063,7 @@ function normalizePasskeyRpDomain(value: string): string {
 
 export function resolveMacPasskeySigningConfiguration(
   env: Readonly<Record<string, string | undefined>>,
+  appId: string = DESKTOP_APP_ID,
 ): MacPasskeySigningConfiguration {
   const teamId = env.T3CODE_APPLE_TEAM_ID?.trim().toUpperCase() ?? "";
   if (!APPLE_TEAM_ID_PATTERN.test(teamId)) {
@@ -1088,7 +1099,7 @@ export function resolveMacPasskeySigningConfiguration(
   }
 
   return {
-    appId: DESKTOP_APP_ID,
+    appId,
     teamId,
     rpDomains: uniqueRpDomains,
     provisioningProfilePath,
@@ -1314,6 +1325,7 @@ const AzureTrustedSigningOptionsConfig = Config.all({
 });
 
 const BuildEnvConfig = Config.all({
+  brand: Config.schema(DesktopBuildBrand, "T3CODE_DESKTOP_BRAND").pipe(Config.option),
   platform: Config.schema(BuildPlatform, "T3CODE_DESKTOP_PLATFORM").pipe(Config.option),
   target: Config.string("T3CODE_DESKTOP_TARGET").pipe(Config.option),
   arch: Config.schema(BuildArch, "T3CODE_DESKTOP_ARCH").pipe(Config.option),
@@ -1374,6 +1386,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const env = yield* BuildEnvConfig;
   const hostPlatform = yield* HostProcessPlatform;
 
+  const brand = mergeOptions(input.brand, env.brand, "t3code" as const);
   const platform = mergeOptions(
     input.platform,
     env.platform,
@@ -1425,6 +1438,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     Option.getOrUndefined(input.wslPrebuild) ?? Option.getOrUndefined(env.wslPrebuild);
 
   return {
+    brand,
     platform,
     target,
     arch,
@@ -1883,14 +1897,14 @@ function stageMacIcons(stageResourcesDir: string, sourcePng: string, verbose: bo
 
 export const stageDesktopDmgBackground = Effect.fn("stageDesktopDmgBackground")(function* (
   stageResourcesDir: string,
-  channel: "latest" | "nightly",
+  brand: DesktopDmgBackgroundBrand,
   verbose: boolean,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const sourcePath = path.join(stageResourcesDir, "dmg", `dmg-background-${channel}.svg`);
+  const sourcePath = path.join(stageResourcesDir, "dmg", `dmg-background-${brand}.svg`);
   if (!(yield* fs.exists(sourcePath))) {
-    return yield* new DesktopDmgBackgroundSourceMissingError({ channel, sourcePath });
+    return yield* new DesktopDmgBackgroundSourceMissingError({ brand, sourcePath });
   }
 
   for (const output of [
@@ -1900,14 +1914,14 @@ export const stageDesktopDmgBackground = Effect.fn("stageDesktopDmgBackground")(
     const targetPath = path.join(
       stageResourcesDir,
       "dmg",
-      `dmg-background-${channel}${output.suffix}.png`,
+      `dmg-background-${brand}${output.suffix}.png`,
     );
     yield* runCommand(
       ChildProcess.make(
         {},
       )`sips -s format png -z ${output.height} ${output.width} ${sourcePath} --out ${targetPath}`,
       {
-        label: `sips ${channel} DMG background${output.suffix || "@1x"}`,
+        label: `sips ${brand} DMG background${output.suffix || "@1x"}`,
         verbose,
       },
     );
@@ -2047,6 +2061,10 @@ export function resolveDesktopRuntimeDependencies(
 
 export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
   updateChannel: "latest" | "nightly",
+  options: {
+    readonly defaultRepository?: string;
+    readonly releaseType?: "release" | "prerelease";
+  } = {},
 ) {
   const env = yield* Config.all({
     updateRepository: Config.string("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
@@ -2054,6 +2072,7 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
   });
   const rawRepo = (
     Option.getOrUndefined(env.updateRepository)?.trim() ||
+    options.defaultRepository?.trim() ||
     Option.getOrUndefined(env.githubRepository)?.trim() ||
     ""
   ).trim();
@@ -2066,7 +2085,7 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
     provider: "github",
     owner,
     repo,
-    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
+    releaseType: options.releaseType ?? (updateChannel === "nightly" ? "prerelease" : "release"),
     ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
   };
 });
@@ -2083,7 +2102,18 @@ export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
   return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
 }
 
-export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
+export function resolveDesktopBuildIconAssets(
+  version: string,
+  brand: DesktopBuildBrand = "t3code",
+): DesktopBuildIconAssets {
+  if (brand === "dulli") {
+    return {
+      macIconPng: BRAND_ASSET_PATHS.dulliMacIconPng,
+      linuxIconPng: BRAND_ASSET_PATHS.dulliLinuxIconPng,
+      windowsIconIco: BRAND_ASSET_PATHS.dulliWindowsIconIco,
+    };
+  }
+
   if (resolveDesktopUpdateChannel(version) === "nightly") {
     return {
       macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
@@ -2116,10 +2146,63 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
-export function resolveDesktopProductName(version: string): string {
+export function resolveDesktopProductName(
+  version: string,
+  brand: DesktopBuildBrand = "t3code",
+): string {
+  if (brand === "dulli") return "T3 Dulli";
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
+}
+
+export interface DesktopBuildBrandMetadata {
+  readonly appId: string;
+  readonly artifactName: string;
+  readonly author: string;
+  readonly description: string;
+  readonly executableName: string;
+  readonly linuxDesktopEntryName: string;
+  readonly linuxWmClass: string;
+  readonly packageName: string;
+  readonly productName: string;
+  readonly updateRepository: string | undefined;
+  readonly usesPrereleaseFeed: boolean;
+}
+
+export function resolveDesktopBuildBrandMetadata(
+  brand: DesktopBuildBrand,
+  version: string,
+): DesktopBuildBrandMetadata {
+  if (brand === "dulli") {
+    return {
+      appId: DULLI_DESKTOP_APP_ID,
+      artifactName: "T3-Dulli-${version}-${arch}.${ext}",
+      author: "YJJosh",
+      description: "T3 Dulli desktop build",
+      executableName: "t3-dulli-clean",
+      linuxDesktopEntryName: "t3-dulli-clean.desktop",
+      linuxWmClass: "t3-dulli",
+      packageName: "t3-dulli",
+      productName: resolveDesktopProductName(version, brand),
+      updateRepository: DULLI_UPDATE_REPOSITORY,
+      usesPrereleaseFeed: true,
+    };
+  }
+
+  return {
+    appId: DESKTOP_APP_ID,
+    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    author: "T3 Tools",
+    description: "T3 Code desktop build",
+    executableName: "t3code",
+    linuxDesktopEntryName: "t3code.desktop",
+    linuxWmClass: "t3code",
+    packageName: "t3code",
+    productName: resolveDesktopProductName(version, brand),
+    updateRepository: undefined,
+    usesPrereleaseFeed: false,
+  };
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2139,11 +2222,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   // sidecar staging skips the archive in that case, and listing a resource
   // whose source file was never written fails the electron-builder step.
   wslRuntimeBundled = false,
+  brand: DesktopBuildBrand = "t3code",
 ) {
+  const brandMetadata = resolveDesktopBuildBrandMetadata(brand, version);
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
-    productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    appId: brandMetadata.appId,
+    productName: brandMetadata.productName,
+    artifactName: brandMetadata.artifactName,
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
     files: [...DESKTOP_FILE_EXCLUSIONS, ...(platform === "mac" ? MAC_FILE_EXCLUSIONS : [])],
     directories: {
@@ -2161,7 +2246,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   if (!isDesktopPreviewVersion(version)) {
-    const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
+    const publishConfig = yield* resolveGitHubPublishConfig(updateChannel, {
+      ...(brandMetadata.updateRepository === undefined
+        ? {}
+        : { defaultRepository: brandMetadata.updateRepository }),
+      ...(brandMetadata.usesPrereleaseFeed ? { releaseType: "prerelease" as const } : {}),
+    });
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
     } else if (mockUpdates) {
@@ -2181,12 +2271,16 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
-      protocols: [
-        {
-          name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
-        },
-      ],
+      ...(brand === "t3code"
+        ? {
+            protocols: [
+              {
+                name: "T3 Code",
+                schemes: ["t3code", "t3code-dev"],
+              },
+            ],
+          }
+        : {}),
       ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
       ...(macPasskeySigning
         ? {
@@ -2202,8 +2296,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       // Give the themed installer its own Finder volume name. Finder caches
       // DMG window backgrounds by volume name, so reusing a generic name can
       // make a newly built background look unchanged during testing.
-      title: `${resolveDesktopProductName(version)} ${version} Installer`,
-      background: `dmg/dmg-background-${updateChannel}.png`,
+      title: `${brandMetadata.productName} ${version} Installer`,
+      background: `dmg/dmg-background-${brand === "dulli" ? "dulli" : updateChannel}.png`,
       window: {
         width: 540,
         // Finder counts its 32px title bar in the window bounds. The themed
@@ -2223,21 +2317,25 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "linux") {
     buildConfig.linux = {
       target: [target],
-      executableName: "t3code",
+      executableName: brandMetadata.executableName,
       icon: "icons",
       category: "Development",
-      // electron-builder turns these into MimeType=x-scheme-handler/<scheme>;
-      // in the .desktop entry (Exec already gets %U), so browsers can hand
-      // t3code:// OAuth callbacks to the app.
-      protocols: [
-        {
-          name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
-        },
-      ],
+      // electron-builder adds protocol MIME handlers to the generated desktop
+      // entry. Dulli deliberately has an independent identity and never claims
+      // upstream T3 Code's t3code:// callbacks.
+      ...(brand === "t3code"
+        ? {
+            protocols: [
+              {
+                name: "T3 Code",
+                schemes: ["t3code", "t3code-dev"],
+              },
+            ],
+          }
+        : {}),
       desktop: {
         entry: {
-          StartupWMClass: "t3code",
+          StartupWMClass: brandMetadata.linuxWmClass,
         },
       },
     };
@@ -2954,11 +3052,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   });
 
   const appVersion = options.version ?? serverPackageJson.version;
-  const iconAssets = resolveDesktopBuildIconAssets(appVersion);
+  const brandMetadata = resolveDesktopBuildBrandMetadata(options.brand, appVersion);
+  const iconAssets = resolveDesktopBuildIconAssets(appVersion, options.brand);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
-    prefix: `t3code-desktop-${options.platform}-stage-`,
+    prefix: `${brandMetadata.packageName}-desktop-${options.platform}-stage-`,
   });
 
   const stageAppDir = path.join(stageRoot, "app");
@@ -2976,6 +3075,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     yield* runCommand(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         cwd: repoRoot,
+        env: {
+          ...process.env,
+          VITE_DESKTOP_BUILD_BRAND: options.brand,
+        },
         shell: spawnCommand.shell,
       }),
       { label: "vp run build:desktop", verbose: options.verbose },
@@ -3066,7 +3169,8 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     });
   }
 
-  const webAssetBrand = resolveDesktopWebAssetBrand(appVersion);
+  const webAssetBrand =
+    options.brand === "dulli" ? ("dulli" as const) : resolveDesktopWebAssetBrand(appVersion);
   yield* applyWebBrandAssets(webAssetBrand, "apps/server/dist/client");
   yield* Effect.log(`[desktop-artifact] Applied ${webAssetBrand} web client branding.`);
   yield* validateBundledClientAssets(path.dirname(bundledClientEntry));
@@ -3082,7 +3186,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (options.platform === "mac" && options.target === "dmg") {
     yield* stageDesktopDmgBackground(
       stageResourcesDir,
-      resolveDesktopUpdateChannel(appVersion),
+      options.brand === "dulli" ? "dulli" : resolveDesktopUpdateChannel(appVersion),
       options.verbose,
     );
   }
@@ -3117,7 +3221,8 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () =>
+            resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot }), brandMetadata.appId),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;
@@ -3175,14 +3280,15 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
   const stagePackageJson: StagePackageJson = {
-    name: "t3code",
+    name: brandMetadata.packageName,
+    ...(options.brand === "dulli" ? { productName: brandMetadata.productName } : {}),
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
     private: true,
     packageManager: rootPackageJson.packageManager,
-    description: "T3 Code desktop build",
-    author: "T3 Tools",
+    description: brandMetadata.description,
+    author: brandMetadata.author,
     main: "apps/desktop/dist-electron/main.cjs",
     build: yield* createBuildConfig(
       options.platform,
@@ -3198,6 +3304,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
           }
         : undefined,
       bundlesWslRuntime({ arch: options.arch, prebuildPath: options.wslPrebuild }),
+      options.brand,
     ),
     dependencies: stageDependencies,
     devDependencies: {
@@ -3354,7 +3461,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (options.platform === "win") {
     yield* validateWindowsPackagedPayload({
       stageDistDir,
-      appExecutableName: `${resolveDesktopProductName(appVersion)}.exe`,
+      appExecutableName: `${brandMetadata.productName}.exe`,
       targetArch: options.arch,
       expectWslRuntime: bundlesWslRuntime({
         arch: options.arch,
@@ -3392,6 +3499,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 });
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
+  brand: Flag.choice("brand", DesktopBuildBrand.literals).pipe(
+    Flag.withDescription("Desktop product brand (env: T3CODE_DESKTOP_BRAND)."),
+    Flag.optional,
+  ),
   platform: Flag.choice("platform", BuildPlatform.literals).pipe(
     Flag.withDescription("Build platform (env: T3CODE_DESKTOP_PLATFORM)."),
     Flag.optional,
@@ -3450,7 +3561,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
 }).pipe(
-  Command.withDescription("Build a desktop artifact for T3 Code."),
+  Command.withDescription("Build a branded T3 desktop artifact."),
   Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
 );
 

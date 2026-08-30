@@ -74,6 +74,23 @@ describe("DesktopClerk", () => {
     assert.equal(DesktopClerk.resolveDesktopClerkFrontendApiHostname("invalid"), undefined);
   });
 
+  it("uses Dulli's independent renderer scheme", () => {
+    storageMock.mockReturnValue(storageAdapter);
+    createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
+
+    DesktopClerk.createDesktopClerkBridge("/tmp/t3-dulli", false, true);
+
+    assert.deepEqual(createClerkBridgeMock.mock.calls, [
+      [
+        {
+          storage: storageAdapter,
+          passkeys: true,
+          renderer: { scheme: "t3dulli", host: "app" },
+        },
+      ],
+    ]);
+  });
+
   it.effect("acquires and releases the SDK bridge with the layer", () => {
     const cleanup = vi.fn();
     const events: string[] = [];

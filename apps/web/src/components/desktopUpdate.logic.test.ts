@@ -197,6 +197,18 @@ describe("desktop update UI helpers", () => {
     );
   });
 
+  it("uses Dulli's release repository and product name", () => {
+    expect(getDesktopUpdateReleaseUrl("0.0.36-pi.1", "T3 Dulli")).toBe(
+      "https://github.com/YJJosh/t3code/releases/tag/v0.0.36-pi.1",
+    );
+    expect(
+      getDesktopUpdateInstallConfirmationMessage(
+        { availableVersion: "0.0.36-pi.1", downloadedVersion: null },
+        "T3 Dulli",
+      ),
+    ).toContain("restart T3 Dulli?");
+  });
+
   it("omits the release URL when the updater does not report a version", () => {
     expect(getDesktopUpdateReleaseUrl(null)).toBeNull();
     expect(getDesktopUpdateReleaseUrl("  ")).toBeNull();

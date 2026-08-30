@@ -190,15 +190,19 @@ describe("DesktopLinuxUrlHandler", () => {
     });
   });
 
-  it.effect("does nothing on other platforms or unpackaged builds", () => {
+  it.effect("does nothing on other platforms, unpackaged builds, or Dulli", () => {
     const nonLinux = emptyRecording();
     const unpackaged = emptyRecording();
+    const dulli = emptyRecording();
 
     return Effect.gen(function* () {
       yield* runRegister(nonLinux, { environment: { platform: "darwin" } });
       yield* runRegister(unpackaged, { environment: { isPackaged: false } });
+      yield* runRegister(dulli, {
+        environment: { isDulli: true, displayName: "T3 Dulli" },
+      });
 
-      for (const recorded of [nonLinux, unpackaged]) {
+      for (const recorded of [nonLinux, unpackaged, dulli]) {
         assert.deepEqual(recorded.directories, []);
         assert.deepEqual(recorded.files, []);
         assert.deepEqual(recorded.commands, []);
