@@ -92,6 +92,49 @@ export function deriveLocalBranchNameFromRemoteRef(branchName: string): string {
   return branchName.slice(firstSeparatorIndex + 1);
 }
 
+export const CONVENTIONAL_BRANCH_PREFIXES = [
+  "feature",
+  "fix",
+  "chore",
+  "refactor",
+  "docs",
+  "test",
+  "build",
+  "ci",
+  "perf",
+  "style",
+  "revert",
+] as const;
+
+const CONVENTIONAL_BRANCH_PREFIX_SET = new Set<string>(CONVENTIONAL_BRANCH_PREFIXES);
+
+/** Normalize an agent-generated branch according to the configured naming policy. */
+export function buildGeneratedWorktreeBranchName(
+  raw: string,
+  options: {
+    readonly includeT3CodeBranchPrefix: boolean;
+    readonly useConventionalBranchPrefixes: boolean;
+  },
+): string {
+  const normalized = raw
+    .trim()
+    .toLowerCase()
+    .replace(/^refs\/heads\//, "")
+    .replace(/['"`]/g, "");
+  const withoutT3CodePrefix = normalized.startsWith(`${WORKTREE_BRANCH_PREFIX}/`)
+    ? normalized.slice(`${WORKTREE_BRANCH_PREFIX}/`.length)
+    : normalized;
+  const categoryMatch = /^([a-z]+)[/\s:_-]+(.+)$/.exec(withoutT3CodePrefix);
+  const category = categoryMatch?.[1];
+  const candidate = options.useConventionalBranchPrefixes
+    ? category && CONVENTIONAL_BRANCH_PREFIX_SET.has(category)
+      ? `${category}/${sanitizeBranchFragment(categoryMatch[2] ?? "")}`
+      : `feature/${sanitizeBranchFragment(withoutT3CodePrefix)}`
+    : withoutT3CodePrefix;
+  const fragment = sanitizeBranchFragment(candidate);
+  return options.includeT3CodeBranchPrefix ? `${WORKTREE_BRANCH_PREFIX}/${fragment}` : fragment;
+}
+
 export function buildTemporaryWorktreeBranchName(
   randomHex: (byteLength: number) => string,
 ): string {

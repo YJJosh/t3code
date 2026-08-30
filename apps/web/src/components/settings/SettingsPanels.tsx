@@ -526,6 +526,17 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin
         ? ["New worktrees start from origin"]
         : []),
+      ...(settings.useWorklerForNewWorkspaces !==
+      DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces
+        ? ["Create new workspaces with Workler"]
+        : []),
+      ...(settings.includeT3CodeBranchPrefix !== DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix
+        ? ["Include t3code/ in generated branches"]
+        : []),
+      ...(settings.useConventionalBranchPrefixes !==
+      DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes
+        ? ["Use conventional generated branch prefixes"]
+        : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
         : []),
@@ -563,6 +574,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
+      settings.useWorklerForNewWorkspaces,
+      settings.includeT3CodeBranchPrefix,
+      settings.useConventionalBranchPrefixes,
       settings.diffIgnoreWhitespace,
       settings.environmentIdentificationMode,
       settings.fontFamilyCode,
@@ -671,6 +685,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       providerHealthRefreshInterval: DEFAULT_UNIFIED_SETTINGS.providerHealthRefreshInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+      useWorklerForNewWorkspaces: DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
+      includeT3CodeBranchPrefix: DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix,
+      useConventionalBranchPrefixes: DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
@@ -2267,35 +2284,120 @@ export function GeneralSettingsPanel() {
         />
 
         {settings.defaultThreadEnvMode === "worktree" ? (
-          <SettingsRow
-            className="bg-muted/20 sm:pl-9"
-            title={searchableSetting("start-from-origin").title}
-            description="Creates the worktree from the latest matching branch on origin instead of your local branch."
-            resetAction={
-              settings.newWorktreesStartFromOrigin !==
-              DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
-                <SettingResetButton
-                  label="new worktrees start from origin"
-                  onClick={() =>
-                    updateSettings({
-                      newWorktreesStartFromOrigin:
-                        DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
-                    })
+          <>
+            <SettingsRow
+              className="bg-muted/20 sm:pl-9"
+              title={searchableSetting("start-from-origin").title}
+              description="Creates the worktree from the latest matching branch on origin instead of your local branch."
+              resetAction={
+                settings.newWorktreesStartFromOrigin !==
+                DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
+                  <SettingResetButton
+                    label="new worktrees start from origin"
+                    onClick={() =>
+                      updateSettings({
+                        newWorktreesStartFromOrigin:
+                          DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+                      })
+                    }
+                  />
+                ) : null
+              }
+              control={
+                <Switch
+                  checked={settings.newWorktreesStartFromOrigin}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ newWorktreesStartFromOrigin: Boolean(checked) })
                   }
+                  aria-label="Start new worktrees from origin by default"
                 />
-              ) : null
-            }
-            control={
-              <Switch
-                checked={settings.newWorktreesStartFromOrigin}
-                onCheckedChange={(checked) =>
-                  updateSettings({ newWorktreesStartFromOrigin: Boolean(checked) })
-                }
-                aria-label="Start new worktrees from origin by default"
-              />
-            }
-          />
+              }
+            />
+            <SettingsRow
+              className="bg-muted/20 sm:pl-9"
+              title={searchableSetting("workler-workspaces").title}
+              description="Create automatically located workspaces as independent clones and apply this repository's Workler copy/link rules. Explicit worktree paths still use Git."
+              resetAction={
+                settings.useWorklerForNewWorkspaces !==
+                DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces ? (
+                  <SettingResetButton
+                    label="create new workspaces with Workler"
+                    onClick={() =>
+                      updateSettings({
+                        useWorklerForNewWorkspaces:
+                          DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
+                      })
+                    }
+                  />
+                ) : null
+              }
+              control={
+                <Switch
+                  checked={settings.useWorklerForNewWorkspaces}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ useWorklerForNewWorkspaces: Boolean(checked) })
+                  }
+                  aria-label="Create new workspaces with Workler"
+                />
+              }
+            />
+          </>
         ) : null}
+
+        <SettingsRow
+          {...searchableSetting("generated-branch-prefix")}
+          description="Prefix agent-generated worktree branches with t3code/."
+          resetAction={
+            settings.includeT3CodeBranchPrefix !==
+            DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix ? (
+              <SettingResetButton
+                label="include t3code in generated branches"
+                onClick={() =>
+                  updateSettings({
+                    includeT3CodeBranchPrefix: DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.includeT3CodeBranchPrefix}
+              onCheckedChange={(checked) =>
+                updateSettings({ includeT3CodeBranchPrefix: Boolean(checked) })
+              }
+              aria-label="Include t3code in generated branches"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("conventional-branch-prefixes")}
+          description="Start generated branch names with a category such as feature/ or fix/."
+          resetAction={
+            settings.useConventionalBranchPrefixes !==
+            DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes ? (
+              <SettingResetButton
+                label="use conventional generated branch prefixes"
+                onClick={() =>
+                  updateSettings({
+                    useConventionalBranchPrefixes:
+                      DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.useConventionalBranchPrefixes}
+              onCheckedChange={(checked) =>
+                updateSettings({ useConventionalBranchPrefixes: Boolean(checked) })
+              }
+              aria-label="Use conventional generated branch prefixes"
+            />
+          }
+        />
 
         <SettingsRow
           {...searchableSetting("add-project-starts-in")}

@@ -1,0 +1,22 @@
+# Shared dependencies for Workler-managed local workspace clones.
+# Missing paths are ignored by Workler, so a fresh clone can still install its
+# own dependencies when needed.
+link node_modules
+link apps/desktop/node_modules
+link apps/marketing/node_modules
+link apps/mobile/node_modules
+link apps/server/node_modules
+link apps/web/node_modules
+link packages/client-runtime/node_modules
+link packages/contracts/node_modules
+link packages/effect-acp/node_modules
+link packages/effect-codex-app-server/node_modules
+link packages/shared/node_modules
+link packages/ssh/node_modules
+link packages/tailscale/node_modules
+link scripts/node_modules
+
+# Developer-local environment values should be independently editable per
+# workspace rather than linked back to the primary checkout.
+copy .env
+copy .env.local

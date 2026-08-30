@@ -153,6 +153,22 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "new-threads",
   },
   {
+    id: "workler-workspaces",
+    title: "Create new workspaces with Workler",
+    to: "/settings/general",
+    targetId: "new-threads",
+  },
+  {
+    id: "generated-branch-prefix",
+    title: "Include t3code/ in generated branches",
+    to: "/settings/general",
+  },
+  {
+    id: "conventional-branch-prefixes",
+    title: "Use conventional generated branch prefixes",
+    to: "/settings/general",
+  },
+  {
     id: "add-project-starts-in",
     title: "Add project starts in",
     to: "/settings/general",

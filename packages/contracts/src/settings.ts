@@ -659,6 +659,13 @@ export const ServerSettings = Schema.Struct({
   newWorktreesStartFromOrigin: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
+  // Kept for existing Dulli settings files. Workler is server-local; clients
+  // only select the creation strategy and never load the library themselves.
+  useWorklerForNewWorkspaces: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  includeT3CodeBranchPrefix: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  useConventionalBranchPrefixes: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(
@@ -864,6 +871,9 @@ export const ServerSettingsPatch = Schema.Struct({
   backgroundActivityProfile: Schema.optionalKey(BackgroundActivityProfile),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
+  useWorklerForNewWorkspaces: Schema.optionalKey(Schema.Boolean),
+  includeT3CodeBranchPrefix: Schema.optionalKey(Schema.Boolean),
+  useConventionalBranchPrefixes: Schema.optionalKey(Schema.Boolean),
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   sourceControlWritingStyle: Schema.optionalKey(

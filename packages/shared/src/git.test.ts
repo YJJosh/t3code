@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   applyGitStatusStreamEvent,
+  buildGeneratedWorktreeBranchName,
   buildTemporaryWorktreeBranchName,
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
@@ -59,6 +60,51 @@ describe("parseGitHubRepositoryNameWithOwnerFromRemoteUrl", () => {
     expect(
       parseGitHubRepositoryNameWithOwnerFromRemoteUrl("https://github.com/T3Tools/T3Code.git"),
     ).toBe("T3Tools/T3Code");
+  });
+});
+
+describe("buildGeneratedWorktreeBranchName", () => {
+  it.each([
+    {
+      includeT3CodeBranchPrefix: true,
+      useConventionalBranchPrefixes: false,
+      expected: "t3code/add-login",
+    },
+    {
+      includeT3CodeBranchPrefix: false,
+      useConventionalBranchPrefixes: false,
+      expected: "add-login",
+    },
+    {
+      includeT3CodeBranchPrefix: true,
+      useConventionalBranchPrefixes: true,
+      expected: "t3code/feature/add-login",
+    },
+    {
+      includeT3CodeBranchPrefix: false,
+      useConventionalBranchPrefixes: true,
+      expected: "feature/add-login",
+    },
+  ])("applies the complete generated-branch policy", (options) => {
+    expect(buildGeneratedWorktreeBranchName("Add login", options)).toBe(options.expected);
+  });
+
+  it("preserves an allowed conventional category and removes a model-supplied namespace", () => {
+    expect(
+      buildGeneratedWorktreeBranchName("refs/heads/t3code/fix: reconnect", {
+        includeT3CodeBranchPrefix: false,
+        useConventionalBranchPrefixes: true,
+      }),
+    ).toBe("fix/reconnect");
+  });
+
+  it("keeps the conventional policy valid when the model returns no usable description", () => {
+    expect(
+      buildGeneratedWorktreeBranchName("t3code/fix/!!!", {
+        includeT3CodeBranchPrefix: true,
+        useConventionalBranchPrefixes: true,
+      }),
+    ).toBe("t3code/fix/update");
   });
 });
 

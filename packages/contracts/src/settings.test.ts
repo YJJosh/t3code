@@ -288,14 +288,25 @@ describe("provider enabled defaults", () => {
 });
 
 describe("ServerSettings worktree defaults", () => {
-  it("defaults start-from-origin on for legacy configs", () => {
-    expect(decodeServerSettings({}).newWorktreesStartFromOrigin).toBe(true);
+  it("preserves origin bootstrap and Dulli workspace defaults for legacy configs", () => {
+    const settings = decodeServerSettings({});
+    expect(settings.newWorktreesStartFromOrigin).toBe(true);
+    expect(settings.useWorklerForNewWorkspaces).toBe(true);
+    expect(settings.includeT3CodeBranchPrefix).toBe(true);
+    expect(settings.useConventionalBranchPrefixes).toBe(false);
   });
 
-  it("accepts start-from-origin updates", () => {
-    expect(
-      decodeServerSettingsPatch({ newWorktreesStartFromOrigin: false }).newWorktreesStartFromOrigin,
-    ).toBe(false);
+  it("accepts workspace strategy and branch naming updates", () => {
+    const patch = decodeServerSettingsPatch({
+      newWorktreesStartFromOrigin: false,
+      useWorklerForNewWorkspaces: false,
+      includeT3CodeBranchPrefix: false,
+      useConventionalBranchPrefixes: true,
+    });
+    expect(patch.newWorktreesStartFromOrigin).toBe(false);
+    expect(patch.useWorklerForNewWorkspaces).toBe(false);
+    expect(patch.includeT3CodeBranchPrefix).toBe(false);
+    expect(patch.useConventionalBranchPrefixes).toBe(true);
   });
 });
 
