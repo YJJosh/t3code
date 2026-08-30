@@ -53,6 +53,13 @@ describe("mobile remote connection records", () => {
     });
   });
 
+  it("uses the Dulli product name when the fork brand is provided", () => {
+    expect(authClientMetadata(undefined, "dulli")).toMatchObject({
+      label: "T3 Dulli Mobile",
+      surface: "mobile",
+    });
+  });
+
   it("includes only the Android major version and hardware model", () => {
     mobilePlatform.OS = "android";
     mobileDevice.osVersion = "15.2.1";
