@@ -1,7 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Option from "effect/Option";
 
-import { createVpPmPublishArgs, resolvePublishIdentity } from "./cli.ts";
+import {
+  createVpPmPublishArgs,
+  RESOURCE_MONITOR_EXECUTABLE_FILES,
+  resolvePublishIdentity,
+} from "./cli.ts";
 
 describe("server publish CLI", () => {
   it("targets an overridden fork package when publishing", () => {
@@ -28,6 +32,15 @@ describe("server publish CLI", () => {
         "--dry-run",
       ],
     );
+  });
+
+  it("marks bundled resource monitors as executable in pnpm tarballs", () => {
+    assert.deepEqual(RESOURCE_MONITOR_EXECUTABLE_FILES, [
+      "./dist/resource-monitor/darwin-arm64/t3-resource-monitor",
+      "./dist/resource-monitor/darwin-x64/t3-resource-monitor",
+      "./dist/resource-monitor/linux-x64/t3-resource-monitor",
+      "./dist/resource-monitor/win32-x64/t3-resource-monitor.exe",
+    ]);
   });
 
   it("overrides the package identity used for a fork publish", () => {

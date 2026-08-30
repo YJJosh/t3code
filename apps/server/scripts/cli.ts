@@ -42,6 +42,9 @@ interface PackageJson {
   version: string;
   engines: Record<string, string>;
   files: string[];
+  publishConfig: {
+    executableFiles: string[];
+  };
   dependencies: Record<string, string>;
   overrides: Record<string, string>;
 }
@@ -54,6 +57,15 @@ const WEB_ASSET_BRANDS = [
   "production",
   "dulli",
 ] as const satisfies ReadonlyArray<WebAssetBrand>;
+
+// pnpm intentionally normalizes non-bin package files to mode 0644. Mark the
+// native monitors explicitly so npm/npx installs can execute them on POSIX.
+export const RESOURCE_MONITOR_EXECUTABLE_FILES = [
+  "./dist/resource-monitor/darwin-arm64/t3-resource-monitor",
+  "./dist/resource-monitor/darwin-x64/t3-resource-monitor",
+  "./dist/resource-monitor/linux-x64/t3-resource-monitor",
+  "./dist/resource-monitor/win32-x64/t3-resource-monitor.exe",
+] as const;
 
 const WorkspaceConfig = Schema.Struct({
   catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -294,6 +306,9 @@ const publishCmd = Command.make(
             version: identity.version,
             engines: serverPackageJson.engines,
             files: serverPackageJson.files,
+            publishConfig: {
+              executableFiles: [...RESOURCE_MONITOR_EXECUTABLE_FILES],
+            },
             dependencies: resolveCatalogDependencies(
               serverPackageJson.dependencies,
               workspaceCatalog,
