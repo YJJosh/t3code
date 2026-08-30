@@ -16,6 +16,7 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderTaskControlInput,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
   ThreadId,
@@ -122,6 +123,9 @@ export interface ProviderAdapterShape<TError> {
   readonly uploadFeedback?: (
     input: ProviderUploadFeedbackInput,
   ) => Effect.Effect<ProviderUploadFeedbackResult, TError>;
+
+  /** Control a provider task surfaced through canonical task events. */
+  readonly controlTask?: (input: ProviderTaskControlInput) => Effect.Effect<void, TError>;
 
   /**
    * Stop all sessions owned by this adapter.

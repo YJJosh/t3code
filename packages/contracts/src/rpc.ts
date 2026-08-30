@@ -75,6 +75,8 @@ import {
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
 import {
+  ProviderTaskControlError,
+  ProviderTaskControlInput,
   ProviderUploadFeedbackError,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
@@ -227,6 +229,7 @@ export const WS_METHODS = {
   attachmentsDelete: "attachments.delete",
 
   // Provider methods
+  providerControlTask: "provider.controlTask",
   providerUploadFeedback: "provider.uploadFeedback",
 
   // VCS methods
@@ -694,6 +697,11 @@ export const WsAttachmentsDeleteRpc = Rpc.make(WS_METHODS.attachmentsDelete, {
   error: EnvironmentAuthorizationError,
 });
 
+export const WsProviderControlTaskRpc = Rpc.make(WS_METHODS.providerControlTask, {
+  payload: ProviderTaskControlInput,
+  error: Schema.Union([ProviderTaskControlError, EnvironmentAuthorizationError]),
+});
+
 export const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -1071,6 +1079,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAssetsCreateUrlRpc,
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
+  WsProviderControlTaskRpc,
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,

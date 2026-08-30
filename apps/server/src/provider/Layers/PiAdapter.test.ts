@@ -34,7 +34,9 @@ interface FakePi {
   readonly pushFrame: (frame: unknown) => Effect.Effect<void>;
 }
 
-const makeFakePi = Effect.fn("makeFakePi")(function* () {
+const makeFakePi = Effect.fn("makeFakePi")(function* (
+  options: { readonly subagentsCommand?: boolean } = {},
+) {
   const stdout = yield* Queue.unbounded<Uint8Array>();
   const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
   const args: string[] = [];
@@ -69,7 +71,18 @@ const makeFakePi = Effect.fn("makeFakePi")(function* () {
                 id: request.id,
                 command: request.type,
                 success: true,
-                ...(request.type === "get_state" ? { data: { sessionId: "pi-session-test" } } : {}),
+                ...(request.type === "get_state"
+                  ? { data: { sessionId: "pi-session-test" } }
+                  : request.type === "get_commands"
+                    ? {
+                        data: {
+                          commands:
+                            options.subagentsCommand === false
+                              ? []
+                              : [{ name: "subagents-rpc", source: "extension" }],
+                        },
+                      }
+                    : {}),
               }),
             ),
           ).pipe(Effect.asVoid);
@@ -194,6 +207,63 @@ describe("Pi adapter", () => {
       expect(completed?.payload.state).toBe("completed");
       expect(nativeFrames).toContainEqual(expect.objectContaining({ type: "agent_settled" }));
       expect(fake.written.filter((command) => command.type === "prompt")).toHaveLength(1);
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("sends task controls through the advertised Pi extension command", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      expect(adapter.controlTask).toBeDefined();
+      yield* adapter.controlTask!({
+        threadId: THREAD,
+        taskId: "rmre1dz89-9",
+        action: "reply",
+        message: "Use the upstream lifecycle",
+      });
+
+      const control = fake.written.find(
+        (command) =>
+          command.type === "prompt" &&
+          typeof command.message === "string" &&
+          command.message.startsWith("/subagents-rpc "),
+      );
+      expect(control?.message).toContain('"action":"reply"');
+      expect(control?.message).toContain('"run_id":"rmre1dz89-9"');
+      expect(control?.message).toContain('"message":"Use the upstream lifecycle"');
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("does not forward task controls when the Pi extension is unavailable", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ subagentsCommand: false });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      expect(adapter.controlTask).toBeDefined();
+      const error = yield* adapter.controlTask!({
+        threadId: THREAD,
+        taskId: "rmre1dz89-9",
+        action: "stop",
+      }).pipe(Effect.flip);
+
+      expect(error?._tag).toBe("ProviderAdapterValidationError");
+      expect(fake.written.some((command) => command.type === "get_commands")).toBe(true);
+      expect(fake.written.some((command) => command.type === "prompt")).toBe(false);
     }).pipe(Effect.provide(TestEnv)),
   );
 

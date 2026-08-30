@@ -48,6 +48,7 @@ import {
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
+  ProviderTaskControlError,
   ProviderUploadFeedbackError,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
@@ -1631,6 +1632,21 @@ const makeWsRpcLayer = (
               : providerRegistry.refresh()
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.providerControlTask]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerControlTask,
+            providerService.controlTask(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderTaskControlError({
+                    threadId: input.threadId,
+                    taskId: input.taskId,
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.providerUploadFeedback]: (input) =>
           observeRpcEffect(

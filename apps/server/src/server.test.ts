@@ -654,6 +654,7 @@ const buildAppUnderTest = (options?: {
             ...options?.layers?.providerRegistry,
           }),
           Layer.mock(ProviderService.ProviderService)({
+            controlTask: () => Effect.die("Provider task control is not stubbed in this test"),
             uploadFeedback: () => Effect.die("Provider feedback is not stubbed in this test"),
             ...options?.layers?.providerService,
           }),
@@ -4735,6 +4736,45 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           }),
         ),
       );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("keeps task-control errors structured across websocket rpc", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-task-control-failure");
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            controlTask: () =>
+              Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: "pi",
+                  method: "subagents-rpc",
+                  detail: "private provider detail",
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const error = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.providerControlTask]({
+            threadId,
+            taskId: "task-1",
+            action: "stop",
+          }).pipe(Effect.flip),
+        ),
+      );
+
+      assert.strictEqual(error._tag, "ProviderTaskControlError");
+      if (error._tag === "ProviderTaskControlError") {
+        assert.strictEqual(error.threadId, threadId);
+        assert.strictEqual(error.taskId, "task-1");
+        assert.strictEqual(error.message, `Failed to control task task-1 for thread ${threadId}.`);
+        assert.isDefined(error.cause);
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

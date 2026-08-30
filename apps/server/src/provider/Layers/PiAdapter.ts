@@ -40,6 +40,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -80,6 +81,7 @@ import {
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
+const encodeUnknownJsonString = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const CLAUDE_AGENT_SDK_RPC_BRIDGE_ENV = "CLAUDE_AGENT_SDK_RPC_BRIDGE";
 const CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX = "claude-agent-sdk:tool-lifecycle:v1:";
 const TOOL_UPDATE_MIN_INTERVAL_NANOS = 1_000_000_000n;
@@ -1536,6 +1538,44 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         });
       });
 
+    const controlTask: NonNullable<PiAdapterShape["controlTask"]> = (input) =>
+      Effect.gen(function* () {
+        const ctx = yield* requireSession(input.threadId);
+        // Pi forwards unknown slash commands to the model. Revalidate the
+        // private bridge command before every control so a missing extension
+        // can never turn a UI action into an unintended user prompt.
+        if (!(yield* piAdvertisesCommand(ctx, "subagents-rpc", true))) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "controlTask",
+            issue: "The Pi subagent control extension is not installed in this session.",
+          });
+        }
+        const envelope = {
+          action: input.action === "stop" ? "kill" : input.action,
+          request_id: yield* randomUUIDv4,
+          run_id: input.taskId,
+          ...(input.action === "steer" || input.action === "reply"
+            ? { message: input.message }
+            : { reason: input.reason ?? "Stopped from T3 Code" }),
+        };
+        const encoded = yield* encodeUnknownJsonString(envelope).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "subagents-rpc",
+                detail: "Failed to encode Pi task control.",
+                cause,
+              }),
+          ),
+        );
+        yield* request(ctx, {
+          type: "prompt",
+          message: `/subagents-rpc ${encoded}`,
+        });
+      }).pipe(Effect.asVoid);
+
     const stopAll: PiAdapterShape["stopAll"] = () =>
       Effect.forEach(Array.from(sessions.values()), stopSessionInternal, { discard: true });
 
@@ -1558,6 +1598,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       hasSession,
       readThread,
       rollbackThread,
+      controlTask,
       stopAll,
       streamEvents,
     } satisfies PiAdapterShape;

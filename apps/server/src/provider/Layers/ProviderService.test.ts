@@ -8,6 +8,7 @@ import type {
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
+  ProviderTaskControlInput,
   ProviderTurnStartResult,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
@@ -200,6 +201,10 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       Effect.succeed({ threadId, turns: [] }),
   );
 
+  const controlTask = vi.fn(
+    (_input: ProviderTaskControlInput): Effect.Effect<void, ProviderAdapterError> => Effect.void,
+  );
+
   const uploadFeedback = vi.fn(
     (
       input: ProviderUploadFeedbackInput,
@@ -229,7 +234,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     hasSession,
     readThread,
     rollbackThread,
-    ...(provider === CODEX_DRIVER ? { uploadFeedback } : {}),
+    ...(provider === CODEX_DRIVER ? { controlTask, uploadFeedback } : {}),
     stopAll,
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
@@ -265,6 +270,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     hasSession,
     readThread,
     rollbackThread,
+    controlTask,
     uploadFeedback,
     stopAll,
   };
@@ -1012,6 +1018,54 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.threadId, session.threadId);
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("routes task controls to the active owning adapter", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-task-control");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.codex.controlTask.mockClear();
+
+      yield* provider.controlTask({
+        threadId,
+        taskId: "task-1",
+        action: "steer",
+        message: "Check the scope",
+      });
+
+      assert.deepStrictEqual(routing.codex.controlTask.mock.calls, [
+        [{ threadId, taskId: "task-1", action: "steer", message: "Check the scope" }],
+      ]);
+    }),
+  );
+
+  it.effect("does not recover a stopped provider session to control a stale task", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-task-control-stopped");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* routing.codex.stopSession(threadId);
+      routing.codex.startSession.mockClear();
+
+      const error = yield* provider
+        .controlTask({ threadId, taskId: "task-1", action: "stop" })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderValidationError);
+      assert.include(error.issue, "does not have an active provider session");
+      assert.strictEqual(routing.codex.startSession.mock.calls.length, 0);
     }),
   );
 

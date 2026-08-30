@@ -20,15 +20,38 @@ import type {
 import {
   formatSubagentModelLabel,
   formatSubagentTokenCount,
+  isTerminalSubagentStatus,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
+import type { EnvironmentId, ProviderTaskControlInput, ThreadId } from "@t3tools/contracts";
+import {
+  Bot,
+  Braces,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  MessageSquareMore,
+  OctagonX,
+  Send,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
+import { threadEnvironment } from "~/state/threads";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "~/components/ui/dialog";
+import { Textarea } from "~/components/ui/textarea";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -137,8 +160,14 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
   );
 }
 
-/** Flat, non-interactive agent status line. No unfold. */
-function AgentRow({ agent }: { agent: RuntimeSubagent }) {
+/** Fixed-height agent status line; details open without reshaping the roster. */
+function AgentRow({
+  agent,
+  onSelect,
+}: {
+  agent: RuntimeSubagent;
+  onSelect: (agent: RuntimeSubagent) => void;
+}) {
   const visuals = STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
@@ -154,7 +183,12 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
   ].filter((value): value is string => value !== null);
 
   return (
-    <div className="grid h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
+    <button
+      type="button"
+      onClick={() => onSelect(agent)}
+      aria-label={`View details for ${agent.title}`}
+      className="grid h-[3.875rem] w-full grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
       <span className="col-start-1 row-start-1 flex items-center">
         <StatusDot status={agent.status} />
       </span>
@@ -186,7 +220,7 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
         {metadata.join(" · ")}
       </span>
       <span className="sr-only">{visuals.label}</span>
-    </div>
+    </button>
   );
 }
 
@@ -316,9 +350,11 @@ function WorkflowScriptView({
  */
 function PhaseSection({
   phase,
+  onSelectAgent,
   defaultOpen = false,
 }: {
   phase: AgentPanelWorkflowGroup["phases"][number];
+  onSelectAgent: (agent: RuntimeSubagent) => void;
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen || phase.state === "running");
@@ -368,7 +404,11 @@ function PhaseSection({
           </span>
         ) : null}
       </button>
-      {open ? phase.members.map((member) => <AgentRow key={member.id} agent={member} />) : null}
+      {open
+        ? phase.members.map((member) => (
+            <AgentRow key={member.id} agent={member} onSelect={onSelectAgent} />
+          ))
+        : null}
     </div>
   );
 }
@@ -378,11 +418,13 @@ function ExpandedWorkflowSection({
   group,
   environmentId,
   threadId,
+  onSelectAgent,
   onCollapse,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
+  onSelectAgent: (agent: RuntimeSubagent) => void;
   onCollapse: () => void;
 }) {
   const [scriptOpen, setScriptOpen] = useState(false);
@@ -438,13 +480,18 @@ function ExpandedWorkflowSection({
         />
       ) : null}
       {group.phases.map((phase) => (
-        <PhaseSection key={phase.index} phase={phase} defaultOpen={!workflowIsLive(group)} />
+        <PhaseSection
+          key={phase.index}
+          phase={phase}
+          onSelectAgent={onSelectAgent}
+          defaultOpen={!workflowIsLive(group)}
+        />
       ))}
       {group.unphasedMembers.map((member) => (
-        <AgentRow key={member.id} agent={member} />
+        <AgentRow key={member.id} agent={member} onSelect={onSelectAgent} />
       ))}
       {group.phases.length === 0 && group.unphasedMembers.length === 0 ? (
-        <AgentRow agent={group.workflow} />
+        <AgentRow agent={group.workflow} onSelect={onSelectAgent} />
       ) : null}
     </section>
   );
@@ -502,10 +549,12 @@ function WorkflowSection({
   group,
   environmentId,
   threadId,
+  onSelectAgent,
 }: {
   group: AgentPanelWorkflowGroup;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
+  onSelectAgent: (agent: RuntimeSubagent) => void;
 }) {
   const [open, setOpen] = useState(() => workflowIsLive(group));
   return open ? (
@@ -513,6 +562,7 @@ function WorkflowSection({
       group={group}
       environmentId={environmentId}
       threadId={threadId}
+      onSelectAgent={onSelectAgent}
       onCollapse={() => setOpen(false)}
     />
   ) : (
@@ -520,15 +570,244 @@ function WorkflowSection({
   );
 }
 
+function AgentDetailsDialog({
+  agent,
+  environmentId,
+  threadId,
+  controlsEnabled,
+  onClose,
+}: {
+  agent: RuntimeSubagent | null;
+  environmentId: EnvironmentId | null;
+  threadId: ThreadId | null;
+  controlsEnabled: boolean;
+  onClose: () => void;
+}) {
+  const controlTask = useAtomCommand(threadEnvironment.controlTask, { reportFailure: false });
+  const [message, setMessage] = useState("");
+  const [pendingAction, setPendingAction] = useState<ProviderTaskControlInput["action"] | null>(
+    null,
+  );
+  const [controlStatus, setControlStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMessage("");
+    setPendingAction(null);
+    setControlStatus(null);
+  }, [agent?.id]);
+
+  if (agent === null) return null;
+
+  const canControl =
+    controlsEnabled &&
+    environmentId !== null &&
+    threadId !== null &&
+    agent.kind !== "workflow" &&
+    !isTerminalSubagentStatus(agent.status) &&
+    agent.status !== "idle";
+  const messageAction = agent.status === "waiting" ? "reply" : "steer";
+  const submitControl = async (
+    input:
+      | { readonly action: "steer" | "reply"; readonly message: string }
+      | { readonly action: "stop"; readonly reason?: string },
+  ) => {
+    if (environmentId === null || threadId === null) return;
+    setPendingAction(input.action);
+    setControlStatus(null);
+    const result = await controlTask({
+      environmentId,
+      input: { threadId, taskId: agent.id, ...input } as ProviderTaskControlInput,
+    });
+    setPendingAction(null);
+    if (result._tag === "Failure") {
+      setControlStatus("The task control could not be delivered.");
+      return;
+    }
+    setMessage("");
+    setControlStatus(
+      input.action === "stop"
+        ? "Stop requested."
+        : input.action === "reply"
+          ? "Reply requested."
+          : "Steering requested.",
+    );
+  };
+
+  const details = [
+    ["Task ID", agent.id],
+    ["Kind", agent.kind.replace("_", " ")],
+    ["Status", STATUS_VISUALS[agent.status].label],
+    ["Role", agent.role],
+    ["Model", formatSubagentModelLabel(agent.model, agent.effort)],
+    ["Phase", agent.phaseTitle],
+    ["Attempt", agent.attempt?.toString()],
+    ["Started", agent.startedAt],
+    ["Updated", agent.updatedAt],
+    ["Completed", agent.completedAt],
+  ].filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0,
+  );
+  const handles = agent.runHandles
+    ? [
+        ["Run", agent.runHandles.runId],
+        ["Session", agent.runHandles.sessionUrl],
+        ["Transcript", agent.runHandles.transcriptDir],
+        ["Script", agent.runHandles.scriptPath],
+      ].filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0,
+      )
+    : [];
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogPopup className="w-[min(42rem,calc(100vw-2rem))]">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 pr-8">
+            <StatusDot status={agent.status} />
+            <span className="truncate">{agent.title}</span>
+          </DialogTitle>
+          <DialogDescription>
+            Live task metadata and provider controls for this agent run.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogPanel className="space-y-5">
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-xs">
+            {[...details, ...handles].map(([label, value]) => (
+              <div key={label} className="contents">
+                <dt className="text-muted-foreground">{label}</dt>
+                <dd className="min-w-0 break-words font-mono text-foreground/90">{value}</dd>
+              </div>
+            ))}
+          </dl>
+
+          {agent.usage ? (
+            <section>
+              <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Usage
+              </h3>
+              <p className="font-mono text-xs text-foreground/90">
+                {formatSubagentTokenCount(agent.usage.totalTokens)} tokens
+                {agent.usage.inputTokens !== undefined ? ` · ${agent.usage.inputTokens} in` : ""}
+                {agent.usage.outputTokens !== undefined ? ` · ${agent.usage.outputTokens} out` : ""}
+                {agent.usage.toolUses !== undefined ? ` · ${agent.usage.toolUses} tools` : ""}
+              </p>
+            </section>
+          ) : null}
+
+          {agent.error || agent.result || agent.progress ? (
+            <section className="space-y-2">
+              {agent.error ? (
+                <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive-foreground">
+                  {agent.error}
+                </div>
+              ) : null}
+              {agent.result ? (
+                <div className="whitespace-pre-wrap break-words rounded-md border border-border/60 bg-muted/30 p-2 text-xs">
+                  {agent.result}
+                </div>
+              ) : null}
+              {!agent.result && agent.progress ? (
+                <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                  {agent.progress}
+                </p>
+              ) : null}
+            </section>
+          ) : null}
+
+          {agent.recentActivity.length > 0 ? (
+            <section>
+              <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Recent activity
+              </h3>
+              <ol className="space-y-1 border-l border-border/60 pl-3 text-xs">
+                {agent.recentActivity.map((entry, index) => (
+                  <li key={`${entry.at}-${index}`}>
+                    <span className="mr-2 font-mono text-[.65rem] text-muted-foreground">
+                      {entry.at}
+                    </span>
+                    <span>{entry.summary}</span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          ) : null}
+
+          {canControl ? (
+            <section className="space-y-2 border-t border-border/60 pt-4">
+              <div className="flex items-center gap-2 text-xs font-medium">
+                <MessageSquareMore aria-hidden className="size-3.5" />
+                {messageAction === "reply" ? "Answer requested input" : "Steer this agent"}
+              </div>
+              <Textarea
+                value={message}
+                onChange={(event) => setMessage(event.target.value)}
+                placeholder={
+                  messageAction === "reply"
+                    ? "Send the answer the agent is waiting for…"
+                    : "Send guidance between the agent's turns…"
+                }
+                rows={3}
+                disabled={pendingAction !== null}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  disabled={message.trim().length === 0 || pendingAction !== null}
+                  onClick={() =>
+                    void submitControl({ action: messageAction, message: message.trim() })
+                  }
+                >
+                  <Send aria-hidden className="size-3.5" />
+                  {messageAction === "reply" ? "Reply" : "Steer"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={pendingAction !== null}
+                  onClick={() => void submitControl({ action: "stop" })}
+                >
+                  <OctagonX aria-hidden className="size-3.5" />
+                  Stop agent
+                </Button>
+                {controlStatus ? (
+                  <span className="text-xs text-muted-foreground">{controlStatus}</span>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
+        </DialogPanel>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
 export function AgentsPanel({
   model,
   environmentId = null,
   threadId = null,
+  taskControlsEnabled = false,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
+  taskControlsEnabled?: boolean;
 }) {
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const selectedAgent =
+    selectedAgentId === null
+      ? null
+      : (model.directAgents.find((agent) => agent.id === selectedAgentId) ??
+        model.workflows
+          .flatMap((group) => [group.workflow, ...workflowMembers(group)])
+          .find((agent) => agent.id === selectedAgentId) ??
+        null);
+  const selectAgent = (agent: RuntimeSubagent) => setSelectedAgentId(agent.id);
+
   if (!model.hasAgents) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -552,6 +831,7 @@ export function AgentsPanel({
               group={group}
               environmentId={environmentId}
               threadId={threadId}
+              onSelectAgent={selectAgent}
             />
           ))}
           {model.directAgents.length > 0 ? (
@@ -560,12 +840,19 @@ export function AgentsPanel({
                 Direct spawns
               </div>
               {model.directAgents.map((agent) => (
-                <AgentRow key={agent.id} agent={agent} />
+                <AgentRow key={agent.id} agent={agent} onSelect={selectAgent} />
               ))}
             </section>
           ) : null}
         </div>
       </ScrollArea>
+      <AgentDetailsDialog
+        agent={selectedAgent}
+        environmentId={environmentId}
+        threadId={threadId}
+        controlsEnabled={taskControlsEnabled}
+        onClose={() => setSelectedAgentId(null)}
+      />
       <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
         <span className="flex items-center gap-2">
           {model.runningCount + model.waitingCount > 0 ? (

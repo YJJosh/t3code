@@ -7,6 +7,8 @@ import {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderTaskControlError,
+  ProviderTaskControlInput,
   ProviderUploadFeedbackError,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
@@ -16,6 +18,7 @@ const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSession
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
+const decodeProviderTaskControlInput = Schema.decodeUnknownSync(ProviderTaskControlInput);
 const decodeProviderUploadFeedbackInput = Schema.decodeUnknownSync(ProviderUploadFeedbackInput);
 const decodeProviderUploadFeedbackResult = Schema.decodeUnknownSync(ProviderUploadFeedbackResult);
 
@@ -156,6 +159,53 @@ describe("ProviderSendTurnInput", () => {
     expect(parsed.modelSelection?.instanceId).toBe("claudeAgent");
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("ultrathink");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
+  });
+});
+
+describe("provider task control", () => {
+  it("requires action-specific task messages", () => {
+    expect(
+      decodeProviderTaskControlInput({
+        threadId: "thread-1",
+        taskId: "task-1",
+        action: "steer",
+        message: "Focus on lifecycle cleanup",
+      }),
+    ).toEqual({
+      threadId: "thread-1",
+      taskId: "task-1",
+      action: "steer",
+      message: "Focus on lifecycle cleanup",
+    });
+    expect(() =>
+      decodeProviderTaskControlInput({
+        threadId: "thread-1",
+        taskId: "task-1",
+        action: "reply",
+      }),
+    ).toThrow();
+  });
+
+  it("accepts an optional stop reason", () => {
+    expect(
+      decodeProviderTaskControlInput({
+        threadId: "thread-1",
+        taskId: "task-1",
+        action: "stop",
+      }),
+    ).toEqual({ threadId: "thread-1", taskId: "task-1", action: "stop" });
+  });
+
+  it("keeps task identity and the original cause in structured failures", () => {
+    const cause = new Error("private provider detail");
+    const error = new ProviderTaskControlError({
+      threadId: ThreadId.make("thread-1"),
+      taskId: "task-1",
+      cause,
+    });
+
+    expect(error.message).toBe("Failed to control task task-1 for thread thread-1.");
+    expect(error.cause).toBe(cause);
   });
 });
 

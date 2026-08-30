@@ -21,6 +21,7 @@ import type {
   ProviderSession,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
+  ProviderTaskControlInput,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
   ThreadId,
@@ -106,6 +107,11 @@ export interface ProviderServiceShape {
     readonly threadId: ThreadId;
     readonly numTurns: number;
   }) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Control a provider task surfaced through canonical task events. */
+  readonly controlTask: (
+    input: ProviderTaskControlInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
 
   /**
    * Upload a thread and return the provider's shareable feedback identifier.

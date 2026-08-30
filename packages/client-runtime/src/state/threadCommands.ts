@@ -204,6 +204,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    controlTask: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:control-task",
+      tag: WS_METHODS.providerControlTask,
+      scheduler,
+      concurrency,
+    }),
     uploadFeedback: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:thread:upload-feedback",
       tag: WS_METHODS.providerUploadFeedback,

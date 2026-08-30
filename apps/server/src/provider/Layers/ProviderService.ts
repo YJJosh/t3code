@@ -19,6 +19,7 @@ import {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
+  ProviderTaskControlInput,
   ProviderUploadFeedbackInput,
   type ProviderInstanceId,
   type ProviderDriverKind,
@@ -1116,6 +1117,44 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const controlTask: ProviderServiceMethod<"controlTask"> = Effect.fn("controlTask")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.controlTask",
+        schema: ProviderTaskControlInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.controlTask",
+        // A recovered provider session cannot own an in-memory child task
+        // from the previous process, so never restart one to deliver control.
+        allowRecovery: false,
+      });
+      if (!routed.isActive) {
+        return yield* toValidationError(
+          "ProviderService.controlTask",
+          `Thread '${input.threadId}' does not have an active provider session.`,
+        );
+      }
+      const controlTask = routed.adapter.controlTask;
+      if (controlTask === undefined) {
+        return yield* toValidationError(
+          "ProviderService.controlTask",
+          `Provider '${routed.adapter.provider}' does not support task controls.`,
+        );
+      }
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "control-task",
+        "provider.kind": routed.adapter.provider,
+        "provider.thread_id": input.threadId,
+        "provider.task_id": input.taskId,
+        "provider.task_action": input.action,
+      });
+      yield* controlTask(input);
+    },
+  );
+
   const uploadFeedback: ProviderServiceMethod<"uploadFeedback"> = Effect.fn("uploadFeedback")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1228,6 +1267,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
+    controlTask,
     uploadFeedback,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
