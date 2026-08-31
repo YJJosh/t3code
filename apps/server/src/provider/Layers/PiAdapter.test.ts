@@ -23,6 +23,7 @@ import { parseJsonlLine, serializeJsonlLine } from "../pi/piJsonl.ts";
 import {
   type PiTaskBridgeEvent,
   PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX,
+  PI_SUBAGENTS_RPC_EVENT_PREFIX,
 } from "../pi/piRpcProtocol.ts";
 import { makePiAdapter, projectPiTaskBridgeEvent, splitPiModelSlug } from "./PiAdapter.ts";
 
@@ -426,6 +427,183 @@ describe("Pi adapter", () => {
     }).pipe(Effect.provide(TestEnv)),
   );
 
+  it.effect("normalizes child deltas into cumulative live transcript events", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* Queue.takeAll(events);
+
+      const view = {
+        runId: "run-live",
+        task: "Inspect transcript projection",
+        state: "running",
+        model: "openai-codex/gpt-5.6-sol",
+        activeMs: 100,
+      };
+      const pushBridge = (event: Record<string, unknown>) =>
+        fake.pushFrame({
+          type: "extension_ui_request",
+          id: `request-${String(event.sequence)}`,
+          method: "notify",
+          notifyType: "info",
+          message: `${PI_SUBAGENTS_RPC_EVENT_PREFIX}${JSON.stringify(event)}`,
+        });
+
+      yield* pushBridge({
+        contractVersion: 1,
+        managerId: "manager-live",
+        sequence: 1,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        kind: "run_created",
+        runId: "run-live",
+        view,
+      });
+      yield* takeThroughType(events, "task.started");
+
+      yield* pushBridge({
+        contractVersion: 1,
+        managerId: "manager-live",
+        sequence: 2,
+        timestamp: "2026-01-01T00:00:01.000Z",
+        kind: "child_message",
+        runId: "run-live",
+        view,
+        activity: {
+          type: "message_update",
+          liveOnly: true,
+          data: { assistantMessageEvent: { type: "thinking_delta", delta: "Inspecting" } },
+        },
+      });
+      yield* takeThroughType(events, "task.progress");
+
+      yield* pushBridge({
+        contractVersion: 1,
+        managerId: "manager-live",
+        sequence: 3,
+        timestamp: "2026-01-01T00:00:01.050Z",
+        kind: "child_message",
+        runId: "run-live",
+        view,
+        activity: {
+          type: "message_update",
+          liveOnly: true,
+          data: { assistantMessageEvent: { type: "text_delta", delta: "Buffered " } },
+        },
+      });
+      yield* pushBridge({
+        contractVersion: 1,
+        managerId: "manager-live",
+        sequence: 4,
+        timestamp: "2026-01-01T00:00:01.200Z",
+        kind: "child_message",
+        runId: "run-live",
+        view,
+        activity: {
+          type: "message_update",
+          liveOnly: true,
+          data: { assistantMessageEvent: { type: "text_delta", delta: "found the path" } },
+        },
+      });
+      const throughText = yield* takeThroughType(events, "task.progress");
+      const progress = throughText.at(-1);
+      expect(progress).toEqual(
+        expect.objectContaining({
+          type: "task.progress",
+          payload: expect.objectContaining({
+            taskId: "run-live",
+            transcriptEvent: expect.objectContaining({
+              activity: expect.objectContaining({
+                type: "message_update",
+                liveOnly: true,
+                data: expect.objectContaining({
+                  message: {
+                    role: "assistant",
+                    content: [
+                      { type: "thinking", thinking: "Inspecting" },
+                      { type: "text", text: "Buffered found the path" },
+                    ],
+                  },
+                }),
+              }),
+            }),
+          }),
+        }),
+      );
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it("replays durable child transcript events from Pi snapshots", () => {
+    const view = {
+      runId: "run-replay",
+      task: "Replay the child conversation",
+      state: "done",
+      model: "openai-codex/gpt-5.6-sol",
+      activeMs: 500,
+      result: { result: { summary: "Replay complete" } },
+    };
+    const replay = projectPiTaskBridgeEvent({
+      contractVersion: 1,
+      managerId: "manager-replay",
+      sequence: 20,
+      timestamp: "2026-01-01T00:01:00.000Z",
+      kind: "snapshot",
+      snapshot: {
+        runs: [view],
+        events: [
+          {
+            contractVersion: 1,
+            managerId: "manager-replay",
+            sequence: 7,
+            timestamp: "2026-01-01T00:00:07.000Z",
+            kind: "child_message",
+            runId: "run-replay",
+            view,
+            activity: {
+              type: "message_end",
+              data: {
+                message: {
+                  role: "assistant",
+                  content: [{ type: "text", text: "Persisted answer" }],
+                },
+              },
+            },
+            replay: true,
+          },
+        ],
+        replay: true,
+      },
+    } as PiTaskBridgeEvent);
+
+    expect(replay.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.progress",
+      "task.completed",
+    ]);
+    expect(replay[1]).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          taskId: "run-replay",
+          transcriptEvent: expect.objectContaining({
+            managerId: "manager-replay",
+            sequence: 7,
+            activity: expect.objectContaining({ type: "message_end" }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("projects optional Pi workflow notifications into canonical task lifecycles", () => {
     const base = {
       contractVersion: 1,
@@ -468,6 +646,34 @@ describe("Pi adapter", () => {
         }),
       ],
     );
+    expect(
+      projectPiTaskBridgeEvent({
+        ...base,
+        sequence: 2,
+        kind: "child_message",
+        activity: {
+          type: "message_end",
+          data: {
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "The adapter is bounded." }],
+            },
+          },
+        },
+      } as PiTaskBridgeEvent),
+    ).toEqual([
+      expect.objectContaining({
+        type: "task.progress",
+        payload: expect.objectContaining({
+          taskId: "run-1",
+          transcriptEvent: expect.objectContaining({
+            managerId: "manager-1",
+            sequence: 2,
+            activity: expect.objectContaining({ type: "message_end" }),
+          }),
+        }),
+      }),
+    ]);
     expect(
       projectPiTaskBridgeEvent({
         ...base,

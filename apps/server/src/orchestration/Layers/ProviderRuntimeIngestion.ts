@@ -556,6 +556,7 @@ export function runtimeEventToActivities(
     }
 
     case "task.started": {
+      const linkage = taskLinkageActivityFields(event.payload as Record<string, unknown>);
       return [
         {
           id: event.eventId,
@@ -572,9 +573,14 @@ export function runtimeEventToActivities(
             taskId: event.payload.taskId,
             ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
             ...(event.payload.description
-              ? { detail: truncateDetail(event.payload.description) }
+              ? {
+                  detail: truncateDetail(
+                    event.payload.description,
+                    linkage.agentKind === "agent" ? 4_000 : 180,
+                  ),
+                }
               : {}),
-            ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
+            ...linkage,
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -597,11 +603,27 @@ export function runtimeEventToActivities(
           ? { title: truncateDetail(event.payload.description, 120) }
           : {};
       const hasProgressState =
-        event.payload.typedUsage === undefined ||
-        event.payload.summary !== undefined ||
-        event.payload.lastToolName !== undefined ||
-        event.payload.status !== undefined ||
-        event.payload.error !== undefined;
+        event.payload.transcriptEvent === undefined &&
+        (event.payload.typedUsage === undefined ||
+          event.payload.summary !== undefined ||
+          event.payload.lastToolName !== undefined ||
+          event.payload.status !== undefined ||
+          event.payload.error !== undefined);
+      const transcriptEvent = event.payload.transcriptEvent;
+      const transcriptActivity = transcriptEvent?.activity;
+      const transcriptData = transcriptActivity?.data;
+      const transcriptToolCallId =
+        transcriptData && typeof transcriptData.toolCallId === "string"
+          ? transcriptData.toolCallId
+          : undefined;
+      const transcriptRowId =
+        transcriptEvent && transcriptActivity
+          ? EventId.make(
+              transcriptActivity.liveOnly
+                ? `task-transcript-live:${event.threadId}:${event.payload.taskId}:${encodeURIComponent(transcriptActivity.type)}:${encodeURIComponent(transcriptToolCallId ?? "assistant")}`
+                : `task-transcript:${event.threadId}:${event.payload.taskId}:${encodeURIComponent(transcriptEvent.managerId)}:${transcriptEvent.sequence}`,
+            )
+          : undefined;
       return [
         ...(hasProgressState
           ? [
@@ -631,6 +653,24 @@ export function runtimeEventToActivities(
                   ...(event.payload.error ? { error: event.payload.error } : {}),
                   ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
                   ...identityLinkage,
+                },
+                turnId: toTurnId(event.turnId) ?? null,
+                ...maybeSequence,
+              },
+            ]
+          : []),
+        ...(transcriptEvent && transcriptRowId
+          ? [
+              {
+                id: transcriptRowId,
+                createdAt: event.createdAt,
+                tone: "info" as const,
+                kind: "task.progress" as const,
+                summary: "Agent transcript updated",
+                payload: {
+                  taskId: event.payload.taskId,
+                  ...identityLinkage,
+                  transcriptEvent,
                 },
                 turnId: toTurnId(event.turnId) ?? null,
                 ...maybeSequence,

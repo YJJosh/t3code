@@ -24,9 +24,9 @@ Terminal state belongs to the active Pi process. T3 requests a replay when a cli
 
 When the optional `pi-subagents` extension is installed, Pi mirrors its child runs and workflows into T3's normal `task.*` activity stream:
 
-- Web and desktop show them in an adaptive **Agents** inspector: a live roster and detail pane at wider panel widths, or a focused list/detail flow in compact layouts. Runs are separated by the prompt that introduced them. Workflows expand into phase sections with nested child agents, and selecting a child opens the normal agent detail view.
+- Web and desktop show them in an adaptive **Agents** inspector: a live roster and detail pane at wider panel widths, or a focused list/detail flow in compact layouts. Runs are separated by the prompt that introduced them. Each workflow occupies one roster row; selecting it opens a visual phase tree in the detail pane, where its nested agents can be selected.
+- Selecting a direct agent or workflow child opens the same live conversation view. It includes the originating prompt, streamed and persisted reasoning, assistant messages, tool calls and output, final results, status, model and effort, token/tool usage, and available controls. Durable child events are restored after a reconnect while bounded live deltas update in place.
 - Mobile shows compact agent-run rows above the composer and opens a detail sheet for each run.
-- Run details include status, role, model and effort, token/tool usage, recent activity, results, and available Pi run handles.
 
 For a live Pi run, its details expose immediate controls:
 

@@ -3442,6 +3442,135 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe("# Plan title");
   });
 
+  it("persists durable child transcript events and replaces live transcript state in place", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const transcriptBase = {
+      managerId: "manager-1",
+      timestamp: now,
+      kind: "child_message",
+    } as const;
+
+    harness.emit({
+      type: "task.started",
+      eventId: asEventId("evt-transcript-started"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-transcript"),
+      payload: {
+        taskId: "agent-transcript",
+        taskType: "pi-subagent",
+        description: "Read the provider and report the event flow",
+      },
+    });
+    harness.emit({
+      type: "task.progress",
+      eventId: asEventId("evt-transcript-live-1"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-transcript"),
+      payload: {
+        taskId: "agent-transcript",
+        description: "Read the provider and report the event flow",
+        transcriptEvent: {
+          ...transcriptBase,
+          sequence: 1,
+          activity: {
+            type: "message_update",
+            liveOnly: true,
+            data: {
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "First live state" }],
+              },
+            },
+          },
+        },
+      },
+    });
+    harness.emit({
+      type: "task.progress",
+      eventId: asEventId("evt-transcript-live-2"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-transcript"),
+      payload: {
+        taskId: "agent-transcript",
+        description: "Read the provider and report the event flow",
+        transcriptEvent: {
+          ...transcriptBase,
+          sequence: 2,
+          activity: {
+            type: "message_update",
+            liveOnly: true,
+            data: {
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "Latest live state" }],
+              },
+            },
+          },
+        },
+      },
+    });
+    harness.emit({
+      type: "task.progress",
+      eventId: asEventId("evt-transcript-durable"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-transcript"),
+      payload: {
+        taskId: "agent-transcript",
+        description: "Read the provider and report the event flow",
+        transcriptEvent: {
+          ...transcriptBase,
+          sequence: 3,
+          activity: {
+            type: "message_end",
+            data: {
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "Persist this response" }],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const durableId = "task-transcript:thread-1:agent-transcript:manager-1:3";
+    const liveId = "task-transcript-live:thread-1:agent-transcript:message_update:assistant";
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => activity.id === durableId),
+    );
+    const liveRows = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.id === liveId,
+    );
+    const livePayload = liveRows[0]?.payload as Record<string, unknown> | undefined;
+    const liveTranscript = livePayload?.transcriptEvent as Record<string, unknown> | undefined;
+    const liveActivity = liveTranscript?.activity as Record<string, unknown> | undefined;
+    const liveData = liveActivity?.data as Record<string, unknown> | undefined;
+    const liveMessage = liveData?.message as Record<string, unknown> | undefined;
+    const durable = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === durableId,
+    );
+
+    expect(liveRows).toHaveLength(1);
+    expect(liveMessage?.content).toEqual([{ type: "text", text: "Latest live state" }]);
+    expect(durable?.kind).toBe("task.progress");
+    expect(durable?.summary).toBe("Agent transcript updated");
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task-progress:thread-1:agent-transcript",
+      ),
+    ).toBe(false);
+  });
+
   it("titles task activities with the task description, including on completion", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

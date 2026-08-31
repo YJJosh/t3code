@@ -611,6 +611,24 @@ export const RuntimeTaskStatus = Schema.Literals([
 ]);
 export type RuntimeTaskStatus = typeof RuntimeTaskStatus.Type;
 
+/**
+ * Sanitized child-runtime activity mirrored by providers that expose a
+ * subagent transcript. Durable events retain their manager sequence while
+ * live-only updates replace the matching live projection row.
+ */
+export const RuntimeSubagentTranscriptEvent = Schema.Struct({
+  managerId: TrimmedNonEmptyStringSchema,
+  sequence: NonNegativeInt,
+  timestamp: Schema.String,
+  kind: TrimmedNonEmptyStringSchema,
+  activity: Schema.Struct({
+    type: TrimmedNonEmptyStringSchema,
+    data: Schema.Record(Schema.String, Schema.Unknown),
+    liveOnly: Schema.optional(Schema.Boolean),
+  }),
+});
+export type RuntimeSubagentTranscriptEvent = typeof RuntimeSubagentTranscriptEvent.Type;
+
 const TaskProgressPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: TrimmedNonEmptyStringSchema,
@@ -621,6 +639,7 @@ const TaskProgressPayload = Schema.Struct({
   /** Present on synthesized member/child progress rows that carry state. */
   status: Schema.optional(RuntimeTaskStatus),
   error: Schema.optional(TrimmedNonEmptyStringSchema),
+  transcriptEvent: Schema.optional(RuntimeSubagentTranscriptEvent),
   ...taskAgentLinkageFields,
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;

@@ -1,66 +1,181 @@
-import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
+import type {
+  RuntimeSubagent,
+  SubagentLiveTool,
+  SubagentTranscriptItem,
+  SubagentTranscriptPart,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   formatSubagentModelLabel,
   formatSubagentTokenCount,
   isTerminalSubagentStatus,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ProviderTaskControlInput, ThreadId } from "@t3tools/contracts";
-import { ArrowLeft, MessageSquareMore, OctagonX, Send, Workflow } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import {
+  ArrowLeft,
+  Bot,
+  Brain,
+  Check,
+  FileText,
+  FolderSearch,
+  OctagonX,
+  Send,
+  Terminal,
+  Workflow,
+  Wrench,
+} from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 
+import ChatMarkdown from "~/components/ChatMarkdown";
 import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Textarea } from "~/components/ui/textarea";
+import { cn } from "~/lib/utils";
 import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { AGENT_STATUS_VISUALS, AgentElapsed, AgentStatusDot } from "./agentsPresentation";
 
-function DetailTile({ label, children }: { label: string; children: React.ReactNode }) {
+function ToolGlyph({ name }: { name: string }) {
+  const normalized = name.toLocaleLowerCase();
+  const Icon = normalized.includes("read")
+    ? FileText
+    : normalized.includes("list") || normalized === "ls" || normalized.includes("glob")
+      ? FolderSearch
+      : normalized.includes("bash") || normalized.includes("shell") || normalized.includes("exec")
+        ? Terminal
+        : Wrench;
+  return <Icon aria-hidden className="size-3.5" />;
+}
+
+function ReasoningBlock({ text, live = false }: { text: string; live?: boolean }) {
   return (
-    <div className="min-w-0 rounded-md bg-muted/35 px-2.5 py-2">
-      <dt className="text-[.65rem] uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 min-w-0 truncate text-xs font-medium text-foreground">{children}</dd>
+    <section className="flex gap-2.5 rounded-lg bg-muted/20 px-3 py-2.5 text-sm text-muted-foreground">
+      <Brain aria-hidden className={cn("mt-0.5 size-4 shrink-0", live && "text-info-foreground")} />
+      <div className="min-w-0 flex-1">
+        <p className="mb-1 text-[.65rem] font-semibold uppercase tracking-wider text-muted-foreground/75">
+          {live ? "Thinking" : "Reasoning"}
+        </p>
+        <ChatMarkdown
+          cwd={undefined}
+          text={text}
+          isStreaming={live}
+          parseRawHtml={false}
+          className="text-muted-foreground italic"
+        />
+      </div>
+    </section>
+  );
+}
+
+function ToolCallCard({
+  part,
+  live = false,
+}: {
+  part: Extract<SubagentTranscriptPart, { type: "toolCall" }>;
+  live?: boolean;
+}) {
+  return (
+    <section className="rounded-lg border border-border/65 bg-card/30 px-3 py-2">
+      <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
+        <ToolGlyph name={part.name} />
+        <span className="truncate">{part.name}</span>
+        {live ? (
+          <span className="ml-auto text-[.65rem] font-normal text-info-foreground">Running</span>
+        ) : (
+          <Check aria-hidden className="ml-auto size-3.5 text-success-foreground" />
+        )}
+      </div>
+      {part.argsPreview ? (
+        <pre className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[.7rem] leading-relaxed text-muted-foreground">
+          {part.argsPreview}
+        </pre>
+      ) : null}
+    </section>
+  );
+}
+
+function LiveToolCard({ tool }: { tool: SubagentLiveTool }) {
+  return (
+    <ToolCallCard
+      live
+      part={{
+        type: "toolCall",
+        id: tool.id,
+        name: tool.name,
+        ...(tool.outputPreview || tool.argsPreview
+          ? { argsPreview: tool.outputPreview ?? tool.argsPreview }
+          : {}),
+      }}
+    />
+  );
+}
+
+function ToolResultCard({
+  item,
+}: {
+  item: Extract<SubagentTranscriptItem, { kind: "toolResult" }>;
+}) {
+  return (
+    <section
+      className={cn(
+        "rounded-lg border px-3 py-2",
+        item.isError ? "border-destructive/35 bg-destructive/5" : "border-border/55 bg-muted/15",
+      )}
+    >
+      <div className="flex items-center gap-2 text-xs font-semibold">
+        <ToolGlyph name={item.name} />
+        <span>{item.name}</span>
+        <span
+          className={cn(
+            "ml-auto text-[.65rem] font-normal",
+            item.isError ? "text-destructive-foreground" : "text-success-foreground",
+          )}
+        >
+          {item.isError ? "Failed" : "Completed"}
+        </span>
+      </div>
+      {item.outputPreview ? (
+        <pre className="mt-1.5 max-h-44 overflow-auto whitespace-pre-wrap break-words font-mono text-[.7rem] leading-relaxed text-muted-foreground">
+          {item.outputPreview}
+        </pre>
+      ) : null}
+    </section>
+  );
+}
+
+function AssistantPart({ part }: { part: SubagentTranscriptPart }) {
+  if (part.type === "thinking") {
+    return <ReasoningBlock text={part.redacted ? "[redacted reasoning]" : part.text} />;
+  }
+  if (part.type === "toolCall") return <ToolCallCard part={part} />;
+  return (
+    <div className="px-1">
+      <ChatMarkdown cwd={undefined} text={part.text} parseRawHtml={false} />
     </div>
   );
 }
 
-function AgentMetadata({ agent }: { agent: RuntimeSubagent }) {
-  const model = formatSubagentModelLabel(agent.model, agent.effort) ?? "Provider default";
+function TranscriptItem({ item }: { item: SubagentTranscriptItem }) {
+  if (item.kind === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-muted/55 px-3.5 py-2.5">
+          <ChatMarkdown cwd={undefined} text={item.text} parseRawHtml={false} />
+        </div>
+      </div>
+    );
+  }
+  if (item.kind === "toolResult") return <ToolResultCard item={item} />;
   return (
-    <dl className="grid grid-cols-2 gap-2">
-      <DetailTile label="Model">{model}</DetailTile>
-      <DetailTile label="Elapsed">
-        <AgentElapsed agent={agent} />
-      </DetailTile>
-      <DetailTile label="Runs">
-        {agent.activationCount}
-        {agent.attempt !== null ? ` · attempt ${agent.attempt}` : ""}
-      </DetailTile>
-      <DetailTile label="Usage">
-        {agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tokens` : "—"}
-      </DetailTile>
-    </dl>
+    <div className="space-y-2.5">
+      {item.parts.map((part, index) => (
+        <AssistantPart key={`${part.type}:${"id" in part ? part.id : index}`} part={part} />
+      ))}
+    </div>
   );
 }
 
-function UsageBreakdown({ agent }: { agent: RuntimeSubagent }) {
-  if (!agent.usage) return null;
-  const values = [
-    agent.usage.inputTokens !== undefined ? `${agent.usage.inputTokens} input` : null,
-    agent.usage.cachedInputTokens !== undefined ? `${agent.usage.cachedInputTokens} cached` : null,
-    agent.usage.outputTokens !== undefined ? `${agent.usage.outputTokens} output` : null,
-    agent.usage.reasoningOutputTokens !== undefined
-      ? `${agent.usage.reasoningOutputTokens} reasoning`
-      : null,
-    agent.usage.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
-  ].filter((value): value is string => value !== null);
-  return values.length > 0 ? (
-    <p className="font-mono text-[.7rem] text-muted-foreground">{values.join(" · ")}</p>
-  ) : null;
-}
-
-function AgentControls({
+function AgentComposer({
   agent,
   environmentId,
   threadId,
@@ -128,59 +243,60 @@ function AgentControls({
   };
 
   return (
-    <section className="space-y-2 rounded-lg border border-border/65 p-3">
-      <label htmlFor={messageId} className="flex items-center gap-2 text-xs font-semibold">
-        <MessageSquareMore aria-hidden className="size-3.5" />
-        {messageAction === "reply" ? "Answer requested input" : "Steer this agent"}
-      </label>
-      <Textarea
-        id={messageId}
-        value={message}
-        onChange={(event) => setMessage(event.target.value)}
-        placeholder={
-          messageAction === "reply"
-            ? "Send the answer the agent is waiting for…"
-            : "Send guidance between the agent's turns…"
-        }
-        rows={3}
-        disabled={pendingAction !== null}
-      />
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          disabled={message.trim().length === 0 || pendingAction !== null}
-          onClick={() => void submitControl({ action: messageAction, message: message.trim() })}
-        >
-          <Send aria-hidden className="size-3.5" />
-          {pendingAction === messageAction
-            ? "Sending…"
-            : messageAction === "reply"
-              ? "Reply"
-              : "Steer"}
-        </Button>
-        <Button
-          size="sm"
-          variant="destructive"
+    <div className="shrink-0 border-t border-border/65 bg-background p-3">
+      <div className="relative rounded-xl border border-border/70 bg-card/30 p-2 shadow-sm">
+        <label htmlFor={messageId} className="sr-only">
+          {messageAction === "reply" ? "Reply to this agent" : "Steer this agent"}
+        </label>
+        <Textarea
+          id={messageId}
+          value={message}
+          onChange={(event) => setMessage(event.target.value)}
+          placeholder={
+            messageAction === "reply"
+              ? "Answer what this agent is waiting for…"
+              : "Send guidance to this agent…"
+          }
+          rows={2}
           disabled={pendingAction !== null}
-          onClick={() => void submitControl({ action: "stop" })}
-        >
-          <OctagonX aria-hidden className="size-3.5" />
-          {pendingAction === "stop" ? "Stopping…" : "Stop agent"}
-        </Button>
+          className="min-h-14 resize-none border-0 bg-transparent pr-20 shadow-none focus-visible:ring-0"
+        />
+        <div className="absolute bottom-2 right-2 flex items-center gap-1.5">
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="destructive"
+            disabled={pendingAction !== null}
+            onClick={() => void submitControl({ action: "stop" })}
+            aria-label="Stop agent"
+          >
+            <OctagonX aria-hidden />
+          </Button>
+          <Button
+            type="button"
+            size="icon-sm"
+            disabled={message.trim().length === 0 || pendingAction !== null}
+            onClick={() => void submitControl({ action: messageAction, message: message.trim() })}
+            aria-label={messageAction === "reply" ? "Reply" : "Steer"}
+          >
+            <Send aria-hidden />
+          </Button>
+        </div>
       </div>
       {controlStatus ? (
         <p
           role={controlStatus.tone === "error" ? "alert" : "status"}
-          className={
+          className={cn(
+            "mt-1.5 px-1 text-xs",
             controlStatus.tone === "error"
-              ? "text-xs text-destructive-foreground"
-              : "text-xs text-muted-foreground"
-          }
+              ? "text-destructive-foreground"
+              : "text-muted-foreground",
+          )}
         >
           {controlStatus.message}
         </p>
       ) : null}
-    </section>
+    </div>
   );
 }
 
@@ -190,33 +306,69 @@ export function AgentDetail({
   threadId,
   controlsEnabled,
   onBack,
+  backLabel = "Back to agent list",
 }: {
   agent: RuntimeSubagent;
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
   controlsEnabled: boolean;
   onBack?: (() => void) | undefined;
+  backLabel?: string;
 }) {
   const visuals = AGENT_STATUS_VISUALS[agent.status];
-  const role =
-    agent.role?.trim().toLocaleLowerCase() === agent.title.trim().toLocaleLowerCase()
-      ? null
-      : agent.role;
-  const handles = agent.runHandles
-    ? [
-        ["Run", agent.runHandles.runId],
-        ["Session", agent.runHandles.sessionUrl],
-        ["Transcript", agent.runHandles.transcriptDir],
-        ["Script", agent.runHandles.scriptPath],
-      ].filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0,
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const model = formatSubagentModelLabel(agent.model, agent.effort) ?? "Provider default";
+  const promptAlreadyShown = agent.prompt
+    ? agent.transcript.items.some(
+        (item) => item.kind === "user" && item.text.trim() === agent.prompt?.trim(),
       )
-    : [];
+    : false;
+  const resultAlreadyShown = agent.result
+    ? agent.transcript.items.some(
+        (item) =>
+          item.kind === "assistant" &&
+          item.parts.some(
+            (part) => part.type === "text" && part.text.trim() === agent.result?.trim(),
+          ),
+      )
+    : false;
+
+  useEffect(() => {
+    stickToBottomRef.current = true;
+  }, [agent.id]);
+
+  useEffect(() => {
+    const viewport = scrollAreaRef.current?.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
+    if (!viewport) return;
+    const trackPosition = () => {
+      stickToBottomRef.current =
+        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 80;
+    };
+    viewport.addEventListener("scroll", trackPosition, { passive: true });
+    return () => viewport.removeEventListener("scroll", trackPosition);
+  }, [agent.id]);
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const viewport = scrollAreaRef.current?.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  }, [
+    agent.id,
+    agent.updatedAt,
+    agent.transcript.items.length,
+    agent.transcript.liveAssistant,
+    agent.transcript.liveTools,
+  ]);
 
   return (
-    <ScrollArea className="min-h-0 flex-1" data-agent-detail={agent.id}>
-      <div className="flex flex-col gap-4 p-4">
-        <header className="flex min-w-0 items-start gap-2">
+    <div className="flex min-h-0 flex-1 flex-col" data-agent-detail={agent.id}>
+      <header className="shrink-0 border-b border-border/65 px-3 py-2.5">
+        <div className="flex min-w-0 items-start gap-2">
           {onBack ? (
             <Button
               type="button"
@@ -224,7 +376,7 @@ export function AgentDetail({
               variant="ghost"
               onClick={onBack}
               autoFocus
-              aria-label="Back to agent list"
+              aria-label={backLabel}
               className="-ml-1 shrink-0"
             >
               <ArrowLeft aria-hidden />
@@ -232,7 +384,7 @@ export function AgentDetail({
           ) : null}
           <div className="min-w-0 flex-1">
             {agent.workflowName || agent.phaseTitle ? (
-              <p className="mb-1 flex min-w-0 items-center gap-1 text-[.7rem] text-muted-foreground">
+              <p className="mb-0.5 flex min-w-0 items-center gap-1 text-[.65rem] text-muted-foreground">
                 <Workflow aria-hidden className="size-3 shrink-0" />
                 {agent.workflowName ? <span className="truncate">{agent.workflowName}</span> : null}
                 {agent.workflowName && agent.phaseTitle ? <span aria-hidden>/</span> : null}
@@ -241,117 +393,90 @@ export function AgentDetail({
             ) : null}
             <div className="flex min-w-0 items-center gap-2">
               <AgentStatusDot status={agent.status} />
-              <h2 className="min-w-0 truncate text-base font-semibold text-foreground">
+              <h2 className="min-w-0 truncate text-sm font-semibold text-foreground">
                 {agent.title}
               </h2>
               <span className="shrink-0 rounded-full border border-border/65 px-2 py-0.5 text-[.65rem] text-muted-foreground">
                 {visuals.label}
               </span>
             </div>
-            {role ? <p className="mt-0.5 truncate text-xs text-muted-foreground">{role}</p> : null}
-            <p
-              className="mt-1 truncate font-mono text-[.65rem] text-muted-foreground"
-              title={agent.id}
-            >
-              {agent.id}
+            <p className="mt-1 truncate font-mono text-[.65rem] text-muted-foreground">
+              {model} · <AgentElapsed agent={agent} /> ·{" "}
+              {agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok"}
+              {agent.usage?.toolUses !== undefined ? ` · ${agent.usage.toolUses} tools` : ""}
             </p>
           </div>
-        </header>
+        </div>
+      </header>
 
-        <AgentMetadata agent={agent} />
-        <UsageBreakdown agent={agent} />
-
-        {agent.status === "waiting" ? (
-          <section className="rounded-lg border border-warning/40 bg-warning/8 px-3 py-2.5 text-xs">
-            <h3 className="font-semibold text-foreground">Waiting on input</h3>
-            <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
-              {agent.progress ??
-                agent.recentActivity.at(-1)?.summary ??
-                "This agent needs a reply."}
+      <ScrollArea ref={scrollAreaRef} className="min-h-0 flex-1">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 p-4">
+          {agent.transcript.droppedItems > 0 ? (
+            <p className="text-center text-xs text-muted-foreground">
+              {agent.transcript.droppedItems} earlier transcript items omitted
             </p>
-          </section>
-        ) : agent.progress ? (
-          <section className="rounded-lg border border-info/25 bg-info/5 px-3 py-2.5 text-xs">
-            <h3 className="font-semibold text-foreground">Progress</h3>
-            <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{agent.progress}</p>
-          </section>
-        ) : null}
-
-        {agent.error ? (
-          <section className="rounded-lg border border-destructive/35 bg-destructive/6 px-3 py-2.5 text-xs">
-            <h3 className="font-semibold text-destructive-foreground">Error</h3>
-            <p className="mt-1 whitespace-pre-wrap break-words text-destructive-foreground">
-              {agent.error}
-            </p>
-          </section>
-        ) : null}
-        {agent.result ? (
-          <section className="rounded-lg border border-border/65 px-3 py-2.5 text-xs">
-            <h3 className="font-semibold text-foreground">Result</h3>
-            <p className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">
-              {agent.result}
-            </p>
-          </section>
-        ) : null}
-        {agent.outputFile ? (
-          <section className="rounded-lg bg-muted/30 px-3 py-2 text-xs">
-            <h3 className="font-semibold text-foreground">Output</h3>
-            <p className="mt-1 break-all font-mono text-[.7rem] text-muted-foreground">
-              {agent.outputFile}
-            </p>
-          </section>
-        ) : null}
-
-        {agent.recentActivity.length > 0 ? (
-          <section>
-            <div className="mb-1.5 flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-foreground">Recent activity</h3>
-              <span className="text-[.65rem] text-muted-foreground">Latest events</span>
+          ) : null}
+          {!promptAlreadyShown && agent.prompt ? (
+            <TranscriptItem
+              item={{ sourceId: "originating-prompt", kind: "user", text: agent.prompt }}
+            />
+          ) : null}
+          {agent.transcript.items.map((item) => (
+            <TranscriptItem key={item.sourceId} item={item} />
+          ))}
+          {agent.transcript.liveAssistant?.thinking ? (
+            <ReasoningBlock text={agent.transcript.liveAssistant.thinking} live />
+          ) : null}
+          {agent.transcript.liveAssistant?.text ? (
+            <div className="px-1">
+              <ChatMarkdown
+                cwd={undefined}
+                text={agent.transcript.liveAssistant.text}
+                isStreaming
+                parseRawHtml={false}
+              />
             </div>
-            <ol className="space-y-1 rounded-lg border border-border/65 p-2">
-              {agent.recentActivity.map((entry) => (
-                <li
-                  key={`${entry.at}:${entry.summary}`}
-                  className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted/35"
-                >
-                  <time
-                    className="truncate font-mono text-[.65rem] text-muted-foreground"
-                    dateTime={entry.at}
-                  >
-                    {entry.at}
-                  </time>
-                  <span className="min-w-0 whitespace-pre-wrap break-words text-foreground/90">
-                    {entry.summary}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          </section>
-        ) : null}
+          ) : null}
+          {agent.transcript.liveTools.map((tool) => (
+            <LiveToolCard key={tool.id} tool={tool} />
+          ))}
+          {agent.error ? (
+            <section className="rounded-lg border border-destructive/35 bg-destructive/6 px-3 py-2.5">
+              <h3 className="text-xs font-semibold text-destructive-foreground">Agent failed</h3>
+              <ChatMarkdown
+                cwd={undefined}
+                text={agent.error}
+                parseRawHtml={false}
+                className="mt-1 text-destructive-foreground"
+              />
+            </section>
+          ) : agent.result && !resultAlreadyShown ? (
+            <section className="rounded-lg border border-border/65 px-3 py-2.5">
+              <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-foreground">
+                <Bot aria-hidden className="size-3.5" />
+                Final result
+              </div>
+              <ChatMarkdown cwd={undefined} text={agent.result} parseRawHtml={false} />
+            </section>
+          ) : null}
+          {agent.transcript.items.length === 0 && !agent.prompt && !agent.result && !agent.error ? (
+            <div className="flex min-h-48 flex-col items-center justify-center gap-2 text-center text-muted-foreground">
+              <Bot aria-hidden className="size-6 opacity-50" />
+              <p className="text-sm font-medium text-foreground">Waiting for agent activity</p>
+              <p className="max-w-72 text-xs">
+                Reasoning, messages, and tool calls will appear here as this agent works.
+              </p>
+            </div>
+          ) : null}
+        </div>
+      </ScrollArea>
 
-        {handles.length > 0 ? (
-          <section>
-            <h3 className="mb-1.5 text-xs font-semibold text-foreground">Run details</h3>
-            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-lg border border-border/65 px-3 py-2 text-xs">
-              {handles.map(([label, value]) => (
-                <div key={label} className="contents">
-                  <dt className="text-muted-foreground">{label}</dt>
-                  <dd className="min-w-0 break-all font-mono text-[.7rem] text-foreground/90">
-                    {value}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          </section>
-        ) : null}
-
-        <AgentControls
-          agent={agent}
-          environmentId={environmentId}
-          threadId={threadId}
-          enabled={controlsEnabled}
-        />
-      </div>
-    </ScrollArea>
+      <AgentComposer
+        agent={agent}
+        environmentId={environmentId}
+        threadId={threadId}
+        enabled={controlsEnabled}
+      />
+    </div>
   );
 }

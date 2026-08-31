@@ -100,6 +100,12 @@ export interface PiAdapterLiveOptions {
   readonly nativeEventLogger?: EventNdjsonLogger | undefined;
 }
 
+interface SubagentLiveMessage {
+  readonly text: string;
+  readonly thinking: string;
+  readonly publishedAt: number;
+}
+
 interface PiSessionContext {
   readonly threadId: ThreadId;
   readonly connection: PiRpcConnection;
@@ -113,6 +119,10 @@ interface PiSessionContext {
   assistantItemId: ProviderItemId | undefined;
   assistantText: string;
   reasoningText: string;
+  /** Cumulative, rate-limited live assistant state for each child transcript. */
+  subagentLiveMessages: Map<string, SubagentLiveMessage>;
+  /** Last published time for other high-frequency child transcript events. */
+  subagentLivePublishedAtByKey: Map<string, number>;
   /** Pi only repeats tool args on start/update; retain them for the final result. */
   toolArgsByCallId: Map<string, unknown>;
   /** Last persisted progress time per tool; Pi progress payloads are cumulative. */
@@ -310,10 +320,134 @@ function taskCompletionStatus(view: Record<string, unknown>): "completed" | "fai
   return view.state === "done" ? "completed" : view.state === "failed" ? "failed" : "stopped";
 }
 
+function taskTranscriptEvent(event: PiTaskBridgeEvent) {
+  if (!event.activity || !event.runId) return undefined;
+  const type = nonEmptyString(event.activity.type);
+  const data = isRecord(event.activity.data) ? event.activity.data : undefined;
+  if (!type || !data) return undefined;
+  return {
+    managerId: event.managerId,
+    sequence: event.sequence,
+    timestamp: event.timestamp,
+    kind: event.kind,
+    activity: {
+      type,
+      data,
+      ...(event.activity.liveOnly === true ? { liveOnly: true } : {}),
+    },
+  };
+}
+
+const SUBAGENT_LIVE_PUBLISH_INTERVAL_MS = 100;
+
+function normalizeTaskBridgeTranscriptEvent(
+  event: PiTaskBridgeEvent,
+  liveMessages: Map<string, SubagentLiveMessage>,
+  livePublishedAtByKey: Map<string, number>,
+): PiTaskBridgeEvent | undefined {
+  const runId = event.runId;
+  const activity = event.activity;
+  const activityType = activity ? nonEmptyString(activity.type) : undefined;
+  const activityData = activity && isRecord(activity.data) ? activity.data : undefined;
+  if (!runId || !activity || !activityType || !activityData) {
+    if (runId && ["terminal", "killed", "interrupted"].includes(event.kind)) {
+      liveMessages.delete(runId);
+      for (const key of livePublishedAtByKey.keys()) {
+        if (key.startsWith(`${runId}:`)) livePublishedAtByKey.delete(key);
+      }
+    }
+    return event;
+  }
+
+  if (activityType === "message_update") {
+    const data = activityData;
+    const message = isRecord(data.message) ? data.message : undefined;
+    const current = liveMessages.get(runId);
+    let text = current?.text ?? "";
+    let thinking = current?.thinking ?? "";
+    let forcePublish = activity.liveOnly !== true;
+    if (message?.role === "assistant") {
+      const extracted = extractPiAssistantText(message);
+      text = extracted.text;
+      thinking = extracted.thinking;
+    } else if (isRecord(data.assistantMessageEvent)) {
+      const update = data.assistantMessageEvent;
+      if (update.type === "text_delta" && typeof update.delta === "string") {
+        text += update.delta;
+        forcePublish ||= update.delta.includes("\n");
+      } else if (update.type === "thinking_delta" && typeof update.delta === "string") {
+        thinking += update.delta;
+        forcePublish ||= update.delta.includes("\n");
+      } else if (update.type === "text_end" && typeof update.content === "string") {
+        text = update.content;
+      } else if (update.type === "thinking_end" && typeof update.content === "string") {
+        thinking = update.content;
+      }
+    }
+    const parsedTimestamp = Date.parse(event.timestamp);
+    const eventTime = Number.isFinite(parsedTimestamp)
+      ? parsedTimestamp
+      : (current?.publishedAt ?? 0) + SUBAGENT_LIVE_PUBLISH_INTERVAL_MS;
+    const shouldPublish =
+      current === undefined ||
+      forcePublish ||
+      eventTime - current.publishedAt >= SUBAGENT_LIVE_PUBLISH_INTERVAL_MS;
+    liveMessages.set(runId, {
+      text,
+      thinking,
+      publishedAt: shouldPublish ? eventTime : (current?.publishedAt ?? eventTime),
+    });
+    if (!shouldPublish) return undefined;
+    return {
+      ...event,
+      activity: {
+        ...activity,
+        data: {
+          ...data,
+          message: {
+            role: "assistant",
+            content: [
+              ...(thinking ? [{ type: "thinking", thinking }] : []),
+              ...(text ? [{ type: "text", text }] : []),
+            ],
+          },
+        },
+      },
+    };
+  }
+
+  if (activityType === "message_end") liveMessages.delete(runId);
+
+  const toolCallId = nonEmptyString(activityData.toolCallId) ?? "activity";
+  const liveKey = `${runId}:${activityType}:${toolCallId}`;
+  if (activity.liveOnly === true) {
+    const lastPublishedAt = livePublishedAtByKey.get(liveKey);
+    const parsedTimestamp = Date.parse(event.timestamp);
+    const eventTime = Number.isFinite(parsedTimestamp)
+      ? parsedTimestamp
+      : (lastPublishedAt ?? 0) + SUBAGENT_LIVE_PUBLISH_INTERVAL_MS;
+    if (
+      lastPublishedAt !== undefined &&
+      eventTime - lastPublishedAt < SUBAGENT_LIVE_PUBLISH_INTERVAL_MS
+    ) {
+      return undefined;
+    }
+    livePublishedAtByKey.set(liveKey, eventTime);
+  } else if (activityType.endsWith("_end")) {
+    for (const key of livePublishedAtByKey.keys()) {
+      if (key.startsWith(`${runId}:`) && key.endsWith(`:${toolCallId}`)) {
+        livePublishedAtByKey.delete(key);
+      }
+    }
+  }
+  return event;
+}
+
 function projectTaskView(
   kind: PiTaskBridgeEvent["kind"],
   view: Record<string, unknown>,
   fallbackRunId?: string,
+  transcriptEvent?: ReturnType<typeof taskTranscriptEvent>,
 ): ReadonlyArray<PiTaskProjection> {
   const runId = nonEmptyString(view.runId) ?? fallbackRunId;
   if (!runId) return [];
@@ -360,8 +494,9 @@ function projectTaskView(
           payload: {
             ...common,
             description,
-            ...(summary ? { summary } : {}),
+            ...(summary && !transcriptEvent ? { summary } : {}),
             ...(typedUsage ? { typedUsage } : {}),
+            ...(transcriptEvent ? { transcriptEvent } : {}),
           },
         },
       ];
@@ -377,8 +512,32 @@ export function projectPiTaskBridgeEvent(
   event: PiTaskBridgeEvent,
 ): ReadonlyArray<PiTaskProjection> {
   if (event.kind === "snapshot" && isRecord(event.snapshot) && Array.isArray(event.snapshot.runs)) {
-    return event.snapshot.runs.flatMap((candidate) => {
-      if (!isRecord(candidate)) return [];
+    const runs = event.snapshot.runs.filter(isRecord);
+    const starts = runs.flatMap((candidate) => projectTaskView("run_created", candidate));
+    const transcript = Array.isArray(event.snapshot.events)
+      ? event.snapshot.events.flatMap((candidate) => {
+          if (
+            !isRecord(candidate) ||
+            !isRecord(candidate.view) ||
+            !isRecord(candidate.activity) ||
+            typeof candidate.managerId !== "string" ||
+            typeof candidate.sequence !== "number" ||
+            typeof candidate.timestamp !== "string" ||
+            typeof candidate.kind !== "string" ||
+            typeof candidate.runId !== "string"
+          ) {
+            return [];
+          }
+          const replayEvent = candidate as PiTaskBridgeEvent;
+          return projectTaskView(
+            replayEvent.kind,
+            replayEvent.view!,
+            replayEvent.runId,
+            taskTranscriptEvent(replayEvent),
+          );
+        })
+      : [];
+    const states = runs.flatMap((candidate) => {
       const state = candidate.state;
       const lifecycleKind =
         state === "done" || state === "failed" || state === "killed" || state === "interrupted"
@@ -388,13 +547,13 @@ export function projectPiTaskBridgeEvent(
           : state === "needs_input"
             ? "needs_input"
             : "run_running";
-      return [
-        ...projectTaskView("run_created", candidate),
-        ...projectTaskView(lifecycleKind, candidate),
-      ];
+      return projectTaskView(lifecycleKind, candidate);
     });
+    return [...starts, ...transcript, ...states];
   }
-  return event.view ? projectTaskView(event.kind, event.view, event.runId) : [];
+  return event.view
+    ? projectTaskView(event.kind, event.view, event.runId, taskTranscriptEvent(event))
+    : [];
 }
 
 export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOptions) {
@@ -693,7 +852,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }
         const taskBridgeEvent = parsePiTaskBridgeNotification(request);
         if (taskBridgeEvent) {
-          yield* emitTaskBridgeEvent(ctx, taskBridgeEvent);
+          const normalized = normalizeTaskBridgeTranscriptEvent(
+            taskBridgeEvent,
+            ctx.subagentLiveMessages,
+            ctx.subagentLivePublishedAtByKey,
+          );
+          if (normalized) yield* emitTaskBridgeEvent(ctx, normalized);
           return;
         }
         const backgroundTerminalEvent = parsePiBackgroundTerminalNotification(request);
@@ -1371,6 +1535,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           assistantItemId: undefined,
           assistantText: "",
           reasoningText: "",
+          subagentLiveMessages: new Map(),
+          subagentLivePublishedAtByKey: new Map(),
           toolArgsByCallId: new Map(),
           toolUpdateEmittedAtByCallId: new Map(),
           lastAgentEndOutcome: undefined,

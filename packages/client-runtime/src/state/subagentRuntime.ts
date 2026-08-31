@@ -44,6 +44,46 @@ export interface SubagentActivityEntry {
   readonly summary: string;
 }
 
+export type SubagentTranscriptPart =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "thinking"; readonly text: string; readonly redacted?: boolean }
+  | {
+      readonly type: "toolCall";
+      readonly id: string;
+      readonly name: string;
+      readonly argsPreview?: string;
+    };
+
+export type SubagentTranscriptItem =
+  | { readonly sourceId: string; readonly kind: "user"; readonly text: string }
+  | {
+      readonly sourceId: string;
+      readonly kind: "assistant";
+      readonly parts: ReadonlyArray<SubagentTranscriptPart>;
+    }
+  | {
+      readonly sourceId: string;
+      readonly kind: "toolResult";
+      readonly id: string;
+      readonly name: string;
+      readonly isError: boolean;
+      readonly outputPreview?: string;
+    };
+
+export interface SubagentLiveTool {
+  readonly id: string;
+  readonly name: string;
+  readonly argsPreview?: string;
+  readonly outputPreview?: string;
+}
+
+export interface SubagentTranscript {
+  readonly items: ReadonlyArray<SubagentTranscriptItem>;
+  readonly droppedItems: number;
+  readonly liveAssistant: { readonly text: string; readonly thinking: string } | null;
+  readonly liveTools: ReadonlyArray<SubagentLiveTool>;
+}
+
 export interface SubagentWorkflowPhase {
   readonly index: number;
   readonly title: string;
@@ -60,6 +100,7 @@ export interface RuntimeSubagent {
   readonly id: string;
   readonly kind: "subagent" | "workflow" | "workflow_agent";
   readonly title: string;
+  readonly prompt: string | null;
   readonly role: string | null;
   readonly model: string | null;
   readonly effort: string | null;
@@ -82,6 +123,7 @@ export interface RuntimeSubagent {
   readonly phases: ReadonlyArray<SubagentWorkflowPhase>;
   readonly runHandles: SubagentRunHandles | null;
   readonly recentActivity: ReadonlyArray<SubagentActivityEntry>;
+  readonly transcript: SubagentTranscript;
   /** First retained observation, used as the roster's stable display order. */
   readonly firstSeenAt: string;
   readonly startedAt: string | null;
@@ -146,6 +188,208 @@ function asString(value: unknown): string | undefined {
 
 function asCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/* eslint-disable no-control-regex -- Terminal transcript sanitization intentionally strips control sequences. */
+function sanitizeTranscriptText(value: string): string {
+  return value
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, "");
+}
+/* eslint-enable no-control-regex */
+
+function transcriptPreview(value: unknown, maxLength = 2_000): string | undefined {
+  if (value === undefined) return undefined;
+  let raw: string;
+  try {
+    raw = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    raw = String(value);
+  }
+  const clean = sanitizeTranscriptText(raw).trim();
+  if (!clean) return undefined;
+  return clean.length > maxLength ? `${clean.slice(0, maxLength - 1)}…` : clean;
+}
+
+function transcriptContentText(value: unknown): string {
+  if (typeof value === "string") return sanitizeTranscriptText(value);
+  if (!Array.isArray(value)) return "";
+  return value
+    .flatMap((candidate) => {
+      const part = asRecord(candidate);
+      if (part?.type === "text" && typeof part.text === "string") {
+        return [sanitizeTranscriptText(part.text)];
+      }
+      return part?.type === "image" ? ["[image]"] : [];
+    })
+    .join("\n");
+}
+
+function transcriptAssistantParts(
+  message: Record<string, unknown>,
+): ReadonlyArray<SubagentTranscriptPart> {
+  if (!Array.isArray(message.content)) return [];
+  return message.content.flatMap((candidate): ReadonlyArray<SubagentTranscriptPart> => {
+    const part = asRecord(candidate);
+    if (!part) return [];
+    if (part.type === "text" && typeof part.text === "string") {
+      return [{ type: "text", text: sanitizeTranscriptText(part.text) }];
+    }
+    if (part.type === "thinking") {
+      const thinking =
+        typeof part.thinking === "string"
+          ? part.thinking
+          : typeof part.text === "string"
+            ? part.text
+            : "";
+      return thinking
+        ? [
+            {
+              type: "thinking",
+              text: sanitizeTranscriptText(thinking),
+              ...(part.redacted === true ? { redacted: true } : {}),
+            },
+          ]
+        : [];
+    }
+    if (part.type === "toolCall") {
+      const argsPreview = transcriptPreview(part.arguments ?? part.args, 500);
+      return [
+        {
+          type: "toolCall",
+          id: asString(part.id) ?? "?",
+          name: asString(part.name) ?? "tool",
+          ...(argsPreview ? { argsPreview } : {}),
+        },
+      ];
+    }
+    return [];
+  });
+}
+
+const MAX_TRANSCRIPT_ITEMS = 1_000;
+const MAX_TRANSCRIPT_CHARS = 2 * 1024 * 1024;
+
+function transcriptItemChars(item: SubagentTranscriptItem): number {
+  if (item.kind === "user") return item.text.length;
+  if (item.kind === "toolResult") return item.name.length + (item.outputPreview?.length ?? 0);
+  return item.parts.reduce(
+    (total, part) =>
+      total +
+      (part.type === "toolCall"
+        ? part.name.length + (part.argsPreview?.length ?? 0)
+        : part.text.length),
+    0,
+  );
+}
+
+function pushTranscriptItem(state: MutableTranscript, item: SubagentTranscriptItem): void {
+  state.items.push(item);
+  state.retainedChars += transcriptItemChars(item);
+  while (state.items.length > MAX_TRANSCRIPT_ITEMS || state.retainedChars > MAX_TRANSCRIPT_CHARS) {
+    const removed = state.items.shift();
+    if (!removed) break;
+    state.retainedChars -= transcriptItemChars(removed);
+    state.droppedItems += 1;
+  }
+}
+
+function applyTranscriptEvent(state: MutableTranscript, value: unknown): void {
+  const event = asRecord(value);
+  const activity = asRecord(event?.activity);
+  const data = asRecord(activity?.data) ?? {};
+  const sourceId = `${asString(event?.managerId) ?? "unknown"}:${asCount(event?.sequence) ?? state.items.length}`;
+  switch (activity?.type) {
+    case "message_update": {
+      const message = asRecord(data.message);
+      if (message?.role !== "assistant") break;
+      const parts = transcriptAssistantParts(message);
+      state.liveAssistant = {
+        text: parts
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("\n"),
+        thinking: parts
+          .filter((part) => part.type === "thinking")
+          .map((part) => (part.redacted ? "[redacted reasoning]" : part.text))
+          .join("\n"),
+      };
+      break;
+    }
+    case "message_end": {
+      const message = asRecord(data.message);
+      if (!message) break;
+      if (message.role === "user") {
+        const text = transcriptContentText(message.content);
+        if (text) pushTranscriptItem(state, { sourceId, kind: "user", text });
+      } else if (message.role === "assistant") {
+        const parts = transcriptAssistantParts(message);
+        if (parts.length > 0) {
+          pushTranscriptItem(state, { sourceId, kind: "assistant", parts });
+        }
+        state.liveAssistant = null;
+      } else if (message.role === "toolResult") {
+        const outputPreview = transcriptPreview(transcriptContentText(message.content));
+        pushTranscriptItem(state, {
+          sourceId,
+          kind: "toolResult",
+          id: asString(message.toolCallId) ?? "?",
+          name: asString(message.toolName) ?? "tool",
+          isError: message.isError === true,
+          ...(outputPreview ? { outputPreview } : {}),
+        });
+      }
+      break;
+    }
+    case "tool_execution_start":
+    case "provider_tool_execution_start": {
+      const id = asString(data.toolCallId) ?? "?";
+      const argsPreview = transcriptPreview(data.args, 500);
+      const next: SubagentLiveTool = {
+        id,
+        name: asString(data.toolName) ?? "tool",
+        ...(argsPreview ? { argsPreview } : {}),
+      };
+      state.liveTools = [...state.liveTools.filter((tool) => tool.id !== id), next];
+      break;
+    }
+    case "tool_execution_update": {
+      const id = asString(data.toolCallId) ?? "?";
+      const partial = asRecord(data.partialResult);
+      const outputPreview = transcriptPreview(transcriptContentText(partial?.content), 500);
+      state.liveTools = state.liveTools.map((tool) =>
+        tool.id === id && outputPreview ? { ...tool, outputPreview } : tool,
+      );
+      break;
+    }
+    case "tool_execution_end": {
+      const id = asString(data.toolCallId) ?? "?";
+      state.liveTools = state.liveTools.filter((tool) => tool.id !== id);
+      break;
+    }
+    case "provider_tool_execution_end": {
+      const id = asString(data.toolCallId) ?? "?";
+      const current = state.liveTools.find((tool) => tool.id === id);
+      const outputPreview = transcriptPreview(data.error ?? data.result);
+      pushTranscriptItem(state, {
+        sourceId,
+        kind: "toolResult",
+        id,
+        name: asString(data.toolName) ?? current?.name ?? "tool",
+        isError: data.isError === true,
+        ...(outputPreview ? { outputPreview } : {}),
+      });
+      state.liveTools = state.liveTools.filter((tool) => tool.id !== id);
+      break;
+    }
+  }
 }
 
 function asUsage(value: unknown): SubagentUsage | undefined {
@@ -227,10 +471,19 @@ function mergeUsageMax(
   return merged;
 }
 
+interface MutableTranscript {
+  items: SubagentTranscriptItem[];
+  retainedChars: number;
+  droppedItems: number;
+  liveAssistant: { text: string; thinking: string } | null;
+  liveTools: SubagentLiveTool[];
+}
+
 interface MutableAgent {
   id: string;
   kind: RuntimeSubagent["kind"];
   title: string;
+  prompt: string | null;
   role: string | null;
   model: string | null;
   effort: string | null;
@@ -252,6 +505,7 @@ interface MutableAgent {
   phases: ReadonlyArray<SubagentWorkflowPhase>;
   runHandles: SubagentRunHandles | null;
   recentActivity: ReadonlyArray<SubagentActivityEntry>;
+  transcriptState: MutableTranscript;
   firstSeenAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -287,6 +541,7 @@ function getOrCreate(
     id,
     kind: kindFromPayload(payload, id),
     title: asString(payload.title) ?? asString(payload.detail) ?? id,
+    prompt: asString(payload.detail) ?? null,
     role: asString(payload.role) ?? null,
     model: asString(payload.model) ?? null,
     effort: asString(payload.effort) ?? null,
@@ -308,6 +563,13 @@ function getOrCreate(
     phases: [],
     runHandles: null,
     recentActivity: [],
+    transcriptState: {
+      items: [],
+      retainedChars: 0,
+      droppedItems: 0,
+      liveAssistant: null,
+      liveTools: [],
+    },
     firstSeenAt: at,
     startedAt: null,
     completedAt: null,
@@ -323,6 +585,8 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   if (title) agent.title = title;
   const role = asString(payload.role);
   if (role) agent.role = role;
+  const detail = asString(payload.detail);
+  if (detail && agent.prompt === null) agent.prompt = detail;
   const model = asString(payload.model);
   if (model) agent.model = model;
   const effort = asString(payload.effort);
@@ -399,6 +663,10 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
 function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: string): void {
   const wasTerminal = isTerminalSubagentStatus(agent.status);
   const isTerminal = isTerminalSubagentStatus(status);
+  if (isTerminal) {
+    agent.transcriptState.liveAssistant = null;
+    agent.transcriptState.liveTools = [];
+  }
   if (wasTerminal && isTerminal) {
     // Duplicate terminal events are idempotent: first write wins, timestamps
     // don't slide.
@@ -513,6 +781,9 @@ export function foldSubagentActivities(
         if (!existed && isBackgroundTaskActivity(payload)) break;
         const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
         fillMetadata(agent, payload);
+        if (payload.transcriptEvent !== undefined) {
+          applyTranscriptEvent(agent.transcriptState, payload.transcriptEvent);
+        }
         if (agent.activationCount === 0) agent.activationCount = 1;
         const explicitStatus = asRuntimeStatus(payload.status);
         if (explicitStatus) {
@@ -649,6 +920,8 @@ export function foldSubagentActivities(
       }
       member.status = agent.status === "completed" ? "completed" : "interrupted";
       member.completedAt = member.completedAt ?? agent.completedAt ?? agent.updatedAt;
+      member.transcriptState.liveAssistant = null;
+      member.transcriptState.liveTools = [];
       member.updatedAt = agent.updatedAt;
     }
   }
@@ -661,6 +934,8 @@ export function foldSubagentActivities(
       if (isActiveSubagentStatus(agent.status)) {
         agent.status = "interrupted";
         agent.completedAt = agent.completedAt ?? agent.updatedAt;
+        agent.transcriptState.liveAssistant = null;
+        agent.transcriptState.liveTools = [];
       }
     }
   }
@@ -676,7 +951,15 @@ export function foldSubagentActivities(
       .slice(0, ROSTER_LIMIT);
   }
 
-  return roster.map((agent) => ({ ...agent }));
+  return roster.map(({ transcriptState, ...agent }) => ({
+    ...agent,
+    transcript: {
+      items: transcriptState.items,
+      droppedItems: transcriptState.droppedItems,
+      liveAssistant: transcriptState.liveAssistant,
+      liveTools: transcriptState.liveTools,
+    },
+  }));
 }
 
 export interface AgentPanelWorkflowGroup {
@@ -775,6 +1058,7 @@ export function deriveAgentPanelModel({
       id,
       kind: "workflow" as const,
       title: first.workflowName ?? id,
+      prompt: null,
       role: null,
       model: null,
       effort: null,
@@ -800,6 +1084,12 @@ export function deriveAgentPanelModel({
       phases: [],
       runHandles: null,
       recentActivity: [],
+      transcript: {
+        items: [],
+        droppedItems: 0,
+        liveAssistant: null,
+        liveTools: [],
+      },
       firstSeenAt: first.firstSeenAt,
       startedAt: first.startedAt,
       completedAt: allTerminal
