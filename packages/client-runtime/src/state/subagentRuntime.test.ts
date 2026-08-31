@@ -21,6 +21,7 @@ function activity(
   kind: string,
   payload: Record<string, unknown>,
   at = `2026-08-01T10:00:${String(sequence).padStart(2, "0")}.000Z`,
+  turnId: string | null = null,
 ): OrchestrationThreadActivity {
   sequence += 1;
   const stamped =
@@ -39,7 +40,7 @@ function activity(
     kind,
     summary: kind,
     payload: stamped,
-    turnId: null,
+    turnId,
     createdAt: at,
   } as unknown as OrchestrationThreadActivity;
 }
@@ -378,6 +379,64 @@ describe("deriveAgentPanelModel", () => {
     expect(group.phases[0]!.state).toBe("done");
     expect(group.phases[1]!.state).toBe("running");
     expect(model.directAgents.map((agent) => agent.id)).toEqual(["direct-1"]);
+  });
+
+  it("derives named Pi workflow phases when the bridge has no numeric indices", () => {
+    const piWorkflow = fold([
+      activity("task.started", {
+        taskId: "pi-child-a",
+        title: "Inspect",
+        parentAgentId: "pi-workflow",
+        workflowName: "Two-step review",
+        phaseTitle: "Implementation",
+      }),
+      activity("task.started", {
+        taskId: "pi-child-b",
+        title: "Verify",
+        parentAgentId: "pi-workflow",
+        workflowName: "Two-step review",
+        phaseTitle: "Review",
+      }),
+    ]);
+
+    const group = deriveAgentPanelModel({ agents: piWorkflow }).workflows[0]!;
+    expect(piWorkflow).toHaveLength(2);
+    expect(group.workflow.id).toBe("pi-workflow");
+    expect(group.phases.map((phase) => phase.title)).toEqual(["Implementation", "Review"]);
+    expect(group.phases.map((phase) => phase.members.map((member) => member.id))).toEqual([
+      ["pi-child-a"],
+      ["pi-child-b"],
+    ]);
+  });
+
+  it("groups direct spawns by the turn that introduced them", () => {
+    const directRoster = fold([
+      activity(
+        "task.started",
+        { taskId: "turn-a-1", title: "First A" },
+        "2026-08-01T11:00:00.000Z",
+        "turn-a",
+      ),
+      activity(
+        "task.started",
+        { taskId: "turn-a-2", title: "Second A" },
+        "2026-08-01T11:00:01.000Z",
+        "turn-a",
+      ),
+      activity(
+        "task.started",
+        { taskId: "turn-b-1", title: "First B" },
+        "2026-08-01T11:05:00.000Z",
+        "turn-b",
+      ),
+    ]);
+
+    const model = deriveAgentPanelModel({ agents: directRoster });
+    expect(model.directAgentGroups.map((group) => group.turnId)).toEqual(["turn-a", "turn-b"]);
+    expect(model.directAgentGroups.map((group) => group.agents.map((agent) => agent.id))).toEqual([
+      ["turn-a-1", "turn-a-2"],
+      ["turn-b-1"],
+    ]);
   });
 
   it("counts idle deliberately and waiting as active", () => {

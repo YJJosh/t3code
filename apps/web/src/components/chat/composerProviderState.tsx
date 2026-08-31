@@ -16,7 +16,12 @@ import type { ReactNode } from "react";
 
 import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
-import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
+import {
+  shouldRenderTraitsControls,
+  TraitsMenuContent,
+  TraitsPicker,
+  type TraitsDescriptorScope,
+} from "./TraitsPicker";
 
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
@@ -49,6 +54,7 @@ type TraitsRenderInput = {
   prompt: string;
   onPromptChange: (prompt: string) => void;
   planModeEnabled: boolean;
+  descriptorScope?: TraitsDescriptorScope;
 };
 
 export function getComposerPromptInjectionState(prompt: string): ComposerPromptInjectionState {
@@ -124,6 +130,7 @@ function renderTraitsControl(
     prompt,
     onPromptChange,
     planModeEnabled,
+    descriptorScope = "all",
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
   if (
@@ -135,6 +142,7 @@ function renderTraitsControl(
       modelOptions,
       prompt,
       planModeEnabled,
+      descriptorScope,
     })
   ) {
     return null;
@@ -151,6 +159,7 @@ function renderTraitsControl(
       prompt={prompt}
       onPromptChange={onPromptChange}
       planModeEnabled={planModeEnabled}
+      descriptorScope={descriptorScope}
     />
   );
 }

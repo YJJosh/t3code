@@ -77,6 +77,8 @@ export interface RuntimeSubagent {
   readonly phaseTitle: string | null;
   readonly attempt: number | null;
   readonly workflowName: string | null;
+  /** Turn that first introduced this task, used to separate prompt-spawn batches. */
+  readonly originTurnId?: string | null;
   readonly phases: ReadonlyArray<SubagentWorkflowPhase>;
   readonly runHandles: SubagentRunHandles | null;
   readonly recentActivity: ReadonlyArray<SubagentActivityEntry>;
@@ -246,6 +248,7 @@ interface MutableAgent {
   phaseTitle: string | null;
   attempt: number | null;
   workflowName: string | null;
+  originTurnId: string | null;
   phases: ReadonlyArray<SubagentWorkflowPhase>;
   runHandles: SubagentRunHandles | null;
   recentActivity: ReadonlyArray<SubagentActivityEntry>;
@@ -274,6 +277,7 @@ function getOrCreate(
   id: string,
   payload: Record<string, unknown>,
   at: string,
+  originTurnId: string | null,
 ): MutableAgent {
   const existing = agents.get(id);
   if (existing) {
@@ -300,6 +304,7 @@ function getOrCreate(
     phaseTitle: asString(payload.phaseTitle) ?? null,
     attempt: asCount(payload.attempt) ?? null,
     workflowName: asString(payload.workflowName) ?? null,
+    originTurnId,
     phases: [],
     runHandles: null,
     recentActivity: [],
@@ -477,7 +482,7 @@ export function foldSubagentActivities(
         // tasks are background work — they render in the ordinary work log,
         // not the Agents surface (a "Run 12s stall" shell is not a subagent).
         if (isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at);
+        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
         fillMetadata(agent, payload);
         // Order-robustness: a start row arriving after a terminal state is a
         // late/out-of-order delivery and only fills metadata — it must not
@@ -506,7 +511,7 @@ export function foldSubagentActivities(
         // first row's classification instead of being re-judged.
         const existed = agents.has(taskId);
         if (!existed && isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at);
+        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
         const explicitStatus = asRuntimeStatus(payload.status);
@@ -544,7 +549,7 @@ export function foldSubagentActivities(
         // rows often carry only taskId+status, no marker fields) inherit the
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at);
+        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
         fillMetadata(agent, payload);
         // A task first seen via task.updated (start row aged out) has run at
         // least once — zero activations would misreport "run 0" and let a
@@ -572,7 +577,7 @@ export function foldSubagentActivities(
         // rows often carry only taskId+status, no marker fields) inherit the
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at);
+        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
         // Already-terminal: status and timestamps are frozen (first write
@@ -689,9 +694,17 @@ export interface AgentPanelWorkflowGroup {
   readonly unphasedMembers: ReadonlyArray<RuntimeSubagent>;
 }
 
+export interface AgentPanelDirectGroup {
+  readonly id: string;
+  readonly turnId: string | null;
+  readonly firstSeenAt: string;
+  readonly agents: ReadonlyArray<RuntimeSubagent>;
+}
+
 export interface AgentPanelModel {
   readonly workflows: ReadonlyArray<AgentPanelWorkflowGroup>;
   readonly directAgents: ReadonlyArray<RuntimeSubagent>;
+  readonly directAgentGroups: ReadonlyArray<AgentPanelDirectGroup>;
   readonly runningCount: number;
   readonly waitingCount: number;
   readonly idleCount: number;
@@ -704,6 +717,7 @@ export interface AgentPanelModel {
 const EMPTY_PANEL_MODEL: AgentPanelModel = {
   workflows: [],
   directAgents: [],
+  directAgentGroups: [],
   runningCount: 0,
   waitingCount: 0,
   idleCount: 0,
@@ -735,10 +749,75 @@ export function deriveAgentPanelModel({
     return EMPTY_PANEL_MODEL;
   }
 
-  const workflows = source
-    .filter((agent) => agent.kind === "workflow")
-    .slice()
-    .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
+  const explicitWorkflows = source.filter((agent) => agent.kind === "workflow");
+  const explicitWorkflowIds = new Set(explicitWorkflows.map((workflow) => workflow.id));
+  const syntheticWorkflowMembers = new Map<string, RuntimeSubagent[]>();
+  for (const agent of source) {
+    if (
+      agent.kind !== "workflow" &&
+      agent.parentAgentId !== null &&
+      !explicitWorkflowIds.has(agent.parentAgentId) &&
+      agent.workflowName !== null
+    ) {
+      const entries = syntheticWorkflowMembers.get(agent.parentAgentId) ?? [];
+      entries.push(agent);
+      syntheticWorkflowMembers.set(agent.parentAgentId, entries);
+    }
+  }
+  const syntheticWorkflows = Array.from(syntheticWorkflowMembers, ([id, children]) => {
+    const ordered = children
+      .slice()
+      .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
+    const first = ordered[0]!;
+    const allTerminal = ordered.every((child) => isTerminalSubagentStatus(child.status));
+    const hasFailure = ordered.some((child) => child.status === "failed");
+    return {
+      id,
+      kind: "workflow" as const,
+      title: first.workflowName ?? id,
+      role: null,
+      model: null,
+      effort: null,
+      status: hasFailure
+        ? ("failed" as const)
+        : allTerminal
+          ? ("completed" as const)
+          : ("running" as const),
+      activationCount: 1,
+      usage: null,
+      progress: null,
+      lastToolName: null,
+      result: null,
+      error: null,
+      outputFile: null,
+      parentAgentId: null,
+      agentIndex: null,
+      phaseIndex: null,
+      phaseTitle: null,
+      attempt: null,
+      workflowName: first.workflowName,
+      originTurnId: first.originTurnId ?? null,
+      phases: [],
+      runHandles: null,
+      recentActivity: [],
+      firstSeenAt: first.firstSeenAt,
+      startedAt: first.startedAt,
+      completedAt: allTerminal
+        ? (ordered
+            .map((child) => child.completedAt)
+            .filter((value): value is string => value !== null)
+            .sort()
+            .at(-1) ?? null)
+        : null,
+      updatedAt: ordered
+        .map((child) => child.updatedAt)
+        .sort()
+        .at(-1)!,
+    } satisfies RuntimeSubagent;
+  });
+  const workflows = [...explicitWorkflows, ...syntheticWorkflows].sort(
+    (a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id),
+  );
   const workflowIds = new Set(workflows.map((workflow) => workflow.id));
   const members = new Map<string, RuntimeSubagent[]>();
   const direct: RuntimeSubagent[] = [];
@@ -759,31 +838,54 @@ export function deriveAgentPanelModel({
 
   const workflowGroups: AgentPanelWorkflowGroup[] = workflows.map((workflow) => {
     const workflowMembers = members.get(workflow.id) ?? [];
-    const knownPhases =
-      workflow.phases.length > 0
-        ? workflow.phases
-        : (() => {
-            const derived = new Map<number, string>();
-            for (const member of workflowMembers) {
-              if (member.phaseIndex !== null && !derived.has(member.phaseIndex)) {
-                derived.set(
-                  member.phaseIndex,
-                  member.phaseTitle ?? `Phase ${member.phaseIndex + 1}`,
-                );
-              }
-            }
-            return Array.from(derived.entries())
-              .map(([index, title]) => ({ index, title }))
-              .slice()
-              .sort((a, b) => a.index - b.index);
-          })();
+    // Some bridges (including Pi) report workflow phase names but no numeric
+    // index. Build stable first-seen indices for those names so children stay
+    // nested under the workflow instead of falling back to top-level agents.
+    const phaseTitlesByIndex = new Map<number, string>(
+      workflow.phases.map((phase) => [phase.index, phase.title]),
+    );
+    const phaseIndicesByTitle = new Map<string, number>(
+      workflow.phases.map((phase) => [phase.title.trim().toLocaleLowerCase(), phase.index]),
+    );
+    let nextDerivedPhaseIndex = Math.max(-1, ...workflow.phases.map((phase) => phase.index)) + 1;
+    for (const member of workflowMembers) {
+      if (member.phaseIndex !== null) {
+        if (!phaseTitlesByIndex.has(member.phaseIndex)) {
+          phaseTitlesByIndex.set(
+            member.phaseIndex,
+            member.phaseTitle ?? `Phase ${member.phaseIndex + 1}`,
+          );
+        }
+        if (member.phaseTitle) {
+          phaseIndicesByTitle.set(member.phaseTitle.trim().toLocaleLowerCase(), member.phaseIndex);
+        }
+        continue;
+      }
+      if (!member.phaseTitle) continue;
+      const titleKey = member.phaseTitle.trim().toLocaleLowerCase();
+      if (phaseIndicesByTitle.has(titleKey)) continue;
+      phaseIndicesByTitle.set(titleKey, nextDerivedPhaseIndex);
+      phaseTitlesByIndex.set(nextDerivedPhaseIndex, member.phaseTitle);
+      nextDerivedPhaseIndex += 1;
+    }
 
+    const resolveMemberPhaseIndex = (member: RuntimeSubagent): number | null => {
+      if (member.phaseIndex !== null) return member.phaseIndex;
+      if (!member.phaseTitle) return null;
+      return phaseIndicesByTitle.get(member.phaseTitle.trim().toLocaleLowerCase()) ?? null;
+    };
+    const knownPhases = Array.from(phaseTitlesByIndex, ([index, title]) => ({ index, title })).sort(
+      (a, b) => a.index - b.index,
+    );
     const knownPhaseIndices = new Set(knownPhases.map((phase) => phase.index));
     const phases = knownPhases.map((phase) => {
       const phaseMembers = workflowMembers
-        .filter((member) => member.phaseIndex === phase.index)
+        .filter((member) => resolveMemberPhaseIndex(member) === phase.index)
         .slice()
-        .sort((a, b) => (a.agentIndex ?? 0) - (b.agentIndex ?? 0));
+        .sort(
+          (a, b) =>
+            (a.agentIndex ?? 0) - (b.agentIndex ?? 0) || a.firstSeenAt.localeCompare(b.firstSeenAt),
+        );
       const activeCount = phaseMembers.filter(
         // Idle members count as active for phase-liveness: a resumable Codex
         // member has not finished the phase.
@@ -810,12 +912,17 @@ export function deriveAgentPanelModel({
       };
     });
 
-    // Unknown phase indices land here too — a member must never vanish just
-    // because its phase row was lost (review finding).
+    // Members with neither a numeric nor named phase still remain visible.
     const unphasedMembers = workflowMembers
-      .filter((member) => member.phaseIndex === null || !knownPhaseIndices.has(member.phaseIndex))
+      .filter((member) => {
+        const phaseIndex = resolveMemberPhaseIndex(member);
+        return phaseIndex === null || !knownPhaseIndices.has(phaseIndex);
+      })
       .slice()
-      .sort((a, b) => (a.agentIndex ?? 0) - (b.agentIndex ?? 0));
+      .sort(
+        (a, b) =>
+          (a.agentIndex ?? 0) - (b.agentIndex ?? 0) || a.firstSeenAt.localeCompare(b.firstSeenAt),
+      );
 
     return { workflow, phases, unphasedMembers };
   });
@@ -838,13 +945,33 @@ export function deriveAgentPanelModel({
     totalTokens += agent.usage?.totalTokens ?? 0;
   }
 
+  // Updates and the >100-agent retention ranking must never reshuffle rows
+  // that remain visible.
+  const directAgents = direct
+    .slice()
+    .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
+  const directGroupsByTurn = new Map<string, AgentPanelDirectGroup>();
+  for (const agent of directAgents) {
+    const turnId = agent.originTurnId ?? null;
+    const key = turnId ?? "unattributed";
+    const existing = directGroupsByTurn.get(key);
+    directGroupsByTurn.set(
+      key,
+      existing
+        ? { ...existing, agents: [...existing.agents, agent] }
+        : {
+            id: `direct-turn:${key}`,
+            turnId,
+            firstSeenAt: agent.firstSeenAt,
+            agents: [agent],
+          },
+    );
+  }
+
   return {
     workflows: workflowGroups,
-    // Updates and the >100-agent retention ranking must never reshuffle rows
-    // that remain visible.
-    directAgents: direct
-      .slice()
-      .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)),
+    directAgents,
+    directAgentGroups: Array.from(directGroupsByTurn.values()),
     runningCount,
     waitingCount,
     idleCount,

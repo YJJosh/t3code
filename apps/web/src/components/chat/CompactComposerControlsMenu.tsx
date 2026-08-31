@@ -17,6 +17,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   showRuntimeMode: boolean;
   showInteractionModeToggle: boolean;
   traitsMenuContent?: ReactNode;
+  profileMenuContent?: ReactNode;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
@@ -38,7 +39,11 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
         {props.traitsMenuContent ? (
           <>
             {props.traitsMenuContent}
-            {props.showInteractionModeToggle || props.showRuntimeMode ? <MenuDivider /> : null}
+            {props.showInteractionModeToggle ||
+            props.profileMenuContent ||
+            props.showRuntimeMode ? (
+              <MenuDivider />
+            ) : null}
           </>
         ) : null}
         {props.showInteractionModeToggle ? (
@@ -54,6 +59,12 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
               <MenuRadioItem value="default">Chat</MenuRadioItem>
               <MenuRadioItem value="plan">Plan</MenuRadioItem>
             </MenuRadioGroup>
+            {props.profileMenuContent || props.showRuntimeMode ? <MenuDivider /> : null}
+          </>
+        ) : null}
+        {props.profileMenuContent ? (
+          <>
+            {props.profileMenuContent}
             {props.showRuntimeMode ? <MenuDivider /> : null}
           </>
         ) : null}

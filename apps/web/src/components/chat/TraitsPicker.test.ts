@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind, type ProviderOptionDescriptor } from "@t3tools/contracts";
-import { buildTraitsTriggerDisplay, buildUnavailableModelOptionDescriptors } from "./TraitsPicker";
+import {
+  buildTraitsTriggerDisplay,
+  buildUnavailableModelOptionDescriptors,
+  filterTraitsDescriptors,
+  mergeScopedProviderOptions,
+} from "./TraitsPicker";
 
 function selectDescriptor(
   id: string,
@@ -153,6 +158,45 @@ describe("buildTraitsTriggerDisplay", () => {
         ultrathinkPromptControlled: true,
       }),
     ).toEqual({ label: "Ultrathink", showFastModeIcon: true });
+  });
+});
+
+describe("Pi profile descriptor placement", () => {
+  const profile = selectDescriptor(
+    "profile",
+    [
+      { id: "coder", label: "coder" },
+      { id: "reviewer", label: "reviewer" },
+    ],
+    "coder",
+  );
+
+  it("separates Profile from Pi's remaining composer options", () => {
+    expect(filterTraitsDescriptors([EFFORT, CONTEXT_WINDOW, profile], "pi-other")).toEqual([
+      EFFORT,
+      CONTEXT_WINDOW,
+    ]);
+    expect(filterTraitsDescriptors([EFFORT, CONTEXT_WINDOW, profile], "pi-profile")).toEqual([
+      profile,
+    ]);
+  });
+
+  it("updates a scoped control without dropping the other Pi selections", () => {
+    const changedProfile = { ...profile, currentValue: "reviewer" };
+    expect(
+      mergeScopedProviderOptions(
+        [
+          { id: "reasoningEffort", value: "high" },
+          { id: "contextWindow", value: "1m" },
+          { id: "profile", value: "coder" },
+        ],
+        [changedProfile],
+      ),
+    ).toEqual([
+      { id: "reasoningEffort", value: "high" },
+      { id: "contextWindow", value: "1m" },
+      { id: "profile", value: "reviewer" },
+    ]);
   });
 });
 

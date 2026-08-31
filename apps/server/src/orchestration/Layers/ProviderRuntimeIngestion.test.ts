@@ -1033,6 +1033,126 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("publishes canonical reasoning live and finalizes the same thinking activity", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    for (const [index, delta] of [
+      "Inspecting the provider. ",
+      "The lifecycle is settled.",
+    ].entries()) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-reasoning-delta-${index}`),
+        provider: ProviderDriverKind.make("pi"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-reasoning"),
+        itemId: asItemId("item-reasoning"),
+        payload: {
+          streamKind: "reasoning_text",
+          delta,
+        },
+      });
+    }
+    const reasoningActivityId = "reasoning:assistant:item-reasoning";
+    const liveThread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === reasoningActivityId,
+      ),
+    );
+    expect(
+      liveThread.activities.find(
+        (entry: ProviderRuntimeTestActivity) => entry.id === reasoningActivityId,
+      ),
+    ).toMatchObject({
+      kind: "reasoning",
+      summary: "Thinking",
+      tone: "info",
+      turnId: "turn-reasoning",
+      payload: {
+        detail: "Inspecting the provider. The lifecycle is settled.",
+        reasoning: true,
+      },
+    });
+
+    const continuedReasoning = ` ${"Continuing the live reasoning. ".repeat(10)}`;
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta-continued"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("item-reasoning"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: continuedReasoning,
+      },
+    });
+    await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => {
+        if (activity.id !== reasoningActivityId || typeof activity.payload !== "object") {
+          return false;
+        }
+        return (activity.payload as { detail?: unknown }).detail
+          ?.toString()
+          .endsWith(continuedReasoning);
+      }),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-delta-final"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("item-reasoning"),
+      payload: {
+        streamKind: "reasoning_text",
+        delta: " Final check.",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-reasoning-completed"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reasoning"),
+      itemId: asItemId("item-reasoning"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity: ProviderRuntimeTestActivity) => {
+        if (activity.id !== reasoningActivityId || typeof activity.payload !== "object") {
+          return false;
+        }
+        return (activity.payload as { detail?: unknown }).detail
+          ?.toString()
+          .endsWith("Final check.");
+      }),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === reasoningActivityId,
+    );
+    expect(activity).toMatchObject({
+      kind: "reasoning",
+      summary: "Thinking",
+      tone: "info",
+      turnId: "turn-reasoning",
+      payload: {
+        detail: `Inspecting the provider. The lifecycle is settled.${continuedReasoning} Final check.`,
+        reasoning: true,
+      },
+    });
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -2135,6 +2135,44 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     );
   });
 
+  it("groups Pi workflow members by parent id when no coordinator row exists", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        kind: "task.started",
+        summary: "implementation agent",
+        payload: {
+          taskId: "pi-child-1",
+          taskType: "pi-subagent",
+          parentAgentId: "pi-workflow-1",
+          workflowName: "two-step-review",
+          phaseTitle: "Implementation",
+        },
+        turnId: "turn-pi-workflow",
+        sequence: 1,
+      }),
+      makeActivity({
+        kind: "task.started",
+        summary: "review agent",
+        payload: {
+          taskId: "pi-child-2",
+          taskType: "pi-subagent",
+          parentAgentId: "pi-workflow-1",
+          workflowName: "two-step-review",
+          phaseTitle: "Review",
+        },
+        turnId: "turn-pi-workflow",
+        sequence: 2,
+      }),
+    ]);
+
+    const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
+    expect(spawnRows).toHaveLength(1);
+    expect(spawnRows[0]!.agentSpawn).toEqual({
+      workflowId: "pi-workflow-1",
+      agentTaskIds: ["pi-child-1", "pi-child-2"],
+    });
+  });
+
   it("keeps unattributed tool rows (over-hiding loses the only signal)", () => {
     const entries = deriveWorkLogEntries([
       makeActivity({

@@ -113,6 +113,7 @@ interface DerivedWorkLogEntry extends WorkLogEntry {
   sourceActivityKind: OrchestrationThreadActivity["kind"];
   [workLogCollapseKey]?: string;
   toolCallId?: string;
+  parentAgentId?: string;
   isWorkflowCoordinator?: boolean;
   /** Shell/monitor/plan tasks: ordinary work-log rows, never spawn CTAs. */
   isBackgroundTask?: boolean;
@@ -187,6 +188,10 @@ export type TimelineEntry =
       createdAt: string;
       entry: WorkLogEntry;
     };
+
+export function workLogEntryIsReasoning(entry: WorkLogEntry): boolean {
+  return entry.sourceActivityKind === "reasoning";
+}
 
 export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") {
@@ -1034,9 +1039,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (
     isTaskActivity &&
-    (payload?.taskType === "local_workflow" ||
-      (typeof payload?.workflowName === "string" && payload.workflowName.length > 0))
+    typeof payload?.parentAgentId === "string" &&
+    payload.parentAgentId.length > 0
   ) {
+    entry.parentAgentId = payload.parentAgentId;
+  }
+  if (isTaskActivity && payload?.taskType === "local_workflow") {
     entry.isWorkflowCoordinator = true;
   }
   if (isTaskActivity && payload && isBackgroundTaskActivity(payload)) {
@@ -1063,6 +1071,9 @@ function agentSpawnGroupKey(entry: DerivedWorkLogEntry): string {
   }
   if (entry.agentSpawn?.workflowId) {
     return `wf:${entry.agentSpawn.workflowId}`;
+  }
+  if (entry.parentAgentId) {
+    return `wf:${entry.parentAgentId}`;
   }
   if (entry.isWorkflowCoordinator) {
     return `wf:${taskId}`;

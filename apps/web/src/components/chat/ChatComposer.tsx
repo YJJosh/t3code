@@ -1337,6 +1337,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     prompt,
     onPromptChange: setPromptFromTraits,
     planModeEnabled: settings.planModeEnabled,
+    descriptorScope: selectedProvider === "pi" ? "pi-other" : "all",
   });
   const providerTraitsPicker = renderProviderTraitsPicker({
     provider: selectedProvider,
@@ -1349,7 +1350,40 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     prompt,
     onPromptChange: setPromptFromTraits,
     planModeEnabled: settings.planModeEnabled,
+    descriptorScope: selectedProvider === "pi" ? "pi-other" : "all",
   });
+  const providerProfileMenuContent =
+    selectedProvider === "pi"
+      ? renderProviderTraitsMenuContent({
+          provider: selectedProvider,
+          instanceId: selectedInstanceId,
+          ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
+          ...(routeKind === "draft" && draftId ? { draftId } : {}),
+          model: selectedModel,
+          models: selectedProviderModels,
+          modelOptions: composerModelOptions?.[selectedInstanceId],
+          prompt,
+          onPromptChange: setPromptFromTraits,
+          planModeEnabled: settings.planModeEnabled,
+          descriptorScope: "pi-profile",
+        })
+      : null;
+  const providerProfilePicker =
+    selectedProvider === "pi"
+      ? renderProviderTraitsPicker({
+          provider: selectedProvider,
+          instanceId: selectedInstanceId,
+          ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
+          ...(routeKind === "draft" && draftId ? { draftId } : {}),
+          model: selectedModel,
+          models: selectedProviderModels,
+          modelOptions: composerModelOptions?.[selectedInstanceId],
+          prompt,
+          onPromptChange: setPromptFromTraits,
+          planModeEnabled: settings.planModeEnabled,
+          descriptorScope: "pi-profile",
+        })
+      : null;
   const pendingPrimaryAction = useMemo(
     () =>
       activePendingProgress
@@ -3539,6 +3573,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       showRuntimeMode={composerProviderControls.showRuntimeMode}
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                       traitsMenuContent={providerTraitsMenuContent}
+                      profileMenuContent={providerProfileMenuContent}
                       onToggleInteractionMode={toggleInteractionMode}
                       onRuntimeModeChange={handleRuntimeModeChange}
                     />
@@ -3551,6 +3586,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                             className="mx-0.5 hidden h-4 sm:block"
                           />
                           {providerTraitsPicker}
+                        </>
+                      ) : null}
+                      {providerProfilePicker ? (
+                        <>
+                          <Separator
+                            orientation="vertical"
+                            className="mx-0.5 hidden h-4 sm:block"
+                          />
+                          {providerProfilePicker}
                         </>
                       ) : null}
                       <ComposerFooterModeControls

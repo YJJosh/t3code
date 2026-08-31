@@ -264,6 +264,7 @@ function taskViewLinkage(view: Record<string, unknown>, runId: string) {
   const title = nonEmptyString(workflow?.label) ?? nonEmptyString(view.task);
   const model = nonEmptyString(view.model);
   const workflowName = nonEmptyString(workflow?.name);
+  const workflowRunId = nonEmptyString(workflow?.runId);
   const phaseTitle = nonEmptyString(workflow?.phase);
   return {
     taskType,
@@ -271,6 +272,7 @@ function taskViewLinkage(view: Record<string, unknown>, runId: string) {
     ...(title ? { title } : {}),
     ...(model ? { model } : {}),
     ...(workflowName ? { workflowName } : {}),
+    ...(workflowRunId ? { parentAgentId: workflowRunId } : {}),
     ...(phaseTitle ? { phaseTitle } : {}),
     runHandles: { runId },
   };
@@ -797,6 +799,51 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }
       });
 
+    const emitAssistantEventDelta = (
+      ctx: PiSessionContext,
+      event: unknown,
+    ): Effect.Effect<void, ProviderAdapterRequestError> => {
+      if (!isRecord(event) || typeof event.type !== "string") return Effect.void;
+      if (
+        (event.type === "thinking_delta" || event.type === "text_delta") &&
+        typeof event.delta === "string" &&
+        event.delta.length > 0
+      ) {
+        const thinking =
+          event.type === "thinking_delta" ? ctx.reasoningText + event.delta : ctx.reasoningText;
+        const text =
+          event.type === "text_delta" ? ctx.assistantText + event.delta : ctx.assistantText;
+        return emitAssistantDelta(ctx, {
+          role: "assistant",
+          content: [
+            ...(thinking.length > 0 ? [{ type: "thinking", thinking }] : []),
+            ...(text.length > 0 ? [{ type: "text", text }] : []),
+          ],
+        });
+      }
+      if (
+        (event.type === "thinking_end" || event.type === "text_end") &&
+        typeof event.content === "string"
+      ) {
+        const thinking = event.type === "thinking_end" ? event.content : ctx.reasoningText;
+        const text = event.type === "text_end" ? event.content : ctx.assistantText;
+        return emitAssistantDelta(ctx, {
+          role: "assistant",
+          content: [
+            ...(thinking.length > 0 ? [{ type: "thinking", thinking }] : []),
+            ...(text.length > 0 ? [{ type: "text", text }] : []),
+          ],
+        });
+      }
+      if (event.type === "done" && isRecord(event.message)) {
+        return emitAssistantDelta(ctx, event.message);
+      }
+      if (event.type === "error" && isRecord(event.error)) {
+        return emitAssistantDelta(ctx, event.error);
+      }
+      return Effect.void;
+    };
+
     const finishAssistantItem = (ctx: PiSessionContext) =>
       Effect.gen(function* () {
         if (ctx.assistantItemId === undefined) return;
@@ -1049,6 +1096,13 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             // those messages must not invent autonomous work on their own.
             return;
           case "message_update":
+            if (ctx.activeTurnId === undefined) return;
+            if (isRecord(message.message) && message.message.role === "assistant") {
+              yield* emitAssistantDelta(ctx, message.message);
+            } else {
+              yield* emitAssistantEventDelta(ctx, message.assistantMessageEvent);
+            }
+            return;
           case "message_end":
             if (
               ctx.activeTurnId === undefined ||
@@ -1058,9 +1112,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               return;
             }
             yield* emitAssistantDelta(ctx, message.message);
-            if (message.type === "message_end") {
-              yield* finishAssistantItem(ctx);
-            }
+            yield* finishAssistantItem(ctx);
             return;
           case "tool_execution_start":
             if (ctx.activeTurnId !== undefined) {

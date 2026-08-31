@@ -246,6 +246,38 @@ describe("Pi adapter", () => {
       yield* takeThroughType(events, "turn.started");
 
       yield* fake.pushFrame({
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "thinking_delta",
+          contentIndex: 0,
+          delta: "Inspecting the repository",
+        },
+      });
+      const throughReasoning = yield* takeThroughType(events, "content.delta");
+      expect(throughReasoning.at(-1)).toEqual(
+        expect.objectContaining({
+          type: "content.delta",
+          payload: { streamKind: "reasoning_text", delta: "Inspecting the repository" },
+        }),
+      );
+
+      yield* fake.pushFrame({
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: 1,
+          delta: "First pass",
+        },
+      });
+      const throughText = yield* takeThroughType(events, "content.delta");
+      expect(throughText.at(-1)).toEqual(
+        expect.objectContaining({
+          type: "content.delta",
+          payload: { streamKind: "assistant_text", delta: "First pass" },
+        }),
+      );
+
+      yield* fake.pushFrame({
         type: "agent_end",
         messages: [{ role: "assistant", content: [{ type: "text", text: "first pass" }] }],
       });
@@ -422,6 +454,8 @@ describe("Pi adapter", () => {
             agentKind: "agent",
             title: "Reviewer",
             workflowName: "review",
+            parentAgentId: "workflow-1",
+            phaseTitle: "Audit",
           }),
         }),
       ],

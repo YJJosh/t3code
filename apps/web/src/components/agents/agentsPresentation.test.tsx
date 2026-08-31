@@ -1,4 +1,5 @@
 import type {
+  AgentPanelModel,
   RuntimeSubagent,
   RuntimeSubagentStatus,
 } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -6,6 +7,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   agentActivityText,
+  agentRosterBatches,
   formatAgentElapsedSeconds,
   preferredInspectorAgent,
 } from "./agentsPresentation";
@@ -75,6 +77,58 @@ describe("agent inspector presentation", () => {
         }),
       ),
     ).toBe("Reading tests");
+  });
+
+  it("keeps direct agents and workflows from the same prompt in one ordered batch", () => {
+    const direct = makeAgent("direct", "completed", { originTurnId: "turn-1" });
+    const coordinator = makeAgent("workflow", "running", {
+      kind: "workflow",
+      originTurnId: "turn-1",
+    });
+    const child = makeAgent("child", "running", {
+      kind: "workflow_agent",
+      parentAgentId: coordinator.id,
+      originTurnId: "turn-1",
+    });
+    const model: AgentPanelModel = {
+      workflows: [
+        {
+          workflow: coordinator,
+          phases: [
+            {
+              index: 0,
+              title: "Implementation",
+              members: [child],
+              state: "running",
+              activeCount: 1,
+              settledCount: 0,
+            },
+          ],
+          unphasedMembers: [],
+        },
+      ],
+      directAgents: [direct],
+      directAgentGroups: [
+        {
+          id: "direct-turn:turn-1",
+          turnId: "turn-1",
+          firstSeenAt: direct.firstSeenAt,
+          agents: [direct],
+        },
+      ],
+      runningCount: 1,
+      waitingCount: 0,
+      idleCount: 0,
+      settledCount: 1,
+      totalTokens: 0,
+      hasAgents: true,
+      liveCount: 1,
+    };
+
+    const batches = agentRosterBatches(model);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]?.directAgents.map((agent) => agent.id)).toEqual(["direct"]);
+    expect(batches[0]?.workflows.map((group) => group.workflow.id)).toEqual(["workflow"]);
   });
 
   it("formats elapsed time without sub-second churn", () => {

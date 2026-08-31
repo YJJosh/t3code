@@ -6,6 +6,7 @@ import {
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   shouldPreserveAssistantLineBreaks,
+  workEntryIsVisibleInGroup,
 } from "./MessagesTimeline.logic";
 
 describe("shouldPreserveAssistantLineBreaks", () => {
@@ -16,6 +17,21 @@ describe("shouldPreserveAssistantLineBreaks", () => {
       ),
     ).toBe(true);
     expect(shouldPreserveAssistantLineBreaks("A normal\\nmarkdown paragraph")).toBe(false);
+  });
+});
+
+describe("workEntryIsVisibleInGroup", () => {
+  it("keeps persisted reasoning visible in expanded work groups", () => {
+    expect(
+      workEntryIsVisibleInGroup({
+        id: "reasoning-1",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        label: "Thinking",
+        detail: "Inspecting the provider lifecycle",
+        tone: "info",
+        sourceActivityKind: "reasoning",
+      }),
+    ).toBe(true);
   });
 });
 

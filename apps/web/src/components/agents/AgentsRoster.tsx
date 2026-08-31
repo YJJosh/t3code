@@ -21,6 +21,7 @@ import {
   AGENT_STATUS_VISUALS,
   AgentElapsed,
   agentActivityText,
+  agentRosterBatches,
   agentElapsedBetween,
   AgentStatusDot,
   workflowIsLive,
@@ -32,11 +33,13 @@ function AgentRosterRow({
   selected,
   autoFocus,
   onSelect,
+  nested = false,
 }: {
   agent: RuntimeSubagent;
   selected: boolean;
   autoFocus: boolean;
   onSelect: (agent: RuntimeSubagent) => void;
+  nested?: boolean;
 }) {
   const visuals = AGENT_STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
@@ -61,7 +64,8 @@ function AgentRosterRow({
       aria-label={`${agent.title}. ${visuals.label}`}
       data-agent-run-id={agent.id}
       className={cn(
-        "grid h-[3.875rem] w-full grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-2 py-1 text-left hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        "grid w-full grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-2 py-1 text-left hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        nested ? "h-[3.5rem]" : "h-[3.875rem]",
         selected && "bg-accent text-accent-foreground",
         agent.status === "waiting" && !selected && "bg-warning/8",
       )}
@@ -92,54 +96,6 @@ function AgentRosterRow({
         {metadata.join(" · ")}
       </span>
     </button>
-  );
-}
-
-function PhaseRail({ group }: { group: AgentPanelWorkflowGroup }) {
-  if (group.phases.length === 0) return null;
-  return (
-    <div className="flex flex-wrap items-center gap-x-1 gap-y-1 px-2 pb-1 pt-1.5">
-      {group.phases.map((phase, index) => (
-        <div key={phase.index} className="flex items-center gap-1">
-          {index > 0 ? (
-            <ChevronRight aria-hidden className="size-3 text-muted-foreground/40" />
-          ) : null}
-          <div
-            className={cn(
-              "flex items-center gap-1 rounded-sm border px-1.5 py-0.5",
-              phase.state === "running"
-                ? "border-info/40"
-                : phase.state === "done"
-                  ? "border-success/30"
-                  : "border-border/50",
-            )}
-          >
-            <span
-              className={cn(
-                "font-mono text-[.65rem]",
-                phase.state === "running"
-                  ? "text-info-foreground"
-                  : phase.state === "done"
-                    ? "text-success-foreground"
-                    : "text-muted-foreground/70",
-              )}
-            >
-              {phase.state === "done" ? "✓ " : ""}
-              {phase.title}
-            </span>
-            <span className="flex items-center gap-0.5">
-              {phase.members.length === 0 ? (
-                <span className="font-mono text-[.65rem] text-muted-foreground/50">–</span>
-              ) : (
-                phase.members.map((member) => (
-                  <AgentStatusDot key={member.id} status={member.status} />
-                ))
-              )}
-            </span>
-          </div>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -215,13 +171,13 @@ function PhaseSection({
   }, [phase.state, shouldRestoreFocus]);
 
   return (
-    <section aria-label={phase.title}>
+    <section aria-label={phase.title} className="border-s border-border/60 ps-2">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         className={cn(
-          "mt-2 flex w-full items-center gap-1.5 rounded-sm px-2 text-left text-[.65rem] font-medium uppercase tracking-wider hover:bg-accent/40",
+          "flex min-h-7 w-full items-center gap-1.5 rounded-sm px-1.5 text-left text-[.68rem] font-medium uppercase tracking-wider hover:bg-accent/40",
           phase.state === "done"
             ? "text-success-foreground"
             : phase.state === "running"
@@ -245,7 +201,11 @@ function PhaseSection({
         </span>
       </button>
       {open ? (
-        <div role="list" aria-label={`${phase.title} agents`}>
+        <div
+          role="list"
+          aria-label={`${phase.title} agents`}
+          className="ms-2 border-s border-border/45 ps-1.5"
+        >
           {phase.members.map((member) => (
             <div role="listitem" key={member.id}>
               <AgentRosterRow
@@ -253,6 +213,7 @@ function PhaseSection({
                 selected={selectedAgentId === member.id}
                 autoFocus={autoFocusAgentId === member.id}
                 onSelect={onSelectAgent}
+                nested
               />
             </div>
           ))}
@@ -281,6 +242,9 @@ function WorkflowSection({
   const [scriptOpen, setScriptOpen] = useState(false);
   const members = workflowMembers(group);
   const failed = members.filter((member) => member.status === "failed").length;
+  const live = workflowIsLive(group);
+  const displayStatus: RuntimeSubagent["status"] =
+    failed > 0 ? "failed" : live ? "running" : "completed";
   const settled = members.filter((member) =>
     ["completed", "failed", "cancelled", "interrupted"].includes(member.status),
   ).length;
@@ -294,6 +258,15 @@ function WorkflowSection({
       : null;
   const scriptPath = group.workflow.runHandles?.scriptPath;
   const canShowScript = scriptPath !== undefined && environmentId !== null && threadId !== null;
+  const shouldRestoreFocus = members.some((member) => member.id === autoFocusAgentId);
+  const previousLive = useRef(live);
+
+  useEffect(() => {
+    if ((!previousLive.current && live) || shouldRestoreFocus) {
+      setOpen(true);
+    }
+    previousLive.current = live;
+  }, [live, shouldRestoreFocus]);
 
   if (!open) {
     return (
@@ -304,7 +277,8 @@ function WorkflowSection({
           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/40"
           aria-expanded={false}
         >
-          <AgentStatusDot status={failed > 0 ? "failed" : group.workflow.status} />
+          <ChevronRight aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+          <AgentStatusDot status={displayStatus} />
           <span className="truncate text-sm">
             {group.workflow.workflowName ?? group.workflow.title}
           </span>
@@ -315,7 +289,6 @@ function WorkflowSection({
             <span>{members.length} agents</span>
             <span className="tabular-nums">· {formatSubagentTokenCount(totalTokens)} tok</span>
             {elapsed ? <span className="tabular-nums">· {elapsed}</span> : null}
-            <ChevronRight aria-hidden className="size-3" />
           </span>
         </button>
       </section>
@@ -325,7 +298,15 @@ function WorkflowSection({
   return (
     <section className="rounded-lg border border-border/55 bg-card/30 p-1">
       <div className="flex items-center gap-2 px-2 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
-        <AgentStatusDot status={group.workflow.status} />
+        <Button
+          size="icon-micro"
+          variant="ghost-muted"
+          onClick={() => setOpen(false)}
+          aria-label="Collapse workflow"
+        >
+          <ChevronDown aria-hidden className="size-3" />
+        </Button>
+        <AgentStatusDot status={displayStatus} />
         <span className="min-w-0 truncate">
           {group.workflow.workflowName ?? group.workflow.title}
         </span>
@@ -345,16 +326,7 @@ function WorkflowSection({
         <span className="ml-auto shrink-0 font-mono normal-case text-muted-foreground/80">
           {settled}/{members.length} settled
         </span>
-        <Button
-          size="icon-micro"
-          variant="ghost-muted"
-          onClick={() => setOpen(false)}
-          aria-label="Collapse workflow"
-        >
-          <ChevronDown aria-hidden className="size-3" />
-        </Button>
       </div>
-      <PhaseRail group={group} />
       {scriptOpen && canShowScript ? (
         <WorkflowScriptView
           environmentId={environmentId}
@@ -363,18 +335,26 @@ function WorkflowSection({
           onClose={() => setScriptOpen(false)}
         />
       ) : null}
-      {group.phases.map((phase) => (
-        <PhaseSection
-          key={phase.index}
-          phase={phase}
-          selectedAgentId={selectedAgentId}
-          autoFocusAgentId={autoFocusAgentId}
-          onSelectAgent={onSelectAgent}
-          defaultOpen={!workflowIsLive(group)}
-        />
-      ))}
+      {group.phases.length > 0 ? (
+        <div className="ms-3 mt-1 space-y-1" aria-label="Workflow phases">
+          {group.phases.map((phase) => (
+            <PhaseSection
+              key={phase.index}
+              phase={phase}
+              selectedAgentId={selectedAgentId}
+              autoFocusAgentId={autoFocusAgentId}
+              onSelectAgent={onSelectAgent}
+              defaultOpen={!live}
+            />
+          ))}
+        </div>
+      ) : null}
       {group.unphasedMembers.length > 0 ? (
-        <div role="list" aria-label="Workflow agents">
+        <div
+          role="list"
+          aria-label="Workflow agents"
+          className="ms-3 border-s border-border/60 ps-2"
+        >
           {group.unphasedMembers.map((member) => (
             <div role="listitem" key={member.id}>
               <AgentRosterRow
@@ -382,6 +362,7 @@ function WorkflowSection({
                 selected={selectedAgentId === member.id}
                 autoFocus={autoFocusAgentId === member.id}
                 onSelect={onSelectAgent}
+                nested
               />
             </div>
           ))}
@@ -418,54 +399,52 @@ export function AgentsRoster({
   autoFocusAgentId: string | null;
   onSelectAgent: (agent: RuntimeSubagent) => void;
 }) {
+  const batches = agentRosterBatches(model);
   return (
     <ScrollArea className="min-h-0 flex-1">
       <div className="flex flex-col gap-3 p-2.5">
-        {model.workflows.length > 0 ? (
-          <section aria-labelledby="agent-workflows-heading">
-            <h2
-              id="agent-workflows-heading"
-              className="mb-1 px-1 text-[.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
-            >
-              Workflows
-            </h2>
-            <div className="flex flex-col gap-2">
-              {model.workflows.map((group) => (
-                <WorkflowSection
-                  key={group.workflow.id}
-                  group={group}
-                  environmentId={environmentId}
-                  threadId={threadId}
-                  selectedAgentId={selectedAgentId}
-                  autoFocusAgentId={autoFocusAgentId}
-                  onSelectAgent={onSelectAgent}
-                />
-              ))}
-            </div>
+        {batches.map((batch, batchIndex) => (
+          <section
+            key={batch.id}
+            aria-label={`Prompt ${batchIndex + 1} agents`}
+            className={cn("space-y-2", batchIndex > 0 && "border-t border-border/60 pt-3")}
+          >
+            {batches.length > 1 ? (
+              <h2 className="px-1 text-[.65rem] font-semibold uppercase tracking-wider text-muted-foreground">
+                Prompt {batchIndex + 1}
+                <span className="ms-1 font-normal normal-case tracking-normal text-muted-foreground/65">
+                  · {batch.directAgents.length + batch.workflows.length} run
+                  {batch.directAgents.length + batch.workflows.length === 1 ? "" : "s"}
+                </span>
+              </h2>
+            ) : null}
+            {batch.directAgents.length > 0 ? (
+              <div role="list" aria-label={`Prompt ${batchIndex + 1} direct agents`}>
+                {batch.directAgents.map((agent) => (
+                  <div role="listitem" key={agent.id}>
+                    <AgentRosterRow
+                      agent={agent}
+                      selected={selectedAgentId === agent.id}
+                      autoFocus={autoFocusAgentId === agent.id}
+                      onSelect={onSelectAgent}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {batch.workflows.map((group) => (
+              <WorkflowSection
+                key={group.workflow.id}
+                group={group}
+                environmentId={environmentId}
+                threadId={threadId}
+                selectedAgentId={selectedAgentId}
+                autoFocusAgentId={autoFocusAgentId}
+                onSelectAgent={onSelectAgent}
+              />
+            ))}
           </section>
-        ) : null}
-        {model.directAgents.length > 0 ? (
-          <section aria-labelledby="direct-agents-heading">
-            <h2
-              id="direct-agents-heading"
-              className="mb-1 px-1 text-[.65rem] font-semibold uppercase tracking-wider text-muted-foreground"
-            >
-              {model.workflows.length > 0 ? "Direct spawns" : "Agents"}
-            </h2>
-            <div role="list" aria-label="Direct agents">
-              {model.directAgents.map((agent) => (
-                <div role="listitem" key={agent.id}>
-                  <AgentRosterRow
-                    agent={agent}
-                    selected={selectedAgentId === agent.id}
-                    autoFocus={autoFocusAgentId === agent.id}
-                    onSelect={onSelectAgent}
-                  />
-                </div>
-              ))}
-            </div>
-          </section>
-        ) : null}
+        ))}
       </div>
     </ScrollArea>
   );

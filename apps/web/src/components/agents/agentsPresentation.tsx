@@ -1,4 +1,5 @@
 import type {
+  AgentPanelModel,
   AgentPanelWorkflowGroup,
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -106,11 +107,78 @@ export function agentActivityText(agent: RuntimeSubagent): string | null {
   );
 }
 
-export function workflowIsLive(group: AgentPanelWorkflowGroup): boolean {
-  const status = group.workflow.status;
-  return !["completed", "failed", "cancelled", "interrupted"].includes(status);
-}
-
 export function workflowMembers(group: AgentPanelWorkflowGroup): ReadonlyArray<RuntimeSubagent> {
   return [...group.phases.flatMap((phase) => phase.members), ...group.unphasedMembers];
+}
+
+export function workflowIsLive(group: AgentPanelWorkflowGroup): boolean {
+  const members = workflowMembers(group);
+  if (members.length > 0) {
+    return members.some(
+      (member) => !["completed", "failed", "cancelled", "interrupted"].includes(member.status),
+    );
+  }
+  return !["completed", "failed", "cancelled", "interrupted"].includes(group.workflow.status);
+}
+
+export interface AgentRosterBatch {
+  readonly id: string;
+  readonly turnId: string | null;
+  readonly firstSeenAt: string;
+  readonly directAgents: ReadonlyArray<RuntimeSubagent>;
+  readonly workflows: ReadonlyArray<AgentPanelWorkflowGroup>;
+}
+
+/** Keeps all agents introduced by one prompt together while retaining workflow nesting. */
+export function agentRosterBatches(model: AgentPanelModel): ReadonlyArray<AgentRosterBatch> {
+  const batches = new Map<string, AgentRosterBatch>();
+  const add = (input: {
+    key: string;
+    turnId: string | null;
+    firstSeenAt: string;
+    directAgents?: ReadonlyArray<RuntimeSubagent>;
+    workflow?: AgentPanelWorkflowGroup;
+  }) => {
+    const existing = batches.get(input.key);
+    batches.set(
+      input.key,
+      existing
+        ? {
+            ...existing,
+            firstSeenAt:
+              input.firstSeenAt < existing.firstSeenAt ? input.firstSeenAt : existing.firstSeenAt,
+            directAgents: [...existing.directAgents, ...(input.directAgents ?? [])],
+            workflows: [...existing.workflows, ...(input.workflow ? [input.workflow] : [])],
+          }
+        : {
+            id: input.key,
+            turnId: input.turnId,
+            firstSeenAt: input.firstSeenAt,
+            directAgents: input.directAgents ?? [],
+            workflows: input.workflow ? [input.workflow] : [],
+          },
+    );
+  };
+
+  for (const group of model.directAgentGroups) {
+    add({
+      key: group.turnId ? `turn:${group.turnId}` : `direct:${group.id}`,
+      turnId: group.turnId,
+      firstSeenAt: group.firstSeenAt,
+      directAgents: group.agents,
+    });
+  }
+  for (const workflow of model.workflows) {
+    const turnId = workflow.workflow.originTurnId ?? null;
+    add({
+      key: turnId ? `turn:${turnId}` : `workflow:${workflow.workflow.id}`,
+      turnId,
+      firstSeenAt: workflow.workflow.firstSeenAt,
+      workflow,
+    });
+  }
+
+  return Array.from(batches.values()).sort(
+    (a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id),
+  );
 }

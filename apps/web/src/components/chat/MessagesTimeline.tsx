@@ -35,7 +35,9 @@ import { FileDiff } from "@pierre/diffs/react";
 import {
   deriveTimelineEntries,
   workEntryDisplayIndicatesToolFailure,
+  workEntryIndicatesToolSuccess,
   workEntrySignalsSevereFailure,
+  workLogEntryIsReasoning,
   workLogEntryIsToolLike,
 } from "../../session-logic";
 import { type ChatImageAttachment, isImageAttachment, type TurnDiffSummary } from "../../types";
@@ -1402,7 +1404,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
       {!onlyToolEntries && (
         <p className="px-0.5 pb-0.5 font-medium text-secondary-label text-[11px]">{groupLabel}</p>
       )}
-      <div className="space-y-px">
+      <div className={cn(onlyToolEntries ? "space-y-1" : "space-y-1.5")}>
         {nonEmptyEntries.map((workEntry) => (
           <SimpleWorkEntryRow
             key={workEntry.id}
@@ -2402,7 +2404,11 @@ function liveWorkEntryLabel(
   if (command) {
     // This row describes the active parent turn, not the command lifecycle.
     // Keep its live "Running" copy until the turn or contiguous tool run settles.
-    const program = commandProgramName(command);
+    const executableCommand = command
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0 && !line.startsWith("#"));
+    const program = executableCommand ? commandProgramName(executableCommand) : null;
     if (program) return `Running ${program}`;
     return "Running command";
   }
@@ -2517,17 +2523,27 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
   ).length;
   const waiting = agents.filter((agent) => agent.status === "waiting").length;
   const failed = agents.filter((agent) => agent.status === "failed").length;
-  // The coordinator's own status is authoritative for workflows: dynamic
-  // spawns mean the member list can be momentarily all-settled while the
-  // run is still mid-flight (the "completed" lie from live testing). A
-  // workflow is live until the coordinator itself reaches a terminal state.
+  // Pi's workflow coordinator is a synthetic container and has no terminal
+  // event of its own, so member lifecycle is authoritative whenever members
+  // are present. Providers with coordinator-only workflows still fall back to
+  // the coordinator status.
   const coordinatorStatus = workflowGroup?.workflow.status;
   const coordinatorSettled =
     coordinatorStatus === "completed" ||
     coordinatorStatus === "failed" ||
     coordinatorStatus === "cancelled" ||
     coordinatorStatus === "interrupted";
-  const live = workflowGroup !== undefined ? !coordinatorSettled : running + waiting > 0;
+  const live = workflowGroup
+    ? agents.length > 0
+      ? agents.some(
+          (agent) =>
+            agent.status !== "completed" &&
+            agent.status !== "failed" &&
+            agent.status !== "cancelled" &&
+            agent.status !== "interrupted",
+        )
+      : !coordinatorSettled
+    : running + waiting > 0;
   // Same rule as the panel footer: providers may aggregate member usage into
   // the coordinator, so count the coordinator only when no members exist.
   const totalTokens = agents.reduce(
@@ -2579,15 +2595,40 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
   );
 });
 
+const ReasoningWorkEntryRow = memo(function ReasoningWorkEntryRow(props: {
+  workEntry: TimelineWorkEntry;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const text = props.workEntry.detail?.trim() || props.workEntry.label.trim();
+  if (text.length === 0) return null;
+
+  return (
+    <div
+      data-reasoning-entry="true"
+      className="border-s-2 border-border/55 px-3 py-0.5 text-[13px] italic leading-relaxed text-muted-foreground"
+    >
+      <ChatMarkdown
+        text={text}
+        cwd={ctx.markdownCwd}
+        threadRef={ctx.threadRef ?? undefined}
+        skills={ctx.skills}
+        className="text-[13px] leading-relaxed [&_p]:my-0"
+      />
+    </div>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
   isExpandedToolGroupEntry: boolean;
 }) {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry } = props;
-  // Before any hooks: spawn CTA rows render their own component.
   if (workEntry.agentSpawn) {
     return <AgentSpawnCtaRow workEntry={workEntry} />;
+  }
+  if (workLogEntryIsReasoning(workEntry)) {
+    return <ReasoningWorkEntryRow workEntry={workEntry} />;
   }
   return (
     <PlainWorkEntryRow
@@ -2610,7 +2651,11 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   const showFailedIndicator = workEntryDisplayIndicatesToolFailure(workEntry);
   const entryIconName =
     showWarningIndicator || showFailedIndicator ? "x" : workEntryIconName(workEntry);
-  const displayText = workEntryPreview(workEntry, workspaceRoot) ?? toolWorkEntryHeading(workEntry);
+  const isToolEntry = workLogEntryIsToolLike(workEntry);
+  const heading = toolWorkEntryHeading(workEntry);
+  const preview = workEntryPreview(workEntry, workspaceRoot);
+  const displayText = preview ?? heading;
+  const showSuccessIndicator = isToolEntry && workEntryIndicatesToolSuccess(workEntry);
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const canExpand = expandedBody !== null;
   const showDestructiveRowStyle =
@@ -2632,10 +2677,11 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
     ? "font-medium text-warning"
     : showDestructiveRowStyle
       ? "font-medium text-destructive"
-      : workLogEntryIsToolLike(workEntry)
-        ? "text-secondary-label"
+      : isToolEntry
+        ? "text-foreground/90"
         : "text-foreground/80";
-  const showEntryIcon = !isExpandedToolGroupEntry || showWarningIndicator || showFailedIndicator;
+  const showEntryIcon =
+    isToolEntry || !isExpandedToolGroupEntry || showWarningIndicator || showFailedIndicator;
   const accessibleDisplayText = showFailedIndicator
     ? `${displayText}, tool call failed`
     : displayText;
@@ -2658,10 +2704,14 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   return (
     <div
       className={cn(
-        "flex flex-col rounded-md px-0.5 transition-colors",
-        isExpandedToolGroupEntry ? "py-0" : "py-0.5",
+        "flex flex-col rounded-md transition-colors",
+        isToolEntry
+          ? "border border-border/55 bg-card/35 px-1 py-0.5"
+          : isExpandedToolGroupEntry
+            ? "px-0.5 py-0"
+            : "px-0.5 py-0.5",
         canExpand &&
-          "cursor-pointer hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+          "cursor-pointer hover:border-border/80 hover:bg-accent/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
       )}
       {...rowToggleProps}
     >
@@ -2679,10 +2729,22 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
         </span>
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <div className="min-w-0 flex-1 overflow-hidden">
-            <p className="flex min-w-0 w-full items-baseline gap-1.5 text-sm leading-relaxed">
-              <span className={cn("min-w-0 flex-1 truncate", headingClass)}>{displayText}</span>
+            <p className="flex min-w-0 w-full items-baseline gap-1.5 text-[13px] leading-relaxed">
+              {isToolEntry ? (
+                <>
+                  <span className={cn("shrink-0 font-medium", headingClass)}>{heading}</span>
+                  {preview && preview !== heading ? (
+                    <span className="min-w-0 flex-1 truncate text-secondary-label">{preview}</span>
+                  ) : null}
+                </>
+              ) : (
+                <span className={cn("min-w-0 flex-1 truncate", headingClass)}>{displayText}</span>
+              )}
             </p>
           </div>
+          {showSuccessIndicator ? (
+            <CheckIcon aria-hidden className="size-3 shrink-0 text-success/80" />
+          ) : null}
           <span
             className={cn(
               "flex size-4 shrink-0 items-center justify-center",

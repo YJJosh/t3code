@@ -55,6 +55,15 @@ export function AgentsPanel({
   const rootRef = useRef<HTMLDivElement>(null);
   const splitLayout = useSplitInspectorLayout(rootRef);
   const agents = useMemo(() => allPanelAgents(model), [model]);
+  const visibleAgentCount = useMemo(
+    () =>
+      model.directAgents.length +
+      model.workflows.reduce(
+        (count, group) => count + Math.max(workflowMembers(group).length, 1),
+        0,
+      ),
+    [model],
+  );
   const preferredAgentId = useMemo(() => preferredInspectorAgent(agents)?.id ?? null, [agents]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [returnFocusAgentId, setReturnFocusAgentId] = useState<string | null>(null);
@@ -110,7 +119,7 @@ export function AgentsPanel({
         <div className="flex items-baseline gap-2">
           <h1 className="text-sm font-semibold text-foreground">Agent inspector</h1>
           <span className="text-[.7rem] text-muted-foreground">
-            {agents.length} agent{agents.length === 1 ? "" : "s"}
+            {visibleAgentCount} agent{visibleAgentCount === 1 ? "" : "s"}
           </span>
         </div>
         <p className="mt-0.5 text-[.7rem] text-muted-foreground">

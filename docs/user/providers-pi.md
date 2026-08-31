@@ -12,7 +12,7 @@ Open **Settings → Providers**, add or select **Pi**, and configure any overrid
 
 Pi model names use `provider/model`, for example `openai-codex/gpt-5.6-sol`. The model picker also exposes profile, reasoning, context-window, and supported service-tier options discovered from the configured Pi installation.
 
-Pi sessions always run with full local access because T3 owns the surrounding runtime approval boundary, so the composer does not show an access-mode selector for Pi. The Pi profile selector remains available alongside reasoning, context-window, and service-tier controls. Extension input and editor prompts that cannot be represented safely in the provider protocol are cancelled rather than answered with fabricated values.
+Pi sessions always run with full local access because T3 owns the surrounding runtime approval boundary, so the composer does not show an access-mode selector for Pi. The Pi profile selector occupies that footer position, while reasoning, context-window, and service-tier controls remain separate. Pi reasoning streams into the work log while a turn is running, and tool calls appear as compact, expandable cards with action-specific icons and output previews. Extension input and editor prompts that cannot be represented safely in the provider protocol are cancelled rather than answered with fabricated values.
 
 ## Background terminals
 
@@ -24,7 +24,7 @@ Terminal state belongs to the active Pi process. T3 requests a replay when a cli
 
 When the optional `pi-subagents` extension is installed, Pi mirrors its child runs and workflows into T3's normal `task.*` activity stream:
 
-- Web and desktop show them in an adaptive **Agents** inspector: a live roster and detail pane at wider panel widths, or a focused list/detail flow in compact layouts.
+- Web and desktop show them in an adaptive **Agents** inspector: a live roster and detail pane at wider panel widths, or a focused list/detail flow in compact layouts. Runs are separated by the prompt that introduced them. Workflows expand into phase sections with nested child agents, and selecting a child opens the normal agent detail view.
 - Mobile shows compact agent-run rows above the composer and opens a detail sheet for each run.
 - Run details include status, role, model and effort, token/tool usage, recent activity, results, and available Pi run handles.
 
