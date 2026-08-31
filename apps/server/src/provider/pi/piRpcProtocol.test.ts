@@ -7,10 +7,12 @@ import {
   buildPiRpcArgs,
   buildPiRpcEnv,
   extractPiAssistantText,
+  parsePiBackgroundTerminalNotification,
   parsePiContextWindow,
   parsePiFastServiceEnabled,
   parsePiTaskBridgeNotification,
   parsePiThinkingLevel,
+  PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX,
   PI_SUBAGENTS_RPC_EVENT_PREFIX,
   resolvePiBinary,
   supportsPiCodexFastService,
@@ -55,10 +57,12 @@ describe("Pi RPC protocol", () => {
     expect(buildPiRpcEnv(decodeSettings({}), { HOME: "/home/test" })).toEqual({
       HOME: "/home/test",
       PI_SUBAGENTS_RPC_BRIDGE: "1",
+      PI_BACKGROUND_TERMINALS_RPC_BRIDGE: "1",
     });
     expect(buildPiRpcEnv(decodeSettings({ agentDir: "/agents" }), { HOME: "/home/test" })).toEqual({
       HOME: "/home/test",
       PI_SUBAGENTS_RPC_BRIDGE: "1",
+      PI_BACKGROUND_TERMINALS_RPC_BRIDGE: "1",
       PI_CODING_AGENT_DIR: "/agents",
     });
   });
@@ -100,6 +104,33 @@ describe("Pi RPC protocol", () => {
         id: "notice-2",
         method: "notify",
         message: `${PI_SUBAGENTS_RPC_EVENT_PREFIX}{not-json}`,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("parses schema-valid background-terminal notifications", () => {
+    const event = {
+      contractVersion: 1 as const,
+      managerId: "manager-1",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      kind: "snapshot" as const,
+      snapshot: { terminals: [], replay: true },
+    };
+    expect(
+      parsePiBackgroundTerminalNotification({
+        type: "extension_ui_request",
+        id: "notice-bg-1",
+        method: "notify",
+        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${JSON.stringify(event)}`,
+      }),
+    ).toEqual(event);
+    expect(
+      parsePiBackgroundTerminalNotification({
+        type: "extension_ui_request",
+        id: "notice-bg-2",
+        method: "notify",
+        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}{not-json}`,
       }),
     ).toBeUndefined();
   });

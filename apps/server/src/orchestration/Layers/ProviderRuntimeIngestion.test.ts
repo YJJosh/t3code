@@ -127,6 +127,8 @@ function createProviderServiceHarness() {
     rollbackConversation: () => unsupported(),
     controlTask: () => unsupported(),
     uploadFeedback: () => unsupported(),
+    controlBackgroundTerminal: () => unsupported(),
+    streamBackgroundTerminalEvents: Stream.empty,
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
     },

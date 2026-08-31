@@ -168,6 +168,7 @@ import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs, type PullRequestTabStatus } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
+import { BackgroundTerminalRuns } from "./background-terminals/BackgroundTerminalRuns";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -7032,6 +7033,11 @@ function ChatViewContent(props: ChatViewProps) {
                   ) : (
                     <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                   )}
+                  <BackgroundTerminalRuns
+                    environmentId={activeThreadRef?.environmentId ?? null}
+                    threadId={activeThreadRef?.threadId ?? null}
+                    enabled={isServerThread && selectedProvider === ProviderDriverKind.make("pi")}
+                  />
                   {threadSyncPhase && !activeEnvironmentUnavailable ? (
                     <ThreadSyncStatusPill phase={threadSyncPhase} />
                   ) : null}
@@ -7269,8 +7275,15 @@ function ChatViewContent(props: ChatViewProps) {
 
       {!shouldUseRightPanelSheet && rightPanelOpen && activeThreadRef ? (
         <RightPanelTabs
+          key={activeRightPanelSurface?.kind === "agents" ? "agents" : "default"}
           mode="inline"
           maximized={rightPanelMaximized}
+          {...(activeRightPanelSurface?.kind === "agents"
+            ? {
+                widthStorageKey: "t3code:agents-panel-width",
+                defaultWidth: 820,
+              }
+            : {})}
           surfaces={rightPanelState.surfaces}
           activeSurfaceId={activeRightPanelSurface?.id ?? null}
           pendingSurfaceIds={pendingFileSurfaceIds}

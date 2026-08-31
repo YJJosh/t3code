@@ -1,5 +1,11 @@
 import * as Schema from "effect/Schema";
-import { type PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { getLocalStorageItem, setLocalStorageItem } from "./useLocalStorage";
 
@@ -24,6 +30,42 @@ export interface ResizableWidthHandlers {
   readonly onPointerMove: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onPointerUp: (event: ReactPointerEvent<HTMLElement>) => void;
   readonly onPointerCancel: (event: ReactPointerEvent<HTMLElement>) => void;
+}
+
+export interface UseViewportClampedMaxWidthOptions {
+  readonly maxWidth: number;
+  readonly maxViewportFraction: number;
+  readonly fallbackViewportWidth?: number;
+}
+
+/** Responsive maximum shared by side panels that size against the viewport. */
+export function useViewportClampedMaxWidth({
+  maxWidth,
+  maxViewportFraction,
+  fallbackViewportWidth = 1280,
+}: UseViewportClampedMaxWidthOptions): number {
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === "undefined" ? fallbackViewportWidth : window.innerWidth,
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let frame = 0;
+    const onResize = () => {
+      if (frame !== 0) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        setViewportWidth(window.innerWidth);
+      });
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (frame !== 0) window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
+  return Math.min(maxWidth, Math.floor(viewportWidth * maxViewportFraction));
 }
 
 /**

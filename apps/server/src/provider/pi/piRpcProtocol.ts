@@ -1,5 +1,9 @@
 /** Pure helpers for Pi 0.84.4's JSONL RPC protocol. */
-import { type PiSettings } from "@t3tools/contracts";
+import {
+  PiBackgroundTerminalEvent,
+  type PiBackgroundTerminalEvent as PiBackgroundTerminalEventType,
+  type PiSettings,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -85,6 +89,12 @@ export const DEFAULT_PI_BINARY = "pi";
 export const DEFAULT_PI_PROFILE = "coder";
 export const PI_SUBAGENTS_RPC_BRIDGE_ENV = "PI_SUBAGENTS_RPC_BRIDGE";
 export const PI_SUBAGENTS_RPC_EVENT_PREFIX = "pi-subagents:event:v1:";
+export const PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV = "PI_BACKGROUND_TERMINALS_RPC_BRIDGE";
+export const PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX = "pi-background-terminals:event:v1:";
+
+const decodePiBackgroundTerminalEventJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(PiBackgroundTerminalEvent),
+);
 
 export const PI_THINKING_LEVELS = [
   "off",
@@ -175,6 +185,7 @@ export function buildPiRpcEnv(
     // adapter translates their lifecycle to canonical task.* events; controls
     // remain a later slice on top of the native Agents panel.
     [PI_SUBAGENTS_RPC_BRIDGE_ENV]: "1",
+    [PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV]: "1",
     ...(agentDir ? { PI_CODING_AGENT_DIR: agentDir } : {}),
   };
 }
@@ -209,6 +220,23 @@ export function parsePiTaskBridgeNotification(
   }
   return Option.getOrUndefined(
     decodePiTaskBridgeEvent(request.message.slice(PI_SUBAGENTS_RPC_EVENT_PREFIX.length)),
+  );
+}
+
+/** Decode a structured Pi background-terminal envelope from an RPC UI notification. */
+export function parsePiBackgroundTerminalNotification(
+  request: PiExtensionUiRequest,
+): PiBackgroundTerminalEventType | undefined {
+  if (
+    request.method !== "notify" ||
+    !request.message.startsWith(PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX)
+  ) {
+    return undefined;
+  }
+  return Option.getOrUndefined(
+    decodePiBackgroundTerminalEventJson(
+      request.message.slice(PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX.length),
+    ),
   );
 }
 

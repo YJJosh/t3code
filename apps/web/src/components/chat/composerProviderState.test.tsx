@@ -10,6 +10,7 @@ import {
   getComposerProviderState,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
+  shouldShowRuntimeModeSelector,
 } from "./composerProviderState";
 
 // Everything in composerProviderState is now data-driven by the model's
@@ -60,6 +61,13 @@ const ULTRATHINK_FRAME_CLASSES = {
   composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.07)_inset]",
   modelPickerIconClassName: "ultrathink-chroma",
 } as const;
+
+describe("shouldShowRuntimeModeSelector", () => {
+  it("hides permission modes for Pi while retaining them for other providers", () => {
+    expect(shouldShowRuntimeModeSelector(ProviderDriverKind.make("pi"))).toBe(false);
+    expect(shouldShowRuntimeModeSelector(ProviderDriverKind.make("codex"))).toBe(true);
+  });
+});
 
 describe("getComposerProviderState", () => {
   it("derives a stable prompt injection state for ordinary prompt edits", () => {

@@ -55,6 +55,10 @@ export function getComposerPromptInjectionState(prompt: string): ComposerPromptI
   return isClaudeUltrathinkPrompt(prompt) ? "ultrathink" : "none";
 }
 
+export function shouldShowRuntimeModeSelector(provider: ProviderDriverKind): boolean {
+  return provider !== "pi";
+}
+
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
   const {
     provider,

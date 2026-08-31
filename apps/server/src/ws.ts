@@ -48,6 +48,7 @@ import {
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
+  PiBackgroundTerminalControlError,
   ProviderTaskControlError,
   ProviderUploadFeedbackError,
   RelayClientInstallFailedError,
@@ -1647,6 +1648,31 @@ const makeWsRpcLayer = (
               ),
             ),
             { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.backgroundTerminalsControl]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.backgroundTerminalsControl,
+            providerService.controlBackgroundTerminal(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PiBackgroundTerminalControlError({
+                    message:
+                      cause instanceof Error
+                        ? cause.message
+                        : "Failed to control Pi background terminal.",
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "background-terminals" },
+          ),
+        [WS_METHODS.subscribeBackgroundTerminalEvents]: (input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeBackgroundTerminalEvents,
+            providerService.streamBackgroundTerminalEvents.pipe(
+              Stream.filter((entry) => entry.threadId === input.threadId),
+              Stream.map((entry) => entry.event),
+            ),
+            { "rpc.aggregate": "background-terminals" },
           ),
         [WS_METHODS.providerUploadFeedback]: (input) =>
           observeRpcEffect(

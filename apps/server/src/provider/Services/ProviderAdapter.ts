@@ -10,6 +10,8 @@
 import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
+  PiBackgroundTerminalControlInput,
+  PiBackgroundTerminalEvent,
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
@@ -45,12 +47,25 @@ export interface ProviderThreadSnapshot {
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
 }
 
+export interface ProviderBackgroundTerminalEvent {
+  readonly threadId: ThreadId;
+  readonly event: PiBackgroundTerminalEvent;
+}
+
+export interface ProviderBackgroundTerminalAdapter<TError> {
+  readonly control: (input: PiBackgroundTerminalControlInput) => Effect.Effect<void, TError>;
+  readonly streamEvents: Stream.Stream<ProviderBackgroundTerminalEvent>;
+}
+
 export interface ProviderAdapterShape<TError> {
   /**
    * Provider kind implemented by this adapter.
    */
   readonly provider: ProviderDriverKind;
   readonly capabilities: ProviderAdapterCapabilities;
+
+  /** Optional Pi extension bridge for live background-terminal inspection. */
+  readonly backgroundTerminals?: ProviderBackgroundTerminalAdapter<TError>;
 
   /**
    * Start a provider-backed session.

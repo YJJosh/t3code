@@ -4,6 +4,12 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
+  PiBackgroundTerminalControlError,
+  PiBackgroundTerminalControlInput,
+  PiBackgroundTerminalEvent,
+  PiBackgroundTerminalSubscribeInput,
+} from "./backgroundTerminals.ts";
+import {
   AuthAccessStreamError,
   AuthAccessStreamEvent,
   EnvironmentAuthorizationError,
@@ -231,6 +237,8 @@ export const WS_METHODS = {
   // Provider methods
   providerControlTask: "provider.controlTask",
   providerUploadFeedback: "provider.uploadFeedback",
+  backgroundTerminalsControl: "backgroundTerminals.control",
+  subscribeBackgroundTerminalEvents: "subscribeBackgroundTerminalEvents",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -708,6 +716,21 @@ export const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFee
   error: Schema.Union([ProviderUploadFeedbackError, EnvironmentAuthorizationError]),
 });
 
+export const WsBackgroundTerminalsControlRpc = Rpc.make(WS_METHODS.backgroundTerminalsControl, {
+  payload: PiBackgroundTerminalControlInput,
+  error: Schema.Union([PiBackgroundTerminalControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsSubscribeBackgroundTerminalEventsRpc = Rpc.make(
+  WS_METHODS.subscribeBackgroundTerminalEvents,
+  {
+    payload: PiBackgroundTerminalSubscribeInput,
+    success: PiBackgroundTerminalEvent,
+    error: EnvironmentAuthorizationError,
+    stream: true,
+  },
+);
+
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   payload: VcsStatusInput,
   success: VcsStatusStreamEvent,
@@ -1081,6 +1104,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsDeleteRpc,
   WsProviderControlTaskRpc,
   WsProviderUploadFeedbackRpc,
+  WsBackgroundTerminalsControlRpc,
+  WsSubscribeBackgroundTerminalEventsRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,

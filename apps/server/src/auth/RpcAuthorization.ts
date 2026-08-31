@@ -88,6 +88,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.attachmentsDelete]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerControlTask]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerUploadFeedback]: AuthOrchestrationOperateScope,
+  [WS_METHODS.backgroundTerminalsControl]: AuthTerminalOperateScope,
+  [WS_METHODS.subscribeBackgroundTerminalEvents]: AuthTerminalOperateScope,
   [WS_METHODS.subscribeVcsStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeResourceTelemetry]: AuthOrchestrationReadScope,
   [WS_METHODS.vcsRefreshStatus]: AuthOrchestrationReadScope,

@@ -12,6 +12,7 @@
  * @module ProviderService
  */
 import type {
+  PiBackgroundTerminalControlInput,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
@@ -32,7 +33,10 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
+import type {
+  ProviderAdapterCapabilities,
+  ProviderBackgroundTerminalEvent,
+} from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -119,6 +123,14 @@ export interface ProviderServiceShape {
   readonly uploadFeedback: (
     input: ProviderUploadFeedbackInput,
   ) => Effect.Effect<ProviderUploadFeedbackResult, ProviderServiceError>;
+
+  /** Route a replay or kill control to a Pi background terminal. */
+  readonly controlBackgroundTerminal: (
+    input: PiBackgroundTerminalControlInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Live Pi background-terminal events, correlated with their T3 thread. */
+  readonly streamBackgroundTerminalEvents: Stream.Stream<ProviderBackgroundTerminalEvent>;
 
   /**
    * Canonical provider runtime event stream.

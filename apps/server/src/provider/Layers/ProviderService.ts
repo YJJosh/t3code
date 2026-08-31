@@ -12,6 +12,7 @@
 import {
   ModelSelection,
   NonNegativeInt,
+  PiBackgroundTerminalControlInput,
   ThreadId,
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
@@ -50,6 +51,7 @@ import {
   withMetrics,
 } from "../../observability/Metrics.ts";
 import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import { makeBackgroundTerminalEventPubSub } from "../backgroundTerminalEvents.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
@@ -233,6 +235,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const revokeMcpCredential =
     options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpThread;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+  const backgroundTerminalEventPubSub = yield* makeBackgroundTerminalEventPubSub();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   /**
    * Attach the `t3-code` MCP server to the session that is about to start.
@@ -397,6 +400,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             event,
           ),
         ).pipe(Effect.forkScoped);
+        if (adapter.backgroundTerminals !== undefined) {
+          yield* Stream.runForEach(adapter.backgroundTerminals.streamEvents, (event) =>
+            PubSub.publish(backgroundTerminalEventPubSub, event),
+          ).pipe(Effect.forkScoped);
+        }
       }
     }
     yield* Ref.set(subscribedAdapters, next);
@@ -1155,6 +1163,37 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const controlBackgroundTerminal: ProviderServiceMethod<"controlBackgroundTerminal"> = Effect.fn(
+    "controlBackgroundTerminal",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.controlBackgroundTerminal",
+      schema: PiBackgroundTerminalControlInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.controlBackgroundTerminal",
+      // A restarted Pi process cannot own the extension-local terminal shown
+      // by a prior process epoch, so never recover a session for this control.
+      allowRecovery: false,
+    });
+    if (!routed.isActive) {
+      return yield* toValidationError(
+        "ProviderService.controlBackgroundTerminal",
+        `Thread '${input.threadId}' does not have an active provider session.`,
+      );
+    }
+    const backgroundTerminals = routed.adapter.backgroundTerminals;
+    if (backgroundTerminals === undefined) {
+      return yield* toValidationError(
+        "ProviderService.controlBackgroundTerminal",
+        `Provider '${routed.adapter.provider}' does not support background terminals.`,
+      );
+    }
+    yield* backgroundTerminals.control(input);
+  });
+
   const uploadFeedback: ProviderServiceMethod<"uploadFeedback"> = Effect.fn("uploadFeedback")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1269,6 +1308,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     rollbackConversation,
     controlTask,
     uploadFeedback,
+    controlBackgroundTerminal,
+    get streamBackgroundTerminalEvents(): ProviderServiceMethod<"streamBackgroundTerminalEvents"> {
+      return Stream.fromPubSub(backgroundTerminalEventPubSub);
+    },
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
     // independently receive all runtime events.

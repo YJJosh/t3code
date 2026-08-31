@@ -118,6 +118,8 @@ const startupDependencies = Layer.mergeAll(
     rollbackConversation: () => Effect.die("unused"),
     controlTask: () => Effect.die("unused"),
     uploadFeedback: () => Effect.die("unused"),
+    controlBackgroundTerminal: () => Effect.die("unused"),
+    streamBackgroundTerminalEvents: Stream.empty,
     streamEvents: Stream.empty,
   }),
 );
