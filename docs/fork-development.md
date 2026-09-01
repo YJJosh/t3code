@@ -38,6 +38,10 @@ scripts/dulli/generate-assets.sh
 
 The desktop build stages Dulli icons for macOS, Windows, Linux, and the bundled web client. Product text is selected in source from packaged Electron metadata and the desktop build brand; do not restore recursive replacement of compiled web output.
 
+## Fork settings
+
+**Settings → General → Fork features** keeps Dulli-owned workspace and branch-naming controls separate from upstream General settings. It contains Workler workspace creation, the `t3code/` generated-branch prefix, and conventional generated-branch prefixes. Provider-specific Pi configuration remains under **Settings → Providers**.
+
 ## Building
 
 Example unsigned Linux artifact:

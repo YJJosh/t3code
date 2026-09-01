@@ -156,7 +156,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "workler-workspaces",
     title: "Create new workspaces with Workler",
     to: "/settings/general",
-    targetId: "new-threads",
   },
   {
     id: "generated-branch-prefix",
