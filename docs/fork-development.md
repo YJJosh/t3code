@@ -40,7 +40,7 @@ The desktop build stages Dulli icons for macOS, Windows, Linux, and the bundled 
 
 ## Fork settings
 
-**Settings → General → Fork features** keeps Dulli-owned workspace and branch-naming controls separate from upstream General settings. It contains Workler workspace creation, the `t3code/` generated-branch prefix, and conventional generated-branch prefixes. Provider-specific Pi configuration remains under **Settings → Providers**.
+**Settings → General → Fork features** keeps Dulli-owned workspace and branch-naming controls separate from upstream General settings. It contains Workler workspace creation, the `t3code/` generated-branch prefix, and conventional generated-branch prefixes. Dulli defaults new threads to Workler-backed workspaces created from origin, omits the `t3code/` namespace, and uses conventional category prefixes. Provider-specific Pi configuration remains under **Settings → Providers**.
 
 ## Building
 

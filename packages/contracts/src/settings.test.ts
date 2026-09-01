@@ -290,10 +290,11 @@ describe("provider enabled defaults", () => {
 describe("ServerSettings worktree defaults", () => {
   it("preserves origin bootstrap and Dulli workspace defaults for legacy configs", () => {
     const settings = decodeServerSettings({});
+    expect(settings.defaultThreadEnvMode).toBe("worktree");
     expect(settings.newWorktreesStartFromOrigin).toBe(true);
     expect(settings.useWorklerForNewWorkspaces).toBe(true);
-    expect(settings.includeT3CodeBranchPrefix).toBe(true);
-    expect(settings.useConventionalBranchPrefixes).toBe(false);
+    expect(settings.includeT3CodeBranchPrefix).toBe(false);
+    expect(settings.useConventionalBranchPrefixes).toBe(true);
   });
 
   it("accepts workspace strategy and branch naming updates", () => {
