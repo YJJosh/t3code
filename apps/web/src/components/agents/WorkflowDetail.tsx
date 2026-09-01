@@ -2,7 +2,10 @@ import type {
   AgentPanelWorkflowGroup,
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import { formatSubagentTokenCount } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  formatSubagentModelLabel,
+  formatSubagentTokenCount,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { ArrowLeft, Check, ChevronDown, ChevronRight, GitBranch } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -150,6 +153,14 @@ export function WorkflowDetail({
     ["completed", "failed", "cancelled", "interrupted"].includes(member.status),
   ).length;
   const tokens = members.reduce((sum, member) => sum + (member.usage?.totalTokens ?? 0), 0);
+  const models = Array.from(
+    new Set(
+      members
+        .map((member) => formatSubagentModelLabel(member.model, member.effort))
+        .filter((model): model is string => model !== null),
+    ),
+  );
+  const modelSummary = models.join(", ");
   const status: RuntimeSubagent["status"] =
     failed > 0 || group.workflow.status === "failed"
       ? "failed"
@@ -189,8 +200,11 @@ export function WorkflowDetail({
                 {visuals.label}
               </span>
             </div>
-            <p className="mt-1 font-mono text-[.7rem] text-muted-foreground">
-              {settled}/{members.length} settled · Σ {formatSubagentTokenCount(tokens)} tok
+            <p className="mt-1 flex min-w-0 items-center gap-1 font-mono text-[.7rem] text-muted-foreground">
+              <span className="shrink-0">
+                {settled}/{members.length} settled · Σ {formatSubagentTokenCount(tokens)} tok
+              </span>
+              {modelSummary ? <span className="truncate">· {modelSummary}</span> : null}
             </p>
           </div>
         </header>

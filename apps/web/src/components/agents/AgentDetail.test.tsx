@@ -97,6 +97,42 @@ describe("AgentDetail", () => {
     expect(html).toContain('data-markdown-streaming="true"');
   });
 
+  it("does not repeat Pi's wrapped originating prompt", () => {
+    const prompt =
+      "Monitor the file every twenty seconds using only read-only operations and report whether it changed.";
+    const html = renderToStaticMarkup(
+      <AgentDetail
+        agent={makeAgent({
+          prompt,
+          transcript: {
+            items: [
+              {
+                sourceId: "manager:1",
+                kind: "user",
+                text: `Task:\n\n${prompt}\n\nRemember: finish with exactly one JSON result object.`,
+              },
+              {
+                sourceId: "manager:2",
+                kind: "user",
+                text: `Follow-up quoting the task: ${prompt}`,
+              },
+            ],
+            droppedItems: 0,
+            liveAssistant: null,
+            liveTools: [],
+          },
+        })}
+        environmentId={null}
+        threadId={null}
+        controlsEnabled={false}
+      />,
+    );
+
+    expect(html.split(prompt)).toHaveLength(3);
+    expect(html).toContain("Follow-up quoting the task:");
+    expect(html).not.toContain("Remember: finish with exactly one JSON result object.");
+  });
+
   it("shows steer and stop controls for a live agent", () => {
     const html = renderToStaticMarkup(
       <AgentDetail
@@ -235,6 +271,7 @@ describe("WorkflowDetail", () => {
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain("Audit");
     expect(html).toContain("Phase reviewer");
+    expect(html).toContain("openai-codex/gpt-5.6-sol · high");
     expect(html).toContain('aria-label="release-review workflow map"');
   });
 });

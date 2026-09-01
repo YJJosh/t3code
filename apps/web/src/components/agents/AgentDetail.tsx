@@ -143,6 +143,36 @@ function ToolResultCard({
   );
 }
 
+function normalizedPromptText(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
+function transcriptUserRepeatsPrompt(item: SubagentTranscriptItem, prompt: string): boolean {
+  if (item.kind !== "user") return false;
+  const transcriptText = normalizedPromptText(item.text);
+  const promptText = normalizedPromptText(prompt);
+  if (transcriptText === promptText || transcriptText.includes(promptText)) return true;
+
+  // Older retained task rows may contain an ellipsized prompt while Pi's
+  // child transcript preserves the complete Task:/Remember: wrapper.
+  const promptWithoutEllipsis = promptText.replace(/(?:…|\.{3})$/u, "").trim();
+  return promptWithoutEllipsis.length >= 64 && transcriptText.includes(promptWithoutEllipsis);
+}
+
+function transcriptWithoutRepeatedPrompt(
+  items: ReadonlyArray<SubagentTranscriptItem>,
+  prompt: string,
+): ReadonlyArray<SubagentTranscriptItem> {
+  let removedOrigin = false;
+  return items.filter((item) => {
+    if (!removedOrigin && transcriptUserRepeatsPrompt(item, prompt)) {
+      removedOrigin = true;
+      return false;
+    }
+    return true;
+  });
+}
+
 function AssistantPart({ part }: { part: SubagentTranscriptPart }) {
   if (part.type === "thinking") {
     return <ReasoningBlock text={part.redacted ? "[redacted reasoning]" : part.text} />;
@@ -319,11 +349,9 @@ export function AgentDetail({
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const model = formatSubagentModelLabel(agent.model, agent.effort) ?? "Provider default";
-  const promptAlreadyShown = agent.prompt
-    ? agent.transcript.items.some(
-        (item) => item.kind === "user" && item.text.trim() === agent.prompt?.trim(),
-      )
-    : false;
+  const transcriptItems = agent.prompt
+    ? transcriptWithoutRepeatedPrompt(agent.transcript.items, agent.prompt)
+    : agent.transcript.items;
   const resultAlreadyShown = agent.result
     ? agent.transcript.items.some(
         (item) =>
@@ -416,12 +444,12 @@ export function AgentDetail({
               {agent.transcript.droppedItems} earlier transcript items omitted
             </p>
           ) : null}
-          {!promptAlreadyShown && agent.prompt ? (
+          {agent.prompt ? (
             <TranscriptItem
               item={{ sourceId: "originating-prompt", kind: "user", text: agent.prompt }}
             />
           ) : null}
-          {agent.transcript.items.map((item) => (
+          {transcriptItems.map((item) => (
             <TranscriptItem key={item.sourceId} item={item} />
           ))}
           {agent.transcript.liveAssistant?.thinking ? (
