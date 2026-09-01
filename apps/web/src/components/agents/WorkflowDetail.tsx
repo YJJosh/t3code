@@ -45,6 +45,7 @@ function WorkflowAgentNode({
 }) {
   const visuals = AGENT_STATUS_VISUALS[agent.status];
   const activity = agentActivityText(agent);
+  const model = formatSubagentModelLabel(agent.model, agent.effort);
   return (
     <button
       type="button"
@@ -61,8 +62,12 @@ function WorkflowAgentNode({
       <span className="font-mono text-[.7rem] text-muted-foreground">
         <AgentElapsed agent={agent} />
       </span>
-      <span className="col-start-2 col-end-4 row-start-2 truncate text-xs text-muted-foreground">
-        {activity ?? visuals.label}
+      <span className="col-start-2 col-end-4 row-start-2 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+        {model ? (
+          <span className="max-w-[55%] shrink-0 truncate font-mono text-[.68rem]">{model}</span>
+        ) : null}
+        {model && activity ? <span aria-hidden>·</span> : null}
+        <span className="min-w-0 truncate">{activity ?? (model ? null : visuals.label)}</span>
       </span>
     </button>
   );
@@ -153,14 +158,6 @@ export function WorkflowDetail({
     ["completed", "failed", "cancelled", "interrupted"].includes(member.status),
   ).length;
   const tokens = members.reduce((sum, member) => sum + (member.usage?.totalTokens ?? 0), 0);
-  const models = Array.from(
-    new Set(
-      members
-        .map((member) => formatSubagentModelLabel(member.model, member.effort))
-        .filter((model): model is string => model !== null),
-    ),
-  );
-  const modelSummary = models.join(", ");
   const status: RuntimeSubagent["status"] =
     failed > 0 || group.workflow.status === "failed"
       ? "failed"
@@ -200,11 +197,8 @@ export function WorkflowDetail({
                 {visuals.label}
               </span>
             </div>
-            <p className="mt-1 flex min-w-0 items-center gap-1 font-mono text-[.7rem] text-muted-foreground">
-              <span className="shrink-0">
-                {settled}/{members.length} settled · Σ {formatSubagentTokenCount(tokens)} tok
-              </span>
-              {modelSummary ? <span className="truncate">· {modelSummary}</span> : null}
+            <p className="mt-1 font-mono text-[.7rem] text-muted-foreground">
+              {settled}/{members.length} settled · Σ {formatSubagentTokenCount(tokens)} tok
             </p>
           </div>
         </header>

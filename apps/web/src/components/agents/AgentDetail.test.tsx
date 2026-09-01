@@ -242,6 +242,17 @@ describe("WorkflowDetail", () => {
       phaseTitle: "Audit",
       workflowName: "release-review",
     });
+    const secondMember = makeAgent({
+      id: "agent-phase-2",
+      title: "Independent reviewer",
+      kind: "workflow_agent",
+      parentAgentId: "workflow-1",
+      phaseIndex: 0,
+      phaseTitle: "Audit",
+      workflowName: "release-review",
+      model: "opencode-go/kimi-k3",
+      effort: "medium",
+    });
     const group: AgentPanelWorkflowGroup = {
       workflow: makeAgent({
         id: "workflow-1",
@@ -253,9 +264,9 @@ describe("WorkflowDetail", () => {
         {
           index: 0,
           title: "Audit",
-          members: [member],
+          members: [member, secondMember],
           state: "running",
-          activeCount: 1,
+          activeCount: 2,
           settledCount: 0,
         },
       ],
@@ -271,7 +282,9 @@ describe("WorkflowDetail", () => {
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain("Audit");
     expect(html).toContain("Phase reviewer");
+    expect(html).toContain("Independent reviewer");
     expect(html).toContain("openai-codex/gpt-5.6-sol · high");
+    expect(html).toContain("opencode-go/kimi-k3 · medium");
     expect(html).toContain('aria-label="release-review workflow map"');
   });
 });
