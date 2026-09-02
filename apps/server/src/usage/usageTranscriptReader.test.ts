@@ -21,7 +21,7 @@ describe("listTranscriptFiles", () => {
   it("returns an empty listing for a missing root", async () => {
     const listing = await listTranscriptFiles(NodePath.join(root, "does-not-exist"), 0);
 
-    expect(listing.files).toEqual([]);
+    expect(listing).toEqual({ files: [], unreadableDirectories: 1 });
   });
 
   it("limits Pi subagent discovery to run session transcripts", async () => {
@@ -43,6 +43,7 @@ describe("listTranscriptFiles", () => {
     });
 
     expect(listing.files.map((file) => file.path)).toEqual([session]);
+    expect(listing.unreadableDirectories).toBe(0);
   });
 
   it("can inspect only direct Pi v0.30 legacy session files", async () => {
@@ -58,6 +59,7 @@ describe("listTranscriptFiles", () => {
     const listing = await listTranscriptFiles(agent, 0, { maxDepth: 0 });
 
     expect(listing.files.map((file) => file.path)).toEqual([directSession]);
+    expect(listing.unreadableDirectories).toBe(0);
   });
 });
 

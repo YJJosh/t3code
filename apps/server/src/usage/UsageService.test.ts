@@ -11,11 +11,13 @@ import {
   resolvePiAgentDir,
   resolvePiSubagentTranscriptDirs,
   resolvePiTranscriptDir,
+  resolveUsageSourceReadCoverage,
+  resolveUsageTranscriptDirs,
 } from "./UsageService.ts";
 
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 
-it.layer(NodeServices.layer)("Pi transcript roots", (it) => {
+it.layer(NodeServices.layer)("Usage transcript roots", (it) => {
   it.effect("matches Pi's standard and legacy app-name environment precedence", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
@@ -126,6 +128,86 @@ it.layer(NodeServices.layer)("Pi transcript roots", (it) => {
       ]);
     }),
   );
+
+  it.effect("resolves and de-duplicates every configured provider transcript home", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-usage-homes-" });
+      const claudePersonal = path.join(root, "claude-personal");
+      const claudeWork = path.join(root, "claude-work");
+      const codexPersonal = path.join(root, "codex-personal");
+      const codexWork = path.join(root, "codex-work");
+      const grokPersonal = path.join(root, "grok-personal");
+      const grokWork = path.join(root, "grok-work");
+      const claudePersonalProjects = path.join(claudePersonal, ".claude", "projects");
+      yield* fileSystem.makeDirectory(claudePersonalProjects, { recursive: true });
+
+      const settings = decodeServerSettings({
+        providerInstances: {
+          claudeAgent: { driver: "claudeAgent", config: { homePath: claudePersonal } },
+          claude_work: {
+            driver: "claudeAgent",
+            config: {},
+            environment: [{ name: "CLAUDE_CONFIG_DIR", value: claudeWork }],
+          },
+          claude_duplicate: { driver: "claudeAgent", config: { homePath: claudePersonal } },
+          codex: { driver: "codex", config: { homePath: codexPersonal } },
+          codex_work: {
+            driver: "codex",
+            config: {},
+            environment: [{ name: "CODEX_HOME", value: codexWork }],
+          },
+          grok: {
+            driver: "grok",
+            config: {},
+            environment: [{ name: "GROK_HOME", value: grokPersonal }],
+          },
+          grok_work: {
+            driver: "grok",
+            config: {},
+            environment: [{ name: "GROK_HOME", value: grokWork }],
+          },
+          pi: { driver: "pi", config: { agentDir: path.join(root, "pi") } },
+        },
+      });
+
+      const directories = yield* resolveUsageTranscriptDirs(settings, { HOME: root });
+      const nonPiDirectories = directories.filter(({ provider }) => provider !== "pi");
+
+      expect(nonPiDirectories).toHaveLength(6);
+      expect(nonPiDirectories).toEqual(
+        expect.arrayContaining([
+          { provider: "claude", dir: claudePersonalProjects },
+          { provider: "claude", dir: path.join(claudeWork, "projects") },
+          { provider: "codex", dir: path.join(codexPersonal, "sessions") },
+          { provider: "codex", dir: path.join(codexWork, "sessions") },
+          {
+            provider: "grok",
+            dir: path.join(grokPersonal, "sessions"),
+            scanOptions: { fileName: "updates.jsonl" },
+          },
+          {
+            provider: "grok",
+            dir: path.join(grokWork, "sessions"),
+            scanOptions: { fileName: "updates.jsonl" },
+          },
+        ]),
+      );
+    }),
+  );
+
+  it("reports partial read coverage without hiding complete scans", () => {
+    expect(
+      resolveUsageSourceReadCoverage({ unreadableFiles: 1, unreadableDirectories: 2 }),
+    ).toEqual({
+      status: "partial",
+      message: "2 transcript directories could not be read; 1 transcript file could not be read.",
+    });
+    expect(
+      resolveUsageSourceReadCoverage({ unreadableFiles: 0, unreadableDirectories: 0 }),
+    ).toEqual({ status: "ok", message: null });
+  });
 
   it.effect("coalesces overlapping standard and legacy Pi roots", () =>
     Effect.gen(function* () {

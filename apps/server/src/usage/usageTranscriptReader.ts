@@ -36,6 +36,8 @@ export interface TranscriptFile {
 
 export interface TranscriptFileListing {
   readonly files: readonly TranscriptFile[];
+  /** Directories that existed but could not be enumerated during this walk. */
+  readonly unreadableDirectories: number;
 }
 
 export interface TranscriptFileOptions {
@@ -59,9 +61,9 @@ export interface TranscriptReadResult {
 /**
  * Lists `.jsonl` transcripts under `root` last modified at or after `sinceMs`.
  *
- * Errors on individual entries are swallowed: session files rotate and get
- * removed while the walk is in flight, and a partial listing is far better than
- * failing the page.
+ * Vanished individual entries are skipped because sessions can rotate during
+ * the walk. Unreadable directories are counted so callers can report partial
+ * coverage and avoid pruning cache entries from an incomplete listing.
  *
  * `fileName` restricts the walk to a single basename (Grok's `updates.jsonl`).
  * Grok sessions also ship multi-megabyte `chat_history` and `events` logs that
@@ -78,6 +80,7 @@ export async function listTranscriptFiles(
   options?: TranscriptFileOptions,
 ): Promise<TranscriptFileListing> {
   const found: TranscriptFile[] = [];
+  let unreadableDirectories = 0;
   const fileName = options?.fileName;
 
   const walk = async (dir: string, depth: number): Promise<void> => {
@@ -85,6 +88,7 @@ export async function listTranscriptFiles(
     try {
       entries = await NodeFSP.readdir(dir, { withFileTypes: true });
     } catch {
+      unreadableDirectories += 1;
       return;
     }
     for (const entry of entries) {
@@ -117,7 +121,7 @@ export async function listTranscriptFiles(
   };
 
   await walk(root, 0);
-  return { files: found };
+  return { files: found, unreadableDirectories };
 }
 
 /**

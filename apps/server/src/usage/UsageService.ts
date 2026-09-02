@@ -14,6 +14,9 @@
 import * as NodeOS from "node:os";
 
 import {
+  ClaudeSettings,
+  CodexSettings,
+  GrokSettings,
   PiSettings,
   ProviderDriverKind,
   type ProviderInstanceConfig,
@@ -39,10 +42,10 @@ import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import { ServerConfig } from "../config.ts";
-import { expandHomePath } from "../pathExpansion.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
+import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
@@ -95,6 +98,9 @@ const PI_SUBAGENT_SESSION_SCAN_OPTIONS: TranscriptFileOptions = {
 };
 const MAX_PI_PROJECT_ANCESTOR_DEPTH = 32;
 const MAX_USAGE_SOURCE_ANCESTORS = 8;
+const decodeClaudeSettingsOption = Schema.decodeUnknownOption(ClaudeSettings);
+const decodeCodexSettingsOption = Schema.decodeUnknownOption(CodexSettings);
+const decodeGrokSettingsOption = Schema.decodeUnknownOption(GrokSettings);
 const decodePiSettingsOption = Schema.decodeUnknownOption(PiSettings);
 
 interface TranscriptDirectory {
@@ -258,6 +264,120 @@ export function resolveConfiguredPiTranscriptDirs(
   return [...directories.values()];
 }
 
+/**
+ * Claude's config dir is the home itself when overridden, but a default
+ * install nests transcripts under `~/.claude/projects`. Probe both.
+ */
+const resolveClaudeTranscriptDirectory = Effect.fn("UsageService.resolveClaudeTranscriptDirectory")(
+  function* (homePath: string) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const nested = path.join(homePath, ".claude", "projects");
+    const nestedExists = yield* fileSystem
+      .exists(nested)
+      .pipe(Effect.catchCause(() => Effect.succeed(false)));
+    return nestedExists ? nested : path.join(homePath, "projects");
+  },
+);
+
+/** Resolves and de-duplicates transcript roots from every configured instance. */
+export const resolveUsageTranscriptDirs = Effect.fn("UsageService.resolveUsageTranscriptDirs")(
+  function* (settings: ServerSettingsContract, hostEnvironment: NodeJS.ProcessEnv = process.env) {
+    const path = yield* Path.Path;
+    const directories = new Map<string, TranscriptDirectory>();
+    const append = (directory: TranscriptDirectory) => {
+      const options = directory.scanOptions;
+      const key = [
+        directory.provider,
+        directory.dir,
+        options?.fileName ?? "",
+        options?.maxDepth ?? "",
+        options?.piSubagentSessionsOnly === true ? "subagents" : "",
+      ].join("\0");
+      if (!directories.has(key)) directories.set(key, directory);
+    };
+
+    for (const instance of Object.values(deriveProviderInstanceConfigMap(settings))) {
+      const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
+      const homePath =
+        environment.HOME?.trim() || environment.USERPROFILE?.trim() || NodeOS.homedir();
+
+      if (instance.driver === "claudeAgent") {
+        const decoded = decodeClaudeSettingsOption(instance.config ?? {});
+        if (Option.isNone(decoded)) continue;
+        const configuredHome = decoded.value.homePath.trim();
+        const inheritedHome = environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
+        const claudeHome =
+          configuredHome.length > 0
+            ? yield* resolveClaudeHomePath(decoded.value)
+            : inheritedHome.length > 0
+              ? resolvePiPath(inheritedHome, homePath, path)
+              : path.resolve(homePath);
+        append({ provider: "claude", dir: yield* resolveClaudeTranscriptDirectory(claudeHome) });
+        continue;
+      }
+
+      if (instance.driver === "codex") {
+        const decoded = decodeCodexSettingsOption(instance.config ?? {});
+        if (Option.isNone(decoded)) continue;
+        const configuredHome = decoded.value.homePath.trim();
+        const inheritedHome = environment.CODEX_HOME?.trim() ?? "";
+        const codexHome =
+          configuredHome.length > 0
+            ? decoded.value.homePath
+            : inheritedHome.length > 0
+              ? resolvePiPath(inheritedHome, homePath, path)
+              : path.join(homePath, ".codex");
+        const layout = yield* resolveCodexHomeLayout({ ...decoded.value, homePath: codexHome });
+        append({ provider: "codex", dir: path.join(layout.sharedHomePath, "sessions") });
+        continue;
+      }
+
+      if (instance.driver === "grok") {
+        const decoded = decodeGrokSettingsOption(instance.config ?? {});
+        if (Option.isNone(decoded)) continue;
+        const inheritedHome = environment.GROK_HOME?.trim() ?? "";
+        const grokHome =
+          inheritedHome.length > 0
+            ? resolvePiPath(inheritedHome, homePath, path)
+            : path.join(homePath, ".grok");
+        append({
+          provider: "grok",
+          dir: path.join(grokHome, "sessions"),
+          scanOptions: { fileName: "updates.jsonl" },
+        });
+      }
+    }
+
+    for (const directory of resolveConfiguredPiTranscriptDirs(settings, hostEnvironment, path)) {
+      append(directory);
+    }
+
+    return [...directories.values()];
+  },
+);
+
+export function resolveUsageSourceReadCoverage(input: {
+  readonly unreadableFiles: number;
+  readonly unreadableDirectories: number;
+}): Pick<UsageSource, "status" | "message"> {
+  const failures = [
+    ...(input.unreadableDirectories > 0
+      ? [
+          `${String(input.unreadableDirectories)} transcript ${input.unreadableDirectories === 1 ? "directory" : "directories"} could not be read`,
+        ]
+      : []),
+    ...(input.unreadableFiles > 0
+      ? [
+          `${String(input.unreadableFiles)} transcript ${input.unreadableFiles === 1 ? "file" : "files"} could not be read`,
+        ]
+      : []),
+  ];
+  return failures.length > 0
+    ? { status: "partial", message: `${failures.join("; ")}.` }
+    : { status: "ok", message: null };
+}
+
 /** Finds bounded, de-duplicated Pi subagent roots reachable from project paths. */
 export const resolvePiSubagentTranscriptDirs = Effect.fn(
   "UsageService.resolvePiSubagentTranscriptDirs",
@@ -406,19 +526,6 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  /**
-   * Claude's config dir is the home itself when overridden, but a default
-   * install nests transcripts under `~/.claude/projects`. Probe both.
-   */
-  const resolveClaudeTranscriptDir = (homePath: string) =>
-    Effect.gen(function* () {
-      const nested = path.join(homePath, ".claude", "projects");
-      const nestedExists = yield* fileSystem
-        .exists(nested)
-        .pipe(Effect.catchCause(() => Effect.succeed(false)));
-      return nestedExists ? nested : path.join(homePath, "projects");
-    });
-
   /** Resolves the transcript directory for each provider. */
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* () {
     // A settings failure must surface as an error: swallowing it here would
@@ -437,29 +544,10 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-    const claudeHome = yield* resolveClaudeHomePath(settings.providers.claudeAgent);
-    const claudeDir = yield* resolveClaudeTranscriptDir(claudeHome);
-    const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
-    // Grok Settings only expose the binary path; home is `$GROK_HOME` or `~/.grok`.
-    // Empty/whitespace GROK_HOME must fall back: coalescing alone would scan cwd.
-    const grokHomeEnv = hostEnvironment["GROK_HOME"]?.trim() ?? "";
-    const grokHome =
-      grokHomeEnv.length > 0
-        ? path.resolve(expandHomePath(grokHomeEnv))
-        : path.join(NodeOS.homedir(), ".grok");
-
-    const piDirs = resolveConfiguredPiTranscriptDirs(settings, hostEnvironment, path);
-
-    return [
-      { provider: "claude" as const, dir: claudeDir },
-      { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
-      {
-        provider: "grok" as const,
-        dir: path.join(grokHome, "sessions"),
-        scanOptions: { fileName: "updates.jsonl" },
-      },
-      ...piDirs,
-    ] satisfies readonly TranscriptDirectory[];
+    return yield* resolveUsageTranscriptDirs(settings, hostEnvironment).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
   });
 
   /**
@@ -503,6 +591,7 @@ export const make = Effect.gen(function* () {
   ): Effect.Effect<{
     readonly records: readonly UsageRecord[];
     readonly projectPaths: readonly string[];
+    readonly readFailed: boolean;
   }> =>
     Effect.gen(function* () {
       const cached = fileCache.get(filePath);
@@ -515,13 +604,13 @@ export const make = Effect.gen(function* () {
         cached.mtimeMs === mtimeMs &&
         cached.provider === provider
       ) {
-        return { records: cached.records, projectPaths: cached.projectPaths };
+        return { records: cached.records, projectPaths: cached.projectPaths, readFailed: false };
       }
 
       const parsed = yield* Effect.promise(() => readTranscriptRecords(filePath, provider));
       // A read failure is not an empty transcript: caching it under this
       // (size, mtime) would silently drop the file's usage until it changes.
-      if (parsed === null) return { records: [], projectPaths: [] };
+      if (parsed === null) return { records: [], projectPaths: [], readFailed: true };
       // Stored already de-duplicated within the file, which is 99% of all
       // duplicates. The aggregator still runs the cross-file dedupe pass.
       const records = dedupeWithinFile(parsed.records);
@@ -534,7 +623,7 @@ export const make = Effect.gen(function* () {
         projectPaths: parsed.projectPaths,
       });
       cacheDirty = true;
-      return { records, projectPaths: parsed.projectPaths };
+      return { records, projectPaths: parsed.projectPaths, readFailed: false };
     });
 
   const readSummary = Effect.fn("UsageService.readSummary")(function* (input: UsageSummaryInput) {
@@ -651,11 +740,15 @@ export const make = Effect.gen(function* () {
       const listing = yield* Effect.promise(() =>
         listTranscriptFiles(dir, windowStartMs, scanOptions),
       );
-      // The v0.30 compatibility root intentionally lists direct files only,
-      // so it cannot establish that cached descendants disappeared.
-      if (transcriptDir.completeForCachePruning !== false) walkedRoots.push(dir);
+      // Only a complete walk proves an absent cached file was deleted. The
+      // v0.30 compatibility root intentionally lists direct files only, so it
+      // cannot establish that cached descendants disappeared either.
+      if (listing.unreadableDirectories === 0 && transcriptDir.completeForCachePruning !== false) {
+        walkedRoots.push(dir);
+      }
       let scannedFiles = 0;
       let skippedFiles = 0;
+      let unreadableFiles = 0;
       // Distinct per directory. Buckets carry per-cell session counts, but a
       // session spans days and models, so clients total this figure instead.
       const sessionIds = new Set<string>();
@@ -668,6 +761,7 @@ export const make = Effect.gen(function* () {
         processedFiles.add(processedFileKey);
         const read = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
         for (const projectPath of read.projectPaths) projectPaths.add(projectPath);
+        if (read.readFailed) unreadableFiles += 1;
         if (read.records.length === 0) {
           skippedFiles += 1;
           continue;
@@ -685,12 +779,14 @@ export const make = Effect.gen(function* () {
       sources.push({
         fingerprint,
         ...(scan === undefined ? {} : { scan }),
-        status: "ok",
+        ...resolveUsageSourceReadCoverage({
+          unreadableFiles,
+          unreadableDirectories: listing.unreadableDirectories,
+        }),
         scannedFiles,
         skippedFiles,
         malformedRecords: 0,
         distinctSessions: sessionIds.size,
-        message: null,
       });
 
       if (provider === "pi" && projectPaths.size > 0) {
