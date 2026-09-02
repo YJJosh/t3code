@@ -45,6 +45,7 @@ function summary(
       readonly maxDepth: number;
       readonly filePattern: "jsonl" | "pi-subagent-session";
     };
+    status?: "ok" | "partial" | "failed";
     distinctSessions?: number;
   }[],
   contractVersion: number = USAGE_CONTRACT_VERSION,
@@ -67,12 +68,12 @@ function summary(
           : { ancestorVolumeIds: [...source.ancestorVolumeIds] }),
       },
       ...(source.scan === undefined ? {} : { scan: source.scan }),
-      status: "ok" as const,
+      status: source.status ?? ("ok" as const),
       scannedFiles: 1,
       skippedFiles: 0,
       malformedRecords: 0,
       distinctSessions: source.distinctSessions ?? 1,
-      message: null,
+      message: source.status === "partial" ? "Transcript scan was incomplete." : null,
     })),
     pricing: { status: "fresh", source: "litellm", fetchedAt: null, knownModels: 10 },
     scanDurationMs: 1,
@@ -120,6 +121,39 @@ describe("mergeUsage", () => {
     expect(merged.sessions).toBe(1);
     expect(merged.duplicateSources).toHaveLength(1);
     expect(merged.contributingEnvironments).toEqual(["env-a"]);
+  });
+
+  it("prefers a complete source over an earlier partial copy of the same root", () => {
+    const shared = {
+      provider: "pi" as const,
+      hostId: "mac",
+      homePath: "/home/theo/.pi/agent/sessions",
+    };
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
+            [{ ...shared, status: "partial" }],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
+            [shared],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(10);
+    expect(merged.records).toBe(5);
+    expect(merged.sessions).toBe(1);
+    expect(merged.duplicateSources).toEqual(["env-a: /home/theo/.pi/agent/sessions"]);
+    expect(merged.contributingEnvironments).toEqual(["env-b"]);
   });
 
   it("drops only the shared root when one environment has another root for the same provider", () => {

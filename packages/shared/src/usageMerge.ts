@@ -195,6 +195,8 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
     }
   }
   candidates.sort((a, b) => {
+    const coverageOrder = Number(a.source.status !== "ok") - Number(b.source.status !== "ok");
+    if (coverageOrder !== 0) return coverageOrder;
     const pathOrder =
       pathDepth(a.source.fingerprint.resolvedHomePath) -
       pathDepth(b.source.fingerprint.resolvedHomePath);
