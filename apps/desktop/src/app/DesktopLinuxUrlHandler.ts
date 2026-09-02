@@ -97,7 +97,7 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-  const scheme = ElectronProtocol.getDesktopScheme(environment.isDevelopment);
+  const scheme = ElectronProtocol.getDesktopScheme(environment.isDevelopment, environment.isDulli);
   const desktopEntryPath = environment.path.join(
     environment.linuxApplicationsDir,
     URL_HANDLER_DESKTOP_ENTRY_NAME,

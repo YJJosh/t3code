@@ -4,7 +4,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProviderDriverKind } from "./providerInstance.ts";
 
-/** Model-selection option used to choose the Pi profile for a thread. */
+/** Model-selection option used to choose the Pi profile for a new thread. */
 export const PI_PROFILE_OPTION_ID = "profile";
 
 export const ProviderOptionDescriptorType = Schema.Literals(["select", "boolean"]);

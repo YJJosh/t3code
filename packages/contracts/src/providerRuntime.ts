@@ -14,6 +14,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import { ProviderApprovalOption } from "./orchestration.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -26,8 +27,7 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("claude.sdk.permission"),
   Schema.Literal("codex.sdk.thread-event"),
   Schema.Literal("opencode.sdk.event"),
-  Schema.Literal("pi.rpc.event"),
-  Schema.Literal("pi.rpc.response"),
+  Schema.Literal("pi.rpc"),
   Schema.Literal("acp.jsonrpc"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
 ]);
@@ -140,6 +140,7 @@ export const CanonicalRequestType = Schema.Literals([
   "file_change_approval",
   "apply_patch_approval",
   "exec_command_approval",
+  "mcp_elicitation_approval",
   "tool_user_input",
   "dynamic_tool_call",
   "auth_tokens_refresh",
@@ -324,6 +325,7 @@ export const ThreadTokenUsageSnapshot = Schema.Struct({
   toolUses: Schema.optional(NonNegativeInt),
   durationMs: Schema.optional(NonNegativeInt),
   compactsAutomatically: Schema.optional(Schema.Boolean),
+  autoCompactThreshold: Schema.optional(PositiveInt),
 });
 export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 
@@ -432,6 +434,8 @@ export type ContentDeltaPayload = typeof ContentDeltaPayload.Type;
 const RequestOpenedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
+  appName: Schema.optional(TrimmedNonEmptyStringSchema),
+  options: Schema.optional(Schema.Array(ProviderApprovalOption)),
   args: Schema.optional(Schema.Unknown),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
@@ -607,6 +611,24 @@ export const RuntimeTaskStatus = Schema.Literals([
 ]);
 export type RuntimeTaskStatus = typeof RuntimeTaskStatus.Type;
 
+/**
+ * Sanitized child-runtime activity mirrored by providers that expose a
+ * subagent transcript. Durable events retain their manager sequence while
+ * live-only updates replace the matching live projection row.
+ */
+export const RuntimeSubagentTranscriptEvent = Schema.Struct({
+  managerId: TrimmedNonEmptyStringSchema,
+  sequence: NonNegativeInt,
+  timestamp: Schema.String,
+  kind: TrimmedNonEmptyStringSchema,
+  activity: Schema.Struct({
+    type: TrimmedNonEmptyStringSchema,
+    data: Schema.Record(Schema.String, Schema.Unknown),
+    liveOnly: Schema.optional(Schema.Boolean),
+  }),
+});
+export type RuntimeSubagentTranscriptEvent = typeof RuntimeSubagentTranscriptEvent.Type;
+
 const TaskProgressPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: TrimmedNonEmptyStringSchema,
@@ -617,6 +639,7 @@ const TaskProgressPayload = Schema.Struct({
   /** Present on synthesized member/child progress rows that carry state. */
   status: Schema.optional(RuntimeTaskStatus),
   error: Schema.optional(TrimmedNonEmptyStringSchema),
+  transcriptEvent: Schema.optional(RuntimeSubagentTranscriptEvent),
   ...taskAgentLinkageFields,
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;

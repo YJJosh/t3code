@@ -21,6 +21,7 @@ function activity(
   kind: string,
   payload: Record<string, unknown>,
   at = `2026-08-01T10:00:${String(sequence).padStart(2, "0")}.000Z`,
+  turnId: string | null = null,
 ): OrchestrationThreadActivity {
   sequence += 1;
   const stamped =
@@ -39,7 +40,7 @@ function activity(
     kind,
     summary: kind,
     payload: stamped,
-    turnId: null,
+    turnId,
     createdAt: at,
   } as unknown as OrchestrationThreadActivity;
 }
@@ -108,6 +109,158 @@ describe("foldSubagentActivities", () => {
     expect(agents).toHaveLength(1);
     expect(agents[0]!.title).toBe("Recovered agent");
     expect(agents[0]!.status).toBe("running");
+  });
+
+  it("folds persisted child messages, reasoning, tools, and the originating prompt", () => {
+    const agents = fold([
+      activity("task.started", {
+        taskId: "task-transcript",
+        title: "Transcript agent",
+        detail: "Inspect the provider boundary in detail",
+      }),
+      activity("task.progress", {
+        taskId: "task-transcript",
+        transcriptEvent: {
+          managerId: "manager-1",
+          sequence: 1,
+          timestamp: "2026-08-01T10:00:01.000Z",
+          kind: "child_message",
+          activity: {
+            type: "message_end",
+            data: { message: { role: "user", content: "Start with the adapter" } },
+          },
+        },
+      }),
+      activity("task.progress", {
+        taskId: "task-transcript",
+        transcriptEvent: {
+          managerId: "manager-1",
+          sequence: 2,
+          timestamp: "2026-08-01T10:00:02.000Z",
+          kind: "child_message",
+          activity: {
+            type: "message_end",
+            data: {
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "thinking", thinking: "I should inspect the event projection." },
+                  {
+                    type: "toolCall",
+                    id: "call-1",
+                    name: "read",
+                    arguments: { path: "PiAdapter.ts" },
+                  },
+                  { type: "text", text: "The projection is bounded." },
+                ],
+              },
+            },
+          },
+        },
+      }),
+      activity("task.progress", {
+        taskId: "task-transcript",
+        transcriptEvent: {
+          managerId: "manager-1",
+          sequence: 3,
+          timestamp: "2026-08-01T10:00:03.000Z",
+          kind: "child_message",
+          activity: {
+            type: "message_end",
+            data: {
+              message: {
+                role: "toolResult",
+                toolCallId: "call-1",
+                toolName: "read",
+                content: [{ type: "text", text: "export function project()" }],
+                isError: false,
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(agents[0]?.prompt).toBe("Inspect the provider boundary in detail");
+    expect(agents[0]?.transcript.items).toEqual([
+      { sourceId: "manager-1:1", kind: "user", text: "Start with the adapter" },
+      {
+        sourceId: "manager-1:2",
+        kind: "assistant",
+        parts: [
+          { type: "thinking", text: "I should inspect the event projection." },
+          { type: "toolCall", id: "call-1", name: "read", argsPreview: '{"path":"PiAdapter.ts"}' },
+          { type: "text", text: "The projection is bounded." },
+        ],
+      },
+      {
+        sourceId: "manager-1:3",
+        kind: "toolResult",
+        id: "call-1",
+        name: "read",
+        isError: false,
+        outputPreview: "export function project()",
+      },
+    ]);
+  });
+
+  it("keeps cumulative live child output and clears it when the agent settles", () => {
+    const activeRows = [
+      activity("task.started", { taskId: "task-live", title: "Live agent" }),
+      activity("task.progress", {
+        taskId: "task-live",
+        transcriptEvent: {
+          managerId: "manager-1",
+          sequence: 4,
+          timestamp: "2026-08-01T10:00:04.000Z",
+          kind: "child_message",
+          activity: {
+            type: "message_update",
+            liveOnly: true,
+            data: {
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "thinking", thinking: "Checking types" },
+                  { type: "text", text: "I found" },
+                ],
+              },
+            },
+          },
+        },
+      }),
+      activity("task.progress", {
+        taskId: "task-live",
+        transcriptEvent: {
+          managerId: "manager-1",
+          sequence: 5,
+          timestamp: "2026-08-01T10:00:05.000Z",
+          kind: "child_message",
+          activity: {
+            type: "provider_tool_execution_start",
+            liveOnly: true,
+            data: { toolCallId: "call-live", toolName: "bash", args: { command: "vp test" } },
+          },
+        },
+      }),
+    ];
+
+    const active = fold(activeRows)[0]!;
+    expect(active.transcript.liveAssistant).toEqual({
+      text: "I found",
+      thinking: "Checking types",
+    });
+    expect(active.transcript.liveTools).toEqual([
+      { id: "call-live", name: "bash", argsPreview: '{"command":"vp test"}' },
+    ]);
+
+    const settled = fold([
+      ...activeRows,
+      activity("task.updated", { taskId: "task-live", status: "completed" }),
+      activity("task.completed", { taskId: "task-live", status: "completed" }),
+    ])[0]!;
+    expect(settled.transcript.liveAssistant).toBeNull();
+    expect(settled.transcript.liveTools).toEqual([]);
   });
 
   it("completion before start stays terminal; a late start only fills metadata", () => {
@@ -380,14 +533,108 @@ describe("deriveAgentPanelModel", () => {
     expect(model.directAgents.map((agent) => agent.id)).toEqual(["direct-1"]);
   });
 
+  it("derives named Pi workflow phases when the bridge has no numeric indices", () => {
+    const piWorkflow = fold([
+      activity("task.started", {
+        taskId: "pi-child-a",
+        title: "Inspect",
+        parentAgentId: "pi-workflow",
+        workflowName: "Two-step review",
+        phaseTitle: "Implementation",
+      }),
+      activity("task.started", {
+        taskId: "pi-child-b",
+        title: "Verify",
+        parentAgentId: "pi-workflow",
+        workflowName: "Two-step review",
+        phaseTitle: "Review",
+      }),
+    ]);
+
+    const group = deriveAgentPanelModel({ agents: piWorkflow }).workflows[0]!;
+    expect(piWorkflow).toHaveLength(2);
+    expect(group.workflow.id).toBe("pi-workflow");
+    expect(group.phases.map((phase) => phase.title)).toEqual(["Implementation", "Review"]);
+    expect(group.phases.map((phase) => phase.members.map((member) => member.id))).toEqual([
+      ["pi-child-a"],
+      ["pi-child-b"],
+    ]);
+  });
+
+  it("groups direct spawns by the turn that introduced them", () => {
+    const directRoster = fold([
+      activity(
+        "task.started",
+        { taskId: "turn-a-1", title: "First A" },
+        "2026-08-01T11:00:00.000Z",
+        "turn-a",
+      ),
+      activity(
+        "task.started",
+        { taskId: "turn-a-2", title: "Second A" },
+        "2026-08-01T11:00:01.000Z",
+        "turn-a",
+      ),
+      activity(
+        "task.started",
+        { taskId: "turn-b-1", title: "First B" },
+        "2026-08-01T11:05:00.000Z",
+        "turn-b",
+      ),
+    ]);
+
+    const model = deriveAgentPanelModel({ agents: directRoster });
+    expect(model.directAgentGroups.map((group) => group.turnId)).toEqual(["turn-a", "turn-b"]);
+    expect(model.directAgentGroups.map((group) => group.agents.map((agent) => agent.id))).toEqual([
+      ["turn-a-1", "turn-a-2"],
+      ["turn-b-1"],
+    ]);
+  });
+
   it("counts idle deliberately and waiting as active", () => {
     const model = deriveAgentPanelModel({ agents: roster });
     expect(model.idleCount).toBe(1);
-    // wf-1 coordinator + member 1 running.
-    expect(model.runningCount).toBeGreaterThanOrEqual(1);
+    // Member 1 is running; the wf-1 coordinator is a container, not a worker.
+    expect(model.runningCount).toBe(1);
+    // Every agent lands in exactly one bucket, except coordinators that stand
+    // in for their members.
     expect(model.idleCount + model.runningCount + model.waitingCount + model.settledCount).toBe(
-      roster.length,
+      roster.length - 1,
     );
+  });
+
+  it("omits a workflow coordinator from the working-agent count", () => {
+    const model = deriveAgentPanelModel({ agents: roster });
+    // One member still running plus one idle direct spawn. The coordinator
+    // reports running for the whole workflow and must not inflate the banner.
+    expect(model.liveCount).toBe(1);
+  });
+
+  it("omits a finished workflow coordinator from the settled count", () => {
+    const finished = fold([
+      activity("task.started", { taskId: "wf-2", taskType: "local_workflow", title: "sweep" }),
+      activity("task.progress", {
+        taskId: "wf-2:wf:0",
+        title: "sweep:a",
+        status: "completed",
+        parentAgentId: "wf-2",
+        agentIndex: 0,
+        phaseIndex: 0,
+      }),
+      activity("task.completed", {
+        taskId: "wf-2:wf:0",
+        status: "completed",
+        parentAgentId: "wf-2",
+      }),
+      activity("task.completed", { taskId: "wf-2", status: "completed" }),
+    ]);
+
+    const model = deriveAgentPanelModel({ agents: finished });
+
+    // Only the member settled. The coordinator stands in for it, so counting
+    // both would report two finished agents where one ran.
+    expect(model.settledCount).toBe(1);
+    expect(model.liveCount).toBe(0);
   });
 
   it("keeps direct spawns in first-seen order as their activity changes", () => {
@@ -565,6 +812,43 @@ describe("model and effort attribution", () => {
     expect(agents).toHaveLength(1);
     expect(agents[0]!.model).toBe("claude-sonnet-5[1m]");
     expect(agents[0]!.effort).toBe("high");
+  });
+
+  it("applies metadata-only updates without changing the current status", () => {
+    const waitingRows = [
+      activity("task.updated", {
+        taskId: "task-metadata",
+        title: "Check metadata",
+        status: "waiting",
+      }),
+      activity("task.updated", {
+        taskId: "task-metadata",
+        model: "gpt-5.6-sol",
+        effort: "high",
+      }),
+    ];
+    const waitingAgent = fold(waitingRows)[0]!;
+    expect(waitingAgent.status).toBe("waiting");
+    expect(formatSubagentModelLabel(waitingAgent.model, waitingAgent.effort)).toBe(
+      "gpt-5.6-sol · high",
+    );
+
+    const idleRows = [
+      ...waitingRows,
+      activity("task.updated", { taskId: "task-metadata", status: "idle" }),
+      activity("task.updated", { taskId: "task-metadata", model: "gpt-5.6-sol" }),
+    ];
+    expect(fold(idleRows)[0]!.status).toBe("idle");
+
+    const completedAgent = fold([
+      ...idleRows,
+      activity("task.progress", { taskId: "task-metadata", typedUsage: { totalTokens: 42 } }),
+      activity("task.completed", { taskId: "task-metadata", status: "completed" }),
+      activity("task.updated", { taskId: "task-metadata", effort: "high" }),
+    ])[0]!;
+    expect(completedAgent.status).toBe("completed");
+    expect(completedAgent.model).toBe("gpt-5.6-sol");
+    expect(completedAgent.effort).toBe("high");
   });
 
   it("formatSubagentModelLabel compacts ids and appends effort", () => {

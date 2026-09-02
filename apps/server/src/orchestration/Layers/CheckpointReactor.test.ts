@@ -125,9 +125,8 @@ function createProviderServiceHarness(
         },
       }),
     rollbackConversation,
-    nameThreadSession: () => Effect.void,
-    controlSubagent: () => unsupported(),
-    streamSubagentEvents: Stream.empty,
+    controlTask: () => unsupported(),
+    uploadFeedback: () => unsupported(),
     controlBackgroundTerminal: () => unsupported(),
     streamBackgroundTerminalEvents: Stream.empty,
     get streamEvents() {

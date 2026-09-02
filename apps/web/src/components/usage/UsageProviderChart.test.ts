@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { buildDayColumns, niceScale } from "./UsageProviderChart";
+import { providersWithUsage } from "./usageProviders";
 
 describe("niceScale", () => {
   it("never puts the peak above the top of the scale", () => {
@@ -47,12 +48,11 @@ describe("buildDayColumns", () => {
       "2026-08-01",
       {
         day: "2026-08-01",
-        costUsd: 35,
-        totalTokens: 350,
+        costUsd: 30,
+        totalTokens: 300,
         byProvider: new Map([
           ["codex" as const, { costUsd: 10, totalTokens: 100 }],
           ["claude" as const, { costUsd: 20, totalTokens: 200 }],
-          ["pi" as const, { costUsd: 5, totalTokens: 50 }],
         ]),
       },
     ],
@@ -69,12 +69,12 @@ describe("buildDayColumns", () => {
   ]);
 
   it("plots each day on its own", () => {
-    expect(buildDayColumns(days, byDay, "cost").map((column) => column.total)).toEqual([35, 0, 5]);
+    expect(buildDayColumns(days, byDay, "cost").map((column) => column.total)).toEqual([30, 0, 5]);
   });
 
   it("reads the requested metric", () => {
     expect(buildDayColumns(days, byDay, "tokens").map((column) => column.total)).toEqual([
-      350, 0, 50,
+      300, 0, 50,
     ]);
   });
 
@@ -86,7 +86,8 @@ describe("buildDayColumns", () => {
     expect(first?.bands).toEqual([
       { provider: "codex", value: 10 },
       { provider: "claude", value: 20 },
-      { provider: "pi", value: 5 },
+      { provider: "grok", value: 0 },
+      { provider: "pi", value: 0 },
     ]);
   });
 
@@ -95,6 +96,18 @@ describe("buildDayColumns", () => {
       const sum = column.bands.reduce((running, band) => running + band.value, 0);
       expect(column.total).toBeCloseTo(sum, 9);
     }
+  });
+});
+
+describe("providersWithUsage", () => {
+  it("omits providers with no cost or tokens", () => {
+    expect(
+      providersWithUsage([
+        { provider: "codex", costUsd: 0, totalTokens: 0 },
+        { provider: "claude", costUsd: 0, totalTokens: 200 },
+        { provider: "pi", costUsd: 2, totalTokens: 0 },
+      ]),
+    ).toEqual(["claude", "pi"]);
   });
 });
 

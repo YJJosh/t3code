@@ -30,12 +30,12 @@ import {
   type VcsStatusInput,
   type VcsStatusResult,
 } from "@t3tools/contracts";
-import { ServerConfig } from "../config.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { makeGitVcsDriverCore, type GitVcsDriverCoreOptions } from "./GitVcsDriverCore.ts";
+import { makeGitVcsDriverCore } from "./GitVcsDriverCore.ts";
+import { withWorklerWorkspaceSupport } from "./WorklerGitWorkspaceDriver.ts";
 import * as VcsDriver from "./VcsDriver.ts";
-import * as VcsProcess from "./VcsProcess.ts";
 import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
+import * as VcsProcess from "./VcsProcess.ts";
 
 export interface ExecuteGitInput {
   readonly operation: string;
@@ -44,7 +44,7 @@ export interface ExecuteGitInput {
   readonly stdin?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly allowNonZeroExit?: boolean;
-  readonly timeoutMs?: number;
+  readonly timeoutMs?: number | null;
   readonly maxOutputBytes?: number;
   readonly appendTruncationMarker?: boolean;
   readonly progress?: ExecuteGitProgress;
@@ -75,6 +75,7 @@ export interface GitStatusDetails {
 
 export interface GitRemoteStatusDetails {
   isRepo: boolean;
+  defaultBranch: string | null;
   isDefaultBranch: boolean;
   branch: string | null;
   upstreamRef: string | null;
@@ -291,6 +292,10 @@ export class GitVcsDriver extends Context.Service<
     ) => Effect.Effect<GitRefreshCheckedOutBranchResult, GitCommandError>;
     readonly ensureRemote: (input: GitEnsureRemoteInput) => Effect.Effect<string, GitCommandError>;
     readonly resolvePrimaryRemoteName: (cwd: string) => Effect.Effect<string, GitCommandError>;
+    readonly resolveDefaultBranchName: (
+      cwd: string,
+      remoteName: string,
+    ) => Effect.Effect<string | null, GitCommandError>;
     readonly fetchRemote: (input: GitFetchRemoteInput) => Effect.Effect<void, GitCommandError>;
     readonly remoteExists: (input: GitRemoteExistsInput) => Effect.Effect<boolean, GitCommandError>;
     readonly resolveRemoteTrackingCommit: (
@@ -308,6 +313,10 @@ export class GitVcsDriver extends Context.Service<
     readonly removeWorktree: (
       input: VcsRemoveWorktreeInput,
     ) => Effect.Effect<void, GitCommandError>;
+    /** Drops worktree admin entries whose directory is already gone (`git worktree prune`). */
+    readonly pruneWorktrees: (input: {
+      readonly cwd: string;
+    }) => Effect.Effect<void, GitCommandError>;
     readonly renameBranch: (
       input: GitRenameBranchInput,
     ) => Effect.Effect<GitRenameBranchResult, GitCommandError>;
@@ -924,36 +933,22 @@ export const makeVcsDriver = Effect.gen(function* () {
 });
 
 export const make = Effect.gen(function* () {
-  const serverConfig = yield* ServerConfig;
-  const serverSettings = yield* ServerSettingsService;
-  const git = yield* makeGitVcsDriverCore({
-    getWorkspaceCreationSettings: serverSettings.getSettings.pipe(
-      Effect.map((settings) => ({
-        useWorklerForNewWorkspaces: settings.useWorklerForNewWorkspaces,
-        gitWorktreesDir: serverConfig.worktreesDir,
-      })),
-    ),
-  });
-  return GitVcsDriver.of(git);
+  const git = yield* makeGitVcsDriverCore();
+  const workler = yield* WorklerWorkspaceService.WorklerWorkspaceService;
+  const path = yield* Path.Path;
+  const settings = yield* Effect.serviceOption(ServerSettingsService);
+  return GitVcsDriver.of(
+    withWorklerWorkspaceSupport({
+      git,
+      workler,
+      path,
+      ...(Option.isSome(settings) ? { settings: settings.value } : {}),
+    }),
+  );
 });
 
-const makeWithCoreOptions = (options: GitVcsDriverCoreOptions) =>
-  Effect.gen(function* () {
-    const git = yield* makeGitVcsDriverCore(options);
-    return GitVcsDriver.of(git);
-  });
-
 export const vcsLayer = Layer.effect(VcsDriver.VcsDriver, makeVcsDriver);
-
-/**
- * Builds the driver with an explicit Workler workspace service layer; tests
- * use this to substitute an in-process fake for the `workler` library.
- */
 export const layerWithWorkler = (
   worklerLayer: Layer.Layer<WorklerWorkspaceService.WorklerWorkspaceService>,
-  options: GitVcsDriverCoreOptions = {},
-) => Layer.effect(GitVcsDriver, makeWithCoreOptions(options)).pipe(Layer.provide(worklerLayer));
-
-export const layer = Layer.effect(GitVcsDriver, make).pipe(
-  Layer.provide(WorklerWorkspaceService.layer),
-);
+) => Layer.effect(GitVcsDriver, make).pipe(Layer.provide(worklerLayer));
+export const layer = layerWithWorkler(WorklerWorkspaceService.layer);

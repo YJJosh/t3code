@@ -121,17 +121,19 @@ describe("buildBranchNamePrompt", () => {
 
     expect(result.prompt).toContain("User message:");
     expect(result.prompt).toContain("Fix the login timeout bug");
+    expect(result.prompt).toContain("Start with the t3code/ namespace.");
     expect(result.prompt).not.toContain("Attachment metadata:");
   });
 
-  it("requires an allowed category when conventional branch prefixes are enabled", () => {
+  it("requests both configured branch policies", () => {
     const result = buildBranchNamePrompt({
-      message: "Refactor the login flow",
+      message: "Fix the login timeout bug",
+      includeT3CodeBranchPrefix: false,
       useConventionalBranchPrefixes: true,
     });
 
-    expect(result.prompt).toContain("Start the branch with exactly one category prefix");
-    expect(result.prompt).toContain("feature, fix, chore, refactor");
+    expect(result.prompt).toContain("Do not include the t3code/ namespace.");
+    expect(result.prompt).toContain("feature, fix, chore");
   });
 
   it("includes attachment metadata when attachments are provided", () => {

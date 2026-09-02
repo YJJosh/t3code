@@ -12,7 +12,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   DEVELOPMENT_ICON_OVERRIDES,
-  brandDulliClientText,
   resolveWebAssetBrandForPackageVersion,
   resolveWebIconOverrides,
   type WebAssetBrand,
@@ -43,12 +42,30 @@ interface PackageJson {
   version: string;
   engines: Record<string, string>;
   files: string[];
+  publishConfig: {
+    executableFiles: string[];
+  };
   dependencies: Record<string, string>;
   overrides: Record<string, string>;
 }
 
 const PackageJsonPrettyJson = fromJsonStringPretty(Schema.Unknown);
 const encodePackageJson = Schema.encodeEffect(PackageJsonPrettyJson);
+const WEB_ASSET_BRANDS = [
+  "development",
+  "nightly",
+  "production",
+  "dulli",
+] as const satisfies ReadonlyArray<WebAssetBrand>;
+
+// pnpm intentionally normalizes non-bin package files to mode 0644. Mark the
+// native monitors explicitly so npm/npx installs can execute them on POSIX.
+export const RESOURCE_MONITOR_EXECUTABLE_FILES = [
+  "./dist/resource-monitor/darwin-arm64/t3-resource-monitor",
+  "./dist/resource-monitor/darwin-x64/t3-resource-monitor",
+  "./dist/resource-monitor/linux-x64/t3-resource-monitor",
+  "./dist/resource-monitor/win32-x64/t3-resource-monitor.exe",
+] as const;
 
 const WorkspaceConfig = Schema.Struct({
   catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -69,10 +86,7 @@ const readWorkspaceConfig = Effect.fn("readWorkspaceConfig")(function* () {
   return yield* decodeWorkspaceConfig(workspaceYaml);
 });
 
-const runCommand = Effect.fn("runCommand")(function* (
-  command: ChildProcess.StandardCommand,
-  errorArgs: ReadonlyArray<string> = command.args,
-) {
+const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.StandardCommand) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* spawner.spawn(command);
   const exitCode = yield* child.exitCode;
@@ -80,7 +94,7 @@ const runCommand = Effect.fn("runCommand")(function* (
   if (exitCode !== 0) {
     return yield* new ServerCliCommandExitError({
       command: command.command,
-      args: errorArgs,
+      args: command.args,
       cwd: command.options.cwd,
       exitCode,
     });
@@ -114,46 +128,6 @@ const preparePublishIcons = Effect.fn("preparePublishIcons")(function* (
       publish: fs.readFile(icon.sourcePath),
     }).pipe(Effect.map((contents) => ({ ...icon, ...contents }))),
   );
-});
-
-const DULLI_BRANDABLE_CLIENT_FILE_PATTERN = /\.(?:html|js|json|css)$/u;
-
-const preparePublishClientBrand = Effect.fn("preparePublishClientBrand")(function* (
-  serverDir: string,
-  brand: WebAssetBrand,
-) {
-  if (brand !== "dulli") return { textFiles: [], sourceMaps: [] };
-
-  const path = yield* Path.Path;
-  const fs = yield* FileSystem.FileSystem;
-  const pendingDirectories = [path.join(serverDir, "dist/client")];
-  const textFiles: Array<{ path: string; original: string; publish: string }> = [];
-  const sourceMaps: Array<{ path: string; original: Uint8Array }> = [];
-
-  while (pendingDirectories.length > 0) {
-    const directory = pendingDirectories.pop();
-    if (directory === undefined) continue;
-    for (const entry of yield* fs.readDirectory(directory)) {
-      const filePath = path.join(directory, entry);
-      const stat = yield* fs.stat(filePath);
-      if (stat.type === "Directory") {
-        pendingDirectories.push(filePath);
-        continue;
-      }
-      if (stat.type !== "File") continue;
-      if (entry.endsWith(".map")) {
-        sourceMaps.push({ path: filePath, original: yield* fs.readFile(filePath) });
-        continue;
-      }
-      if (!DULLI_BRANDABLE_CLIENT_FILE_PATTERN.test(entry)) continue;
-
-      const original = yield* fs.readFileString(filePath);
-      const publish = brandDulliClientText(original);
-      if (publish !== original) textFiles.push({ path: filePath, original, publish });
-    }
-  }
-
-  return { textFiles, sourceMaps };
 });
 
 const applyDevelopmentIconOverrides = Effect.fn("applyDevelopmentIconOverrides")(function* (
@@ -223,19 +197,34 @@ const buildCmd = Command.make(
 // publish subcommand
 // ---------------------------------------------------------------------------
 
-const WEB_ASSET_BRANDS = [
-  "development",
-  "nightly",
-  "production",
-  "dulli",
-] as const satisfies ReadonlyArray<WebAssetBrand>;
-
-export interface PublishCommandConfig {
+interface PublishCommandConfig {
   readonly access: string;
   readonly tag: string;
   readonly provenance: boolean;
   readonly dryRun: boolean;
-  readonly otp: Option.Option<string>;
+}
+
+interface PublishIdentityConfig {
+  readonly appVersion: Option.Option<string>;
+  readonly packageName: Option.Option<string>;
+  readonly repositoryUrl: Option.Option<string>;
+}
+
+interface PublishIdentity {
+  readonly version: string;
+  readonly packageName: string;
+  readonly repositoryUrl: string;
+}
+
+export function resolvePublishIdentity(
+  config: PublishIdentityConfig,
+  defaults: PublishIdentity,
+): PublishIdentity {
+  return {
+    version: Option.getOrElse(config.appVersion, () => defaults.version),
+    packageName: Option.getOrElse(config.packageName, () => defaults.packageName),
+    repositoryUrl: Option.getOrElse(config.repositoryUrl, () => defaults.repositoryUrl),
+  };
 }
 
 export const createVpPmPublishArgs = (
@@ -255,37 +244,9 @@ export const createVpPmPublishArgs = (
 
   if (config.provenance) args.push("--provenance");
   if (config.dryRun) args.push("--dry-run");
-  if (Option.isSome(config.otp)) args.push("--otp", config.otp.value);
 
   return args;
 };
-
-export function redactOtpArgs(args: ReadonlyArray<string>): ReadonlyArray<string> {
-  return args.map((arg, index) => {
-    if (index > 0 && args[index - 1] === "--otp") return "***";
-    if (arg.startsWith("--otp=")) return "--otp=***";
-    return arg;
-  });
-}
-
-export function resolvePublishIdentity(
-  config: {
-    readonly appVersion: Option.Option<string>;
-    readonly packageName: Option.Option<string>;
-    readonly repositoryUrl: Option.Option<string>;
-  },
-  defaults: {
-    readonly version: string;
-    readonly packageName: string;
-    readonly repositoryUrl: string;
-  },
-) {
-  return {
-    version: Option.getOrElse(config.appVersion, () => defaults.version),
-    packageName: Option.getOrElse(config.packageName, () => defaults.packageName),
-    repositoryUrl: Option.getOrElse(config.repositoryUrl, () => defaults.repositoryUrl),
-  };
-}
 
 const publishCmd = Command.make(
   "publish",
@@ -298,7 +259,6 @@ const publishCmd = Command.make(
     brand: Flag.choice("brand", WEB_ASSET_BRANDS).pipe(Flag.optional),
     provenance: Flag.boolean("provenance").pipe(Flag.withDefault(false)),
     dryRun: Flag.boolean("dry-run").pipe(Flag.withDefault(false)),
-    otp: Flag.string("otp").pipe(Flag.optional),
     verbose: Flag.boolean("verbose").pipe(Flag.withDefault(false)),
   },
   (config) =>
@@ -346,6 +306,9 @@ const publishCmd = Command.make(
             version: identity.version,
             engines: serverPackageJson.engines,
             files: serverPackageJson.files,
+            publishConfig: {
+              executableFiles: [...RESOURCE_MONITOR_EXECUTABLE_FILES],
+            },
             dependencies: resolveCatalogDependencies(
               serverPackageJson.dependencies,
               workspaceCatalog,
@@ -363,7 +326,6 @@ const publishCmd = Command.make(
             packageJsonString: yield* encodePackageJson(pkg),
             originalPackageJson: yield* fs.readFile(packageJsonPath),
             icons: yield* preparePublishIcons(repoRoot, serverDir, publishBrand),
-            clientBrand: yield* preparePublishClientBrand(serverDir, publishBrand),
           };
         }),
         // Use: pnpm publish from the workspace root so pnpm-only workspace
@@ -374,30 +336,19 @@ const publishCmd = Command.make(
             for (const icon of resource.icons) {
               yield* fs.writeFile(icon.targetPath, icon.publish);
             }
-            for (const file of resource.clientBrand.textFiles) {
-              yield* fs.writeFileString(file.path, file.publish);
-            }
-            for (const sourceMap of resource.clientBrand.sourceMaps) {
-              yield* fs.remove(sourceMap.path, { force: true });
-            }
-            yield* Effect.log("[cli] Applied package metadata and client branding");
+            yield* Effect.log("[cli] Applied package metadata and publish icon overrides");
 
             const args = createVpPmPublishArgs(config, resource.packageName);
-            const safeArgs = redactOtpArgs(args);
             const spawnCommand = yield* resolveSpawnCommand("vp", ["pm", ...args]);
 
-            yield* Effect.log(`[cli] Running: vp pm ${safeArgs.join(" ")}`);
+            yield* Effect.log(`[cli] Running: vp pm ${args.join(" ")}`);
             yield* runCommand(
               ChildProcess.make(spawnCommand.command, spawnCommand.args, {
                 cwd: repoRoot,
-                // pnpm prompts for npm 2FA (OTP or web auth) on publish; it
-                // needs the parent terminal to do so.
-                stdin: "inherit",
                 stdout: config.verbose ? "inherit" : "ignore",
                 stderr: "inherit",
                 shell: spawnCommand.shell,
               }),
-              ["pm", ...safeArgs],
             );
           }),
         // Release: restore every file even if applying overrides or publishing fails.
@@ -406,12 +357,6 @@ const publishCmd = Command.make(
             yield* fs.writeFile(packageJsonPath, resource.originalPackageJson);
             for (const icon of resource.icons) {
               yield* fs.writeFile(icon.targetPath, icon.original);
-            }
-            for (const file of resource.clientBrand.textFiles) {
-              yield* fs.writeFileString(file.path, file.original);
-            }
-            for (const sourceMap of resource.clientBrand.sourceMaps) {
-              yield* fs.writeFile(sourceMap.path, sourceMap.original);
             }
             if (config.verbose) yield* Effect.log("[cli] Restored original publish assets");
           }),
@@ -428,10 +373,8 @@ const cli = Command.make("cli").pipe(
   Command.withSubcommands([buildCmd, publishCmd]),
 );
 
-if (import.meta.main) {
-  Command.run(cli, { version: "0.0.0" }).pipe(
-    Effect.scoped,
-    Effect.provide([Logger.layer([Logger.consolePretty()]), NodeServices.layer]),
-    NodeRuntime.runMain,
-  );
-}
+Command.run(cli, { version: "0.0.0" }).pipe(
+  Effect.scoped,
+  Effect.provide([Logger.layer([Logger.consolePretty()]), NodeServices.layer]),
+  NodeRuntime.runMain,
+);

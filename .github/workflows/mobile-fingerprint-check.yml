@@ -11,6 +11,9 @@ name: Mobile Fingerprint Check
 # The check is advisory: it always passes, the label is the signal. Both
 # fingerprints are computed in this one job (same OS, same corepack-pinned
 # pnpm), so the comparison is self-consistent; no EXPO_TOKEN needed.
+# No trigger paths filter: relevance is detected in-job so the label sync step
+# runs on every PR update and can clear a stale "📱 Native Change" label after
+# a PR stops touching fingerprint inputs.
 on:
   pull_request:
 

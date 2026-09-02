@@ -18,15 +18,17 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 
 import type { UsageRecord } from "./usageTranscripts.ts";
 
-// v4: Invalidate entries created before Pi sessions had their own parser.
-export const USAGE_SCAN_CACHE_VERSION = 4 as const;
+// v3: Pi project roots and entry-id de-duplication changed the records a file
+// contributes. v2 entries cannot discover child sessions and would keep
+// over-counting history copied into forks.
+export const USAGE_SCAN_CACHE_VERSION = 3 as const;
 
 export interface CachedFile {
   readonly size: number;
   readonly mtimeMs: number;
   readonly provider: UsageProviderKind;
   readonly records: readonly UsageRecord[];
-  readonly malformedRecords: number;
+  /** Project roots declared by Pi session headers, used to reach subagent sessions. */
   readonly projectPaths: readonly string[];
 }
 
@@ -54,7 +56,6 @@ interface SerializedFile {
   readonly s: number;
   readonly m: number;
   readonly p: UsageProviderKind;
-  readonly x: number;
   readonly d: readonly string[];
   readonly r: readonly SerializedRecord[];
 }
@@ -88,7 +89,6 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
       s: entry.size,
       m: entry.mtimeMs,
       p: entry.provider,
-      x: entry.malformedRecords,
       d: entry.projectPaths,
       r: entry.records.map((record) => [
         record.timestampMs,
@@ -139,8 +139,9 @@ export function decodeScanCache(document: unknown): ScanCache {
     if (typeof raw !== "object" || raw === null) continue;
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
-    if (entry.p !== "claude" && entry.p !== "codex" && entry.p !== "pi") continue;
-    if (typeof entry.x !== "number" || !Number.isSafeInteger(entry.x) || entry.x < 0) continue;
+    if (entry.p !== "claude" && entry.p !== "codex" && entry.p !== "grok" && entry.p !== "pi") {
+      continue;
+    }
     if (!isRecordArray(entry.d) || !entry.d.every((value) => typeof value === "string")) continue;
     if (!isRecordArray(entry.r)) continue;
 
@@ -172,19 +173,12 @@ export function decodeScanCache(document: unknown): ScanCache {
       if (
         typeof timestampMs !== "number" ||
         !Number.isFinite(timestampMs) ||
-        typeof sessionIndex !== "number" ||
-        !Number.isSafeInteger(sessionIndex) ||
-        sessionIndex < 0 ||
-        sessionIndex >= sessions.length ||
         model === undefined ||
         !Number.isFinite(uncached) ||
         !Number.isFinite(cached) ||
         !Number.isFinite(cacheCreation) ||
         !Number.isFinite(output) ||
-        !Number.isFinite(reasoning) ||
-        (dedupeKey !== null && typeof dedupeKey !== "string") ||
-        (reportedCostUsd !== null &&
-          (typeof reportedCostUsd !== "number" || !Number.isFinite(reportedCostUsd)))
+        !Number.isFinite(reasoning)
       ) {
         corrupt = true;
         break;
@@ -194,7 +188,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         provider,
         timestampMs,
         model,
-        sessionId: sessions[sessionIndex] as string,
+        sessionId: (typeof sessionIndex === "number" ? sessions[sessionIndex] : undefined) ?? "",
         totals: {
           uncachedInputTokens: uncached,
           cachedInputTokens: cached,
@@ -202,8 +196,8 @@ export function decodeScanCache(document: unknown): ScanCache {
           outputTokens: output,
           reasoningTokens: reasoning,
         },
-        reportedCostUsd,
-        dedupeKey,
+        reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
+        dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
       });
     }
 
@@ -213,8 +207,7 @@ export function decodeScanCache(document: unknown): ScanCache {
       mtimeMs: entry.m,
       provider,
       records,
-      malformedRecords: entry.x,
-      projectPaths: entry.d as readonly string[],
+      projectPaths: entry.d,
     });
   }
 

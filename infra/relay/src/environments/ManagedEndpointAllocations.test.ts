@@ -10,16 +10,20 @@ const layerWithDb = (db: RelayDb.RelayDb["Service"]) =>
   ManagedEndpointAllocations.layer.pipe(Layer.provide(Layer.succeed(RelayDb.RelayDb, db)));
 
 describe("ManagedEndpointAllocations", () => {
-  it.effect("returns a monotonic claim generation only when deprovision wins the CAS", () => {
+  it.effect("returns a claim generation only when deprovision wins the allocation CAS", () => {
+    let claimedAt: string | undefined;
     const fakeDb = {
       update: (table: unknown) => {
         expect(table).toBe(relayManagedEndpointAllocations);
         return {
-          set: () => ({
-            where: () => ({
-              returning: () => Effect.succeed([{ generation: 8 }]),
-            }),
-          }),
+          set: (values: { readonly updatedAt: string }) => {
+            claimedAt = values.updatedAt;
+            return {
+              where: () => ({
+                returning: () => Effect.succeed([{ userId: "user-1" }]),
+              }),
+            };
+          },
         };
       },
     } as unknown as RelayDb.RelayDb["Service"];
@@ -29,43 +33,11 @@ describe("ManagedEndpointAllocations", () => {
       const generation = yield* allocations.claimDeprovision({
         userId: "user-1",
         environmentId: "environment-1",
-        generation: 7,
+        updatedAt: "captured-generation",
       });
 
-      expect(generation).toBe(8);
-    }).pipe(Effect.provide(layerWithDb(fakeDb)));
-  });
-
-  it.effect("rejects a provisioning mutation after its generation is superseded", () => {
-    const fakeDb = {
-      update: (table: unknown) => {
-        expect(table).toBe(relayManagedEndpointAllocations);
-        return {
-          set: () => ({
-            where: () => ({
-              returning: () => Effect.succeed([]),
-            }),
-          }),
-        };
-      },
-    } as unknown as RelayDb.RelayDb["Service"];
-
-    return Effect.gen(function* () {
-      const allocations = yield* ManagedEndpointAllocations.ManagedEndpointAllocations;
-      const error = yield* Effect.flip(
-        allocations.recordTunnel({
-          userId: "user-1",
-          environmentId: "environment-1",
-          tunnelId: "stale-tunnel",
-          generation: 7,
-        }),
-      );
-
-      expect(error).toMatchObject({
-        _tag: "ManagedEndpointAllocationPersistenceError",
-        operation: "record-tunnel",
-        stage: "resolve-reservation",
-      });
+      expect(generation).toBe(claimedAt);
+      expect(generation).not.toBeNull();
     }).pipe(Effect.provide(layerWithDb(fakeDb)));
   });
 
@@ -87,7 +59,7 @@ describe("ManagedEndpointAllocations", () => {
         yield* allocations.removeClaimed({
           userId: "user-1",
           environmentId: "environment-1",
-          generation: 7,
+          updatedAt: "outdated-claim-generation",
         }),
       ).toBe(false);
     }).pipe(Effect.provide(layerWithDb(fakeDb)));
@@ -131,16 +103,9 @@ describe("ManagedEndpointAllocations", () => {
         expect(table).toBe(relayManagedEndpointAllocations);
         return {
           values: () => ({
-            onConflictDoUpdate: (input: {
-              readonly set: { readonly updatedAt: string };
-              readonly setWhere: unknown;
-            }) => {
-              expect(input.set.updatedAt).toBeTruthy();
-              expect(input.setWhere).toBeDefined();
-              return {
-                returning: () => Effect.succeed([]),
-              };
-            },
+            onConflictDoNothing: () => ({
+              returning: () => Effect.succeed([]),
+            }),
           }),
         };
       },

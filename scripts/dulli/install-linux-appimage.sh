@@ -53,7 +53,7 @@ cat > "$desktop_file" <<DESKTOP
 [Desktop Entry]
 Name=T3 Dulli
 GenericName=AI coding agent
-Comment=T3 Code with Pi and Workler integration
+Comment=Community desktop build of T3 Code
 Exec=$launcher %U
 Icon=$icon_file
 Terminal=false

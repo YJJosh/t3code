@@ -15,7 +15,6 @@ build/
 release/
 release-mock/
 .t3
-.portler/
 .worktrees/
 .idea/
 apps/web/.playwright
@@ -27,16 +26,16 @@ __screenshots__/
 squashfs-root/
 .vercel
 .gstack/
+.plans/
 dist-electron/
 .electron-runtime/
 .showcase/
 apps/mobile/.showcase/
 artifacts/app-store/screenshots/
+.github/pr-assets/
 native/**/target/
 node_modules/
 .alchemy/
 *.log
 .env*
 !.env.example
-*.keystore
-*.jks

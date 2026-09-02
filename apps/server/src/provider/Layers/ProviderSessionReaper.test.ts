@@ -184,10 +184,9 @@ describe("ProviderSessionReaper", () => {
         });
       },
       rollbackConversation: () => unsupported(),
-      nameThreadSession: () => Effect.void,
-      controlSubagent: () => unsupported(),
+      controlTask: () => unsupported(),
+      uploadFeedback: () => unsupported(),
       controlBackgroundTerminal: () => unsupported(),
-      streamSubagentEvents: Stream.empty,
       streamBackgroundTerminalEvents: Stream.empty,
       streamEvents: Stream.empty,
     };

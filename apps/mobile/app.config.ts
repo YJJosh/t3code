@@ -16,6 +16,9 @@ const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
 
 const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
+// Universal exports already contain their own rounded-square silhouette. Using one as an adaptive
+// foreground makes Android draw an icon shape inside the launcher's mask.
+const androidAdaptiveForeground = "./assets/android-icon-foreground.png";
 
 if (
   isIosPersonalTeamBuild &&
@@ -31,7 +34,7 @@ const DEVELOPMENT_ASSETS = {
   appIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIosIconPng),
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIosIconPng),
-  androidAdaptiveForeground: fromRepoRoot(BRAND_ASSET_PATHS.developmentUniversalIconPng),
+  androidAdaptiveForeground,
   androidAdaptiveBackgroundColor: "#00639B",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
@@ -42,7 +45,7 @@ const PREVIEW_ASSETS = {
   appIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.nightlyIosIconPng),
-  androidAdaptiveForeground: fromRepoRoot(BRAND_ASSET_PATHS.nightlyLinuxIconPng),
+  androidAdaptiveForeground,
   androidAdaptiveBackgroundColor: "#111533",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
@@ -53,7 +56,7 @@ const RELEASE_ASSETS = {
   appIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIconComposerProject),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.productionIosIconPng),
-  androidAdaptiveForeground: "./assets/android-icon-mark.png",
+  androidAdaptiveForeground,
   androidAdaptiveBackgroundColor: "#000000",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
@@ -192,7 +195,7 @@ const config: ExpoConfig = {
   slug: "t3-code",
   platforms: ["ios", "android"],
   scheme: dulliFork?.scheme ?? variant.scheme,
-  version: dulliFork?.versionName ?? "1.0.3",
+  version: dulliFork?.versionName ?? "1.0.4",
   runtimeVersion: {
     // Fingerprint (not appVersion) so an OTA only reaches binaries whose native
     // project — native deps, config plugins, AND patches/ — matches the update.
@@ -400,11 +403,18 @@ const config: ExpoConfig = {
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
-    eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-    },
+    ...(dulliFork === undefined
+      ? {
+          eas: {
+            projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+          },
+        }
+      : {}),
   },
-  owner: "pingdotgg",
+  // Fork artifacts are built directly by the Dulli workflow. Omitting the
+  // upstream EAS owner/project prevents an accidental fork build or submit
+  // from targeting T3 Code's Expo project.
+  ...(dulliFork === undefined ? { owner: "pingdotgg" } : {}),
 };
 
 export default config;

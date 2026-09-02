@@ -92,18 +92,6 @@ export function deriveLocalBranchNameFromRemoteRef(branchName: string): string {
   return branchName.slice(firstSeparatorIndex + 1);
 }
 
-export function buildTemporaryWorktreeBranchName(
-  randomHex: (byteLength: number) => string,
-): string {
-  // Normalize to exactly 8 lowercase hex chars so a UUID-shaped callback
-  // still produces the canonical temporary branch form.
-  const token = randomHex(4)
-    .toLowerCase()
-    .replace(/[^0-9a-f]/g, "")
-    .slice(0, 8);
-  return `${WORKTREE_BRANCH_PREFIX}/${token}`;
-}
-
 export const CONVENTIONAL_BRANCH_PREFIXES = [
   "feature",
   "fix",
@@ -120,16 +108,12 @@ export const CONVENTIONAL_BRANCH_PREFIXES = [
 
 const CONVENTIONAL_BRANCH_PREFIX_SET = new Set<string>(CONVENTIONAL_BRANCH_PREFIXES);
 
-/**
- * Normalize an agent-generated branch and apply the configured naming policy.
- * The conventional-prefix fallback is deterministic so the setting remains
- * enforced even if the text-generation model ignores its prompt.
- */
+/** Normalize an agent-generated branch according to the configured naming policy. */
 export function buildGeneratedWorktreeBranchName(
   raw: string,
   options: {
-    readonly includeT3CodePrefix: boolean;
-    readonly useConventionalPrefix: boolean;
+    readonly includeT3CodeBranchPrefix: boolean;
+    readonly useConventionalBranchPrefixes: boolean;
   },
 ): string {
   const normalized = raw
@@ -140,20 +124,27 @@ export function buildGeneratedWorktreeBranchName(
   const withoutT3CodePrefix = normalized.startsWith(`${WORKTREE_BRANCH_PREFIX}/`)
     ? normalized.slice(`${WORKTREE_BRANCH_PREFIX}/`.length)
     : normalized;
+  const categoryMatch = /^([a-z]+)[/\s:_-]+(.+)$/.exec(withoutT3CodePrefix);
+  const category = categoryMatch?.[1];
+  const candidate = options.useConventionalBranchPrefixes
+    ? category && CONVENTIONAL_BRANCH_PREFIX_SET.has(category)
+      ? `${category}/${sanitizeBranchFragment(categoryMatch[2] ?? "")}`
+      : `feature/${sanitizeBranchFragment(withoutT3CodePrefix)}`
+    : withoutT3CodePrefix;
+  const fragment = sanitizeBranchFragment(candidate);
+  return options.includeT3CodeBranchPrefix ? `${WORKTREE_BRANCH_PREFIX}/${fragment}` : fragment;
+}
 
-  let branchCandidate = withoutT3CodePrefix;
-  if (options.useConventionalPrefix) {
-    const categoryMatch = /^([a-z]+)[/\s:_-]+(.+)$/.exec(withoutT3CodePrefix);
-    branchCandidate =
-      categoryMatch?.[1] && categoryMatch[2] && CONVENTIONAL_BRANCH_PREFIX_SET.has(categoryMatch[1])
-        ? `${categoryMatch[1]}/${categoryMatch[2]}`
-        : `feature/${withoutT3CodePrefix}`;
-  }
-
-  const branchFragment = sanitizeBranchFragment(branchCandidate);
-  return options.includeT3CodePrefix
-    ? `${WORKTREE_BRANCH_PREFIX}/${branchFragment}`
-    : branchFragment;
+export function buildTemporaryWorktreeBranchName(
+  randomHex: (byteLength: number) => string,
+): string {
+  // Normalize to exactly 8 lowercase hex chars so a UUID-shaped callback
+  // still produces the canonical temporary branch form.
+  const token = randomHex(4)
+    .toLowerCase()
+    .replace(/[^0-9a-f]/g, "")
+    .slice(0, 8);
+  return `${WORKTREE_BRANCH_PREFIX}/${token}`;
 }
 
 export function isTemporaryWorktreeBranch(refName: string): boolean {
@@ -185,7 +176,9 @@ export function normalizeGitRemoteUrl(value: string): string {
     }
   }
 
-  const scpStyleHostAndPath = /^git@([^:/\s]+)[:/]([^/\s]+(?:\/[^/\s]+)+)$/i.exec(normalized);
+  const scpStyleHostAndPath = /^[a-zA-Z0-9._-]+@([^:/\s]+):([^/\s]+(?:\/[^/\s]+)+)$/i.exec(
+    normalized,
+  );
   if (scpStyleHostAndPath?.[1] && scpStyleHostAndPath[2]) {
     return `${scpStyleHostAndPath[1]}/${scpStyleHostAndPath[2]}`;
   }

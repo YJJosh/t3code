@@ -15,6 +15,10 @@
       "types": "./src/environment/index.ts",
       "default": "./src/environment/index.ts"
     },
+    "./markdown-images": {
+      "types": "./src/markdownImages.ts",
+      "default": "./src/markdownImages.ts"
+    },
     "./errors": {
       "types": "./src/errors/index.ts",
       "default": "./src/errors/index.ts"
@@ -35,9 +39,9 @@
       "types": "./src/platform/index.ts",
       "default": "./src/platform/index.ts"
     },
-    "./provider-capabilities": {
-      "types": "./src/providerCapabilities.ts",
-      "default": "./src/providerCapabilities.ts"
+    "./providerSkills": {
+      "types": "./src/providerSkills.ts",
+      "default": "./src/providerSkills.ts"
     },
     "./relay": {
       "types": "./src/relay/index.ts",
@@ -126,10 +130,6 @@
     "./state/source-control": {
       "types": "./src/state/sourceControl.ts",
       "default": "./src/state/sourceControl.ts"
-    },
-    "./state/subagents": {
-      "types": "./src/state/subagents.ts",
-      "default": "./src/state/subagents.ts"
     },
     "./state/terminal": {
       "types": "./src/state/terminal.ts",

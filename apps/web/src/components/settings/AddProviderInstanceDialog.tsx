@@ -225,8 +225,8 @@ export function AddProviderInstanceDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogPopup className="max-h-[calc(100dvh-1rem)] max-w-xl overflow-hidden">
-        <div className="flex max-h-[calc(100dvh-1rem)] min-h-0 flex-col overflow-hidden">
+      <DialogPopup className="max-w-xl overflow-hidden">
+        <div className="flex min-h-0 flex-col overflow-hidden">
           <DialogHeader>
             <DialogTitle>Add provider instance</DialogTitle>
             <DialogDescription>
@@ -243,7 +243,7 @@ export function AddProviderInstanceDialog({
 
           <div
             data-slot="dialog-panel"
-            className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-zinc-25/80 px-6 py-5 ring-1 ring-black/5 dark:bg-white/2 dark:ring-white/5"
+            className="space-y-4 bg-zinc-25/80 px-6 py-5 ring-1 ring-black/5 dark:bg-white/2 dark:ring-white/5"
           >
             <AnimatedHeight>
               <div className={cn("grid gap-2", wizardStep !== 0 && "hidden")}>

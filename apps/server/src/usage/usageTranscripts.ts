@@ -1,16 +1,12 @@
 /**
  * Pure parsers for the provider CLIs' on-disk session transcripts.
  *
- * The parsers are line-at-a-time reducers so callers can stream large files
- * without materialising them. None touches the filesystem.
+ * Each parser is a line-at-a-time reducer so callers can stream large files
+ * without materialising them. None of them touch the filesystem.
  *
  * @module usageTranscripts
  */
 import type { UsageProviderKind, UsageTokenTotals } from "@t3tools/contracts";
-
-export interface UsageParseDiagnostics {
-  malformedRecords: number;
-}
 
 export interface UsageRecord {
   readonly provider: UsageProviderKind;
@@ -72,7 +68,20 @@ export function totalTokens(totals: UsageTokenTotals): number {
  * an order of magnitude.
  */
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
-  return provider === "codex" ? line.includes('"token_count"') : line.includes('"usage"');
+  if (provider === "claude" || provider === "pi") return line.includes('"usage"');
+  if (provider === "grok") return line.includes('"turn_completed"');
+  return line.includes('"token_count"');
+}
+
+/**
+ * Grok reports cost in integer ticks where `1 USD = 10^10` ticks. See Grok
+ * headless `total_cost_usd_ticks`. Convert to dollars for pricing.
+ */
+export const GROK_COST_USD_TICKS_PER_DOLLAR = 10_000_000_000;
+
+export function grokCostTicksToUsd(ticks: unknown): number | null {
+  if (typeof ticks !== "number" || !Number.isFinite(ticks) || ticks < 0) return null;
+  return ticks / GROK_COST_USD_TICKS_PER_DOLLAR;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -87,15 +96,11 @@ export function mightCarryUsage(line: string, provider: UsageProviderKind): bool
  * message. Summing them overcounts by roughly 2.4x on a real workload, so the
  * caller must drop repeats by `dedupeKey` and keep the first.
  */
-export function parseClaudeLine(
-  line: string,
-  diagnostics?: UsageParseDiagnostics,
-): UsageRecord | null {
+export function parseClaudeLine(line: string): UsageRecord | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
   } catch {
-    if (diagnostics) diagnostics.malformedRecords += 1;
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
@@ -148,7 +153,11 @@ export function parseClaudeLine(
 /* Pi                                                                         */
 /* -------------------------------------------------------------------------- */
 
-/** Rolling identity needed for Pi usage entries that do not repeat model metadata. */
+/**
+ * Rolling identity for one Pi session file. Pi records the session id and cwd
+ * once in a `session` header and the active model in `model_change` events, so
+ * the usage-bearing message lines carry neither and must inherit both.
+ */
 export interface PiScanState {
   sessionId: string;
   projectPath: string;
@@ -160,17 +169,22 @@ export function initialPiScanState(): PiScanState {
   return { sessionId: "", projectPath: "", provider: "", model: "" };
 }
 
-/** Parses one line from Pi's native session JSONL format. */
-export function parsePiLine(
-  line: string,
-  state: PiScanState,
-  diagnostics?: UsageParseDiagnostics,
-): UsageRecord | null {
+/**
+ * Parses one line of a Pi native session JSONL file.
+ *
+ * Usage lands on assistant/toolResult `message` lines (and `compaction` /
+ * `branch_summary` lines) as a `usage` object; `session` and `model_change`
+ * lines only update rolling state and yield no record. Pi's historical session
+ * formats put the message either under `entry.message` or directly on the
+ * entry, so both are accepted. Records with no usable tokens, no known model,
+ * or no timestamp are dropped so malformed or placeholder lines never create
+ * phantom rows.
+ */
+export function parsePiLine(line: string, state: PiScanState): UsageRecord | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
   } catch {
-    if (diagnostics) diagnostics.malformedRecords += 1;
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
@@ -189,9 +203,11 @@ export function parsePiLine(
 
   let usage: unknown = entry["usage"];
   if (entry["type"] === "message") {
-    const message = entry["message"];
-    if (typeof message !== "object" || message === null) return null;
-    const messageRecord = message as Record<string, unknown>;
+    const nestedMessage = entry["message"];
+    const messageRecord =
+      typeof nestedMessage === "object" && nestedMessage !== null
+        ? (nestedMessage as Record<string, unknown>)
+        : entry;
     const role = messageRecord["role"];
     if (role !== "assistant" && role !== "toolResult") return null;
     if (role === "assistant") {
@@ -213,6 +229,7 @@ export function parsePiLine(
     cachedInputTokens: int(usageRecord["cacheRead"]),
     cacheCreationTokens: int(usageRecord["cacheWrite"]),
     outputTokens: int(usageRecord["output"]),
+    // Pi folds reasoning into output; clamp so it never exceeds the total it is a subset of.
     reasoningTokens: Math.min(int(usageRecord["output"]), int(usageRecord["reasoning"])),
   };
   if (totalTokens(totals) === 0) return null;
@@ -223,11 +240,16 @@ export function parsePiLine(
   return {
     provider: "pi",
     timestampMs,
+    // Pi models are provider-scoped; qualify with the provider when known so
+    // two providers' same-named models never collapse into one row.
     model: state.provider.length > 0 ? `${state.provider}/${state.model}` : state.model,
     sessionId: state.sessionId,
     totals,
     reportedCostUsd: typeof totalCost === "number" && Number.isFinite(totalCost) ? totalCost : null,
-    dedupeKey: null,
+    // Pi copies prior entries (including their ids) into forked sessions. The
+    // entry id is therefore the durable cross-file identity; branch siblings
+    // have their own ids and remain correctly counted as separate API calls.
+    dedupeKey: typeof entry["id"] === "string" ? `pi:${entry["id"]}` : null,
   };
 }
 
@@ -292,16 +314,11 @@ function isForkedSessionMeta(payload: Record<string, unknown>): boolean {
  * reconciles with the session's final `total_token_usage`, provided
  * consecutive duplicate events are dropped, which this does.
  */
-export function parseCodexLine(
-  line: string,
-  state: CodexScanState,
-  diagnostics?: UsageParseDiagnostics,
-): UsageRecord | null {
+export function parseCodexLine(line: string, state: CodexScanState): UsageRecord | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
   } catch {
-    if (diagnostics) diagnostics.malformedRecords += 1;
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
@@ -349,27 +366,22 @@ export function parseCodexLine(
   if (timestampMs === null) return null;
   if (state.model.length === 0) return null;
 
+  // Codex re-emits an unchanged token_count on some stream boundaries. Summing
+  // those would double count, so identical consecutive payloads are skipped.
   const signature = JSON.stringify(lastRecord);
+  if (signature === state.lastUsageSignature) return null;
+  state.lastUsageSignature = signature;
 
   // In a forked rollout the copied parent history was already counted from the
   // parent's own file. Drop the leading burst; the first usage event separated
-  // from its predecessor by a real turn's worth of time ends it for good. End
-  // suppression before duplicate filtering because the first genuine event can
-  // legitimately repeat the final copied totals.
+  // from its predecessor by a real turn's worth of time ends it for good.
   if (state.suppressingForkCopies) {
     if (timestampMs - state.forkCopyAnchorMs < FORK_COPY_MAX_GAP_MS) {
       state.forkCopyAnchorMs = timestampMs;
-      state.lastUsageSignature = signature;
       return null;
     }
     state.suppressingForkCopies = false;
-    state.lastUsageSignature = null;
   }
-
-  // Codex re-emits an unchanged token_count on some stream boundaries. Summing
-  // those would double count, so identical consecutive payloads are skipped.
-  if (signature === state.lastUsageSignature) return null;
-  state.lastUsageSignature = signature;
 
   const inputTokens = int(lastRecord["input_tokens"]);
   const cachedInputTokens = int(lastRecord["cached_input_tokens"]);
@@ -400,6 +412,181 @@ export function parseCodexLine(
     // rollout, so they need no global dedup.
     dedupeKey: null,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Grok Build                                                                 */
+/* -------------------------------------------------------------------------- */
+
+interface GrokUsageTotals {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedReadTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly reasoningTokens: number;
+  readonly costUsdTicks: number | null;
+}
+
+function readGrokUsageTotals(value: unknown): GrokUsageTotals | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  return {
+    inputTokens: int(record["inputTokens"]),
+    outputTokens: int(record["outputTokens"]),
+    cachedReadTokens: int(record["cachedReadTokens"]),
+    cacheCreationTokens: int(record["cacheCreationTokens"]),
+    reasoningTokens: int(record["reasoningTokens"]),
+    costUsdTicks:
+      typeof record["costUsdTicks"] === "number" && Number.isFinite(record["costUsdTicks"])
+        ? record["costUsdTicks"]
+        : null,
+  };
+}
+
+function grokTotalsToUsage(totals: GrokUsageTotals): UsageTokenTotals {
+  const cachedInputTokens = totals.cachedReadTokens;
+  const cacheCreationTokens = totals.cacheCreationTokens;
+  // Grok reports `inputTokens` inclusive of the cached portion, matching Codex.
+  const uncachedInputTokens = Math.max(
+    0,
+    totals.inputTokens - cachedInputTokens - cacheCreationTokens,
+  );
+  const outputTokens = totals.outputTokens;
+  return {
+    uncachedInputTokens,
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens,
+    reasoningTokens: Math.min(outputTokens, totals.reasoningTokens),
+  };
+}
+
+/**
+ * Parses one line of a Grok Build `updates.jsonl` session log.
+ *
+ * Usage lands on `turn_completed` session updates. Per-model breakdowns live
+ * under `usage.modelUsage`; when present each model becomes its own record.
+ *
+ * Returns every record for the line (0 or more). Callers stream line-by-line
+ * and flatten.
+ */
+export function parseGrokLine(line: string): readonly UsageRecord[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null) return [];
+
+  const record = parsed as Record<string, unknown>;
+  const params = record["params"];
+  if (typeof params !== "object" || params === null) return [];
+  const paramsRecord = params as Record<string, unknown>;
+
+  const update = paramsRecord["update"];
+  if (typeof update !== "object" || update === null) return [];
+  const updateRecord = update as Record<string, unknown>;
+  if (updateRecord["sessionUpdate"] !== "turn_completed") return [];
+
+  const usage = updateRecord["usage"];
+  if (typeof usage !== "object" || usage === null) return [];
+  const usageRecord = usage as Record<string, unknown>;
+
+  const sessionId = typeof paramsRecord["sessionId"] === "string" ? paramsRecord["sessionId"] : "";
+  const promptId = typeof updateRecord["prompt_id"] === "string" ? updateRecord["prompt_id"] : null;
+
+  // Prefer the high-resolution agent clock; fall back to the outer unix seconds.
+  const meta = paramsRecord["_meta"];
+  let timestampMs: number | null = null;
+  if (typeof meta === "object" && meta !== null) {
+    const agentTimestampMs = (meta as Record<string, unknown>)["agentTimestampMs"];
+    if (typeof agentTimestampMs === "number" && Number.isFinite(agentTimestampMs)) {
+      timestampMs = agentTimestampMs;
+    }
+  }
+  if (timestampMs === null) {
+    const timestamp = record["timestamp"];
+    if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+      timestampMs = timestamp > 1e12 ? timestamp : timestamp * 1000;
+    }
+  }
+  if (timestampMs === null) return [];
+
+  const topLevel = readGrokUsageTotals(usageRecord);
+  if (topLevel === null) return [];
+
+  const modelUsage = usageRecord["modelUsage"];
+  const modelEntries: Array<{ model: string; totals: GrokUsageTotals }> = [];
+  if (typeof modelUsage === "object" && modelUsage !== null) {
+    for (const [model, raw] of Object.entries(modelUsage as Record<string, unknown>)) {
+      if (model.length === 0) continue;
+      const totals = readGrokUsageTotals(raw);
+      if (totals === null) continue;
+      modelEntries.push({ model, totals });
+    }
+  }
+
+  if (modelEntries.length === 0) {
+    if (totalTokens(grokTotalsToUsage(topLevel)) === 0) return [];
+    return [
+      {
+        provider: "grok",
+        timestampMs,
+        model: "grok",
+        sessionId,
+        totals: grokTotalsToUsage(topLevel),
+        reportedCostUsd: grokCostTicksToUsd(topLevel.costUsdTicks),
+        // No prompt id means we cannot tell two same-second updates apart.
+        dedupeKey: promptId === null ? null : `${sessionId}:${promptId}:grok`,
+      },
+    ];
+  }
+
+  // Cost allocation:
+  // 1. Emitted models with their own costUsdTicks keep those values.
+  // 2. Remaining aggregate cost (top-level minus those per-model ticks,
+  //    clamped at 0) is pro-rated across emitted models that lack ticks,
+  //    by token share among the unticked models only.
+  // 3. When no model has per-model ticks, remaining equals the full
+  //    aggregate and every emitted model gets a token-share slice.
+  // Zero-token rows are never emitted and never count toward used ticks.
+  const topLevelCostUsd = grokCostTicksToUsd(topLevel.costUsdTicks);
+  let usedTickedCostUsd = 0;
+  let untickedTokenDenominator = 0;
+  for (const entry of modelEntries) {
+    const tokens = totalTokens(grokTotalsToUsage(entry.totals));
+    if (tokens === 0) continue;
+    if (entry.totals.costUsdTicks !== null) {
+      usedTickedCostUsd += grokCostTicksToUsd(entry.totals.costUsdTicks) ?? 0;
+    } else {
+      untickedTokenDenominator += tokens;
+    }
+  }
+  const remainingCostUsd =
+    topLevelCostUsd === null ? null : Math.max(0, topLevelCostUsd - usedTickedCostUsd);
+
+  const results: UsageRecord[] = [];
+  for (const entry of modelEntries) {
+    const totals = grokTotalsToUsage(entry.totals);
+    if (totalTokens(totals) === 0) continue;
+
+    let reportedCostUsd = grokCostTicksToUsd(entry.totals.costUsdTicks);
+    if (reportedCostUsd === null && remainingCostUsd !== null && untickedTokenDenominator > 0) {
+      reportedCostUsd = remainingCostUsd * (totalTokens(totals) / untickedTokenDenominator);
+    }
+
+    results.push({
+      provider: "grok",
+      timestampMs,
+      model: entry.model,
+      sessionId,
+      totals,
+      reportedCostUsd,
+      dedupeKey: promptId === null ? null : `${sessionId}:${promptId}:${entry.model}`,
+    });
+  }
+  return results;
 }
 
 export { EMPTY_TOTALS };

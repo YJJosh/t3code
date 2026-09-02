@@ -12,6 +12,10 @@ import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
+import {
+  deriveAgentPanelModel,
+  foldSubagentActivities,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -50,7 +54,6 @@ import {
 } from "../terminal/terminalLaunchContext";
 import { terminalDebugLog } from "../terminal/terminalDebugLog";
 import { ThreadDetailScreen } from "./ThreadDetailScreen";
-import { threadSupportsPiSubagents } from "./subagents/subagentPresentation";
 import {
   ThreadGitControls,
   useThreadGitCenterHeaderItems,
@@ -195,6 +198,20 @@ function ThreadRouteContent(
     useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
+  const mobileAgents = useMemo(() => {
+    if (selectedThreadDetail === null) return [];
+    const model = deriveAgentPanelModel({
+      agents: foldSubagentActivities(selectedThreadDetail.activities),
+    });
+    return [
+      ...model.directAgents,
+      ...model.workflows.flatMap((group) => [
+        group.workflow,
+        ...group.phases.flatMap((phase) => phase.members),
+        ...group.unphasedMembers,
+      ]),
+    ];
+  }, [selectedThreadDetail]);
   // "Load earlier turns" header state for windowed (paginated) thread loads.
   const loadEarlierTurns = useMemo(() => {
     if (selectedThread === null || !threadHasOlderTurns(selectedThreadDetailState)) {
@@ -760,7 +777,6 @@ function ThreadRouteContent(
     connectionState: routeConnectionState,
   });
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
-  const subagentsEnabled = threadSupportsPiSubagents(selectedThread, serverConfig);
   const renderThreadRouteBody = (showActionControls: boolean) => (
     <>
       <ThreadGitControls {...threadGitControlProps} showActionControls={showActionControls} />
@@ -775,6 +791,7 @@ function ThreadRouteContent(
           connectionError={routeConnectionError}
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
           selectedThreadFeed={composer.selectedThreadFeed}
+          subagents={mobileAgents}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
@@ -787,7 +804,6 @@ function ThreadRouteContent(
           connectionStateLabel={routeConnectionState}
           threadSyncStatus={selectedThreadDetailState.status}
           loadEarlier={loadEarlierTurns}
-          activeThreadBusy={composer.activeThreadBusy}
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           threadCwd={selectedThreadCwd}
@@ -800,7 +816,6 @@ function ThreadRouteContent(
           onNativePasteImages={composer.onNativePasteImages}
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
-          subagentsEnabled={subagentsEnabled}
           onStopThread={handleStopThread}
           onSendMessage={composer.onSendMessage}
           onReconnectEnvironment={handleReconnectEnvironment}

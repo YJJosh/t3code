@@ -20,6 +20,7 @@ import {
   DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE,
   DEFAULT_UNIFIED_SETTINGS,
   type EnvironmentIdentificationMode,
+  MAX_APPEARANCE_CONTRAST,
   MAX_CODE_FONT_SIZE,
   MAX_GLASS_OPACITY,
   MAX_INTERFACE_FONT_SIZE,
@@ -27,6 +28,7 @@ import {
   MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   MAX_TERMINAL_FONT_SIZE,
   MIN_CODE_FONT_SIZE,
+  MIN_APPEARANCE_CONTRAST,
   MIN_GLASS_OPACITY,
   MIN_INTERFACE_FONT_SIZE,
   MIN_PROMPT_FONT_SIZE,
@@ -68,6 +70,7 @@ import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
+  withoutPlanAgentSelection,
 } from "../../modelSelection";
 import {
   applyProviderInstanceSettings,
@@ -122,6 +125,7 @@ import {
   backgroundActivitySharedPolicySettings,
   durationToSeconds,
   formatDiagnosticsDescription,
+  getChangedBrowserSettingLabels,
   getChangedTypographySettingLabels,
   normalizeIntervalSeconds,
   PROVIDER_HEALTH_INTERVAL_STEP_SECONDS,
@@ -211,7 +215,7 @@ function backgroundActivityProfileSettings(profile: BackgroundActivityProfile) {
 
 function AboutVersionTitle() {
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex items-baseline gap-2">
       <span>Version</span>
       <code className="text-[11px] font-medium text-muted-foreground">{APP_VERSION}</code>
     </span>
@@ -284,7 +288,6 @@ function AboutVersionSection() {
         confirmed = await ensureLocalApi().dialogs.confirm(
           getDesktopUpdateInstallConfirmationMessage(
             updateState ?? { availableVersion: null, downloadedVersion: null },
-            navigator.platform,
           ),
         );
       } catch (error) {
@@ -474,6 +477,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(theme !== "system" ? ["Theme"] : []),
       ...(!followSystem ? ["Follow system"] : []),
       ...(themeHalves !== null ? ["Theme mix"] : []),
+      ...(settings.appearanceContrast !== DEFAULT_UNIFIED_SETTINGS.appearanceContrast
+        ? ["Contrast"]
+        : []),
       ...(settings.glassOpacity !== DEFAULT_UNIFIED_SETTINGS.glassOpacity ? ["Glass opacity"] : []),
       ...(settings.environmentIdentificationMode !==
       DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode
@@ -493,17 +499,20 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
         ? ["Auto-settle inactive threads"]
         : []),
+      ...(settings.sidebarAutoSettleOnMerge !== DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge
+        ? ["Auto-settle merged threads"]
+        : []),
       ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
       ...getChangedTypographySettingLabels(settings),
       ...(settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace
         ? ["Diff whitespace changes"]
         : []),
+      ...(settings.showSkillsInSlashMenu !== DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu
+        ? ["Show skills in slash menu"]
+        : []),
       ...(settings.enableLegacyTokenStreaming !==
       DEFAULT_UNIFIED_SETTINGS.enableLegacyTokenStreaming
         ? ["Stream token by token"]
-        : []),
-      ...(settings.showAgentReasoning !== DEFAULT_UNIFIED_SETTINGS.showAgentReasoning
-        ? ["Agent reasoning"]
         : []),
       ...(settings.enableProviderUpdateChecks !==
       DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks
@@ -513,27 +522,26 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode
         ? ["New thread mode"]
         : []),
-      ...(settings.newWorktreesStartFromDefaultBranch !==
-      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch
-        ? ["New workspaces start from default branch"]
-        : []),
       ...(settings.newWorktreesStartFromOrigin !==
       DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin
-        ? ["New workspaces start from origin"]
+        ? ["New worktrees start from origin"]
         : []),
       ...(settings.useWorklerForNewWorkspaces !==
       DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces
-        ? ["Workler workspace creation"]
+        ? ["Create new workspaces with Workler"]
         : []),
       ...(settings.includeT3CodeBranchPrefix !== DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix
-        ? ["T3 Code branch prefix"]
+        ? ["Include t3code/ in generated branches"]
         : []),
       ...(settings.useConventionalBranchPrefixes !==
       DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes
-        ? ["Branch category prefixes"]
+        ? ["Use conventional generated branch prefixes"]
         : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
+        : []),
+      ...(settings.confirmThreadUnpin !== DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin
+        ? ["Unpin confirmation"]
         : []),
       ...(settings.confirmThreadArchive !== DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive
         ? ["Archive confirmation"]
@@ -541,16 +549,30 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
+      ...(settings.confirmQuit !== DEFAULT_UNIFIED_SETTINGS.confirmQuit
+        ? ["Quit confirmation"]
+        : []),
       ...(isTextGenerationModelDirty ? ["Text generation model"] : []),
+      ...getChangedBrowserSettingLabels(settings),
+      ...(settings.enableAgentBrowserAccess !== DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess
+        ? ["Agent browser access"]
+        : []),
     ],
     [
       isTextGenerationModelDirty,
       isBackgroundActivityDirty,
+      settings.browserDefaultViewport,
+      settings.browserDefaultZoomFactor,
+      settings.browserDefaultAppearance,
+      settings.browserAutoShowFloatingPreview,
+      settings.appearanceContrast,
+      settings.enableAgentBrowserAccess,
+      settings.confirmQuit,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
+      settings.confirmThreadUnpin,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
-      settings.newWorktreesStartFromDefaultBranch,
       settings.newWorktreesStartFromOrigin,
       settings.useWorklerForNewWorkspaces,
       settings.includeT3CodeBranchPrefix,
@@ -568,10 +590,11 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.glassOpacity,
       settings.enableLegacyTokenStreaming,
       settings.enableProviderUpdateChecks,
-      settings.showAgentReasoning,
       settings.sidebarAutoSettleAfterDays,
+      settings.sidebarAutoSettleOnMerge,
       settings.sidebarProjectGroupingMode,
       settings.sidebarThreadPreviewCount,
+      settings.showSkillsInSlashMenu,
       settings.timestampFormat,
       settings.wordWrap,
       followSystem,
@@ -643,14 +666,17 @@ export function useSettingsRestore(onRestored?: () => void) {
       return;
     }
     updateSettings({
+      appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
+      showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       environmentIdentificationMode: DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
+      sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
       enableLegacyTokenStreaming: DEFAULT_UNIFIED_SETTINGS.enableLegacyTokenStreaming,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
@@ -658,8 +684,6 @@ export function useSettingsRestore(onRestored?: () => void) {
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       providerHealthRefreshInterval: DEFAULT_UNIFIED_SETTINGS.providerHealthRefreshInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
-      newWorktreesStartFromDefaultBranch:
-        DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
       useWorklerForNewWorkspaces: DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
       includeT3CodeBranchPrefix: DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix,
@@ -667,6 +691,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      confirmThreadUnpin: DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin,
+      confirmQuit: DEFAULT_UNIFIED_SETTINGS.confirmQuit,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       fontFamilySans: DEFAULT_UNIFIED_SETTINGS.fontFamilySans,
       fontFamilyComposer: DEFAULT_UNIFIED_SETTINGS.fontFamilyComposer,
@@ -676,6 +702,14 @@ export function useSettingsRestore(onRestored?: () => void) {
       fontSizePrompt: DEFAULT_UNIFIED_SETTINGS.fontSizePrompt,
       fontSizeCode: DEFAULT_UNIFIED_SETTINGS.fontSizeCode,
       fontSizeTerminal: DEFAULT_UNIFIED_SETTINGS.fontSizeTerminal,
+      browserDefaultViewport: DEFAULT_UNIFIED_SETTINGS.browserDefaultViewport,
+      browserDefaultZoomFactor: DEFAULT_UNIFIED_SETTINGS.browserDefaultZoomFactor,
+      browserDefaultAppearance: DEFAULT_UNIFIED_SETTINGS.browserDefaultAppearance,
+      browserAutoShowFloatingPreview: DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview,
+      // Re-granted like any other default. The confirmation dialog lists it by
+      // name, so a user restoring defaults is told the agent regains access
+      // rather than discovering it later.
+      enableAgentBrowserAccess: DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess,
     });
     onRestored?.();
   }, [
@@ -986,6 +1020,13 @@ export function AppearanceSettingsPanel() {
     "--settings-slider-progress": `${glassOpacityRatio * 100}%`,
     "--settings-slider-fill-offset": `${0.5 - glassOpacityRatio}rem`,
   } as CSSProperties;
+  const appearanceContrastRatio =
+    (settings.appearanceContrast - MIN_APPEARANCE_CONTRAST) /
+    (MAX_APPEARANCE_CONTRAST - MIN_APPEARANCE_CONTRAST);
+  const appearanceContrastSliderStyle = {
+    "--settings-slider-progress": `${appearanceContrastRatio * 100}%`,
+    "--settings-slider-fill-offset": `${0.5 - appearanceContrastRatio}rem`,
+  } as CSSProperties;
 
   return (
     <SettingsPageContainer>
@@ -1005,6 +1046,54 @@ export function AppearanceSettingsPanel() {
             onImportOpenChange={setIsImportThemeOpen}
           />
         </div>
+
+        <SettingsRow
+          {...searchableSetting("setting-appearance-contrast")}
+          description="Adjust the contrast of colors and borders across the interface."
+          resetAction={
+            settings.appearanceContrast !== DEFAULT_UNIFIED_SETTINGS.appearanceContrast ? (
+              <SettingResetButton
+                label="contrast"
+                onClick={() =>
+                  updateSettings({
+                    appearanceContrast: DEFAULT_UNIFIED_SETTINGS.appearanceContrast,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex w-full items-center gap-3 sm:w-52">
+              <output
+                className="min-w-12 rounded-md bg-muted px-2 py-1 text-center font-mono text-xs font-medium tabular-nums text-foreground"
+                htmlFor="appearance-contrast"
+              >
+                {settings.appearanceContrast}%
+              </output>
+              <input
+                aria-label="Contrast"
+                className="settings-slider min-w-0 flex-1"
+                id="appearance-contrast"
+                max={MAX_APPEARANCE_CONTRAST}
+                min={MIN_APPEARANCE_CONTRAST}
+                onChange={(event) => {
+                  const appearanceContrast = Number(event.currentTarget.value);
+                  if (
+                    Number.isInteger(appearanceContrast) &&
+                    appearanceContrast >= MIN_APPEARANCE_CONTRAST &&
+                    appearanceContrast <= MAX_APPEARANCE_CONTRAST
+                  ) {
+                    updateSettings({ appearanceContrast });
+                  }
+                }}
+                step={5}
+                style={appearanceContrastSliderStyle}
+                type="range"
+                value={settings.appearanceContrast}
+              />
+            </div>
+          }
+        />
 
         <SettingsRow
           {...searchableSetting("setting-glass-opacity")}
@@ -1711,9 +1800,31 @@ function LegacyFeaturesSection() {
               control={
                 <Switch
                   checked={settings.planModeEnabled}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ planModeEnabled: Boolean(checked) })
-                  }
+                  onCheckedChange={(checked) => {
+                    const planModeEnabled = Boolean(checked);
+                    const textGenerationModelSelection = withoutPlanAgentSelection(
+                      settings.textGenerationModelSelection,
+                    );
+                    const sourceControlWriterModelSelection = withoutPlanAgentSelection(
+                      settings.sourceControlWriterModelSelection,
+                    );
+                    updateSettings({
+                      planModeEnabled,
+                      ...(planModeEnabled
+                        ? {}
+                        : {
+                            ...(textGenerationModelSelection &&
+                            textGenerationModelSelection !== settings.textGenerationModelSelection
+                              ? { textGenerationModelSelection }
+                              : {}),
+                            ...(sourceControlWriterModelSelection &&
+                            sourceControlWriterModelSelection !==
+                              settings.sourceControlWriterModelSelection
+                              ? { sourceControlWriterModelSelection }
+                              : {}),
+                          }),
+                    });
+                  }}
                   aria-label="Plan mode (legacy)"
                 />
               }
@@ -1857,8 +1968,35 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          {...searchableSetting("auto-settle-merged-threads")}
+          description="Settle a thread when its pull request merges. Closed pull requests still settle automatically."
+          resetAction={
+            settings.sidebarAutoSettleOnMerge !==
+            DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge ? (
+              <SettingResetButton
+                label="auto-settle on merge"
+                onClick={() =>
+                  updateSettings({
+                    sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.sidebarAutoSettleOnMerge}
+              onCheckedChange={(checked) =>
+                updateSettings({ sidebarAutoSettleOnMerge: Boolean(checked) })
+              }
+              aria-label="Auto-settle merged threads"
+            />
+          }
+        />
+
+        <SettingsRow
           {...searchableSetting("auto-settle-inactive-threads")}
-          description="Sidebar threads with no activity for this long settle automatically. Threads on merged or closed PRs always settle."
+          description="Sidebar threads with no activity for this long settle automatically."
           resetAction={
             settings.sidebarAutoSettleAfterDays !==
             DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ? (
@@ -1966,15 +2104,15 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          {...searchableSetting("agent-reasoning")}
-          description="Show reasoning traces emitted by providers in the conversation work log."
+          {...searchableSetting("skills-in-slash-menu")}
+          description="Also include skills in the / command menu. Skills always appear when you type $."
           resetAction={
-            settings.showAgentReasoning !== DEFAULT_UNIFIED_SETTINGS.showAgentReasoning ? (
+            settings.showSkillsInSlashMenu !== DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu ? (
               <SettingResetButton
-                label="agent reasoning"
+                label="skills in slash menu"
                 onClick={() =>
                   updateSettings({
-                    showAgentReasoning: DEFAULT_UNIFIED_SETTINGS.showAgentReasoning,
+                    showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
                   })
                 }
               />
@@ -1982,11 +2120,11 @@ export function GeneralSettingsPanel() {
           }
           control={
             <Switch
-              checked={settings.showAgentReasoning}
+              checked={settings.showSkillsInSlashMenu}
               onCheckedChange={(checked) =>
-                updateSettings({ showAgentReasoning: Boolean(checked) })
+                updateSettings({ showSkillsInSlashMenu: Boolean(checked) })
               }
-              aria-label="Show agent reasoning"
+              aria-label="Show skills in slash menu"
             />
           }
         />
@@ -2104,12 +2242,16 @@ export function GeneralSettingsPanel() {
           {...searchableSetting("new-threads")}
           description="Pick the default workspace mode for newly created draft threads."
           resetAction={
-            settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
+            settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ||
+            settings.newWorktreesStartFromOrigin !==
+              DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
               <SettingResetButton
                 label="new threads"
                 onClick={() =>
                   updateSettings({
                     defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+                    newWorktreesStartFromOrigin:
+                      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
                   })
                 }
               />
@@ -2126,7 +2268,7 @@ export function GeneralSettingsPanel() {
             >
               <SelectTrigger className="w-full sm:w-44" aria-label="Default thread mode">
                 <SelectValue>
-                  {settings.defaultThreadEnvMode === "worktree" ? "New workspace" : "Local"}
+                  {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -2134,12 +2276,43 @@ export function GeneralSettingsPanel() {
                   Local
                 </SelectItem>
                 <SelectItem hideIndicator value="worktree">
-                  New workspace
+                  New worktree
                 </SelectItem>
               </SelectPopup>
             </Select>
           }
         />
+
+        {settings.defaultThreadEnvMode === "worktree" ? (
+          <SettingsRow
+            className="bg-muted/20 sm:pl-9"
+            title={searchableSetting("start-from-origin").title}
+            description="Creates the worktree from the latest matching branch on origin instead of your local branch."
+            resetAction={
+              settings.newWorktreesStartFromOrigin !==
+              DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
+                <SettingResetButton
+                  label="new worktrees start from origin"
+                  onClick={() =>
+                    updateSettings({
+                      newWorktreesStartFromOrigin:
+                        DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.newWorktreesStartFromOrigin}
+                onCheckedChange={(checked) =>
+                  updateSettings({ newWorktreesStartFromOrigin: Boolean(checked) })
+                }
+                aria-label="Start new worktrees from origin by default"
+              />
+            }
+          />
+        ) : null}
 
         <SettingsRow
           {...searchableSetting("add-project-starts-in")}
@@ -2165,6 +2338,32 @@ export function GeneralSettingsPanel() {
               placeholder="~/"
               spellCheck={false}
               aria-label="Add project base directory"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("unpin-confirmation")}
+          description="Ask before unpinning a thread from the pinned section."
+          resetAction={
+            settings.confirmThreadUnpin !== DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin ? (
+              <SettingResetButton
+                label="unpin confirmation"
+                onClick={() =>
+                  updateSettings({
+                    confirmThreadUnpin: DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.confirmThreadUnpin}
+              onCheckedChange={(checked) =>
+                updateSettings({ confirmThreadUnpin: Boolean(checked) })
+              }
+              aria-label="Confirm thread unpinning"
             />
           }
         />
@@ -2221,6 +2420,30 @@ export function GeneralSettingsPanel() {
           }
         />
 
+        {isElectron ? (
+          <SettingsRow
+            {...searchableSetting("quit-confirmation")}
+            description="Require holding the quit shortcut before the desktop app quits. A quick tap shows a hint instead."
+            resetAction={
+              settings.confirmQuit !== DEFAULT_UNIFIED_SETTINGS.confirmQuit ? (
+                <SettingResetButton
+                  label="quit confirmation"
+                  onClick={() =>
+                    updateSettings({ confirmQuit: DEFAULT_UNIFIED_SETTINGS.confirmQuit })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.confirmQuit}
+                onCheckedChange={(checked) => updateSettings({ confirmQuit: Boolean(checked) })}
+                aria-label="Hold to quit"
+              />
+            }
+          />
+        ) : null}
+
         <SettingsRow
           {...searchableSetting("text-generation-model")}
           description="Default model for generated text like thread titles and source control content. Source control settings can override it with a dedicated source control writer model."
@@ -2273,6 +2496,7 @@ export function GeneralSettingsPanel() {
                 onPromptChange={() => {}}
                 modelOptions={textGenModelOptions}
                 allowPromptInjectedEffort={false}
+                planModeEnabled={settings.planModeEnabled}
                 triggerVariant="outline"
                 triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
                 onModelOptionsChange={(nextOptions) => {
@@ -2296,17 +2520,17 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
-      {/* Settings introduced by the T3 Dulli fork, grouped so upstream General
-          stays recognizable and sync merges keep a single insertion point. */}
+      {/* Keep fork-owned settings together so upstream General stays recognizable
+          and future syncs have one intentional insertion point. */}
       <SettingsSection title="Fork features">
         <SettingsRow
-          {...searchableSetting("use-workler")}
-          description="Create new isolated workspaces as ordinary Workler clones under the repository's .worktrees directory. Turn this off to create Git worktrees instead. Existing workspaces remain available either way."
+          {...searchableSetting("workler-workspaces")}
+          description="Create automatically located workspaces as independent clones and apply this repository's Workler copy/link rules. Explicit worktree paths still use Git."
           resetAction={
             settings.useWorklerForNewWorkspaces !==
             DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces ? (
               <SettingResetButton
-                label="Workler workspace creation"
+                label="create new workspaces with Workler"
                 onClick={() =>
                   updateSettings({
                     useWorklerForNewWorkspaces: DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces,
@@ -2321,75 +2545,19 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ useWorklerForNewWorkspaces: Boolean(checked) })
               }
-              aria-label="Use Workler for new workspaces"
+              aria-label="Create new workspaces with Workler"
             />
           }
         />
 
         <SettingsRow
-          {...searchableSetting("default-branch")}
-          description="Start new workspace threads from the repository's default branch instead of inheriting a branch or using the current checkout."
-          resetAction={
-            settings.newWorktreesStartFromDefaultBranch !==
-            DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch ? (
-              <SettingResetButton
-                label="new workspaces start from the default branch"
-                onClick={() =>
-                  updateSettings({
-                    newWorktreesStartFromDefaultBranch:
-                      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromDefaultBranch,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.newWorktreesStartFromDefaultBranch}
-              onCheckedChange={(checked) =>
-                updateSettings({ newWorktreesStartFromDefaultBranch: Boolean(checked) })
-              }
-              aria-label="Start new workspaces from the default branch"
-            />
-          }
-        />
-
-        <SettingsRow
-          {...searchableSetting("start-from-origin")}
-          description="Creates the workspace from the latest matching branch on origin instead of your local branch."
-          resetAction={
-            settings.newWorktreesStartFromOrigin !==
-            DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
-              <SettingResetButton
-                label="new workspaces start from origin"
-                onClick={() =>
-                  updateSettings({
-                    newWorktreesStartFromOrigin:
-                      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.newWorktreesStartFromOrigin}
-              onCheckedChange={(checked) =>
-                updateSettings({ newWorktreesStartFromOrigin: Boolean(checked) })
-              }
-              aria-label="Start new workspaces from origin by default"
-            />
-          }
-        />
-
-        <SettingsRow
-          {...searchableSetting("t3code-branch-prefix")}
+          {...searchableSetting("generated-branch-prefix")}
           description="Prefix agent-generated worktree branches with t3code/."
           resetAction={
             settings.includeT3CodeBranchPrefix !==
             DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix ? (
               <SettingResetButton
-                label="T3 Code branch prefix"
+                label="include t3code in generated branches"
                 onClick={() =>
                   updateSettings({
                     includeT3CodeBranchPrefix: DEFAULT_UNIFIED_SETTINGS.includeT3CodeBranchPrefix,
@@ -2404,19 +2572,19 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ includeT3CodeBranchPrefix: Boolean(checked) })
               }
-              aria-label="Prefix agent-generated branches with t3code"
+              aria-label="Include t3code in generated branches"
             />
           }
         />
 
         <SettingsRow
-          {...searchableSetting("branch-category-prefixes")}
-          description="Require agent-generated names to start with a category such as feature/, fix/, chore/, or refactor/."
+          {...searchableSetting("conventional-branch-prefixes")}
+          description="Start generated branch names with a category such as feature/ or fix/."
           resetAction={
             settings.useConventionalBranchPrefixes !==
             DEFAULT_UNIFIED_SETTINGS.useConventionalBranchPrefixes ? (
               <SettingResetButton
-                label="branch category prefixes"
+                label="use conventional generated branch prefixes"
                 onClick={() =>
                   updateSettings({
                     useConventionalBranchPrefixes:
@@ -2432,7 +2600,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ useConventionalBranchPrefixes: Boolean(checked) })
               }
-              aria-label="Require category prefixes on agent-generated branches"
+              aria-label="Use conventional generated branch prefixes"
             />
           }
         />

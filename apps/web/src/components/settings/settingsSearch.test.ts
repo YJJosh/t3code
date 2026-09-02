@@ -56,8 +56,21 @@ describe("searchSettings", () => {
     ]);
   });
 
+  it("lists thread confirmations in panel order", () => {
+    expect(searchSettings("confirmation").map((item) => item.id)).toEqual([
+      "unpin-confirmation",
+      "archive-confirmation",
+      "delete-confirmation",
+    ]);
+  });
+
   it("returns no results for an empty query", () => {
     expect(searchSettings("   ", ITEMS)).toEqual([]);
+  });
+
+  it("hides desktop-only settings from browser search", () => {
+    expect(SETTINGS_SEARCH_ITEMS.some((item) => item.id === "quit-confirmation")).toBe(true);
+    expect(searchSettings("quit confirmation")).toEqual([]);
   });
 
   it("keeps catalog result ids unique", () => {
@@ -67,10 +80,6 @@ describe("searchSettings", () => {
 
   it("serves anchor props to panels from the catalog", () => {
     expect(searchableSetting("word-wrap")).toEqual({ id: "word-wrap", title: "Word wrap" });
-    expect(searchableSetting("agent-reasoning")).toEqual({
-      id: "agent-reasoning",
-      title: "Agent reasoning",
-    });
     expect(searchableSetting("archive")).toEqual({ id: "archive", title: "Archived threads" });
   });
 

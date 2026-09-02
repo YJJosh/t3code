@@ -38,11 +38,7 @@ export interface UseViewportClampedMaxWidthOptions {
   readonly fallbackViewportWidth?: number;
 }
 
-/**
- * Responsive maximum for wide side panels. Tracking the viewport here keeps
- * every consumer clamped when the OS/browser window is resized, rather than
- * duplicating resize listeners in each panel implementation.
- */
+/** Responsive maximum shared by side panels that size against the viewport. */
 export function useViewportClampedMaxWidth({
   maxWidth,
   maxViewportFraction,

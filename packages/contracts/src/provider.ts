@@ -56,6 +56,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   // See ProviderSession for the migration story.
   providerInstanceId: Schema.optional(ProviderInstanceId),
   cwd: Schema.optional(TrimmedNonEmptyString),
+  title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
@@ -108,6 +109,67 @@ export const ProviderRespondToUserInputInput = Schema.Struct({
   answers: ProviderUserInputAnswers,
 });
 export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputInput.Type;
+
+const ProviderTaskControlBase = {
+  threadId: ThreadId,
+  taskId: TrimmedNonEmptyString,
+} as const;
+
+/** Provider-neutral control for a task surfaced in the Agents panel. */
+export const ProviderTaskControlInput = Schema.Union([
+  Schema.Struct({
+    ...ProviderTaskControlBase,
+    action: Schema.Literal("steer"),
+    message: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    ...ProviderTaskControlBase,
+    action: Schema.Literal("reply"),
+    message: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    ...ProviderTaskControlBase,
+    action: Schema.Literal("stop"),
+    reason: Schema.optional(TrimmedNonEmptyString),
+  }),
+]);
+export type ProviderTaskControlInput = typeof ProviderTaskControlInput.Type;
+
+export class ProviderTaskControlError extends Schema.TaggedErrorClass<ProviderTaskControlError>()(
+  "ProviderTaskControlError",
+  {
+    threadId: ThreadId,
+    taskId: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Failed to control task ${this.taskId} for thread ${this.threadId}.`;
+  }
+}
+
+export const ProviderUploadFeedbackInput = Schema.Struct({
+  threadId: ThreadId,
+  reason: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderUploadFeedbackInput = typeof ProviderUploadFeedbackInput.Type;
+
+export const ProviderUploadFeedbackResult = Schema.Struct({
+  feedbackId: TrimmedNonEmptyString,
+});
+export type ProviderUploadFeedbackResult = typeof ProviderUploadFeedbackResult.Type;
+
+export class ProviderUploadFeedbackError extends Schema.TaggedErrorClass<ProviderUploadFeedbackError>()(
+  "ProviderUploadFeedbackError",
+  {
+    threadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Failed to upload feedback for thread ${this.threadId}.`;
+  }
+}
 
 const ProviderEventKind = Schema.Literals(["session", "notification", "request", "error"]);
 

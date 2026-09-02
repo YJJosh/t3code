@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { PiBackgroundTerminalEvent, PiSettings, PiSubagentEvent } from "@t3tools/contracts";
+import { PiSettings } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -7,280 +7,165 @@ import {
   buildPiRpcArgs,
   buildPiRpcEnv,
   extractPiAssistantText,
+  parsePiBackgroundTerminalNotification,
   parsePiContextWindow,
   parsePiFastServiceEnabled,
-  parsePiBackgroundTerminalNotification,
-  parsePiSubagentNotification,
+  parsePiTaskBridgeNotification,
   parsePiThinkingLevel,
   PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX,
   PI_SUBAGENTS_RPC_EVENT_PREFIX,
   resolvePiBinary,
   supportsPiCodexFastService,
-  type PiExtensionUiRequest,
 } from "./piRpcProtocol.ts";
 
-const decodePiSettings = Schema.decodeSync(PiSettings);
-const DEFAULTS = decodePiSettings({});
+const decodeSettings = Schema.decodeSync(PiSettings);
 
-describe("PiSettings defaults", () => {
-  it("supplies the documented defaults from an empty config", () => {
-    expect(DEFAULTS).toEqual({
-      enabled: true,
-      binaryPath: "pi",
-      profile: "coder",
-      agentDir: "",
-      customModels: [],
-    });
-  });
-});
-
-describe("buildPiRpcArgs", () => {
-  it("always requests rpc mode with --approve and the default coder profile", () => {
-    expect(buildPiRpcArgs(DEFAULTS)).toEqual(["--mode", "rpc", "--approve", "--profile", "coder"]);
-  });
-
-  it("does not disable extensions/skills/prompts/context (keeps them enabled)", () => {
-    const args = buildPiRpcArgs(DEFAULTS);
-    expect(args).not.toContain("--no-extensions");
-    expect(args).not.toContain("--no-skills");
-    expect(args).not.toContain("--no-prompt-templates");
-    expect(args).not.toContain("--no-context-files");
-  });
-
-  it("honors a custom provider profile", () => {
-    const args = buildPiRpcArgs(decodePiSettings({ profile: "reviewer" }));
-    expect(args).toEqual(["--mode", "rpc", "--approve", "--profile", "reviewer"]);
-  });
-
-  it("lets a thread selection override the provider profile", () => {
-    const args = buildPiRpcArgs(decodePiSettings({ profile: "coder" }), {
-      profile: "research",
-    });
-    expect(args).toEqual(["--mode", "rpc", "--approve", "--profile", "research"]);
-  });
-
-  it("appends resume/model/thinking flags in order", () => {
-    const args = buildPiRpcArgs(DEFAULTS, {
-      model: "anthropic/claude-sonnet-5",
-      thinkingLevel: "high",
-      resumeSessionId: "abc123",
-    });
-    expect(args).toEqual([
+describe("Pi RPC protocol", () => {
+  it("builds approved long-lived RPC arguments without disabling resources", () => {
+    expect(buildPiRpcArgs(decodeSettings({}))).toEqual([
       "--mode",
       "rpc",
       "--approve",
       "--profile",
       "coder",
+    ]);
+    expect(
+      buildPiRpcArgs(decodeSettings({ profile: "provider-default" }), {
+        profile: "thread-profile",
+        resumeSessionId: "session-1",
+        model: "anthropic/claude-sonnet-5",
+        thinkingLevel: "high",
+      }),
+    ).toEqual([
+      "--mode",
+      "rpc",
+      "--approve",
+      "--profile",
+      "thread-profile",
       "--session",
-      "abc123",
+      "session-1",
       "--model",
       "anthropic/claude-sonnet-5",
       "--thinking",
       "high",
     ]);
   });
-});
 
-describe("buildPiRpcEnv", () => {
-  it("uses the real default agent dir when agentDir is blank (no override set)", () => {
-    const env = buildPiRpcEnv(DEFAULTS, { HOME: "/home/x" });
-    expect(env.PI_CODING_AGENT_DIR).toBeUndefined();
-    expect(env.PI_SUBAGENTS_RPC_BRIDGE).toBe("1");
-    expect(env.PI_BACKGROUND_TERMINALS_RPC_BRIDGE).toBe("1");
-    expect(env.HOME).toBe("/home/x");
+  it("uses Pi defaults and applies only explicit binary/agent-directory overrides", () => {
+    expect(resolvePiBinary(decodeSettings({}))).toBe("pi");
+    expect(resolvePiBinary(decodeSettings({ binaryPath: "/opt/pi" }))).toBe("/opt/pi");
+    expect(buildPiRpcEnv(decodeSettings({}), { HOME: "/home/test" })).toEqual({
+      HOME: "/home/test",
+      PI_SUBAGENTS_RPC_BRIDGE: "1",
+      PI_BACKGROUND_TERMINALS_RPC_BRIDGE: "1",
+    });
+    expect(buildPiRpcEnv(decodeSettings({ agentDir: "/agents" }), { HOME: "/home/test" })).toEqual({
+      HOME: "/home/test",
+      PI_SUBAGENTS_RPC_BRIDGE: "1",
+      PI_BACKGROUND_TERMINALS_RPC_BRIDGE: "1",
+      PI_CODING_AGENT_DIR: "/agents",
+    });
   });
 
-  it("sets PI_CODING_AGENT_DIR only when an override is configured", () => {
-    const env = buildPiRpcEnv(decodePiSettings({ agentDir: "/custom/agent" }), { HOME: "/home/x" });
-    expect(env.PI_CODING_AGENT_DIR).toBe("/custom/agent");
-  });
-});
-
-describe("parsePiBackgroundTerminalNotification", () => {
-  it("decodes only valid v1 background-terminal notifications", () => {
-    const envelope = {
-      contractVersion: 1,
-      managerId: "pi-background-terminals:manager",
-      sequence: 1,
-      timestamp: "2026-07-09T12:00:00.000Z",
-      kind: "control_result",
-      control: { action: "replay", success: true },
-    } as const;
-    const encode = Schema.encodeSync(Schema.fromJsonString(PiBackgroundTerminalEvent));
-    expect(
-      parsePiBackgroundTerminalNotification({
-        type: "extension_ui_request",
-        id: "terminal-event-1",
-        method: "notify",
-        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${encode(envelope)}`,
-        notifyType: "info",
-      }),
-    ).toEqual(envelope);
-    expect(
-      parsePiBackgroundTerminalNotification({
-        type: "extension_ui_request",
-        id: "terminal-event-2",
-        method: "notify",
-        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}{bad`,
-        notifyType: "info",
-      }),
-    ).toBeUndefined();
-  });
-});
-
-describe("parsePiSubagentNotification", () => {
-  it("decodes only valid prefixed v1 notify events", () => {
-    const envelope = {
-      contractVersion: 1 as const,
-      managerId: "pi-subagents:manager",
-      sequence: 1,
-      timestamp: "2026-07-09T12:00:00.000Z",
-      kind: "control_result" as const,
-      control: { action: "replay" as const, success: true, requestId: "ui-1" },
-    };
-    const encode = Schema.encodeSync(Schema.fromJsonString(PiSubagentEvent));
-    expect(
-      parsePiSubagentNotification({
-        type: "extension_ui_request",
-        id: "notify-1",
-        method: "notify",
-        message: `${PI_SUBAGENTS_RPC_EVENT_PREFIX}${encode(envelope)}`,
-      }),
-    ).toEqual(envelope);
-    expect(
-      parsePiSubagentNotification({
-        type: "extension_ui_request",
-        id: "notify-2",
-        method: "notify",
-        message: "ordinary extension notification",
-      }),
-    ).toBeUndefined();
-    expect(
-      parsePiSubagentNotification({
-        type: "extension_ui_request",
-        id: "notify-3",
-        method: "notify",
-        message: `${PI_SUBAGENTS_RPC_EVENT_PREFIX}{bad`,
-      }),
-    ).toBeUndefined();
-  });
-});
-
-describe("resolvePiBinary", () => {
-  it("defaults to `pi` and honors an explicit path", () => {
-    expect(resolvePiBinary(DEFAULTS)).toBe("pi");
-    expect(resolvePiBinary(decodePiSettings({ binaryPath: "/opt/pi" }))).toBe("/opt/pi");
-  });
-});
-
-describe("parsePiThinkingLevel", () => {
-  it("accepts valid levels and rejects everything else", () => {
-    expect(parsePiThinkingLevel("high")).toBe("high");
-    expect(parsePiThinkingLevel("xhigh")).toBe("xhigh");
+  it("parses only safe thinking, context, and service-tier selections", () => {
     expect(parsePiThinkingLevel("max")).toBe("max");
-    expect(parsePiThinkingLevel("ultra")).toBeUndefined();
-    expect(parsePiThinkingLevel(undefined)).toBeUndefined();
-    expect(parsePiThinkingLevel(5)).toBeUndefined();
-  });
-});
-
-describe("Pi Codex Fast service", () => {
-  it("recognizes supported models and service-tier values", () => {
-    expect(supportsPiCodexFastService("openai-codex/gpt-5.5")).toBe(true);
-    expect(supportsPiCodexFastService("openai-codex/gpt-5.4")).toBe(true);
-    expect(supportsPiCodexFastService("openai-codex/gpt-5.6-sol")).toBe(true);
-    expect(supportsPiCodexFastService("openai-codex/gpt-5.6-terra")).toBe(true);
-    expect(supportsPiCodexFastService("openai-codex/gpt-5.6-luna")).toBe(true);
-    expect(supportsPiCodexFastService("openai-codex/gpt-5.4-mini")).toBe(false);
+    expect(parsePiThinkingLevel("turbo")).toBeUndefined();
+    expect(parsePiContextWindow("200k")).toBe("200k");
+    expect(parsePiContextWindow("1.5m")).toBe("1.5m");
+    expect(parsePiContextWindow("auto")).toBe("auto");
+    expect(parsePiContextWindow("200k\n/fast on")).toBeUndefined();
     expect(parsePiFastServiceEnabled("priority")).toBe(true);
     expect(parsePiFastServiceEnabled("default")).toBe(false);
-    expect(parsePiFastServiceEnabled("flex")).toBeUndefined();
+    expect(supportsPiCodexFastService("openai-codex/gpt-5.4")).toBe(true);
+    expect(supportsPiCodexFastService("anthropic/claude-sonnet-5")).toBe(false);
   });
-});
 
-describe("parsePiContextWindow", () => {
-  it("accepts safe context values and rejects command injection or invalid values", () => {
-    expect(parsePiContextWindow("auto")).toBe("auto");
-    expect(parsePiContextWindow(" 372K ")).toBe("372k");
-    expect(parsePiContextWindow("1.05m")).toBe("1.05m");
-    expect(parsePiContextWindow("/context 200k")).toBeUndefined();
-    expect(parsePiContextWindow("200k\n/fast on")).toBeUndefined();
-    expect(parsePiContextWindow("0")).toBeUndefined();
-    expect(parsePiContextWindow(undefined)).toBeUndefined();
-  });
-});
-
-describe("autoRespondToExtensionUi (yolo mode)", () => {
-  const base = { type: "extension_ui_request" as const, id: "req-1" };
-
-  it("auto-confirms confirm requests", () => {
-    const request: PiExtensionUiRequest = {
-      ...base,
-      method: "confirm",
-      title: "Proceed?",
-      message: "Are you sure?",
+  it("parses optional workflow notifications without exporting fork-only contracts", () => {
+    const event = {
+      contractVersion: 1,
+      managerId: "manager-1",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      kind: "run_created",
+      runId: "run-1",
+      view: { runId: "run-1", task: "Review", state: "running" },
     };
-    expect(autoRespondToExtensionUi(request)).toEqual({
-      type: "extension_ui_response",
-      id: "req-1",
-      confirmed: true,
-    });
+    expect(
+      parsePiTaskBridgeNotification({
+        type: "extension_ui_request",
+        id: "notice-1",
+        method: "notify",
+        message: `${PI_SUBAGENTS_RPC_EVENT_PREFIX}${JSON.stringify(event)}`,
+      }),
+    ).toEqual(event);
+    expect(
+      parsePiTaskBridgeNotification({
+        type: "extension_ui_request",
+        id: "notice-2",
+        method: "notify",
+        message: `${PI_SUBAGENTS_RPC_EVENT_PREFIX}{not-json}`,
+      }),
+    ).toBeUndefined();
   });
 
-  it("selects the first option for select requests", () => {
-    const request: PiExtensionUiRequest = {
-      ...base,
-      method: "select",
-      title: "Pick",
-      options: ["alpha", "beta"],
+  it("parses schema-valid background-terminal notifications", () => {
+    const event = {
+      contractVersion: 1 as const,
+      managerId: "manager-1",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      kind: "snapshot" as const,
+      snapshot: { terminals: [], replay: true },
     };
-    expect(autoRespondToExtensionUi(request)).toEqual({
-      type: "extension_ui_response",
-      id: "req-1",
-      value: "alpha",
-    });
+    expect(
+      parsePiBackgroundTerminalNotification({
+        type: "extension_ui_request",
+        id: "notice-bg-1",
+        method: "notify",
+        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${JSON.stringify(event)}`,
+      }),
+    ).toEqual(event);
+    expect(
+      parsePiBackgroundTerminalNotification({
+        type: "extension_ui_request",
+        id: "notice-bg-2",
+        method: "notify",
+        message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}{not-json}`,
+      }),
+    ).toBeUndefined();
   });
 
-  it("cancels (never fabricates) input and editor requests", () => {
-    const input: PiExtensionUiRequest = { ...base, method: "input", title: "Name?" };
-    const editor: PiExtensionUiRequest = { ...base, method: "editor", title: "Edit" };
-    expect(autoRespondToExtensionUi(input)).toEqual({
-      type: "extension_ui_response",
-      id: "req-1",
-      cancelled: true,
-    });
-    expect(autoRespondToExtensionUi(editor)).toEqual({
-      type: "extension_ui_response",
-      id: "req-1",
-      cancelled: true,
-    });
+  it("auto-confirms yolo-safe UI requests and cancels text input", () => {
+    expect(
+      autoRespondToExtensionUi({
+        type: "extension_ui_request",
+        id: "confirm-1",
+        method: "confirm",
+        title: "Proceed?",
+        message: "Continue",
+      }),
+    ).toEqual({ type: "extension_ui_response", id: "confirm-1", confirmed: true });
+    expect(
+      autoRespondToExtensionUi({
+        type: "extension_ui_request",
+        id: "input-1",
+        method: "input",
+        title: "Secret",
+      }),
+    ).toEqual({ type: "extension_ui_response", id: "input-1", cancelled: true });
   });
 
-  it("returns no response for fire-and-forget notifications", () => {
-    const notify: PiExtensionUiRequest = { ...base, method: "notify", message: "hi" };
-    expect(autoRespondToExtensionUi(notify)).toBeUndefined();
-  });
-});
-
-describe("extractPiAssistantText", () => {
-  it("concatenates text and preserves paragraph boundaries between thinking blocks", () => {
-    const message = {
-      role: "assistant",
-      content: [
-        { type: "thinking", thinking: "First thought." },
-        { type: "text", text: "Hello " },
-        { type: "thinking", thinking: "Second thought." },
-        { type: "text", text: "world" },
-      ],
-    };
-    expect(extractPiAssistantText(message)).toEqual({
-      text: "Hello world",
-      thinking: "First thought.\n\nSecond thought.",
-    });
-  });
-
-  it("is defensive against non-conforming payloads", () => {
+  it("extracts assistant text and separated thinking blocks defensively", () => {
+    expect(
+      extractPiAssistantText({
+        content: [
+          { type: "thinking", thinking: "first" },
+          { type: "thinking", thinking: "second" },
+          { type: "text", text: "Hello " },
+          { type: "text", text: "world" },
+        ],
+      }),
+    ).toEqual({ text: "Hello world", thinking: "first\n\nsecond" });
     expect(extractPiAssistantText(null)).toEqual({ text: "", thinking: "" });
-    expect(extractPiAssistantText({ content: "nope" })).toEqual({ text: "", thinking: "" });
   });
 });

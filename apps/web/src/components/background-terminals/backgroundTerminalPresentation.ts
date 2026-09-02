@@ -94,7 +94,8 @@ export function backgroundTerminalElapsedLabel(
   nowMs: number = Date.now(),
 ): string {
   const endMs = view.settledAt ?? nowMs;
-  return formatElapsedDurationLabel(view.createdAt, endMs);
+  if (!Number.isFinite(view.createdAt) || !Number.isFinite(endMs)) return "";
+  return formatElapsedDurationLabel(new Date(view.createdAt).toISOString(), endMs);
 }
 
 /** Human-readable outcome for a settled terminal, e.g. "Exit code 1" or "Signal SIGTERM". */

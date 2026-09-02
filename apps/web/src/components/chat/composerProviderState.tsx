@@ -1,5 +1,4 @@
 import {
-  PI_PROFILE_OPTION_ID,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderOptionSelection,
@@ -11,12 +10,18 @@ import {
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
+  normalizeModelSlug,
 } from "@t3tools/shared/model";
 import type { ReactNode } from "react";
 
 import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
-import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
+import {
+  shouldRenderTraitsControls,
+  TraitsMenuContent,
+  TraitsPicker,
+  type TraitsDescriptorScope,
+} from "./TraitsPicker";
 
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
@@ -24,6 +29,7 @@ export type ComposerProviderStateInput = {
   models: ReadonlyArray<ServerProviderModel>;
   promptInjectionState?: ComposerPromptInjectionState;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+  planModeEnabled: boolean;
 };
 
 export type ComposerPromptInjectionState = "none" | "ultrathink";
@@ -47,22 +53,47 @@ type TraitsRenderInput = {
   modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
   prompt: string;
   onPromptChange: (prompt: string) => void;
-  includeDescriptorIds?: ReadonlyArray<string> | undefined;
-  excludeDescriptorIds?: ReadonlyArray<string> | undefined;
-  disabled?: boolean | undefined;
+  planModeEnabled: boolean;
+  descriptorScope?: TraitsDescriptorScope;
 };
 
 export function getComposerPromptInjectionState(prompt: string): ComposerPromptInjectionState {
   return isClaudeUltrathinkPrompt(prompt) ? "ultrathink" : "none";
 }
 
+export function shouldShowRuntimeModeSelector(provider: ProviderDriverKind): boolean {
+  return provider !== "pi";
+}
+
 export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
-  const { provider, model, models, modelOptions, promptInjectionState = "none" } = input;
-  const caps = getProviderModelCapabilities(models, model, provider);
+  const {
+    provider,
+    model,
+    models,
+    modelOptions,
+    promptInjectionState = "none",
+    planModeEnabled,
+  } = input;
+  if (provider === "opencode") {
+    const normalizedModel = normalizeModelSlug(model, provider);
+    const modelIsInCatalog = models.some((candidate) => candidate.slug === normalizedModel);
+    if (!modelIsInCatalog) {
+      const preservedOptions = modelOptions?.filter(
+        (option) => planModeEnabled || option.id !== "agent" || option.value !== "plan",
+      );
+      return {
+        provider,
+        promptEffort: null,
+        modelOptionsForDispatch:
+          preservedOptions && preservedOptions.length > 0 ? preservedOptions : undefined,
+      };
+    }
+  }
+  const caps = getProviderModelCapabilities(models, model, provider, planModeEnabled);
   const descriptors = getProviderOptionDescriptors({ caps, selections: modelOptions });
   const primarySelectDescriptor = descriptors.find(
     (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>
-      descriptor.type === "select" && descriptor.id !== PI_PROFILE_OPTION_ID,
+      descriptor.type === "select",
   );
   const primaryValue = getProviderOptionCurrentValue(primarySelectDescriptor ?? null);
   const promptEffort = typeof primaryValue === "string" ? primaryValue : null;
@@ -98,9 +129,8 @@ function renderTraitsControl(
     modelOptions,
     prompt,
     onPromptChange,
-    includeDescriptorIds,
-    excludeDescriptorIds,
-    disabled,
+    planModeEnabled,
+    descriptorScope = "all",
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
   if (
@@ -111,8 +141,8 @@ function renderTraitsControl(
       model,
       modelOptions,
       prompt,
-      includeDescriptorIds,
-      excludeDescriptorIds,
+      planModeEnabled,
+      descriptorScope,
     })
   ) {
     return null;
@@ -128,9 +158,8 @@ function renderTraitsControl(
       modelOptions={modelOptions}
       prompt={prompt}
       onPromptChange={onPromptChange}
-      includeDescriptorIds={includeDescriptorIds}
-      excludeDescriptorIds={excludeDescriptorIds}
-      disabled={disabled}
+      planModeEnabled={planModeEnabled}
+      descriptorScope={descriptorScope}
     />
   );
 }

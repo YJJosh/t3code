@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
-
 import { projectActivityPayload } from "./ActivityPayloadProjection.ts";
 
 function activity(payload: Record<string, unknown>): OrchestrationThreadActivity {
@@ -15,70 +14,13 @@ function activity(payload: Record<string, unknown>): OrchestrationThreadActivity
   } as unknown as OrchestrationThreadActivity;
 }
 
-function piToolActivity(data: Record<string, unknown>): OrchestrationThreadActivity {
-  return activity({
-    itemType: "dynamic_tool_call",
-    status: "completed",
-    data,
-  });
-}
-
-describe("projectActivityPayload", () => {
-  it("retains bounded structured Pi tool arguments, results, and correlation metadata", () => {
-    const projected = projectActivityPayload(
-      piToolActivity({
-        toolCallId: "tool-1",
-        args: { file_path: "/tmp/app.ts" },
-        result: { content: [{ type: "text", text: "source" }] },
-        providerMetadata: {
-          provider: "claude-agent-sdk",
-          sdkSessionId: "sdk-session-1",
-        },
-        isError: false,
-        ignoredInternalField: "not sent",
-      }),
-    );
-
-    expect(projected.payload).toEqual({
-      itemType: "dynamic_tool_call",
-      status: "completed",
-      data: {
-        toolCallId: "tool-1",
-        args: { file_path: "/tmp/app.ts" },
-        result: { content: [{ type: "text", text: "source" }] },
-        providerMetadata: {
-          provider: "claude-agent-sdk",
-          sdkSessionId: "sdk-session-1",
-        },
-        isError: false,
-      },
-    });
-  });
-
-  it("truncates oversized tool output before it reaches snapshots and WebSockets", () => {
-    const projected = projectActivityPayload(
-      piToolActivity({
-        toolCallId: "tool-large",
-        result: { content: "x".repeat(40_000) },
-      }),
-    );
-    const payload = projected.payload as Record<string, unknown>;
-    const data = payload.data as Record<string, unknown>;
-    const result = data.result as Record<string, unknown>;
-    const content = result.content as string;
-
-    expect(content.length).toBeLessThan(40_000);
-    expect(content).toContain("[truncated]");
-  });
-});
-
 /**
  * Wire-survival regression: the slimming pass rewrites payload.data but must
  * never strip the top-level per-agent fields the subagent fold depends on.
  * If slimming ever moves to an allowlist over the whole payload, these
  * assertions are the tripwire.
  */
-describe("projectActivityPayload agent-field survival", () => {
+describe("projectActivityPayload", () => {
   it("preserves tool attribution (agentId/parentToolUseId) through data slimming", () => {
     const projected = projectActivityPayload(
       activity({
@@ -100,6 +42,98 @@ describe("projectActivityPayload agent-field survival", () => {
     // Slimming itself still applies to data.
     const data = payload.data as Record<string, unknown>;
     expect(data.somethingClientNeverReads).toBeUndefined();
+  });
+
+  it("keeps a bounded Codex command output summary", () => {
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "command_execution",
+        data: {
+          item: {
+            command: "/bin/zsh -lc 'printf hello'",
+            aggregatedOutput: `hello from codex\n${"x".repeat(5000)}`,
+          },
+        },
+      }),
+    );
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    expect(data.item).toEqual({
+      command: "/bin/zsh -lc 'printf hello'",
+      aggregatedOutput: "hello from codex",
+    });
+    expect(JSON.stringify(projected.payload).length).toBeLessThan(500);
+  });
+
+  it("keeps bounded Claude and ACP command output summaries", () => {
+    const claude = projectActivityPayload(
+      activity({
+        itemType: "command_execution",
+        data: {
+          command: "printf hello",
+          rawOutput: { stdout: `hello from claude\n${"y".repeat(5000)}` },
+        },
+      }),
+    );
+    const acp = projectActivityPayload(
+      activity({
+        itemType: "command_execution",
+        data: {
+          command: "printf hello",
+          content: [
+            {
+              type: "content",
+              content: { type: "text", text: `hello from acp\n${"z".repeat(5000)}` },
+            },
+          ],
+        },
+      }),
+    );
+
+    const claudeData = (claude.payload as Record<string, unknown>).data as Record<string, unknown>;
+    const acpData = (acp.payload as Record<string, unknown>).data as Record<string, unknown>;
+    expect(claudeData.rawOutput).toEqual({ content: "hello from claude" });
+    expect(acpData.rawOutput).toEqual({ content: "hello from acp" });
+    expect(JSON.stringify(claude.payload).length).toBeLessThan(500);
+    expect(JSON.stringify(acp.payload).length).toBeLessThan(500);
+  });
+
+  it("normalizes Claude and OpenCode command inputs before slimming provider data", () => {
+    const claude = projectActivityPayload(
+      activity({
+        itemType: "command_execution",
+        toolCallId: "claude-call-1",
+        data: {
+          toolName: "Bash",
+          input: { command: "vp test run" },
+          result: { content: "x".repeat(5_000) },
+        },
+      }),
+    );
+    const openCode = projectActivityPayload(
+      activity({
+        itemType: "command_execution",
+        toolCallId: "opencode-call-1",
+        data: {
+          tool: "bash",
+          state: {
+            status: "running",
+            input: { command: "vp lint" },
+            output: "x".repeat(5_000),
+          },
+        },
+      }),
+    );
+
+    expect(claude.payload).toMatchObject({
+      toolCallId: "claude-call-1",
+      data: { command: "vp test run" },
+    });
+    expect(openCode.payload).toMatchObject({
+      toolCallId: "opencode-call-1",
+      data: { command: "vp lint" },
+    });
+    expect(JSON.stringify(claude.payload).length).toBeLessThan(200);
+    expect(JSON.stringify(openCode.payload).length).toBeLessThan(200);
   });
 
   it("slims Codex-shaped mcp_tool_call items to rendered fields plus a result summary", () => {

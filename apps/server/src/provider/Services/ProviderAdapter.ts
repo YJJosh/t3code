@@ -10,16 +10,17 @@
 import type {
   ApprovalRequestId,
   ProviderApprovalDecision,
+  PiBackgroundTerminalControlInput,
+  PiBackgroundTerminalEvent,
   ProviderDriverKind,
   ProviderUserInputAnswers,
   ProviderRuntimeEvent,
-  PiBackgroundTerminalControlInput,
-  PiBackgroundTerminalEvent,
-  PiSubagentControlInput,
-  PiSubagentEvent,
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderTaskControlInput,
+  ProviderUploadFeedbackInput,
+  ProviderUploadFeedbackResult,
   ThreadId,
   ProviderTurnStartResult,
   TurnId,
@@ -46,16 +47,6 @@ export interface ProviderThreadSnapshot {
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
 }
 
-export interface ProviderSubagentEvent {
-  readonly threadId: ThreadId;
-  readonly event: PiSubagentEvent;
-}
-
-export interface ProviderSubagentAdapter<TError> {
-  readonly control: (input: PiSubagentControlInput) => Effect.Effect<void, TError>;
-  readonly streamEvents: Stream.Stream<ProviderSubagentEvent>;
-}
-
 export interface ProviderBackgroundTerminalEvent {
   readonly threadId: ThreadId;
   readonly event: PiBackgroundTerminalEvent;
@@ -73,19 +64,8 @@ export interface ProviderAdapterShape<TError> {
   readonly provider: ProviderDriverKind;
   readonly capabilities: ProviderAdapterCapabilities;
 
-  /** Optional structured child-agent integration exposed by capable drivers. */
-  readonly subagents?: ProviderSubagentAdapter<TError>;
-
-  /** Optional read-only background-terminal integration exposed by capable drivers. */
+  /** Optional Pi extension bridge for live background-terminal inspection. */
   readonly backgroundTerminals?: ProviderBackgroundTerminalAdapter<TError>;
-
-  /**
-   * Optionally label the provider-native session backing a thread (e.g. Pi's
-   * `set_session_name`) so the conversation stays recognizable in the
-   * provider's own tooling outside T3. Adapters whose providers have no native
-   * session label omit this.
-   */
-  readonly nameSession?: (threadId: ThreadId, name: string) => Effect.Effect<void, TError>;
 
   /**
    * Start a provider-backed session.
@@ -151,6 +131,16 @@ export interface ProviderAdapterShape<TError> {
     threadId: ThreadId,
     numTurns: number,
   ) => Effect.Effect<ProviderThreadSnapshot, TError>;
+
+  /**
+   * Upload a thread to the provider when the adapter supports feedback.
+   */
+  readonly uploadFeedback?: (
+    input: ProviderUploadFeedbackInput,
+  ) => Effect.Effect<ProviderUploadFeedbackResult, TError>;
+
+  /** Control a provider task surfaced through canonical task events. */
+  readonly controlTask?: (input: ProviderTaskControlInput) => Effect.Effect<void, TError>;
 
   /**
    * Stop all sessions owned by this adapter.

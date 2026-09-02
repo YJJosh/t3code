@@ -146,6 +146,7 @@ export interface BranchNamePromptInput {
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
   policy?: TextGenerationPolicy | undefined;
+  includeT3CodeBranchPrefix?: boolean | undefined;
   useConventionalBranchPrefixes?: boolean | undefined;
 }
 
@@ -192,9 +193,12 @@ export function buildBranchNamePrompt(input: BranchNamePromptInput) {
       "Branch should describe the requested work from the user message.",
       "Keep it short and specific (2-6 words).",
       "Use plain words only, no issue prefixes and no punctuation-heavy text.",
+      input.includeT3CodeBranchPrefix === false
+        ? "Do not include the t3code/ namespace."
+        : "Start with the t3code/ namespace.",
       ...(input.useConventionalBranchPrefixes
         ? [
-            `Start the branch with exactly one category prefix followed by a slash: ${CONVENTIONAL_BRANCH_PREFIXES.join(", ")}. Choose the category that best matches the requested work.`,
+            `After the t3code/ namespace when present, start with exactly one category followed by a slash: ${CONVENTIONAL_BRANCH_PREFIXES.join(", ")}.`,
           ]
         : []),
       "If images are attached, use them as primary context for visual/UI issues.",

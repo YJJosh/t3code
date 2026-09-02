@@ -68,6 +68,30 @@ function BackgroundTerminalStatusBadge({ terminal }: { terminal: BackgroundTermi
   );
 }
 
+/** Live elapsed time uses DOM writes so terminal output does not rerender every second. */
+function BackgroundTerminalElapsed({ terminal }: { terminal: BackgroundTerminalEntry }) {
+  const textRef = useRef<HTMLTimeElement>(null);
+  const running = isBackgroundTerminalActive(terminal.view.status);
+
+  useEffect(() => {
+    if (!running) return;
+    const update = () => {
+      if (textRef.current) {
+        textRef.current.textContent = backgroundTerminalElapsedLabel(terminal.view);
+      }
+    };
+    update();
+    const id = window.setInterval(update, ELAPSED_TICK_MS);
+    return () => window.clearInterval(id);
+  }, [running, terminal.view]);
+
+  return (
+    <time ref={textRef} className="tabular-nums">
+      {backgroundTerminalElapsedLabel(terminal.view)}
+    </time>
+  );
+}
+
 interface BackgroundTerminalRowProps {
   terminal: BackgroundTerminalEntry;
   selected: boolean;
@@ -84,7 +108,6 @@ function BackgroundTerminalRow({
 }: BackgroundTerminalRowProps) {
   const tone = backgroundTerminalStatusTone(terminal.view.status);
   const title = backgroundTerminalTitle(terminal.view);
-  const active = isBackgroundTerminalActive(terminal.view.status);
   return (
     <button
       type="button"
@@ -100,11 +123,7 @@ function BackgroundTerminalRow({
     >
       <span
         aria-hidden="true"
-        className={cn(
-          "size-1.5 shrink-0 rounded-full",
-          TONE_DOT_CLASS[tone],
-          active && "animate-pulse",
-        )}
+        className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT_CLASS[tone])}
       />
       <span
         className={cn(
@@ -204,17 +223,6 @@ function BackgroundTerminalDetail({
   const [selectedStream, setSelectedStream] = useState<OutputStreamKind>(
     view.status === "failed" ? "stderr" : "stdout",
   );
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const running = isBackgroundTerminalActive(view.status);
-
-  useEffect(() => {
-    if (!running) {
-      return;
-    }
-    const id = window.setInterval(() => setNowMs(Date.now()), ELAPSED_TICK_MS);
-    return () => window.clearInterval(id);
-  }, [running]);
-
   const exitSummary = backgroundTerminalExitSummary(view);
   const activeBuffer = selectedStream === "stdout" ? terminal.stdout : terminal.stderr;
 
@@ -242,7 +250,9 @@ function BackgroundTerminalDetail({
           )}
           <div className="flex gap-1">
             <dt className="font-medium">Elapsed</dt>
-            <dd>{backgroundTerminalElapsedLabel(view, nowMs)}</dd>
+            <dd>
+              <BackgroundTerminalElapsed terminal={terminal} />
+            </dd>
           </div>
         </dl>
       </div>

@@ -1,5 +1,13 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
-import { ClaudeAI, CursorIcon, GrokIcon, Icon, OpenAI, OpenCodeIcon, PiAgentIcon } from "../Icons";
+import {
+  ClaudeAI,
+  CursorIcon,
+  GrokIcon,
+  type Icon,
+  OpenAI,
+  OpenCodeIcon,
+  PiAgentIcon,
+} from "../Icons";
 import { PROVIDER_OPTIONS } from "../../session-logic";
 
 export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
@@ -28,6 +36,7 @@ export type ModelEsque = {
   shortName?: string | undefined;
   subProvider?: string | undefined;
   isLegacy?: boolean | undefined;
+  isUnavailable?: boolean | undefined;
 };
 
 function escapeRegExp(value: string): string {

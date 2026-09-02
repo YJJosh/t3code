@@ -94,6 +94,26 @@ describe("UsageAggregator", () => {
     expect(result.buckets[0]?.totals.outputTokens).toBe(100);
   });
 
+  it("drops Pi history copied into a fork by its durable entry id", () => {
+    const result = aggregate([
+      record({
+        provider: "pi",
+        model: "openai/gpt-5.6",
+        sessionId: "parent-session",
+        dedupeKey: "pi:entry-1",
+      }),
+      record({
+        provider: "pi",
+        model: "openai/gpt-5.6",
+        sessionId: "fork-session",
+        dedupeKey: "pi:entry-1",
+      }),
+    ]);
+
+    expect(result.duplicatesDropped).toBe(1);
+    expect(result.buckets[0]?.totals.outputTokens).toBe(50);
+  });
+
   it("buckets by the day in the requested time zone", () => {
     const utc = aggregate([record()], "UTC");
     const losAngeles = aggregate([record()], "America/Los_Angeles");
@@ -179,22 +199,6 @@ describe("UsageAggregator", () => {
     expect(result.buckets).toHaveLength(0);
   });
 
-  it("omits zero-value synthetic records", () => {
-    const synthetic = record({
-      model: "<synthetic>",
-      totals: {
-        uncachedInputTokens: 0,
-        cachedInputTokens: 0,
-        cacheCreationTokens: 0,
-        outputTokens: 0,
-        reasoningTokens: 0,
-      },
-      reportedCostUsd: 0,
-    });
-
-    expect(aggregate([synthetic]).buckets).toEqual([]);
-  });
-
   it("reports whether a record contributed", () => {
     const aggregator = new UsageAggregator({
       timeZone: "UTC",
@@ -206,6 +210,19 @@ describe("UsageAggregator", () => {
     expect(aggregator.add(record({ dedupeKey: "msg_1:" }))).toBe(true);
     expect(aggregator.add(record({ dedupeKey: "msg_1:" }))).toBe(false);
     expect(aggregator.add(record({ timestampMs: Date.parse("2026-07-01T12:00:00Z") }))).toBe(false);
+  });
+
+  it("keeps source-attributed records in separate buckets", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+    });
+    aggregator.add(record(), 0);
+    aggregator.add(record(), 1);
+
+    expect(aggregator.finish().buckets.map((bucket) => bucket.sourceIndex)).toEqual([0, 1]);
   });
 
   it("separates providers and models into their own buckets", () => {

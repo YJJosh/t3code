@@ -1,9 +1,16 @@
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
-import { isWindowsPlatform } from "../lib/utils";
+import { APP_BASE_NAME } from "../branding";
 
 export type DesktopUpdateButtonAction = "download" | "install" | "none";
 
-const DESKTOP_RELEASE_TAG_URL = "https://github.com/pingdotgg/t3code/releases/tag";
+const UPSTREAM_DESKTOP_RELEASE_TAG_URL = "https://github.com/pingdotgg/t3code/releases/tag";
+const DULLI_DESKTOP_RELEASE_TAG_URL = "https://github.com/YJJosh/t3code/releases/tag";
+
+function resolveDesktopReleaseTagUrl(appBaseName: string): string {
+  return appBaseName === "T3 Dulli"
+    ? DULLI_DESKTOP_RELEASE_TAG_URL
+    : UPSTREAM_DESKTOP_RELEASE_TAG_URL;
+}
 
 /**
  * The main process fills `downloadedVersion` from the updater's `update-downloaded`
@@ -15,16 +22,24 @@ export function getDesktopUpdateDownloadedVersion(state: DesktopUpdateState): st
 }
 
 /** Release notes for an exact downloaded build; nightly suffixes are part of the tag. */
-export function getDesktopUpdateReleaseUrl(version: string | null): string | null {
+export function getDesktopUpdateReleaseUrl(
+  version: string | null,
+  appBaseName = APP_BASE_NAME,
+): string | null {
   const normalizedVersion = version?.trim();
   if (!normalizedVersion) return null;
-  return `${DESKTOP_RELEASE_TAG_URL}/v${encodeURIComponent(normalizedVersion)}`;
+  return `${resolveDesktopReleaseTagUrl(appBaseName)}/v${encodeURIComponent(normalizedVersion)}`;
 }
 
 export function resolveDesktopUpdateButtonAction(
   state: DesktopUpdateState,
 ): DesktopUpdateButtonAction {
-  if (state.downloadedVersion) {
+  if (
+    state.downloadedVersion &&
+    (state.status === "downloaded" ||
+      (state.status === "error" &&
+        (state.errorContext === null || state.errorContext === "install")))
+  ) {
     return "install";
   }
   if (state.status === "available") {
@@ -56,19 +71,22 @@ export function isDesktopUpdateButtonDisabled(state: DesktopUpdateState | null):
   return state?.status === "downloading";
 }
 
-export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState): string {
+export function getArm64IntelBuildWarningDescription(
+  state: DesktopUpdateState,
+  appBaseName = APP_BASE_NAME,
+): string {
   if (!shouldShowArm64IntelBuildWarning(state)) {
     return "This install is using the correct architecture.";
   }
 
   const action = resolveDesktopUpdateButtonAction(state);
   if (action === "download") {
-    return "This Mac has Apple Silicon, but T3 Code is still running the Intel build under Rosetta. Download the available update to switch to the native Apple Silicon build.";
+    return `This Mac has Apple Silicon, but ${appBaseName} is still running the Intel build under Rosetta. Download the available update to switch to the native Apple Silicon build.`;
   }
   if (action === "install") {
-    return "This Mac has Apple Silicon, but T3 Code is still running the Intel build under Rosetta. Restart to install the downloaded Apple Silicon build.";
+    return `This Mac has Apple Silicon, but ${appBaseName} is still running the Intel build under Rosetta. Restart to install the downloaded Apple Silicon build.`;
   }
-  return "This Mac has Apple Silicon, but T3 Code is still running the Intel build under Rosetta. The next app update will replace it with the native Apple Silicon build.";
+  return `This Mac has Apple Silicon, but ${appBaseName} is still running the Intel build under Rosetta. The next app update will replace it with the native Apple Silicon build.`;
 }
 
 export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string {
@@ -90,6 +108,9 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     if (state.errorContext === "install" && state.downloadedVersion) {
       return `Install failed for ${state.downloadedVersion}. Click to retry.`;
     }
+    if (state.downloadedVersion) {
+      return `Update ${state.downloadedVersion} downloaded. Click to restart and install.`;
+    }
     return state.message ?? "Update failed";
   }
   return "Up to date";
@@ -97,13 +118,10 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
 
 export function getDesktopUpdateInstallConfirmationMessage(
   state: Pick<DesktopUpdateState, "availableVersion" | "downloadedVersion">,
-  platform = "",
+  appBaseName = APP_BASE_NAME,
 ): string {
   const version = state.downloadedVersion ?? state.availableVersion;
-  const windowsInstallWarning = isWindowsPlatform(platform)
-    ? "\n\nOn Windows, T3 Code may remain closed for several minutes while the update installs, and no installer window may appear. T3 Code will reopen automatically when installation finishes."
-    : "";
-  return `Install update${version ? ` ${version}` : ""} and restart T3 Code?\n\nAny running tasks will be interrupted. Make sure you're ready before continuing.${windowsInstallWarning}`;
+  return `Install update${version ? ` ${version}` : ""} and restart ${appBaseName}?\n\nAny running tasks will be interrupted. Make sure you're ready before continuing.`;
 }
 
 export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): string | null {
@@ -125,9 +143,6 @@ export function shouldHighlightDesktopUpdateError(state: DesktopUpdateState | nu
 export function canCheckForUpdate(state: DesktopUpdateState | null): boolean {
   if (!state || !state.enabled) return false;
   return (
-    state.status !== "checking" &&
-    state.status !== "downloading" &&
-    state.status !== "downloaded" &&
-    state.status !== "disabled"
+    state.status !== "checking" && state.status !== "downloading" && state.status !== "disabled"
   );
 }

@@ -10,11 +10,6 @@ import {
 } from "./brand-assets.ts";
 
 describe("brand-assets", () => {
-  it("uses platform-safe macOS artwork for Dulli desktop builds", () => {
-    expect(BRAND_ASSET_PATHS.dulliMacIconPng).toBe("assets/dulli/dulli-macos-1024.png");
-    expect(BRAND_ASSET_PATHS.dulliMacIconPng).not.toBe(BRAND_ASSET_PATHS.dulliLinuxIconPng);
-  });
-
   it("maps production web assets into the server package", () => {
     expect(resolveWebIconOverrides("production", "dist/client")).toEqual([
       {
@@ -78,6 +73,28 @@ describe("brand-assets", () => {
     });
   });
 
+  it("maps Dulli web assets without changing hosted channel defaults", () => {
+    expect(resolveWebIconOverrides("dulli", "dist/client")).toEqual([
+      {
+        sourceRelativePath: BRAND_ASSET_PATHS.dulliWebFaviconIco,
+        targetRelativePath: "dist/client/favicon.ico",
+      },
+      {
+        sourceRelativePath: BRAND_ASSET_PATHS.dulliWebFavicon16Png,
+        targetRelativePath: "dist/client/favicon-16x16.png",
+      },
+      {
+        sourceRelativePath: BRAND_ASSET_PATHS.dulliWebFavicon32Png,
+        targetRelativePath: "dist/client/favicon-32x32.png",
+      },
+      {
+        sourceRelativePath: BRAND_ASSET_PATHS.dulliWebAppleTouchIconPng,
+        targetRelativePath: "dist/client/apple-touch-icon.png",
+      },
+    ]);
+    expect(resolveWebAssetBrandForChannel("latest")).toBe("production");
+  });
+
   it("maps hosted release channels to web asset brands", () => {
     expect(resolveWebAssetBrandForChannel("latest")).toBe("production");
     expect(resolveWebAssetBrandForChannel("nightly")).toBe("nightly");
@@ -88,7 +105,7 @@ describe("brand-assets", () => {
     expect(resolveWebAssetBrandForPackageVersion("0.0.29-nightly.20260723.882")).toBe("nightly");
   });
 
-  it("keeps development, nightly, and production icon families separate", () => {
+  it("keeps development, nightly, production, and Dulli icon families separate", () => {
     expect([
       BRAND_ASSET_PATHS.developmentIconComposerProject,
       BRAND_ASSET_PATHS.nightlyIconComposerProject,
@@ -101,5 +118,6 @@ describe("brand-assets", () => {
     expect(BRAND_ASSET_PATHS.developmentDesktopIconPng).toMatch(/^assets\/dev\/blueprint-/);
     expect(BRAND_ASSET_PATHS.nightlyMacIconPng).toMatch(/^assets\/nightly\/nightly-/);
     expect(BRAND_ASSET_PATHS.productionMacIconPng).toMatch(/^assets\/prod\/black-/);
+    expect(BRAND_ASSET_PATHS.dulliMacIconPng).toBe("assets/dulli/dulli-macos-1024.png");
   });
 });

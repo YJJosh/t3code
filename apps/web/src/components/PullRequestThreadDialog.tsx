@@ -202,7 +202,7 @@ export function PullRequestThreadDialog({
           </DialogTitle>
           <DialogDescription>
             Resolve a {sourceControlPresentation.providerName} {terminology.singular}, then create
-            the draft thread in the main repo or in a dedicated workspace.
+            the draft thread in the main repo or in a dedicated worktree.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-4">
@@ -295,7 +295,7 @@ export function PullRequestThreadDialog({
               preparePullRequestThreadAction.isPending
             }
           >
-            {preparingMode === "worktree" ? "Preparing workspace..." : "Workspace"}
+            {preparingMode === "worktree" ? "Preparing worktree..." : "Worktree"}
           </Button>
         </DialogFooter>
       </DialogPopup>

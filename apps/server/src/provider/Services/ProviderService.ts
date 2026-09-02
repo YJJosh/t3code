@@ -15,7 +15,6 @@ import type {
   PiBackgroundTerminalControlInput,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
-  PiSubagentControlInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
@@ -23,6 +22,9 @@ import type {
   ProviderSession,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
+  ProviderTaskControlInput,
+  ProviderUploadFeedbackInput,
+  ProviderUploadFeedbackResult,
   ThreadId,
   ProviderTurnStartResult,
 } from "@t3tools/contracts";
@@ -34,7 +36,6 @@ import type { ProviderServiceError } from "../Errors.ts";
 import type {
   ProviderAdapterCapabilities,
   ProviderBackgroundTerminalEvent,
-  ProviderSubagentEvent,
 } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
@@ -111,26 +112,19 @@ export interface ProviderServiceShape {
     readonly numTurns: number;
   }) => Effect.Effect<void, ProviderServiceError>;
 
-  /**
-   * Label the provider-native session backing a thread.
-   *
-   * No-op when the bound adapter has no native session label or when the
-   * thread has no live session (the label is re-applied on the next start).
-   */
-  readonly nameThreadSession: (input: {
-    readonly threadId: ThreadId;
-    readonly name: string;
-  }) => Effect.Effect<void, ProviderServiceError>;
-
-  /** Route an immediate control to the child-agent integration for a thread. */
-  readonly controlSubagent: (
-    input: PiSubagentControlInput,
+  /** Control a provider task surfaced through canonical task events. */
+  readonly controlTask: (
+    input: ProviderTaskControlInput,
   ) => Effect.Effect<void, ProviderServiceError>;
 
-  /** Live structured child-agent events, correlated with their T3 thread. */
-  readonly streamSubagentEvents: Stream.Stream<ProviderSubagentEvent>;
+  /**
+   * Upload a thread and return the provider's shareable feedback identifier.
+   */
+  readonly uploadFeedback: (
+    input: ProviderUploadFeedbackInput,
+  ) => Effect.Effect<ProviderUploadFeedbackResult, ProviderServiceError>;
 
-  /** Route an immediate control to the background-terminal integration for a thread. */
+  /** Route a replay or kill control to a Pi background terminal. */
   readonly controlBackgroundTerminal: (
     input: PiBackgroundTerminalControlInput,
   ) => Effect.Effect<void, ProviderServiceError>;

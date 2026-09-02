@@ -22,14 +22,6 @@ export function resolveProviderOptionDescriptors(input: {
   });
 }
 
-export function excludeProviderOptionDescriptors(
-  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
-  excludedDescriptorIds: ReadonlyArray<string>,
-): ReadonlyArray<ProviderOptionDescriptor> {
-  const excludedIds = new Set(excludedDescriptorIds);
-  return descriptors.filter((descriptor) => !excludedIds.has(descriptor.id));
-}
-
 /**
  * Labels for the option values currently in effect (select values plus
  * enabled booleans), used to summarize the thread configuration in the

@@ -22,17 +22,6 @@ describe("ProviderSettingsForm helpers", () => {
     ]);
   });
 
-  it("registers Pi as a configurable provider driver", () => {
-    const pi = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("pi")];
-
-    expect(pi?.label).toBe("Pi");
-    expect(deriveProviderSettingsFields(pi!).map((field) => field.key)).toEqual([
-      "binaryPath",
-      "profile",
-      "agentDir",
-    ]);
-  });
-
   it("sources labels and descriptions from schema annotations", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();
@@ -46,6 +35,29 @@ describe("ProviderSettingsForm helpers", () => {
       description: "Stored in plain text on disk.",
       control: "password",
     });
+  });
+
+  it("exposes Pi's binary, profile, and agent-directory settings", () => {
+    const pi = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("pi")];
+    expect(pi).toBeDefined();
+
+    expect(deriveProviderSettingsFields(pi!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "profile",
+      "agentDir",
+    ]);
+  });
+
+  it("shows the auto-compaction threshold for Claude providers", () => {
+    const claude = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("claudeAgent")];
+    expect(claude).toBeDefined();
+
+    expect(deriveProviderSettingsFields(claude!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "homePath",
+      "autoCompactWindow",
+      "launchArgs",
+    ]);
   });
 
   it("preserves unknown config keys while omitting empty configurable fields", () => {

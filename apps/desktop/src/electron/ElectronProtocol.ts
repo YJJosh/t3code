@@ -11,17 +11,19 @@ import * as Electron from "electron";
 export const DESKTOP_HOST = "app";
 export const DESKTOP_PRODUCTION_SCHEME = "t3code";
 export const DESKTOP_DEVELOPMENT_SCHEME = "t3code-dev";
+export const DULLI_DESKTOP_SCHEME = "t3dulli";
 
-export function getDesktopScheme(isDevelopment: boolean): string {
+export function getDesktopScheme(isDevelopment: boolean, isDulli = false): string {
+  if (isDulli && !isDevelopment) return DULLI_DESKTOP_SCHEME;
   return isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME;
 }
 
-export function getDesktopOrigin(isDevelopment: boolean): string {
-  return `${getDesktopScheme(isDevelopment)}://${DESKTOP_HOST}`;
+export function getDesktopOrigin(isDevelopment: boolean, isDulli = false): string {
+  return `${getDesktopScheme(isDevelopment, isDulli)}://${DESKTOP_HOST}`;
 }
 
-export function getDesktopUrl(isDevelopment: boolean): string {
-  return `${getDesktopOrigin(isDevelopment)}/`;
+export function getDesktopUrl(isDevelopment: boolean, isDulli = false): string {
+  return `${getDesktopOrigin(isDevelopment, isDulli)}/`;
 }
 
 export class ElectronProtocolRegistrationError extends Schema.TaggedErrorClass<ElectronProtocolRegistrationError>()(
@@ -121,6 +123,15 @@ export function registerDesktopSchemePrivilegesSync(): void {
     },
     {
       scheme: DESKTOP_DEVELOPMENT_SCHEME,
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
+      },
+    },
+    {
+      scheme: DULLI_DESKTOP_SCHEME,
       privileges: {
         standard: true,
         secure: true,

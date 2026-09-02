@@ -1,29 +1,12 @@
 # T3 Dulli fork development
 
-T3 Dulli is the branded desktop distribution maintained in `YJJosh/t3code`. This repository is the source of truth for its application changes, `:D` artwork, package identity, and release workflow. Pi extensions and profiles remain in `pi-config`; the Workler library remains in its own repository.
+T3 Dulli is the branded distribution maintained in `YJJosh/t3code`. This repository owns its desktop and mobile identity, Pi and Workler integration, npm CLI, packaging, and release automation. Upstream publishing, T3 Connect relay deployment, and EAS/App Store submission remain disabled.
 
-## Working on the fork
+## Identity and coexistence
 
-1. Fetch `origin` and start from `origin/main` in an isolated Workler clone or Git worktree.
-2. Keep branch names descriptive and submit changes through a pull request.
-3. Do not commit credentials, downloaded release artifacts, machine-local paths, `.t3-dulli` state, or generated logs.
-4. Before opening a pull request, run:
+Build Dulli with `--brand dulli`. The default remains the upstream `t3code` brand.
 
-   ```sh
-   ./node_modules/.bin/vp check
-   ./node_modules/.bin/vp run typecheck
-   ./node_modules/.bin/vp test <relevant-test-files>
-   ```
-
-   Run `./node_modules/.bin/vp run lint:mobile` when native mobile code changes.
-
-Existing Git worktrees are supported and must not be converted automatically. New Workler clones use `<repository>/.worktrees/<safe-name>` while preserving the requested Git branch name.
-
-## Branding and identity
-
-The build command accepts `--brand t3code|dulli`, with `t3code` as the default. Dulli releases use:
-
-| Property            | Value                       |
+| Property            | T3 Dulli value              |
 | ------------------- | --------------------------- |
 | Product name        | `T3 Dulli`                  |
 | Application ID      | `com.yjjosh.t3dulli`        |
@@ -34,214 +17,97 @@ The build command accepts `--brand t3code|dulli`, with `t3code` as the default. 
 | Artifact prefix     | `T3-Dulli-`                 |
 | Update repository   | `YJJosh/t3code` prereleases |
 
-A packaged Dulli build is detected from Electron's packaged application name. It defaults to isolated state and user-data paths:
+A packaged build is identified from Electron's packaged application name. Dulli does not register or claim upstream's `t3code://` and `t3code-dev://` URL callbacks; it uses a separate internal renderer scheme.
 
-- application state: `~/.t3-dulli`
+Dulli defaults to isolated storage so it can be installed beside T3 Code:
+
+- T3 home: `~/.t3-dulli` (application state lives in its `userdata` directory)
 - Linux Electron user data: `${XDG_CONFIG_HOME:-~/.config}/t3-dulli`
 - Windows Electron user data: `%APPDATA%/t3-dulli`
 - macOS Electron user data: `~/Library/Application Support/t3-dulli`
 
-These paths do not hide normal home-scoped Pi resources, including `~/.pi/agent`. Explicit `T3CODE_HOME`, `XDG_CONFIG_HOME`, and platform app-data overrides remain supported.
+An explicit `T3CODE_HOME`, `XDG_CONFIG_HOME`, or platform app-data override still wins. Normal home-scoped provider resources are not hidden or relocated.
 
-### Artwork
+## Artwork
 
-Canonical artwork lives in `assets/dulli/`. `logo.svg` is the editable source; committed PNG and ICO files make builds deterministic and avoid requiring image tools on every runner. After changing the SVG, regenerate derived files with ImageMagick and review all changes:
+`assets/dulli/logo.svg` is the editable source. Derived PNG and ICO files are committed so packaging is deterministic and does not require image tools on every build runner. After editing the SVG, regenerate and review the complete icon family:
 
 ```sh
 scripts/dulli/generate-assets.sh
 ```
 
-The desktop build stages Dulli artwork for macOS, Windows, Linux, and the bundled web client. It also applies Dulli product text before Electron Builder packages the app. Do not restore the retired post-build AppImage patching flow: release artifacts must be branded at build time so updates cannot replace Dulli with generic T3 Code.
+The desktop build stages Dulli icons for macOS, Windows, Linux, and the bundled web client. Product text is selected in source from packaged Electron metadata and the desktop build brand; do not restore recursive replacement of compiled web output.
 
-## Building locally
+## Fork settings
 
-Example unsigned Linux build:
+**Settings → General → Fork features** keeps Dulli-owned workspace and branch-naming controls separate from upstream General settings. It contains Workler workspace creation, the `t3code/` generated-branch prefix, and conventional generated-branch prefixes. Dulli defaults new threads to Workler-backed workspaces created from origin, omits the `t3code/` namespace, and uses conventional category prefixes. Provider-specific Pi configuration remains under **Settings → Providers**.
+
+## Building
+
+Example unsigned Linux artifact:
 
 ```sh
-T3CODE_DESKTOP_UPDATE_REPOSITORY=YJJosh/t3code \
-  ./node_modules/.bin/vp run dist:desktop:artifact \
+./node_modules/.bin/vp run dist:desktop:artifact \
   --brand dulli \
   --platform linux \
   --target AppImage \
   --arch x64 \
-  --build-version 0.0.29-pi.4
+  --build-version 0.0.36-pi.1
 ```
 
-Use the equivalent `mac/dmg` or `win/nsis` target on those host platforms. Local macOS builds use an ad-hoc signature by default. The fork release workflow instead requires the persistent community signing identity described below.
+`T3CODE_DESKTOP_BRAND=dulli` is the environment equivalent. Dulli package metadata always defaults its updater to prereleases from `YJJosh/t3code`; `T3CODE_DESKTOP_UPDATE_REPOSITORY` remains available for an explicit test feed override.
 
-## Persistent macOS community signing
+## Linux installation
 
-T3 Dulli uses one long-lived self-signed certificate so every macOS release has the same Squirrel.Mac designated requirement. This enables built-in updates without an Apple Developer subscription. It does **not** provide Apple trust or notarization: users still approve the app with **System Settings → Privacy & Security → Open Anyway** on first install, and they do not need to install or trust the certificate themselves.
-
-Generate the certificate once on a trusted Mac, outside the repository. Do not repeat this for each release:
+Install the newest x86_64 Dulli prerelease, or provide a tag:
 
 ```sh
-umask 077
-SIGNING_DIR="$HOME/.local/share/t3-dulli-signing"
-mkdir -p "$SIGNING_DIR"
-
-cat > "$SIGNING_DIR/openssl.cnf" <<'EOF'
-[ req ]
-distinguished_name = dn
-x509_extensions = code_signing
-prompt = no
-
-[ dn ]
-CN = T3 Dulli Community Code Signing
-O = YJJosh
-OU = T3 Dulli Community Releases
-
-[ code_signing ]
-basicConstraints = critical,CA:false
-keyUsage = critical,digitalSignature
-extendedKeyUsage = critical,codeSigning
-subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid,issuer
-EOF
-
-openssl req \
-  -new \
-  -newkey rsa:3072 \
-  -x509 \
-  -sha256 \
-  -days 3650 \
-  -nodes \
-  -config "$SIGNING_DIR/openssl.cnf" \
-  -keyout "$SIGNING_DIR/t3-dulli-community-signing.key" \
-  -out "$SIGNING_DIR/t3-dulli-community-signing.crt"
-
-P12_PASSWORD="$(openssl rand -base64 36 | tr -d '\n')"
-export P12_PASSWORD
-printf '%s\n' "$P12_PASSWORD" > "$SIGNING_DIR/t3-dulli-community-signing.password"
-openssl pkcs12 \
-  -export \
-  -name "T3 Dulli Community Code Signing" \
-  -inkey "$SIGNING_DIR/t3-dulli-community-signing.key" \
-  -in "$SIGNING_DIR/t3-dulli-community-signing.crt" \
-  -out "$SIGNING_DIR/t3-dulli-community-signing.p12" \
-  -passout env:P12_PASSWORD
+scripts/dulli/install-linux-appimage.sh
+scripts/dulli/install-linux-appimage.sh v0.0.36-pi.1
 ```
 
-Store the base64-encoded PKCS#12 file and its password as two GitHub Actions repository secrets. Pin the certificate's public SHA-1 identity in a repository variable so an accidental secret replacement cannot silently break update continuity:
-
-```sh
-SIGNING_DIR="${SIGNING_DIR:-$HOME/.local/share/t3-dulli-signing}"
-P12_PASSWORD="$(tr -d '\n' < "$SIGNING_DIR/t3-dulli-community-signing.password")"
-CERTIFICATE_SHA1="$(
-  openssl x509 \
-    -in "$SIGNING_DIR/t3-dulli-community-signing.crt" \
-    -noout -fingerprint -sha1 |
-    awk -F= '{ gsub(":", "", $2); print toupper($2) }'
-)"
-base64 < "$SIGNING_DIR/t3-dulli-community-signing.p12" |
-  gh secret set DULLI_MACOS_CERTIFICATE_P12_BASE64 --repo YJJosh/t3code
-printf '%s' "$P12_PASSWORD" |
-  gh secret set DULLI_MACOS_CERTIFICATE_PASSWORD --repo YJJosh/t3code
-gh variable set DULLI_MACOS_CERTIFICATE_SHA1 \
-  --repo YJJosh/t3code \
-  --body "$CERTIFICATE_SHA1"
-unset P12_PASSWORD CERTIFICATE_SHA1
-```
-
-The same values can instead be entered under **Repository Settings → Secrets and variables → Actions**. The first secret's value is the base64 text, not the binary `.p12` file; `DULLI_MACOS_CERTIFICATE_SHA1` is a non-secret Actions variable.
-
-Keep an encrypted offline backup of the `.p12` file and put its password in a password manager. Then remove the unencrypted `.key` and `.password` files. Losing or replacing the certificate changes the designated requirement and forces another manual migration for every installed copy. Inspect the public certificate without exposing its key:
-
-```sh
-openssl x509 \
-  -in "$SIGNING_DIR/t3-dulli-community-signing.crt" \
-  -noout -subject -dates -fingerprint -sha256
-```
-
-The workflow imports the certificate as a non-extractable key into an ephemeral keychain, checks it against the pinned SHA-1 repository variable, and temporarily trusts only the public certificate in the disposable GitHub-hosted runner's admin trust domain. It explicitly selects the identity for Electron Builder, verifies the resulting bundle's certificate-root requirement, and removes the private-key keychain before uploading artifacts; the public trust entry disappears with the runner VM. It fails rather than silently falling back to ad-hoc signing when any signing configuration is missing or mismatched.
-
-Existing ad-hoc releases cannot accept the first self-signed release because their designated requirements are already tied to release-specific hashes. Install the first self-signed release manually once; subsequent releases signed with the unchanged certificate can update through the app.
+The helper downloads only a `T3-Dulli-*-x86_64.AppImage` prerelease, installs an isolated launcher and icon, and writes `t3-dulli-clean.desktop`. Future updates use the app's built-in updater. There is intentionally no restart helper that finds or kills processes by pattern.
 
 ## Releases
 
-`.github/workflows/fork-desktop-release.yml` is the Dulli-only release workflow. It:
+`.github/workflows/fork-desktop-release.yml` is the only Dulli publisher. It is manual-only and accepts the canonical `0.0.<patch>-pi.<build>` sequence. For one version it:
 
-- accepts a prerelease version such as `0.0.29-pi.4`;
-- runs on GitHub-hosted `ubuntu-24.04`, `windows-2025`, and `macos-14` runners;
-- builds all targets with `--brand dulli`;
-- imports the persistent community certificate for both macOS architectures;
-- publishes the headless CLI to npm as `@yjosh/t3` via trusted publishing;
-- builds a Dulli-branded Android APK signed with the community keystore;
-- publishes installers, the APK, blockmaps, and updater manifests to a GitHub prerelease;
-- creates the tag only after preflight and builds succeed.
+- runs release checks on GitHub-hosted runners;
+- builds branded macOS arm64/x64, Linux x64, and Windows x64 desktop artifacts;
+- signs both macOS builds with the persistent Dulli community certificate;
+- builds and verifies a persistently signed `com.yjjosh.t3dulli` Android APK;
+- publishes the GitHub prerelease and updater manifests; and
+- publishes the same server and web client as `@yjosh/t3` through npm trusted publishing.
 
-Run it from GitHub Actions with a version that does not already have a tag. Verify that the release contains `T3-Dulli-*` installers for every platform, the `T3-Dulli-*-android.apk`, `latest*.yml` updater manifests, macOS ZIP update payloads, and blockmaps before announcing it. The npm job runs after the GitHub release so an immutable npm version is never published before all artifacts are green; if only the npm publish fails, fix the cause and re-run that job.
+The workflow deliberately does not deploy a relay, invoke EAS, submit to an app store, publish the upstream `t3` package, deploy hosted web infrastructure, or mark a Dulli prerelease as GitHub's latest stable release.
 
-### npm CLI package
+Run the workflow from GitHub Actions with a version whose tag does not exist. Before announcing it, verify that the release contains `T3-Dulli-*` artifacts for every matrix target, the Android APK, macOS ZIP update payloads, blockmaps, and `latest*.yml` updater manifests. The npm job runs only after the GitHub release succeeds so an immutable npm version is never published ahead of incomplete application artifacts.
 
-The `publish_cli` job publishes `apps/server` (the `npx t3` server bundle with the built web client) to npm as `@yjosh/t3`, tagged `latest`, with provenance. `npx @yjosh/t3` then runs a T3 Dulli server plus web UI on any machine — the fork's cloud/headless runner path. Fork builds have no relay configuration, so `t3 connect` stays unavailable; reach remote servers over the pairing URL, a tailnet (`--share`), or your own reverse proxy.
+### macOS signing continuity
 
-Authentication uses npm trusted publishing (GitHub OIDC), so no npm token is stored in the repository. One-time setup:
+Dulli uses a persistent self-signed certificate rather than upstream Apple Developer credentials. The workflow requires:
 
-1. Publish the first version manually from a checkout while logged into npm as the scope owner:
+- secrets `DULLI_MACOS_CERTIFICATE_P12_BASE64` and `DULLI_MACOS_CERTIFICATE_PASSWORD`; and
+- repository variable `DULLI_MACOS_CERTIFICATE_SHA1`.
 
-   ```sh
-   vp run --filter @t3tools/web build
-   vp run --filter t3 build
-   node apps/server/scripts/cli.ts publish \
-     --package-name "@yjosh/t3" \
-     --repository-url "https://github.com/YJJosh/t3code" \
-     --brand dulli --tag latest --app-version <version> --verbose
-   ```
+CI imports the key into an ephemeral non-extractable keychain, verifies its SHA-1 identity before packaging, explicitly selects it for Electron Builder, and verifies each mounted app's identifier, authority, and certificate-root requirement. It fails instead of falling back to an ad-hoc signature. Keep the original `.p12` and password in encrypted offline storage: replacing the certificate breaks built-in update continuity and requires users to reinstall manually.
 
-2. On npmjs.com, open the package's settings and add a trusted publisher: repository `YJJosh/t3code`, workflow `fork-desktop-release.yml`, no environment.
+The certificate is not Apple-notarized. New users must approve the app in **System Settings → Privacy & Security**. An installation from the older ad-hoc-signing era must be manually replaced once before persistent-certificate updates can install.
 
-After that, the release workflow publishes without credentials. Fork versions are prereleases but are still tagged `latest` deliberately, so `npx @yjosh/t3` resolves without an explicit version.
+### Android APK signing
 
-### Android APK
+Android releases use `T3CODE_MOBILE_FORK_BRAND=dulli` and `T3CODE_MOBILE_FORK_VERSION=<release>`. That selects the Dulli app name and artwork, `com.yjjosh.t3dulli`, a monotonic version code, and disabled Expo OTA updates. CI produces an `assembleRelease` APK and verifies its package, version, and signer fingerprint.
 
-The `build_android` job runs `expo prebuild` with `T3CODE_MOBILE_FORK_BRAND=dulli`, which gives the app the T3 Dulli name and icon, the `com.yjjosh.t3dulli` application id (so it can coexist with the Play Store app), a version code derived from the release version, and OTA updates disabled. `plugins/withAndroidReleaseSigning.cjs` swaps the Expo debug-keystore fallback for a release signing config that reads the `T3CODE_ANDROID_RELEASE_*` environment variables, and Gradle produces a signed `assembleRelease` APK that is verified (application id, version, non-debug signature) and attached to the release.
+The workflow requires secrets `DULLI_ANDROID_KEYSTORE_BASE64`, `DULLI_ANDROID_KEYSTORE_PASSWORD`, `DULLI_ANDROID_KEY_ALIAS`, and `DULLI_ANDROID_KEY_PASSWORD`, plus repository variable `DULLI_ANDROID_CERT_SHA256`. Keep the keystore backed up offline: Android accepts an update only when it is signed by the same key. The APK is sideloaded, not submitted with the upstream identities in `apps/mobile/eas.json`.
 
-Signing uses a persistent self-managed keystore. One-time setup:
+### npm CLI
 
-```sh
-keytool -genkeypair -v -keystore t3-dulli-release.keystore \
-  -alias t3dulli -keyalg RSA -keysize 4096 -validity 10950 \
-  -dname "CN=T3 Dulli Community Android Signing"
-base64 -w0 t3-dulli-release.keystore   # value for DULLI_ANDROID_KEYSTORE_BASE64
-```
+The release publishes `apps/server` as `@yjosh/t3`, with the Dulli web brand and package repository metadata, using npm trusted publishing and GitHub OIDC. The npm trusted publisher must remain bound to repository `YJJosh/t3code` and workflow filename `fork-desktop-release.yml`; renaming that workflow requires updating npm first. Fork builds contain no relay configuration, so remote access uses pairing over the LAN, Tailscale (`--share`), or an independently managed reverse proxy.
 
-Configure repository secrets `DULLI_ANDROID_KEYSTORE_BASE64`, `DULLI_ANDROID_KEYSTORE_PASSWORD`, `DULLI_ANDROID_KEY_ALIAS` (`t3dulli` above), and `DULLI_ANDROID_KEY_PASSWORD`. Also record the certificate's SHA-256 fingerprint as the repository variable `DULLI_ANDROID_CERT_SHA256` so CI rejects an APK signed by the wrong key:
-
-```sh
-keytool -list -v -keystore t3-dulli-release.keystore -alias t3dulli \
-  | sed -n 's/.*SHA256: //p'
-```
-
-Keep the keystore backed up offline: Android only installs an update over an existing app when both are signed with the same key, so losing it forces users to uninstall and reinstall. Upstream's Play Store pipeline (`mobile-eas-preview.yml` / `mobile-eas-production.yml`) builds through Expo's EAS cloud with upstream's Expo project and store credentials; the fork does not use EAS.
-
-The upstream `.github/workflows/release.yml` workflow has no scheduled trigger in this fork. Do not restore its nightly cron: Dulli releases are created manually through **Fork Desktop Release** and the upstream workflow requires production infrastructure that is not configured here.
-
-Do not use Blacksmith/self-hosted labels, public `t3-api` naming, embedded fork credentials, or hardcoded checkout paths in workflows and scripts.
+The CLI's default state-path migration remains a separate compatibility decision. Until that is intentionally changed, use `T3CODE_HOME` or `--base-dir` when the headless Dulli server must be isolated from another T3 CLI installation.
 
 ## Installation and built-in updates
 
-Linux users can bootstrap an x86_64 AppImage from a checkout:
+Dulli updater metadata points to prereleases in `YJJosh/t3code`, and the packaged app follows those prereleases forward on its normal **Latest** channel without enabling downgrades. Releases must therefore contain directly branded artifacts and must preserve the signing identities above.
 
-```sh
-scripts/dulli/install-linux-appimage.sh                 # newest Dulli prerelease
-scripts/dulli/install-linux-appimage.sh v0.0.29-pi.4    # explicit release
-```
-
-The installer creates `~/.local/bin/t3-dulli`, `t3-dulli-clean.desktop`, and a uniquely keyed icon. `scripts/dulli/restart-linux.sh` restarts that installation during local smoke testing.
-
-After bootstrap, use the update control in T3 Dulli. Dulli's packaged update configuration points to `YJJosh/t3code`, permits prerelease discovery on its normal `latest` UI channel, and does not enable downgrade behavior. macOS updates additionally require every release to use the same persistent community certificate. Releases must therefore contain directly branded artifacts; publishing generic artifacts under Dulli manifests would undo the product identity during an update.
-
-For an update smoke test, use two releases that already share the persistent certificate. The initial ad-hoc-to-self-signed migration must be tested as a manual replacement instead.
-
-1. Install the previous self-signed Dulli prerelease and launch it.
-2. Publish the next self-signed prerelease from a newer commit.
-3. Check for updates in Dulli, download it, and restart through the app.
-4. Confirm the version changed and the following remain intact:
-   - `:D` icons and `T3 Dulli` product text;
-   - `t3-dulli-clean.desktop` and the dock/taskbar identity;
-   - `~/.t3-dulli` and platform-specific `t3-dulli` user data;
-   - access to `~/.pi/agent` profiles, extensions, and skills.
-5. Confirm an upstream T3 Code installation and its state were not changed.
-
-Personal shell updaters (including an `up` alias) are not part of the product and should not be documented as the distributed update mechanism.
+For an update smoke test, install the previous persistently signed Dulli prerelease, publish the next prerelease from a newer commit, update through the app, and confirm the version changed while product artwork, `~/.t3-dulli`, platform-specific Electron user data, and access to the normal `~/.pi/agent` resources remain intact. Confirm an upstream T3 Code installation and its state were not changed.

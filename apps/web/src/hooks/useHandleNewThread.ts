@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import {
   scopedProjectKey,
   scopeProjectRef,
@@ -23,32 +24,15 @@ import {
 } from "../logicalProject";
 import { resolveDefaultThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 import { readThreadShell, useProjects, useThread } from "../state/entities";
-import { useAtomCommand } from "../state/use-atom-command";
-import { vcsEnvironment } from "../state/vcs";
 import {
   resolveNewDraftStartFromOrigin,
-  resolveNewWorktreeDefaultBranch,
+  resolveNewThreadModelSelectionOverride,
 } from "../lib/chatThreadActions";
 import { readT3ProjectFileDefaultThreadEnvMode } from "../lib/t3ProjectFileDefaults";
-import { waitForPrimaryServerConfig } from "../state/server";
+import { primaryServerSettingsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
-
-const DEFAULT_BRANCH_LOOKUP_TIMEOUT_MS = 1_000;
-const DEFAULT_BRANCH_FALLBACK = "main";
-
-async function withDefaultBranchLookupTimeout<A>(operation: Promise<A>): Promise<A | null> {
-  let timeoutId: number | undefined;
-  const timeout = new Promise<null>((resolve) => {
-    timeoutId = window.setTimeout(() => resolve(null), DEFAULT_BRANCH_LOOKUP_TIMEOUT_MS);
-  });
-  return Promise.race([operation, timeout]).finally(() => {
-    if (timeoutId !== undefined) {
-      window.clearTimeout(timeoutId);
-    }
-  });
-}
 
 interface NewThreadWorkspaceOptions {
   branch?: string | null;
@@ -69,26 +53,15 @@ function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undef
   };
 }
 
-// Derived from "new worktrees start from the default branch": a worktree draft
-// seeds the provisional fallback branch synchronously and resolves the real
-// default branch asynchronously afterwards, so those writes win over the raw
-// caller options.
-interface NewWorkspaceDefaults {
-  shouldApplyNewWorkspaceDefaults: boolean;
-  shouldStartFromDefaultBranch: boolean;
-  provisionalDefaultBranch: string | null;
-  branchOption: string | null | undefined;
-  worktreePathOption: string | null | undefined;
-  resolvedStartFromOrigin: boolean;
-}
-
 export function useNewThreadHandler() {
   const projects = useProjects();
+  // New-thread defaults are a user preference, and the settings UI only ever
+  // edits the primary environment's settings.json. Reading the target
+  // environment's own settings here would silently reset remote projects to
+  // the decoded defaults ("local" mode, current branch), since nothing can
+  // set those values on a remote server.
+  const primaryServerSettings = useAtomValue(primaryServerSettingsAtom);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const listRefs = useAtomCommand(vcsEnvironment.listRefsOnce, {
-    label: "resolve new workspace default branch",
-    reportFailure: false,
-  });
   const router = useRouter();
   const getCurrentRouteTarget = useCallback(() => {
     const currentRouteParams = router.state.matches[router.state.matches.length - 1]?.params ?? {};
@@ -96,7 +69,7 @@ export function useNewThreadHandler() {
   }, [router]);
 
   return useCallback(
-    async (
+    (
       projectRef: ScopedProjectRef,
       options?: {
         branch?: string | null;
@@ -117,16 +90,6 @@ export function useNewThreadHandler() {
       // prepared checkout, a task to write — addresses that one rather than looking the project
       // up again and finding whichever draft it happens to hold.
     ): Promise<{ draftId: DraftId; threadId: ThreadId } | null> => {
-      // The shell/project snapshot can arrive before the primary server config
-      // on a cold connection. Pause every entry point until the user's real
-      // workspace settings arrive instead of rejecting or baking schema
-      // defaults into a persistent draft. New-thread defaults are a user
-      // preference, and the settings UI only ever edits the primary
-      // environment's settings.json — reading the target environment's own
-      // settings here would silently reset remote projects to the decoded
-      // defaults, since nothing can set those values on a remote server.
-      const primaryServerSettings = (await waitForPrimaryServerConfig()).settings;
-
       const {
         getComposerDraft,
         getDraftSessionByLogicalProjectKey,
@@ -139,11 +102,10 @@ export function useNewThreadHandler() {
         setModelSelection,
       } = useComposerDraftStore.getState();
       const currentRouteTarget = getCurrentRouteTarget();
-      // A new thread carries the user's *working mode* from the thread being
-      // viewed: model (including options like reasoning effort and context
-      // window), permission mode, and interaction mode. Branch, worktree, and
-      // env mode never carry implicitly — those come from the configured
-      // defaults unless the caller passes them explicitly.
+      // A new thread carries the user's working mode from the thread being
+      // viewed. The target project's configured model still wins; runtime and
+      // interaction modes carry independently. Branch, worktree, and env mode
+      // come from configured defaults unless the caller passes them explicitly.
       const carrySourceShell =
         currentRouteTarget?.kind === "server"
           ? readThreadShell(currentRouteTarget.threadRef)
@@ -201,6 +163,14 @@ export function useNewThreadHandler() {
           candidate.id === projectRef.projectId &&
           candidate.environmentId === projectRef.environmentId,
       );
+      const resolveModelSelectionOverride = (destinationDraftId: DraftId) =>
+        resolveNewThreadModelSelectionOverride({
+          projectDefaultSelection: project?.defaultModelSelection ?? null,
+          carrySelection: carryModelSelection,
+          carrySourceDraftId:
+            currentRouteTarget?.kind === "draft" ? currentRouteTarget.draftId : null,
+          destinationDraftId,
+        });
       // The shared resolver owns the priority order. The t3.json read is
       // skipped entirely when a higher-priority source decides, and its
       // query atom caches per project after the first call.
@@ -217,67 +187,6 @@ export function useNewThreadHandler() {
           globalDefault: primaryServerSettings.defaultThreadEnvMode,
         });
       };
-      const deriveWorkspaceDefaults = (envMode: DraftThreadEnvMode): NewWorkspaceDefaults => {
-        const shouldApplyNewWorkspaceDefaults = envMode === "worktree";
-        const shouldStartFromDefaultBranch =
-          primaryServerSettings.newWorktreesStartFromDefaultBranch &&
-          shouldApplyNewWorkspaceDefaults;
-        const provisionalDefaultBranch = shouldStartFromDefaultBranch
-          ? DEFAULT_BRANCH_FALLBACK
-          : null;
-        // A new worktree always takes the configured start-from-origin
-        // default; other modes honor an explicit option before falling back.
-        const explicitStartFromOrigin = shouldApplyNewWorkspaceDefaults
-          ? undefined
-          : options?.startFromOrigin;
-        return {
-          shouldApplyNewWorkspaceDefaults,
-          shouldStartFromDefaultBranch,
-          provisionalDefaultBranch,
-          branchOption: shouldStartFromDefaultBranch ? provisionalDefaultBranch : options?.branch,
-          worktreePathOption: shouldStartFromDefaultBranch ? null : options?.worktreePath,
-          resolvedStartFromOrigin:
-            explicitStartFromOrigin ??
-            resolveNewDraftStartFromOrigin({
-              envMode,
-              newWorktreesStartFromOrigin: primaryServerSettings.newWorktreesStartFromOrigin,
-            }),
-        };
-      };
-      const resolveAndApplyDefaultBranch = async (
-        draftId: DraftId,
-        defaults: NewWorkspaceDefaults,
-      ) => {
-        if (
-          !defaults.shouldStartFromDefaultBranch ||
-          !project ||
-          defaults.provisionalDefaultBranch === null
-        ) {
-          return;
-        }
-        const refsResult = await withDefaultBranchLookupTimeout(
-          listRefs({
-            environmentId: projectRef.environmentId,
-            input: { cwd: project.workspaceRoot, limit: 100 },
-          }),
-        );
-        if (refsResult?._tag !== "Success") {
-          return;
-        }
-        const resolvedBranch = resolveNewWorktreeDefaultBranch(refsResult.value.refs);
-        if (resolvedBranch === null || resolvedBranch === defaults.provisionalDefaultBranch) {
-          return;
-        }
-        const currentDraft = getDraftSession(draftId);
-        if (
-          currentDraft?.envMode === "worktree" &&
-          currentDraft.worktreePath === null &&
-          currentDraft.branch === defaults.provisionalDefaultBranch &&
-          currentDraft.promotedTo === null
-        ) {
-          setDraftThreadContext(draftId, { branch: resolvedBranch });
-        }
-      };
       const logicalProjectKey = project
         ? deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings)
         : scopedProjectKey(projectRef);
@@ -290,9 +199,12 @@ export function useNewThreadHandler() {
         ? scopeThreadRef(storedDraftThread.environmentId, storedDraftThread.threadId)
         : null;
       const reusableStoredDraftThread =
-        storedDraftThreadRef && readThreadShell(storedDraftThreadRef) !== null
-          ? null
-          : storedDraftThread;
+        storedDraftThread !== null &&
+        storedDraftThread.promotedTo == null &&
+        storedDraftThreadRef !== null &&
+        readThreadShell(storedDraftThreadRef) === null
+          ? storedDraftThread
+          : null;
       if (storedDraftThreadRef && reusableStoredDraftThread === null) {
         markPromotedDraftThreadByRef(storedDraftThreadRef);
       }
@@ -327,30 +239,13 @@ export function useNewThreadHandler() {
           // env context resets to the configured defaults so drafts seeded
           // before a defaults change (or by the old carry-over behavior) stop
           // landing on "current checkout" branches forever. When the draft is
-          // already open and no options were passed, leave it alone entirely —
-          // the user may have just picked a branch in the composer.
-          // A worktree draft that starts from the default branch seeds the
-          // provisional fallback here and resolves the real default branch
-          // asynchronously below, so those writes win over the raw options.
+          // already open and no options were passed, leave its workspace
+          // context alone entirely — the user may have just picked a branch
+          // in the composer. Model selection has its own explicit-pick rule
+          // below and does not follow this guard.
           let workspaceContext: NewThreadWorkspaceOptions | null = null;
-          let appliedDefaults: NewWorkspaceDefaults | null = null;
           if (hasExplicitWorkspaceOption) {
-            const defaults = deriveWorkspaceDefaults(
-              options?.envMode ?? primaryServerSettings.defaultThreadEnvMode,
-            );
-            appliedDefaults = defaults;
-            workspaceContext = {
-              ...(hasBranchOption || defaults.shouldStartFromDefaultBranch
-                ? { branch: defaults.branchOption ?? null }
-                : {}),
-              ...(hasWorktreePathOption || defaults.shouldStartFromDefaultBranch
-                ? { worktreePath: defaults.worktreePathOption ?? null }
-                : {}),
-              ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
-              ...(hasStartFromOriginOption || defaults.shouldApplyNewWorkspaceDefaults
-                ? { startFromOrigin: defaults.resolvedStartFromOrigin }
-                : {}),
-            };
+            workspaceContext = pickExplicitWorkspaceOptions(options);
           } else if (!isDraftAlreadyOpen) {
             const defaultEnvMode = await resolveDefaultEnvMode();
             // The await yields. If the draft was opened (a concurrent
@@ -377,13 +272,14 @@ export function useNewThreadHandler() {
             if (openedMeanwhile || promotedMeanwhile || remappedMeanwhile || investedMeanwhile) {
               return null;
             }
-            const defaults = deriveWorkspaceDefaults(defaultEnvMode);
-            appliedDefaults = defaults;
             workspaceContext = {
-              branch: defaults.branchOption ?? null,
-              worktreePath: defaults.worktreePathOption ?? null,
+              branch: null,
+              worktreePath: null,
               envMode: defaultEnvMode,
-              startFromOrigin: defaults.resolvedStartFromOrigin,
+              startFromOrigin: resolveNewDraftStartFromOrigin({
+                envMode: defaultEnvMode,
+                newWorktreesStartFromOrigin: primaryServerSettings.newWorktreesStartFromOrigin,
+              }),
             };
           }
           if (workspaceContext) {
@@ -392,11 +288,29 @@ export function useNewThreadHandler() {
               ...(carryRuntimeMode ? { runtimeMode: carryRuntimeMode } : {}),
               ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
             });
-            if (carryModelSelection) {
-              // The carried selection is a complete snapshot of the viewed
-              // thread's model state: absent options mean "no options", not
-              // "keep the stale draft's options".
-              setModelSelection(emptyStoredDraftThread.draftId, carryModelSelection, {
+          }
+          // Model intent: an explicit human pick always stands. Seeds and
+          // legacy entries alike re-resolve here — sticky first, mirroring
+          // the mint-fresh path, then the project default or carried
+          // selection on top. This runs even when the draft is already open:
+          // without it, a changed pin could never reach the draft the user
+          // is looking at, because explicit picks are the only thing the
+          // flag protects.
+          const storedDraft = getComposerDraft(emptyStoredDraftThread.draftId);
+          const storedActiveSelection = storedDraft?.activeProvider
+            ? storedDraft.modelSelectionByProvider[storedDraft.activeProvider]
+            : undefined;
+          const storedDraftHasExplicitModelPick =
+            Boolean(storedActiveSelection) && storedDraft?.modelSelectionExplicit === true;
+          if (!storedDraftHasExplicitModelPick) {
+            applyStickyState(emptyStoredDraftThread.draftId);
+            const modelSelectionOverride = resolveModelSelectionOverride(
+              emptyStoredDraftThread.draftId,
+            );
+            if (modelSelectionOverride) {
+              // This is a complete snapshot: absent options mean "no options",
+              // not "keep the stale draft's options".
+              setModelSelection(emptyStoredDraftThread.draftId, modelSelectionOverride, {
                 replaceOptions: true,
               });
             }
@@ -426,18 +340,16 @@ export function useNewThreadHandler() {
           // again would push a duplicate history entry.
           const routeTargetAfterWrites = getCurrentRouteTarget();
           if (
-            routeTargetAfterWrites?.kind !== "draft" ||
-            routeTargetAfterWrites.draftId !== emptyStoredDraftThread.draftId
+            routeTargetAfterWrites?.kind === "draft" &&
+            routeTargetAfterWrites.draftId === emptyStoredDraftThread.draftId
           ) {
-            await router.navigate({
-              to: "/draft/$draftId",
-              params: { draftId: emptyStoredDraftThread.draftId },
-              replace: options?.replace ?? false,
-            });
+            return opened;
           }
-          if (appliedDefaults) {
-            await resolveAndApplyDefaultBranch(emptyStoredDraftThread.draftId, appliedDefaults);
-          }
+          await router.navigate({
+            to: "/draft/$draftId",
+            params: { draftId: emptyStoredDraftThread.draftId },
+            replace: options?.replace ?? false,
+          });
           return opened;
         })();
       }
@@ -466,10 +378,10 @@ export function useNewThreadHandler() {
           interactionMode: latestActiveDraftThread.interactionMode,
           ...pickExplicitWorkspaceOptions(options),
         });
-        return {
+        return Promise.resolve({
           draftId: currentRouteTarget.draftId,
           threadId: latestActiveDraftThread.threadId,
-        };
+        });
       }
 
       const draftId = newDraftId();
@@ -514,25 +426,27 @@ export function useNewThreadHandler() {
           });
           return { draftId: racedDraft.draftId, threadId: racedDraft.threadId };
         }
-        const defaults = deriveWorkspaceDefaults(initialEnvMode);
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, draftId, {
           threadId,
           createdAt,
-          branch: defaults.branchOption ?? null,
-          worktreePath: defaults.worktreePathOption ?? null,
+          branch: options?.branch ?? null,
+          worktreePath: options?.worktreePath ?? null,
           envMode: initialEnvMode,
-          startFromOrigin: defaults.resolvedStartFromOrigin,
+          startFromOrigin:
+            options?.startFromOrigin ??
+            resolveNewDraftStartFromOrigin({
+              envMode: initialEnvMode,
+              newWorktreesStartFromOrigin: primaryServerSettings.newWorktreesStartFromOrigin,
+            }),
           runtimeMode: carryRuntimeMode ?? DEFAULT_RUNTIME_MODE,
           ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
         });
         applyStickyState(draftId);
-        if (carryModelSelection) {
-          // After sticky state so the viewed thread's exact selection
-          // (model + options like effort and context window) wins over the
-          // globally sticky one. replaceOptions: the carried selection is a
-          // complete snapshot — absent options mean "no options", not "keep
-          // whatever sticky state just wrote".
-          setModelSelection(draftId, carryModelSelection, { replaceOptions: true });
+        const modelSelectionOverride = resolveModelSelectionOverride(draftId);
+        if (modelSelectionOverride) {
+          // Project defaults and carried selections both outrank global sticky
+          // state. The project default wins when both are present.
+          setModelSelection(draftId, modelSelectionOverride, { replaceOptions: true });
         }
         carryComposerContentTo(draftId);
 
@@ -541,11 +455,10 @@ export function useNewThreadHandler() {
           params: { draftId },
           replace: options?.replace ?? false,
         });
-        await resolveAndApplyDefaultBranch(draftId, defaults);
         return { draftId, threadId };
       })();
     },
-    [getCurrentRouteTarget, listRefs, projectGroupingSettings, projects, router],
+    [getCurrentRouteTarget, primaryServerSettings, projectGroupingSettings, projects, router],
   );
 }
 

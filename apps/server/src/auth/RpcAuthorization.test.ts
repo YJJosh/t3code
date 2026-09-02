@@ -3,7 +3,6 @@ import {
   AuthOrchestrationReadScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
-  AuthTerminalOperateScope,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -31,26 +30,17 @@ describe("RPC authorization scopes", () => {
     );
   });
 
-  it("preserves Pi control and event-stream scopes", () => {
-    expect(requiredScopeForRpcMethod(WS_METHODS.subagentsControl)).toBe(
-      AuthOrchestrationOperateScope,
-    );
-    expect(requiredScopeForRpcMethod(WS_METHODS.subscribeSubagentEvents)).toBe(
-      AuthOrchestrationReadScope,
-    );
-    expect(requiredScopeForRpcMethod(WS_METHODS.backgroundTerminalsControl)).toBe(
-      AuthTerminalOperateScope,
-    );
-    expect(requiredScopeForRpcMethod(WS_METHODS.subscribeBackgroundTerminalEvents)).toBe(
-      AuthTerminalOperateScope,
-    );
-  });
-
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,
     );
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudInstallRelayClient)).toBe(AuthRelayWriteScope);
+  });
+
+  it("requires permission to operate on a thread before uploading feedback", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerUploadFeedback)).toBe(
+      AuthOrchestrationOperateScope,
+    );
   });
 
   it("reads the reviewer menu under the same scope as the pull request it belongs to", () => {

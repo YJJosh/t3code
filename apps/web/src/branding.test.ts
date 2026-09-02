@@ -8,6 +8,7 @@ const originalWindow = globalThis.window;
 
 afterEach(() => {
   vi.resetModules();
+  vi.unstubAllEnvs();
 
   if (originalWindow === undefined) {
     Reflect.deleteProperty(globalThis, "window");
@@ -37,6 +38,16 @@ describe("branding", () => {
     expect(branding.APP_BASE_NAME).toBe("T3 Code");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
     expect(branding.APP_DISPLAY_NAME).toBe("T3 Code (Nightly)");
+  });
+
+  it("uses source-level Dulli branding for desktop builds", async () => {
+    vi.stubEnv("VITE_DESKTOP_BUILD_BRAND", "dulli");
+
+    const branding = await import("./branding");
+
+    expect(branding.APP_BASE_NAME).toBe("T3 Dulli");
+    expect(branding.APP_STAGE_LABEL).toBe("Latest");
+    expect(branding.APP_DISPLAY_NAME).toBe("T3 Dulli");
   });
 
   it("normalizes hosted app channel metadata", async () => {

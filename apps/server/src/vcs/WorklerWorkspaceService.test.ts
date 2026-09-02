@@ -3,64 +3,37 @@ import * as Effect from "effect/Effect";
 
 import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
 
-interface RecordedCall {
-  readonly method: string;
-  readonly args: ReadonlyArray<unknown>;
-}
-
 class StubWorklerError extends Error {
   readonly code: string;
+
   constructor(code: string, message: string) {
     super(message);
     this.code = code;
   }
 }
 
-function makeStubLibrary(input?: {
-  readonly initialized?: boolean;
-  readonly failCreateWith?: unknown;
-}) {
-  const calls: RecordedCall[] = [];
-  const initialized = input?.initialized ?? false;
-  const library: WorklerWorkspaceService.WorklerLibrary = {
-    inspectProject: (root) => {
-      calls.push({ method: "inspectProject", args: [root] });
-      return {
-        root,
-        exists: true,
-        gitRepo: true,
-        marked: initialized,
-        configFileExists: initialized,
-        workspacesDirExists: initialized,
-        initialized,
-      };
-    },
-    initProject: (root) => {
-      calls.push({ method: "initProject", args: [root] });
-      return {
-        root,
-        configPath: `${root}/.workler`,
-        configCreated: true,
-        workspacesPath: `${root}/.worktrees`,
-        gitRepo: true,
-      };
-    },
-    createWorkspace: (root, options) => {
+function makeLibrary(): {
+  readonly library: WorklerWorkspaceService.WorklerLibrary;
+  readonly calls: Array<{ readonly method: string; readonly args: ReadonlyArray<unknown> }>;
+} {
+  const calls: Array<{ readonly method: string; readonly args: ReadonlyArray<unknown> }> = [];
+  const library = {
+    createWorkspace: (
+      root: string,
+      options: { readonly name: string; readonly branch?: string },
+    ) => {
       calls.push({ method: "createWorkspace", args: [root, options] });
-      if (input?.failCreateWith !== undefined) {
-        throw input.failCreateWith;
-      }
       return {
         name: options.name,
         path: `${root}/.worktrees/${options.name}`,
         root,
-        branch: options.branch ?? options.name,
-        head: "0000000000000000000000000000000000000000",
+        ...(options.branch === undefined ? {} : { branch: options.branch }),
+        head: "deadbeef",
         detached: false,
-        rules: { ruleCount: 0, results: [], conflicts: 0 },
+        rules: { results: [] },
       };
     },
-    listWorkspaces: (root) => {
+    listWorkspaces: (root: string) => {
       calls.push({ method: "listWorkspaces", args: [root] });
       return [
         { name: "main", path: root, isMain: true, isClone: true, detached: false },
@@ -71,138 +44,93 @@ function makeStubLibrary(input?: {
           isClone: true,
           branch: "feature/a",
           detached: false,
-          clean: true,
         },
       ];
     },
-    removeWorkspace: (root, name, options) => {
+    removeWorkspace: (root: string, name: string, options?: { readonly force?: boolean }) => {
       calls.push({ method: "removeWorkspace", args: [root, name, options] });
       return { name, path: `${root}/.worktrees/${name}` };
     },
-  };
-  return { library, calls };
+  } as unknown as WorklerWorkspaceService.WorklerLibrary;
+  return { calls, library };
 }
 
-const withService = <A, E>(
-  library: WorklerWorkspaceService.WorklerLibrary,
-  use: (service: WorklerWorkspaceService.WorklerWorkspaceService["Service"]) => Effect.Effect<A, E>,
-) => use(WorklerWorkspaceService.makeFromLibrary(Effect.succeed(library)));
-
 describe("WorklerWorkspaceService", () => {
-  it.effect("ensureProject initializes only uninitialized projects", () =>
+  it.effect("keeps branch and filesystem-safe workspace name separate", () =>
     Effect.gen(function* () {
-      const uninitialized = makeStubLibrary({ initialized: false });
-      yield* withService(uninitialized.library, (service) => service.ensureProject("/repo"));
-      assert.deepEqual(
-        uninitialized.calls.map((call) => call.method),
-        ["inspectProject", "initProject"],
-      );
-
-      const initialized = makeStubLibrary({ initialized: true });
-      yield* withService(initialized.library, (service) => service.ensureProject("/repo"));
-      assert.deepEqual(
-        initialized.calls.map((call) => call.method),
-        ["inspectProject"],
-      );
-    }),
-  );
-
-  it.effect("passes base and branch through to the library separately from the name", () =>
-    Effect.gen(function* () {
-      const stub = makeStubLibrary({ initialized: true });
-      const created = yield* withService(stub.library, (service) =>
-        service.createWorkspace({
-          root: "/repo",
-          name: "feature-a",
-          branch: "feature/a",
-          base: "origin/main",
-        }),
-      );
+      const stub = makeLibrary();
+      const service = WorklerWorkspaceService.makeFromLibrary(Effect.succeed(stub.library));
+      const created = yield* service.createWorkspace({
+        root: "/repo",
+        name: "feature-login",
+        branch: "feature/login",
+        base: "origin/main",
+      });
 
       assert.deepEqual(stub.calls, [
         {
           method: "createWorkspace",
-          args: ["/repo", { name: "feature-a", branch: "feature/a", base: "origin/main" }],
+          args: ["/repo", { name: "feature-login", branch: "feature/login", base: "origin/main" }],
         },
       ]);
-      assert.equal(created.path, "/repo/.worktrees/feature-a");
-      assert.equal(created.branch, "feature/a");
+      assert.equal(created.branch, "feature/login");
+      assert.equal(created.path, "/repo/.worktrees/feature-login");
     }),
   );
 
-  it.effect("maps library errors to typed workspace errors with their code", () =>
+  it.effect("normalizes list and remove results at the library boundary", () =>
     Effect.gen(function* () {
-      const stub = makeStubLibrary({
-        initialized: true,
-        failCreateWith: new StubWorklerError("BRANCH_EXISTS", 'branch "feature/a" already exists'),
+      const stub = makeLibrary();
+      const service = WorklerWorkspaceService.makeFromLibrary(Effect.succeed(stub.library));
+
+      const workspaces = yield* service.listWorkspaces("/repo");
+      assert.equal(workspaces[0]?.branch, null);
+      assert.equal(workspaces[0]?.broken, null);
+      assert.equal(workspaces[1]?.branch, "feature/a");
+
+      const removed = yield* service.removeWorkspace({
+        root: "/repo",
+        name: "feature-a",
+        force: true,
       });
-
-      const error = yield* withService(stub.library, (service) =>
-        service.createWorkspace({ root: "/repo", name: "feature-a", branch: "feature/a" }),
-      ).pipe(Effect.flip);
-
-      assert.equal(error._tag, "WorklerWorkspaceError");
-      assert.equal(error.code, "BRANCH_EXISTS");
-      assert.equal(error.root, "/repo");
-      assert.include(error.detail, "already exists");
+      assert.deepEqual(removed, { name: "feature-a", path: "/repo/.worktrees/feature-a" });
+      assert.deepEqual(stub.calls.at(-1), {
+        method: "removeWorkspace",
+        args: ["/repo", "feature-a", { force: true }],
+      });
     }),
   );
 
-  it.effect("wraps non-workler defects as unexpected errors", () =>
-    Effect.gen(function* () {
-      const stub = makeStubLibrary({ initialized: true, failCreateWith: "boom" });
-
-      const error = yield* withService(stub.library, (service) =>
-        service.createWorkspace({ root: "/repo", name: "feature-a" }),
-      ).pipe(Effect.flip);
-
-      assert.equal(error._tag, "WorklerWorkspaceError");
-      assert.equal(error.code, "UNEXPECTED");
-    }),
-  );
-
-  it.effect("normalizes optional workspace listing fields", () =>
-    Effect.gen(function* () {
-      const stub = makeStubLibrary({ initialized: true });
-      const workspaces = yield* withService(stub.library, (service) =>
-        service.listWorkspaces("/repo"),
-      );
-
-      assert.deepEqual(workspaces, [
-        {
-          name: "main",
-          path: "/repo",
-          isMain: true,
-          isClone: true,
-          broken: null,
-          branch: null,
-        },
-        {
-          name: "feature-a",
-          path: "/repo/.worktrees/feature-a",
-          isMain: false,
-          isClone: true,
-          broken: null,
-          branch: "feature/a",
-        },
-      ]);
-    }),
-  );
-
-  it.effect("fails operations with a typed error when the library is unavailable", () =>
+  it.effect("returns a typed unavailable error at the operation boundary", () =>
     Effect.gen(function* () {
       const unavailable = new WorklerWorkspaceService.WorklerWorkspaceError({
         operation: "WorklerWorkspaceService.loadLibrary",
         root: "",
         code: "LIBRARY_UNAVAILABLE",
-        detail: "The `workler` package is not installed.",
+        detail: "not installed",
       });
       const service = WorklerWorkspaceService.makeFromLibrary(Effect.fail(unavailable));
-
       const error = yield* service.listWorkspaces("/repo").pipe(Effect.flip);
       assert.equal(error.code, "LIBRARY_UNAVAILABLE");
       assert.equal(error.operation, "WorklerWorkspaceService.listWorkspaces");
       assert.equal(error.root, "/repo");
+    }),
+  );
+
+  it.effect("normalizes library errors", () =>
+    Effect.gen(function* () {
+      const library = makeLibrary().library;
+      const failing = {
+        ...library,
+        createWorkspace: () => {
+          throw new StubWorklerError("BRANCH_EXISTS", "branch already exists");
+        },
+      } as unknown as WorklerWorkspaceService.WorklerLibrary;
+      const error = yield* WorklerWorkspaceService.makeFromLibrary(Effect.succeed(failing))
+        .createWorkspace({ root: "/repo", name: "feature-a" })
+        .pipe(Effect.flip);
+      assert.equal(error.code, "BRANCH_EXISTS");
+      assert.include(error.detail, "already exists");
     }),
   );
 });

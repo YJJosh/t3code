@@ -48,6 +48,14 @@ const normalizeCommitHash = (value: string): Option.Option<string> => {
 export const resolveUserDataPath = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
+  const isolatedPath = environment.path.join(
+    environment.appDataDirectory,
+    environment.userDataDirName,
+  );
+  if (environment.isDulli) {
+    return isolatedPath;
+  }
+
   const legacyPath = environment.path.join(
     environment.appDataDirectory,
     environment.legacyUserDataDirName,
@@ -61,9 +69,7 @@ export const resolveUserDataPath = Effect.gen(function* () {
         }),
     ),
   );
-  return legacyPathExists
-    ? legacyPath
-    : environment.path.join(environment.appDataDirectory, environment.userDataDirName);
+  return legacyPathExists ? legacyPath : isolatedPath;
 }).pipe(Effect.withSpan("desktop.appIdentity.resolveUserDataPath"));
 
 export const make = Effect.gen(function* () {
@@ -134,10 +140,10 @@ export const make = Effect.gen(function* () {
       yield* electronApp.setDesktopName(environment.linuxDesktopEntryName);
     }
 
-    // A packaged macOS app must keep its bundled icon so Dock rendering does not
-    // change when the process exits. Development Electron bundles still need the
-    // explicit override to show this checkout's branded icon.
-    if (environment.platform === "darwin" && environment.isDevelopment) {
+    // Unpackaged runs only. A packaged bundle already carries its icon in
+    // Info.plist, so setting the dock tile again changes nothing except to
+    // overwrite a custom icon the user attached to the app themselves.
+    if (environment.platform === "darwin" && !environment.isPackaged) {
       const iconPaths = yield* assets.iconPaths;
       yield* Option.match(iconPaths.png, {
         onNone: () => Effect.void,

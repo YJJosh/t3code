@@ -3,22 +3,10 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-/**
- * Thin Effect adapter around the `workler` programmatic library API.
- *
- * Workler manages isolated workspaces as ordinary local Git clones under
- * `<repo>/.worktrees/<name>` and applies the repository's `.workler` rules
- * (linked/copied untracked files) to each new workspace. T3 uses it by default
- * for new isolated thread workspaces; users may opt back into `git worktree
- * add`, while existing Workler clones and Git worktrees remain supported.
- *
- * The library is loaded lazily so layer construction stays side-effect free;
- * the published package is a regular server dependency.
- */
-
+/** A lazy, server-local adapter for Workler's workspace library. */
 export type WorklerLibrary = Pick<
   typeof import("workler"),
-  "initProject" | "inspectProject" | "createWorkspace" | "listWorkspaces" | "removeWorkspace"
+  "createWorkspace" | "listWorkspaces" | "removeWorkspace"
 >;
 
 export type WorklerWorkspaceErrorCode =
@@ -41,17 +29,8 @@ export class WorklerWorkspaceError extends Data.TaggedError("WorklerWorkspaceErr
 export interface WorklerCreateWorkspaceInput {
   readonly root: string;
   readonly name: string;
-  /**
-   * Ref the new branch starts from (branch, tag, or commit). Requires
-   * `branch`; mutually exclusive with `checkout`.
-   */
   readonly base?: string | undefined;
-  /**
-   * Git branch to create for the workspace. Kept separate from `name` so a
-   * slash-containing branch can live in a filesystem-safe directory.
-   */
   readonly branch?: string | undefined;
-  /** Existing ref to check out without creating a branch. */
   readonly checkout?: string | undefined;
 }
 
@@ -75,12 +54,9 @@ export interface WorklerCreatedWorkspace {
 export class WorklerWorkspaceService extends Context.Service<
   WorklerWorkspaceService,
   {
-    /** Initializes Workler project metadata for `root` if missing (idempotent). */
-    readonly ensureProject: (root: string) => Effect.Effect<void, WorklerWorkspaceError>;
     readonly createWorkspace: (
       input: WorklerCreateWorkspaceInput,
     ) => Effect.Effect<WorklerCreatedWorkspace, WorklerWorkspaceError>;
-    /** Lists Workler-managed workspaces of `root` (never legacy Git worktrees). */
     readonly listWorkspaces: (
       root: string,
     ) => Effect.Effect<ReadonlyArray<WorklerWorkspaceSummary>, WorklerWorkspaceError>;
@@ -92,16 +68,12 @@ export class WorklerWorkspaceService extends Context.Service<
   }
 >()("t3/vcs/WorklerWorkspaceService") {}
 
-function isWorklerLibraryError(value: unknown): value is Error & { code: string } {
-  return (
-    value instanceof Error &&
-    "code" in value &&
-    typeof (value as { code: unknown }).code === "string"
-  );
+function isWorklerLibraryError(value: unknown): value is Error & { readonly code: string } {
+  return value instanceof Error && "code" in value && typeof value.code === "string";
 }
 
-const toWorkspaceError = (operation: string, root: string, cause: unknown): WorklerWorkspaceError =>
-  isWorklerLibraryError(cause)
+function toWorkspaceError(operation: string, root: string, cause: unknown): WorklerWorkspaceError {
+  return isWorklerLibraryError(cause)
     ? new WorklerWorkspaceError({
         operation,
         root,
@@ -116,6 +88,7 @@ const toWorkspaceError = (operation: string, root: string, cause: unknown): Work
         detail: "Workler workspace operation failed unexpectedly.",
         cause,
       });
+}
 
 export const makeFromLibrary = (
   library: Effect.Effect<WorklerLibrary, WorklerWorkspaceError>,
@@ -145,20 +118,13 @@ export const makeFromLibrary = (
     );
 
   return WorklerWorkspaceService.of({
-    ensureProject: (root) =>
-      withLibrary("WorklerWorkspaceService.ensureProject", root, (workler) => {
-        if (!workler.inspectProject(root).initialized) {
-          workler.initProject(root);
-        }
-      }),
-
     createWorkspace: (input) =>
       withLibrary("WorklerWorkspaceService.createWorkspace", input.root, (workler) => {
         const created = workler.createWorkspace(input.root, {
           name: input.name,
-          ...(input.base !== undefined ? { base: input.base } : {}),
-          ...(input.branch !== undefined ? { branch: input.branch } : {}),
-          ...(input.checkout !== undefined ? { checkout: input.checkout } : {}),
+          ...(input.base === undefined ? {} : { base: input.base }),
+          ...(input.branch === undefined ? {} : { branch: input.branch }),
+          ...(input.checkout === undefined ? {} : { checkout: input.checkout }),
         });
         return {
           name: created.name,
@@ -168,7 +134,6 @@ export const makeFromLibrary = (
           detached: created.detached,
         };
       }),
-
     listWorkspaces: (root) =>
       withLibrary("WorklerWorkspaceService.listWorkspaces", root, (workler) =>
         workler.listWorkspaces(root).map((workspace) => ({
@@ -180,13 +145,12 @@ export const makeFromLibrary = (
           branch: workspace.branch ?? null,
         })),
       ),
-
     removeWorkspace: (input) =>
       withLibrary("WorklerWorkspaceService.removeWorkspace", input.root, (workler) => {
         const removed = workler.removeWorkspace(
           input.root,
           input.name,
-          input.force !== undefined ? { force: input.force } : {},
+          input.force === undefined ? {} : { force: input.force },
         );
         return { name: removed.name, path: removed.path };
       }),
@@ -194,18 +158,15 @@ export const makeFromLibrary = (
 };
 
 export const make = Effect.gen(function* () {
-  // Resolve on first use. A missing/corrupt production installation still
-  // becomes a typed operation failure rather than a layer-construction defect.
   const library = yield* Effect.cached(
     Effect.tryPromise({
-      try: () => import(/* @vite-ignore */ "workler") as Promise<WorklerLibrary>,
+      try: () => import("workler") as Promise<WorklerLibrary>,
       catch: (cause) =>
         new WorklerWorkspaceError({
           operation: "WorklerWorkspaceService.loadLibrary",
           root: "",
           code: "LIBRARY_UNAVAILABLE",
-          detail:
-            "The `workler` package is not installed; isolated workspace management is unavailable.",
+          detail: "The bundled Workler library could not be loaded by this server install.",
           cause,
         }),
     }),
@@ -214,6 +175,5 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(WorklerWorkspaceService, make);
-
 export const layerFromLibrary = (library: WorklerLibrary) =>
   Layer.succeed(WorklerWorkspaceService, makeFromLibrary(Effect.succeed(library)));

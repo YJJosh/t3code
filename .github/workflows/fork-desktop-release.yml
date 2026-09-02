@@ -1,12 +1,13 @@
-name: Fork Desktop Release
+name: T3 Dulli Release
 
+# Dulli releases are explicit and isolated from upstream's release, relay, and
+# EAS workflows. Keeping this filename preserves npm trusted-publisher identity.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "T3 Dulli community release version (for example 0.0.29-pi.4)"
+        description: "T3 Dulli release version (for example 0.0.36-pi.1)"
         required: true
-        default: "0.0.29-pi.4"
         type: string
 
 permissions:
@@ -38,6 +39,9 @@ jobs:
           cache: true
           run-install: true
 
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
       - id: release_meta
         name: Validate release version
         shell: bash
@@ -67,22 +71,28 @@ jobs:
       - name: Test release integrations
         run: |
           vp test --retry=1 \
+            scripts/fork-release-workflows.test.ts \
             scripts/build-desktop-artifact.test.ts \
+            scripts/extract-android-cert-sha256.test.ts \
             apps/desktop/src/app/DesktopEnvironment.test.ts \
             apps/desktop/src/electron/ElectronApp.test.ts \
+            apps/desktop/src/electron/ElectronProtocol.test.ts \
             apps/desktop/src/updates/DesktopUpdates.test.ts \
             packages/contracts/src/settings.test.ts \
-            packages/contracts/src/subagents.test.ts \
+            packages/contracts/src/provider.test.ts \
             packages/client-runtime/src/state/subagentRuntime.test.ts \
             apps/server/src/provider/pi/piJsonl.test.ts \
             apps/server/src/provider/pi/piModelDiscovery.test.ts \
             apps/server/src/provider/pi/piRpcProtocol.test.ts \
             apps/server/src/provider/Layers/PiAdapter.test.ts \
+            apps/server/scripts/cli.test.ts \
             apps/server/src/vcs/GitVcsDriver.test.ts \
             apps/server/src/vcs/GitVcsDriverCore.test.ts \
             apps/server/src/vcs/WorklerWorkspaceService.test.ts \
+            apps/web/src/branding.test.ts \
             apps/web/src/components/settings/ProviderSettingsForm.test.ts \
-            apps/web/src/components/subagents/subagentPresentation.test.ts \
+            apps/mobile/plugins/withAndroidReleaseSigning.test.ts \
+            apps/mobile/scripts/dulli-fork-version.test.ts \
             apps/mobile/src/lib/modelOptions.test.ts \
             apps/mobile/src/features/threads/subagents/subagentPresentation.test.ts
 
@@ -137,24 +147,28 @@ jobs:
             target: dmg
             arch: arm64
             rust_target: aarch64-apple-darwin
+            resource_key: darwin-arm64
           - label: macOS x64
             runner: macos-14
             platform: mac
             target: dmg
             arch: x64
             rust_target: x86_64-apple-darwin
+            resource_key: darwin-x64
           - label: Linux x64
             runner: ubuntu-24.04
             platform: linux
             target: AppImage
             arch: x64
             rust_target: x86_64-unknown-linux-gnu
+            resource_key: linux-x64
           - label: Windows x64
             runner: windows-2025
             platform: win
             target: nsis
             arch: x64
             rust_target: x86_64-pc-windows-msvc
+            resource_key: win32-x64
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       T3CODE_DESKTOP_UPDATE_REPOSITORY: YJJosh/t3code
@@ -414,6 +428,19 @@ jobs:
             }
           done
 
+      - name: Collect resource monitor
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_name="t3-resource-monitor"
+          if [[ "${{ matrix.platform }}" == "win" ]]; then
+            binary_name="${binary_name}.exe"
+          fi
+          source_path="native/resource-monitor/target/${{ matrix.rust_target }}/release/${binary_name}"
+          target_dir="resource-monitor-publish/${{ matrix.resource_key }}"
+          mkdir -p "$target_dir"
+          cp "$source_path" "$target_dir/$binary_name"
+
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -421,14 +448,23 @@ jobs:
           path: release-publish/*
           if-no-files-found: error
 
+      - name: Upload resource monitor
+        uses: actions/upload-artifact@v7
+        with:
+          name: resource-monitor-${{ matrix.resource_key }}
+          path: resource-monitor-publish/${{ matrix.resource_key }}/*
+          if-no-files-found: error
+
   publish_cli:
     name: Publish CLI to npm
     # npm versions are immutable, so publish only after the GitHub release and
     # every desktop/Android artifact have completed successfully.
-    needs: [preflight, release]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' }}
+    needs: [preflight, build, release]
+    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && needs.release.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      VITE_DESKTOP_BUILD_BRAND: dulli
     permissions:
       contents: read
       # npm trusted publishing exchanges the workflow's OIDC token for publish
@@ -464,6 +500,24 @@ jobs:
 
       - name: Build CLI package
         run: vp run --filter t3 build
+
+      - name: Download resource monitors
+        uses: actions/download-artifact@v8
+        with:
+          pattern: resource-monitor-*
+          path: ${{ runner.temp }}/resource-monitors
+
+      - name: Bundle resource monitors into CLI package
+        shell: bash
+        run: |
+          set -euo pipefail
+          for artifact_dir in "$RUNNER_TEMP"/resource-monitors/resource-monitor-*; do
+            resource_key="${artifact_dir##*/resource-monitor-}"
+            target_dir="apps/server/dist/resource-monitor/${resource_key}"
+            mkdir -p "$target_dir"
+            cp "$artifact_dir"/t3-resource-monitor* "$target_dir/"
+            chmod +x "$target_dir"/t3-resource-monitor 2>/dev/null || true
+          done
 
       - name: Publish CLI package
         run: |
@@ -510,6 +564,32 @@ jobs:
           vp_pnpm_bin="$HOME/.vite-plus/package_manager/pnpm/$pnpm_version/pnpm/bin"
           echo "$vp_pnpm_bin" >> "$GITHUB_PATH"
           "$vp_pnpm_bin/pnpm" --version
+
+      - name: Verify Dulli Expo identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          config_path="$RUNNER_TEMP/t3-dulli-expo-config.json"
+          (cd apps/mobile && ./node_modules/.bin/expo config --json) > "$config_path"
+          CONFIG_PATH="$config_path" node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const config = JSON.parse(fs.readFileSync(process.env.CONFIG_PATH, "utf8"));
+          const failures = [
+            [config.name === "T3 Dulli", "app name"],
+            [config.scheme === "t3dulli", "URL scheme"],
+            [config.version === process.env.T3CODE_MOBILE_FORK_VERSION, "version name"],
+            [config.android?.package === "com.yjjosh.t3dulli", "Android package"],
+            [config.updates?.enabled === false, "disabled OTA updates"],
+            [config.extra?.appBrand === "dulli", "runtime app brand"],
+            [config.owner === undefined, "omitted upstream EAS owner"],
+            [config.extra?.eas?.projectId === undefined, "omitted upstream EAS project"],
+          ].filter(([ok]) => !ok);
+
+          if (failures.length > 0) {
+            throw new Error(`Invalid Dulli Expo config: ${failures.map(([, label]) => label).join(", ")}`);
+          }
+          NODE
 
       - name: Setup Java
         uses: actions/setup-java@v5
@@ -601,7 +681,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish community desktop release
+    name: Publish T3 Dulli release
     needs: [preflight, build, build_android]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -649,7 +729,7 @@ jobs:
           done
 
       - name: Publish GitHub prerelease
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.preflight.outputs.tag }}
           target_commitish: ${{ needs.preflight.outputs.ref }}
@@ -662,7 +742,7 @@ jobs:
             Highlights:
             - First-class Dulli identity, :D artwork, isolated state, and built-in prerelease updates
             - Pi as a first-class coding-agent provider, including extension-provided models
-            - Live Pi subagent activity and controls on desktop/web, with read-only mobile visibility
+            - Live Pi subagent activity, details, and controls on desktop/web and mobile
             - Workler clones for isolated workspaces, with a Git-worktree fallback setting
             - Sideloadable Android APK (`T3-Dulli-*-android.apk`) for controlling T3 Dulli servers remotely
             - Headless CLI on npm: `npx @yjosh/t3` runs the server plus web UI on any machine

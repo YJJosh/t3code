@@ -91,17 +91,56 @@ function projectCommandData(data: Record<string, unknown>): Record<string, unkno
     projectedItem.command = item.command;
   }
 
+  const aggregatedOutput = asTrimmedString(item.aggregatedOutput);
+  if (aggregatedOutput) {
+    const summary = summarizeToolTextOutput(aggregatedOutput);
+    if (summary) {
+      projectedItem.aggregatedOutput = summary;
+    }
+  }
+
   const input = asRecord(item.input);
   if (input && "command" in input) {
     projectedItem.input = { command: input.command };
   }
 
   const result = asRecord(item.result);
-  if (result && "command" in result) {
-    projectedItem.result = { command: result.command };
+  if (result) {
+    const projectedResult: Record<string, unknown> = {};
+    if ("command" in result) {
+      projectedResult.command = result.command;
+    }
+    const content = asTrimmedString(result.content);
+    if (content) {
+      const summary = summarizeToolTextOutput(content);
+      if (summary) {
+        projectedResult.content = summary;
+      }
+    }
+    if (Object.keys(projectedResult).length > 0) {
+      projectedItem.result = projectedResult;
+    }
   }
 
   return Object.keys(projectedItem).length > 0 ? projectedItem : undefined;
+}
+
+function projectCommandValue(data: Record<string, unknown>): unknown {
+  if (data.command !== undefined) {
+    return data.command;
+  }
+
+  const input = asRecord(data.input);
+  if (input?.command !== undefined) {
+    return input.command;
+  }
+
+  const stateInput = asRecord(asRecord(data.state)?.input);
+  if (stateInput?.command !== undefined) {
+    return stateInput.command;
+  }
+
+  return undefined;
 }
 
 function summarizeToolTextOutput(value: string): string | null {
@@ -121,44 +160,6 @@ function summarizeToolTextOutput(value: string): string | null {
     return `${lines.length.toLocaleString()} lines`;
   }
   return null;
-}
-
-interface ToolValueProjectionBudget {
-  nodes: number;
-  stringChars: number;
-}
-
-const TOOL_VALUE_MAX_DEPTH = 8;
-const TOOL_VALUE_MAX_ENTRIES = 100;
-const TOOL_VALUE_MAX_NODES = 400;
-const TOOL_VALUE_MAX_STRING_CHARS = 32_000;
-
-function projectToolValue(value: unknown, budget: ToolValueProjectionBudget, depth = 0): unknown {
-  if (budget.nodes <= 0 || depth > TOOL_VALUE_MAX_DEPTH) return "[truncated]";
-  budget.nodes -= 1;
-  if (value === null || typeof value === "boolean" || typeof value === "number") return value;
-  if (typeof value === "string") {
-    if (budget.stringChars <= 0) return "[truncated]";
-    const retained = value.slice(0, budget.stringChars);
-    budget.stringChars -= retained.length;
-    return retained.length === value.length ? retained : `${retained}…[truncated]`;
-  }
-  if (Array.isArray(value)) {
-    const entries = value
-      .slice(0, TOOL_VALUE_MAX_ENTRIES)
-      .map((entry) => projectToolValue(entry, budget, depth + 1));
-    if (value.length > TOOL_VALUE_MAX_ENTRIES) entries.push("[truncated entries]");
-    return entries;
-  }
-  const record = asRecord(value);
-  if (!record) return String(value);
-  const entries = Object.entries(record);
-  const projected: Record<string, unknown> = {};
-  for (const [key, entry] of entries.slice(0, TOOL_VALUE_MAX_ENTRIES)) {
-    projected[key] = projectToolValue(entry, budget, depth + 1);
-  }
-  if (entries.length > TOOL_VALUE_MAX_ENTRIES) projected["[truncated]"] = true;
-  return projected;
 }
 
 /**
@@ -270,6 +271,12 @@ function projectMcpToolCallData(data: Record<string, unknown>): Record<string, u
 }
 
 function projectRawOutput(value: unknown): Record<string, unknown> | undefined {
+  const direct = asTrimmedString(value);
+  if (direct) {
+    const summary = summarizeToolTextOutput(direct);
+    return summary ? { content: summary } : undefined;
+  }
+
   const rawOutput = asRecord(value);
   if (!rawOutput) {
     return undefined;
@@ -294,14 +301,37 @@ function projectRawOutput(value: unknown): Record<string, unknown> | undefined {
     return summary ? { content: summary } : undefined;
   }
 
+  const stderr = asTrimmedString(rawOutput.stderr);
+  if (stderr) {
+    const summary = summarizeToolTextOutput(stderr);
+    return summary ? { content: summary } : undefined;
+  }
+
   return undefined;
+}
+
+function projectAcpContent(value: unknown): Record<string, unknown> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const text = value
+    .map((entryValue) => {
+      const entry = asRecord(entryValue);
+      const content = asRecord(entry?.content);
+      return entry?.type === "content" && content?.type === "text"
+        ? asTrimmedString(content.text)
+        : null;
+    })
+    .filter((entry): entry is string => entry !== null)
+    .join("\n");
+  const summary = summarizeToolTextOutput(text);
+  return summary ? { content: summary } : undefined;
 }
 
 /**
  * Removes activity payload fields that no current client reads while retaining
- * the full payload in persistence and the event store. Structured tool args and
- * results are retained under explicit depth/node/string budgets so details stay
- * useful without allowing one tool response to flood snapshot/WebSocket payloads.
+ * the full payload in persistence and the event store.
  */
 export function projectActivityPayload(
   activity: OrchestrationThreadActivity,
@@ -312,11 +342,17 @@ export function projectActivityPayload(
     return activity;
   }
 
+  const itemStatus = asRecord(data.item)?.status;
+  const projectedPayload =
+    payload.status === "completed" && (itemStatus === "failed" || itemStatus === "declined")
+      ? { ...payload, status: itemStatus }
+      : payload;
+
   if (payload.itemType === "mcp_tool_call") {
     return {
       ...activity,
       payload: {
-        ...payload,
+        ...projectedPayload,
         data: projectMcpToolCallData(data),
       },
     };
@@ -327,8 +363,9 @@ export function projectActivityPayload(
   if (item) {
     projectedData.item = item;
   }
-  if ("command" in data) {
-    projectedData.command = data.command;
+  const command = projectCommandValue(data);
+  if (command !== undefined) {
+    projectedData.command = command;
   }
 
   const changedFiles: string[] = [];
@@ -344,16 +381,8 @@ export function projectActivityPayload(
   if ("kind" in data) {
     projectedData.kind = data.kind;
   }
-  const toolValueBudget: ToolValueProjectionBudget = {
-    nodes: TOOL_VALUE_MAX_NODES,
-    stringChars: TOOL_VALUE_MAX_STRING_CHARS,
-  };
-  for (const key of ["args", "partialResult", "result", "providerMetadata"] as const) {
-    if (key in data) projectedData[key] = projectToolValue(data[key], toolValueBudget);
-  }
-  if (typeof data.isError === "boolean") projectedData.isError = data.isError;
 
-  const rawOutput = projectRawOutput(data.rawOutput);
+  const rawOutput = projectRawOutput(data.rawOutput) ?? projectAcpContent(data.content);
   if (rawOutput) {
     projectedData.rawOutput = rawOutput;
   }
@@ -361,7 +390,7 @@ export function projectActivityPayload(
   return {
     ...activity,
     payload: {
-      ...payload,
+      ...projectedPayload,
       data: projectedData,
     },
   };
@@ -414,12 +443,10 @@ function dropStaleContextWindowActivities(
 }
 
 /**
- * Identity both clients use to fold a tool lifecycle row into the call it
- * belongs to (`deriveToolLifecycleCollapseKey` in web's `session-logic` and
- * mobile's `threadActivity`): an explicit `data.toolCallId` when the adapter
- * emits one, otherwise the itemType/title/detail triple. Returns null for rows
- * with no identity at all — those never collapse on the client either, so they
- * must not be dropped here.
+ * Identity used to retain only the newest lifecycle row for each call in a
+ * thread snapshot. Prefer the runtime item id, then the legacy nested id, and
+ * finally the itemType/title/detail triple. Rows without any identity remain
+ * untouched.
  */
 function toolLifecycleIdentity(activity: OrchestrationThreadActivity): string | null {
   const payload = asRecord(activity.payload);
@@ -427,7 +454,8 @@ function toolLifecycleIdentity(activity: OrchestrationThreadActivity): string | 
     return null;
   }
 
-  const toolCallId = asTrimmedString(asRecord(payload.data)?.toolCallId);
+  const toolCallId =
+    asTrimmedString(payload.toolCallId) ?? asTrimmedString(asRecord(payload.data)?.toolCallId);
   if (toolCallId) {
     return `id:${toolCallId}`;
   }

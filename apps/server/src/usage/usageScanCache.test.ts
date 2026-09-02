@@ -34,9 +34,8 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
     cache.set(path, {
       size: records.length * 10,
       mtimeMs,
-      provider: records[0]?.provider ?? "claude",
+      provider: "claude",
       records,
-      malformedRecords: 0,
       projectPaths: [],
     });
   }
@@ -48,30 +47,33 @@ describe("scan cache round trip", () => {
     const original = cacheWith([
       ["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:", model: "claude-opus-5" })]],
       ["/b.jsonl", 200, [record({ sessionId: "session-b", reportedCostUsd: 1.5 })]],
-      [
-        "/pi.jsonl",
-        300,
-        [record({ provider: "pi", model: "openai-codex/gpt-5.6-sol", dedupeKey: null })],
-      ],
     ]);
+    original.set("/grok.jsonl", {
+      size: 40,
+      mtimeMs: 300,
+      provider: "grok",
+      records: [
+        record({ provider: "grok", model: "grok-4.5-build", dedupeKey: "s:p:grok-4.5-build" }),
+      ],
+      projectPaths: [],
+    });
+    original.set("/pi.jsonl", {
+      size: 50,
+      mtimeMs: 400,
+      provider: "pi",
+      records: [record({ provider: "pi", model: "anthropic/claude-fable-5", dedupeKey: null })],
+      projectPaths: ["/home/theo/project"],
+    });
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
 
-    expect(restored.size).toBe(3);
+    expect(restored.size).toBe(4);
     expect(restored.get("/a.jsonl")).toEqual(original.get("/a.jsonl"));
     expect(restored.get("/b.jsonl")).toEqual(original.get("/b.jsonl"));
+    expect(restored.get("/grok.jsonl")).toEqual(original.get("/grok.jsonl"));
+    // Pi project paths survive the round trip so warm scans can still reach
+    // subagent sessions without reparsing unchanged primary transcripts.
     expect(restored.get("/pi.jsonl")).toEqual(original.get("/pi.jsonl"));
-  });
-
-  it("retains Pi project roots used for child-session discovery", () => {
-    const original = cacheWith([["/pi.jsonl", 100, [record({ provider: "pi" })]]]);
-    const piEntry = original.get("/pi.jsonl");
-    if (piEntry === undefined) throw new Error("missing fixture entry");
-    original.set("/pi.jsonl", { ...piEntry, projectPaths: ["/work/project"] });
-
-    const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
-
-    expect(restored.get("/pi.jsonl")?.projectPaths).toEqual(["/work/project"]);
   });
 
   it("interns repeated model and session strings", () => {
@@ -131,25 +133,14 @@ describe("scan cache round trip", () => {
     expect(restored.has("/a.jsonl")).toBe(false);
   });
 
-  it.each([
-    ["out-of-range session index", 2, 99],
-    ["non-string dedupe key", 8, 42],
-    ["non-numeric reported cost", 9, "bad-cost"],
-  ])("rejects %s instead of warming a lossy cache entry", (_label, index, invalidValue) => {
+  it("rejects an entry whose project paths are corrupt", () => {
     const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record()]]]));
-    const row = [...encoded.files["/a.jsonl"]!.r[0]!] as unknown[];
-    row[index as number] = invalidValue;
-    const poisoned = {
+    const badPaths = {
       ...encoded,
-      files: {
-        "/a.jsonl": {
-          ...encoded.files["/a.jsonl"]!,
-          r: [row],
-        },
-      },
+      files: { "/a.jsonl": { ...encoded.files["/a.jsonl"]!, d: [7] } },
     };
 
-    expect(decodeScanCache(JSON.parse(JSON.stringify(poisoned))).has("/a.jsonl")).toBe(false);
+    expect(decodeScanCache(JSON.parse(JSON.stringify(badPaths))).has("/a.jsonl")).toBe(false);
   });
 });
 

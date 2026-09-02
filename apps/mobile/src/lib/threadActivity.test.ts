@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { codexFeedbackMessage } from "@t3tools/client-runtime/state/threads";
 
 import {
   EventId,
@@ -14,6 +15,7 @@ import {
 import {
   buildPendingUserInputAnswers,
   buildThreadFeed,
+  derivePendingApprovals,
   deriveThreadFeedPresentation,
   isPendingUserInputOptionSelected,
   setPendingUserInputCustomAnswer,
@@ -21,6 +23,34 @@ import {
   type ThreadFeedActivity,
   type ThreadFeedEntry,
 } from "./threadActivity";
+
+describe("Codex feedback pseudo-messages", () => {
+  it("keeps pending and completed feedback messages in the mobile thread body", () => {
+    const pending = {
+      id: MessageId.make("feedback-command"),
+      command: "/feedback The agent stopped early.",
+      createdAt: "2026-08-23T00:00:00.000Z",
+      status: "uploading" as const,
+    };
+    const entries = [codexFeedbackMessage(pending), codexFeedbackMessage(pending, "assistant")].map(
+      (message) => ({
+        type: "message" as const,
+        id: message.id,
+        createdAt: message.createdAt,
+        message,
+      }),
+    );
+
+    expect(deriveThreadFeedPresentation(entries, null, new Set())).toEqual(entries);
+    expect(entries[1]?.message.text).toBe("Sending feedback to OpenAI...");
+
+    const completed = codexFeedbackMessage(
+      { ...pending, status: "sent", feedbackId: "codex-thread-1" },
+      "assistant",
+    );
+    expect(completed.text).toContain("codex-thread-1");
+  });
+});
 
 const singleSelectQuestion = {
   id: "runtime",
@@ -113,6 +143,59 @@ describe("pending user input answers", () => {
   });
 });
 
+describe("pending approvals", () => {
+  it("keeps app access approvals and persistence choices from remote environments", () => {
+    const options = [
+      { decision: "decline", label: "Decline" },
+      { decision: "acceptAlways", label: "Always allow Safari" },
+      { decision: "accept", label: "Approve" },
+    ];
+    const activity = makeActivity({
+      id: EventId.make("approval-safari"),
+      kind: "approval.requested",
+      summary: "App access approval requested",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      payload: {
+        requestId: "req-safari",
+        requestType: "mcp_elicitation_approval",
+        detail: "Allow ChatGPT to use Safari?",
+        appName: "Safari",
+        options,
+      },
+    });
+
+    expect(derivePendingApprovals([activity])).toEqual([
+      {
+        requestId: "req-safari",
+        requestKind: "mcp-elicitation",
+        createdAt: "2026-08-24T00:00:00.000Z",
+        detail: "Allow ChatGPT to use Safari?",
+        appName: "Safari",
+        options,
+      },
+    ]);
+  });
+
+  it("removes an app access approval after a remote client rejects it", () => {
+    const requested = makeActivity({
+      id: EventId.make("approval-safari-open"),
+      kind: "approval.requested",
+      summary: "App access approval requested",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      payload: { requestId: "req-safari", requestKind: "mcp-elicitation" },
+    });
+    const resolved = makeActivity({
+      id: EventId.make("approval-safari-resolved"),
+      kind: "approval.resolved",
+      summary: "Approval resolved",
+      createdAt: "2026-08-24T00:00:01.000Z",
+      payload: { requestId: "req-safari", decision: "decline" },
+    });
+
+    expect(derivePendingApprovals([requested, resolved])).toEqual([]);
+  });
+});
+
 function makeActivity(
   input: Partial<OrchestrationThreadActivity> &
     Pick<OrchestrationThreadActivity, "id" | "kind" | "summary" | "createdAt">,
@@ -151,6 +234,44 @@ function makeThread(
 }
 
 describe("buildThreadFeed", () => {
+  it("keeps older local feedback before newer messages returned by the server", () => {
+    const submission = {
+      id: MessageId.make("feedback-command-ordering"),
+      command: "/feedback The agent stopped early.",
+      createdAt: "2026-08-23T00:00:01.000Z",
+      status: "sent" as const,
+      feedbackId: "codex-thread-1",
+    };
+    const laterMessage = {
+      id: MessageId.make("later-server-message"),
+      role: "assistant" as const,
+      text: "Newer server response",
+      turnId: null,
+      createdAt: "2026-08-23T00:00:02.000Z",
+      updatedAt: "2026-08-23T00:00:02.000Z",
+      streaming: false,
+    };
+    const thread = makeThread({
+      id: ThreadId.make("thread-feedback-ordering"),
+      projectId: ProjectId.make("project-1"),
+      title: "Feedback ordering",
+      messages: [laterMessage],
+    });
+
+    const feed = buildThreadFeed(thread, {
+      localMessages: [
+        codexFeedbackMessage(submission),
+        codexFeedbackMessage(submission, "assistant"),
+      ],
+    });
+
+    expect(feed.map((entry) => entry.id)).toEqual([
+      "feedback-command-ordering",
+      "feedback-command-ordering:feedback",
+      "later-server-message",
+    ]);
+  });
+
   it("keeps historic work entries attributed to their turns", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-1"),
@@ -203,19 +324,25 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
-  it("shows provider reasoning as thinking by default and can hide it", () => {
+  it("drops runtime warnings with no displayable content", () => {
     const thread = makeThread({
-      id: ThreadId.make("thread-reasoning"),
+      id: ThreadId.make("thread-noise"),
       projectId: ProjectId.make("project-1"),
-      title: "Reasoning",
+      title: "Warning noise thread",
       activities: [
         makeActivity({
-          id: EventId.make("reasoning-1"),
-          kind: "reasoning",
-          summary: "Thinking",
-          createdAt: "2026-08-02T00:00:00.000Z",
-          turnId: TurnId.make("turn-reasoning"),
-          payload: { detail: "Inspecting the provider lifecycle.", reasoning: true },
+          id: EventId.make("activity-noise"),
+          kind: "runtime.warning",
+          summary: "Claude system message 'background_tasks_changed' (no displayable text content)",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId: TurnId.make("turn-1"),
+        }),
+        makeActivity({
+          id: EventId.make("activity-signal"),
+          kind: "runtime.warning",
+          summary: "Reconnecting... 2/5",
+          createdAt: "2026-04-01T00:00:03.000Z",
+          turnId: TurnId.make("turn-1"),
         }),
       ],
     });
@@ -224,89 +351,7 @@ describe("buildThreadFeed", () => {
     expect(feed).toMatchObject([
       {
         type: "activity-group",
-        activities: [
-          {
-            summary: "Thinking",
-            detail: "Inspecting the provider lifecycle.",
-            icon: "agent",
-            toolLike: false,
-            reasoning: true,
-          },
-        ],
-      },
-    ]);
-    expect(
-      deriveThreadFeedPresentation(feed, null, new Set([TurnId.make("turn-reasoning")])),
-    ).toMatchObject([
-      { type: "turn-fold" },
-      {
-        type: "activity-group",
-        activities: [{ summary: "Thinking", detail: "Inspecting the provider lifecycle." }],
-      },
-    ]);
-    expect(buildThreadFeed(thread, { showAgentReasoning: false })).toEqual([]);
-  });
-
-  it("does not present task progress as provider reasoning", () => {
-    const thread = makeThread({
-      id: ThreadId.make("thread-task-progress"),
-      projectId: ProjectId.make("project-1"),
-      title: "Task progress",
-      activities: [
-        makeActivity({
-          id: EventId.make("task-progress"),
-          kind: "task.progress",
-          summary: "Inspecting lifecycle files",
-          createdAt: "2026-08-02T00:00:00.000Z",
-          turnId: TurnId.make("turn-task-progress"),
-          payload: { detail: "Reading the provider implementation." },
-        }),
-      ],
-    });
-
-    expect(buildThreadFeed(thread)).toMatchObject([
-      {
-        type: "activity-group",
-        activities: [{ summary: "Reading the provider implementation.", reasoning: false }],
-      },
-    ]);
-  });
-
-  it("keeps reasoning outside adjacent tool groups", () => {
-    const turnId = TurnId.make("turn-reasoning-tools");
-    const thread = makeThread({
-      id: ThreadId.make("thread-reasoning-tools"),
-      projectId: ProjectId.make("project-1"),
-      title: "Reasoning and tools",
-      activities: [
-        makeActivity({
-          id: EventId.make("reasoning-before-tool"),
-          kind: "reasoning",
-          summary: "Thinking",
-          createdAt: "2026-08-02T00:00:00.000Z",
-          turnId,
-          payload: { detail: "Inspecting the provider lifecycle.", reasoning: true },
-        }),
-        makeActivity({
-          id: EventId.make("tool-after-reasoning"),
-          kind: "tool.completed",
-          tone: "tool",
-          summary: "Read package.json completed",
-          createdAt: "2026-08-02T00:00:01.000Z",
-          turnId,
-          payload: { title: "Read package.json", itemType: "dynamic_tool_call" },
-        }),
-      ],
-    });
-
-    expect(buildThreadFeed(thread)).toMatchObject([
-      {
-        type: "activity-group",
-        activities: [{ reasoning: true }],
-      },
-      {
-        type: "activity-group",
-        activities: [{ reasoning: false }],
+        activities: [{ id: "activity-signal" }],
       },
     ]);
   });
@@ -479,7 +524,7 @@ describe("buildThreadFeed", () => {
     expect(serializedToolOutputs).toBe(1);
   });
 
-  it("folds settled turn work while leaving the terminal answer visible", () => {
+  it("keeps the first and terminal assistant messages visible around settled work", () => {
     const turnId = TurnId.make("turn-1");
     const thread = makeThread({
       id: ThreadId.make("thread-3"),
@@ -495,9 +540,9 @@ describe("buildThreadFeed", () => {
       },
       messages: [
         {
-          id: MessageId.make("assistant-commentary"),
+          id: MessageId.make("assistant-first"),
           role: "assistant",
-          text: "I am checking.",
+          text: "Synthetic deployment checklist\n1. Confirm the deployment is ready.",
           turnId,
           streaming: false,
           createdAt: "2026-04-01T00:00:02.000Z",
@@ -532,8 +577,12 @@ describe("buildThreadFeed", () => {
 
     const feed = buildThreadFeed(thread);
     const collapsed = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
-    expect(collapsed.map((entry) => entry.id)).toEqual(["turn-fold:turn-1", "assistant-final"]);
-    expect(collapsed[0]).toMatchObject({
+    expect(collapsed.map((entry) => entry.id)).toEqual([
+      "assistant-first",
+      "turn-fold:turn-1",
+      "assistant-final",
+    ]);
+    expect(collapsed[1]).toMatchObject({
       type: "turn-fold",
       label: "Worked for 17s",
       expanded: false,
@@ -541,9 +590,64 @@ describe("buildThreadFeed", () => {
 
     const expanded = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set([turnId]));
     expect(expanded.map((entry) => entry.id)).toEqual([
+      "assistant-first",
       "turn-fold:turn-1",
-      "assistant-commentary",
       "tool-completed",
+      "assistant-final",
+    ]);
+  });
+
+  it("folds assistant messages between the first and terminal messages", () => {
+    const turnId = TurnId.make("turn-1");
+    const thread = makeThread({
+      id: ThreadId.make("thread-middle-message"),
+      projectId: ProjectId.make("project-1"),
+      title: "Bounded narration",
+      latestTurn: {
+        turnId,
+        state: "completed",
+        requestedAt: "2026-04-01T00:00:00.000Z",
+        startedAt: "2026-04-01T00:00:01.000Z",
+        completedAt: "2026-04-01T00:00:06.000Z",
+        assistantMessageId: MessageId.make("assistant-final"),
+      },
+      messages: [
+        {
+          id: MessageId.make("assistant-first"),
+          role: "assistant",
+          text: "The main result is ready.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:01.000Z",
+          updatedAt: "2026-04-01T00:00:02.000Z",
+        },
+        {
+          id: MessageId.make("assistant-middle"),
+          role: "assistant",
+          text: "I am checking one more detail.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:03.000Z",
+          updatedAt: "2026-04-01T00:00:04.000Z",
+        },
+        {
+          id: MessageId.make("assistant-final"),
+          role: "assistant",
+          text: "Verification finished.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:05.000Z",
+          updatedAt: "2026-04-01T00:00:06.000Z",
+        },
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+    const rows = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
+
+    expect(rows.map((entry) => entry.id)).toEqual([
+      "assistant-first",
+      "turn-fold:turn-1",
       "assistant-final",
     ]);
   });

@@ -1,25 +1,6 @@
 import { assert, it } from "@effect/vitest";
 
-import {
-  applyPreferredCodexDefaultModel,
-  isLegacyCodexModel,
-  mapCodexModelCapabilities,
-} from "./CodexProvider.ts";
-
-it("keeps only the GPT-5.6 Codex family out of legacy models", () => {
-  assert.deepStrictEqual(
-    ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.4"].map((model) => [
-      model,
-      isLegacyCodexModel(model),
-    ]),
-    [
-      ["gpt-5.6-luna", false],
-      ["gpt-5.6-terra", false],
-      ["gpt-5.6-sol", false],
-      ["gpt-5.4", true],
-    ],
-  );
-});
+import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
 
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({
@@ -79,38 +60,6 @@ it("maps current Codex model capability fields", () => {
         },
       ],
       currentValue: "flex",
-    },
-  ]);
-});
-
-it("falls back to high when the catalog reasoning default is unavailable", () => {
-  const capabilities = mapCodexModelCapabilities({
-    additionalSpeedTiers: [],
-    defaultReasoningEffort: "unavailable",
-    defaultServiceTier: null,
-    description: "Test model",
-    displayName: "GPT Test",
-    hidden: false,
-    id: "gpt-test",
-    isDefault: true,
-    model: "gpt-test",
-    serviceTiers: [],
-    supportedReasoningEfforts: [
-      { description: "Low reasoning", reasoningEffort: "low" },
-      { description: "High reasoning", reasoningEffort: "high" },
-    ],
-  });
-
-  assert.deepStrictEqual(capabilities.optionDescriptors, [
-    {
-      id: "reasoningEffort",
-      label: "Reasoning",
-      type: "select",
-      options: [
-        { id: "low", label: "Low" },
-        { id: "high", label: "High", isDefault: true },
-      ],
-      currentValue: "high",
     },
   ]);
 });

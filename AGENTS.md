@@ -4,31 +4,9 @@ T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provid
 
 You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
 
-## Task Completion Requirements
-
-- Keep local verification focused on the files and packages changed. Run the smallest relevant test set; do not run the full workspace test suite as a routine completion step.
-  - Use `vp test run <test-files>` for focused built-in Vite+ tests. Use `vp run test` only when the affected package specifically requires its `test` script.
-  - Backend changes must include and run focused tests for the changed behavior.
-  - Run targeted formatting, lint, and type checks for the affected scope when available.
-- Do not run repo-wide `vp check`, `vp run typecheck`, `vp run test`, or equivalent full-suite commands locally unless the user explicitly requests them. CI is responsible for the full verification suite.
-- After frontend feature development or any user-visible frontend behavior change, the primary agent must run one integrated verification pass for each affected client surface after integrating the work:
-  - Web: use the `test-t3-app` skill. Launch one isolated environment, authenticate through the printed pairing URL, and verify the affected flow in the controlled browser.
-  - Mobile: use the `test-t3-mobile` skill. Connect one representative iOS Simulator or Android Emulator available on the host to one isolated environment and verify the affected flow. On compatible macOS hosts, prefer iOS for cross-platform changes and stream it through serve-sim in the T3 Code in-app browser or another available agent browser; use Android when it is the affected or viable platform.
-  - Subagents must not independently launch dev servers or repeat integrated client verification unless their delegated task explicitly requires it.
-  - Stop dev servers, watchers, and other long-running verification processes when the focused verification is complete.
-
-## Fork Development
-
-- This repository is the canonical home for T3 Dulli application code, branding assets, packaging, release automation, and fork operations.
-- Start fork changes from `origin/main` in an isolated Workler clone or Git worktree; do not develop directly on `main`.
-- Keep Pi configuration/extensions in `pi-config` and Workler package changes in the Workler repository.
-- Never commit credentials, machine-local paths, downloaded installers, or local state.
-- Use repository-pinned `./node_modules/.bin/vp` (or `vp` only where CI setup provides the pinned binary).
-- Follow [docs/fork-development.md](docs/fork-development.md) for branding, local installation, release, and update procedures.
-
 ## What makes T3 Code special?
 
-We have over 100,000 users who love T3 Code. It's important we maintain the things they love as we continue to iterate on the product. Here's a brief list of the things we can never compromise on.
+We have over 200,000 users who love T3 Code. It's important we maintain the things they love as we continue to iterate on the product. Here's a brief list of the things we can never compromise on.
 
 ### 1. Open at the core
 
@@ -137,8 +115,16 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 - Conventional commit titles, plain language: `fix(web): new threads no longer spike CPU`.
 - Body: the problem in a sentence or two, then how you fixed it. End with the model and harness that did the work.
 - UI changes need before/after images. Motion or timing needs a short video.
+- Upload PR evidence to GitHub. Never commit PR-only screenshots or assets such as `.github/pr-assets/`.
 - One concern per PR. If the description says "also", split it.
 - When babysitting: poll checks and comments newer than the last push, verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
+
+## Plans and work artifacts
+
+- Do not commit implementation plans, research notes, or agent scratch files. Keep temporary working material outside the worktree. `.plans/` is gitignored only as a safety net for legacy tooling.
+- Track active maintainer work in the GitHub issue or project item that owns it. External proposals follow `CONTRIBUTING.md` and belong in Ideas discussions.
+- Put durable architecture, constraints, and decisions in `docs/internals/`. Update those docs when the product changes so agents find current facts instead of abandoned intentions.
+- A merged PR is the implementation record. Close or update its tracking item when the work lands; do not preserve a second checklist in the repository.
 
 ## How it works
 

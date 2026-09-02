@@ -15,21 +15,21 @@
  * @module provider/Layers/PiAdapter
  */
 import {
+  classifyTaskAgentKind,
   EventId,
   type ModelSelection,
   PI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION,
   PI_PROFILE_OPTION_ID,
-  type PiSettings,
   type PiBackgroundTerminalControlInput,
   type PiBackgroundTerminalControlResult,
-  type PiSubagentControlInput,
-  type PiSubagentEvent,
+  type PiSettings,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
   ProviderItemId,
   RuntimeItemId,
+  RuntimeTaskId,
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -43,8 +43,8 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -65,7 +65,7 @@ import {
   parsePiBackgroundTerminalNotification,
   parsePiContextWindow,
   parsePiFastServiceEnabled,
-  parsePiSubagentNotification,
+  parsePiTaskBridgeNotification,
   parsePiThinkingLevel,
   PI_AUTO_CONTEXT_WINDOW,
   PI_CODEX_FAST_COMMAND,
@@ -76,7 +76,9 @@ import {
   resolvePiBinary,
   supportsPiCodexFastService,
   type PiExtensionUiRequest,
+  type PiTaskBridgeEvent,
 } from "../pi/piRpcProtocol.ts";
+import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   makePiRpcConnection,
   type PiRpcConnection,
@@ -95,6 +97,13 @@ const TOOL_UPDATE_TRUNCATION_MARKER = "…[truncated]\n";
 export interface PiAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly instanceId?: ProviderInstanceId;
+  readonly nativeEventLogger?: EventNdjsonLogger | undefined;
+}
+
+interface SubagentLiveMessage {
+  readonly text: string;
+  readonly thinking: string;
+  readonly publishedAt: number;
 }
 
 interface PiSessionContext {
@@ -110,6 +119,10 @@ interface PiSessionContext {
   assistantItemId: ProviderItemId | undefined;
   assistantText: string;
   reasoningText: string;
+  /** Cumulative, rate-limited live assistant state for each child transcript. */
+  subagentLiveMessages: Map<string, SubagentLiveMessage>;
+  /** Last published time for other high-frequency child transcript events. */
+  subagentLivePublishedAtByKey: Map<string, number>;
   /** Pi only repeats tool args on start/update; retain them for the final result. */
   toolArgsByCallId: Map<string, unknown>;
   /** Last persisted progress time per tool; Pi progress payloads are cumulative. */
@@ -237,6 +250,312 @@ function piRpcCommandNames(response: PiRpcResponse): ReadonlySet<string> {
   );
 }
 
+type PiTaskEventType = "task.started" | "task.progress" | "task.updated" | "task.completed";
+type PiTaskProjection = {
+  [Type in PiTaskEventType]: Pick<
+    Extract<ProviderRuntimeEvent, { readonly type: Type }>,
+    "type" | "payload"
+  >;
+}[PiTaskEventType];
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function nonNegativeInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function taskViewLinkage(view: Record<string, unknown>, runId: string) {
+  const workflow = isRecord(view.workflow) ? view.workflow : undefined;
+  const taskType = "pi-subagent";
+  const title = nonEmptyString(workflow?.label) ?? nonEmptyString(view.task);
+  const model = nonEmptyString(view.model);
+  const workflowName = nonEmptyString(workflow?.name);
+  const workflowRunId = nonEmptyString(workflow?.runId);
+  const phaseTitle = nonEmptyString(workflow?.phase);
+  return {
+    taskType,
+    agentKind: classifyTaskAgentKind({ taskType }),
+    ...(title ? { title } : {}),
+    ...(model ? { model } : {}),
+    ...(workflowName ? { workflowName } : {}),
+    ...(workflowRunId ? { parentAgentId: workflowRunId } : {}),
+    ...(phaseTitle ? { phaseTitle } : {}),
+    runHandles: { runId },
+  };
+}
+
+function taskUsage(view: Record<string, unknown>):
+  | {
+      readonly totalTokens: number;
+      readonly inputTokens?: number;
+      readonly cachedInputTokens?: number;
+      readonly outputTokens?: number;
+      readonly toolUses?: number;
+      readonly durationMs?: number;
+    }
+  | undefined {
+  if (!isRecord(view.usageSoFar)) return undefined;
+  const totalTokens = nonNegativeInt(view.usageSoFar.total);
+  if (totalTokens === undefined) return undefined;
+  const inputTokens = nonNegativeInt(view.usageSoFar.input);
+  const cachedInputTokens = nonNegativeInt(view.usageSoFar.cacheRead);
+  const outputTokens = nonNegativeInt(view.usageSoFar.output);
+  const toolUses = nonNegativeInt(view.usageSoFar.turns);
+  const durationMs = nonNegativeInt(view.activeMs);
+  return {
+    totalTokens,
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(toolUses !== undefined ? { toolUses } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+  };
+}
+
+function taskCompletionStatus(view: Record<string, unknown>): "completed" | "failed" | "stopped" {
+  return view.state === "done" ? "completed" : view.state === "failed" ? "failed" : "stopped";
+}
+
+function taskTranscriptEvent(event: PiTaskBridgeEvent) {
+  if (!event.activity || !event.runId) return undefined;
+  const type = nonEmptyString(event.activity.type);
+  const data = isRecord(event.activity.data) ? event.activity.data : undefined;
+  if (!type || !data) return undefined;
+  return {
+    managerId: event.managerId,
+    sequence: event.sequence,
+    timestamp: event.timestamp,
+    kind: event.kind,
+    activity: {
+      type,
+      data,
+      ...(event.activity.liveOnly === true ? { liveOnly: true } : {}),
+    },
+  };
+}
+
+const SUBAGENT_LIVE_PUBLISH_INTERVAL_MS = 100;
+
+function normalizeTaskBridgeTranscriptEvent(
+  event: PiTaskBridgeEvent,
+  liveMessages: Map<string, SubagentLiveMessage>,
+  livePublishedAtByKey: Map<string, number>,
+): PiTaskBridgeEvent | undefined {
+  const runId = event.runId;
+  const activity = event.activity;
+  const activityType = activity ? nonEmptyString(activity.type) : undefined;
+  const activityData = activity && isRecord(activity.data) ? activity.data : undefined;
+  if (!runId || !activity || !activityType || !activityData) {
+    if (runId && ["terminal", "killed", "interrupted"].includes(event.kind)) {
+      liveMessages.delete(runId);
+      for (const key of livePublishedAtByKey.keys()) {
+        if (key.startsWith(`${runId}:`)) livePublishedAtByKey.delete(key);
+      }
+    }
+    return event;
+  }
+
+  if (activityType === "message_update") {
+    const data = activityData;
+    const message = isRecord(data.message) ? data.message : undefined;
+    const current = liveMessages.get(runId);
+    let text = current?.text ?? "";
+    let thinking = current?.thinking ?? "";
+    let forcePublish = activity.liveOnly !== true;
+    if (message?.role === "assistant") {
+      const extracted = extractPiAssistantText(message);
+      text = extracted.text;
+      thinking = extracted.thinking;
+    } else if (isRecord(data.assistantMessageEvent)) {
+      const update = data.assistantMessageEvent;
+      if (update.type === "text_delta" && typeof update.delta === "string") {
+        text += update.delta;
+        forcePublish ||= update.delta.includes("\n");
+      } else if (update.type === "thinking_delta" && typeof update.delta === "string") {
+        thinking += update.delta;
+        forcePublish ||= update.delta.includes("\n");
+      } else if (update.type === "text_end" && typeof update.content === "string") {
+        text = update.content;
+      } else if (update.type === "thinking_end" && typeof update.content === "string") {
+        thinking = update.content;
+      }
+    }
+    const parsedTimestamp = Date.parse(event.timestamp);
+    const eventTime = Number.isFinite(parsedTimestamp)
+      ? parsedTimestamp
+      : (current?.publishedAt ?? 0) + SUBAGENT_LIVE_PUBLISH_INTERVAL_MS;
+    const shouldPublish =
+      current === undefined ||
+      forcePublish ||
+      eventTime - current.publishedAt >= SUBAGENT_LIVE_PUBLISH_INTERVAL_MS;
+    liveMessages.set(runId, {
+      text,
+      thinking,
+      publishedAt: shouldPublish ? eventTime : (current?.publishedAt ?? eventTime),
+    });
+    if (!shouldPublish) return undefined;
+    return {
+      ...event,
+      activity: {
+        ...activity,
+        data: {
+          ...data,
+          message: {
+            role: "assistant",
+            content: [
+              ...(thinking ? [{ type: "thinking", thinking }] : []),
+              ...(text ? [{ type: "text", text }] : []),
+            ],
+          },
+        },
+      },
+    };
+  }
+
+  if (activityType === "message_end") liveMessages.delete(runId);
+
+  const toolCallId = nonEmptyString(activityData.toolCallId) ?? "activity";
+  const liveKey = `${runId}:${activityType}:${toolCallId}`;
+  if (activity.liveOnly === true) {
+    const lastPublishedAt = livePublishedAtByKey.get(liveKey);
+    const parsedTimestamp = Date.parse(event.timestamp);
+    const eventTime = Number.isFinite(parsedTimestamp)
+      ? parsedTimestamp
+      : (lastPublishedAt ?? 0) + SUBAGENT_LIVE_PUBLISH_INTERVAL_MS;
+    if (
+      lastPublishedAt !== undefined &&
+      eventTime - lastPublishedAt < SUBAGENT_LIVE_PUBLISH_INTERVAL_MS
+    ) {
+      return undefined;
+    }
+    livePublishedAtByKey.set(liveKey, eventTime);
+  } else if (activityType.endsWith("_end")) {
+    for (const key of livePublishedAtByKey.keys()) {
+      if (key.startsWith(`${runId}:`) && key.endsWith(`:${toolCallId}`)) {
+        livePublishedAtByKey.delete(key);
+      }
+    }
+  }
+  return event;
+}
+
+function projectTaskView(
+  kind: PiTaskBridgeEvent["kind"],
+  view: Record<string, unknown>,
+  fallbackRunId?: string,
+  transcriptEvent?: ReturnType<typeof taskTranscriptEvent>,
+): ReadonlyArray<PiTaskProjection> {
+  const runId = nonEmptyString(view.runId) ?? fallbackRunId;
+  if (!runId) return [];
+  const taskId = RuntimeTaskId.make(runId);
+  const linkage = taskViewLinkage(view, runId);
+  const description =
+    nonEmptyString(view.progressNote) ?? nonEmptyString(view.task) ?? `Pi agent ${runId}`;
+  const summary =
+    (isRecord(view.result) && isRecord(view.result.result)
+      ? nonEmptyString(view.result.result.summary)
+      : undefined) ?? nonEmptyString(view.reason);
+  const typedUsage = taskUsage(view);
+  const common = { taskId, ...linkage };
+
+  switch (kind) {
+    case "run_created":
+      return [{ type: "task.started", payload: { ...common, description } }];
+    case "run_running":
+    case "resumed":
+    case "steered":
+      return [{ type: "task.updated", payload: { ...common, status: "running", description } }];
+    case "needs_input":
+      return [{ type: "task.updated", payload: { ...common, status: "waiting", description } }];
+    case "terminal":
+    case "killed":
+    case "interrupted":
+      return [
+        {
+          type: "task.completed",
+          payload: {
+            ...common,
+            status: taskCompletionStatus(view),
+            ...(summary ? { summary } : {}),
+            ...(typedUsage ? { typedUsage } : {}),
+          },
+        },
+      ];
+    case "control_result":
+      return [];
+    default:
+      return [
+        {
+          type: "task.progress",
+          payload: {
+            ...common,
+            description,
+            ...(summary && !transcriptEvent ? { summary } : {}),
+            ...(typedUsage ? { typedUsage } : {}),
+            ...(transcriptEvent ? { transcriptEvent } : {}),
+          },
+        },
+      ];
+  }
+}
+
+/**
+ * Translation seam for optional Pi workflow extensions. No fork-only contract
+ * crosses the provider boundary: clients receive the same task.* lifecycle
+ * rendered by the upstream Agents panel.
+ */
+export function projectPiTaskBridgeEvent(
+  event: PiTaskBridgeEvent,
+): ReadonlyArray<PiTaskProjection> {
+  if (event.kind === "snapshot" && isRecord(event.snapshot) && Array.isArray(event.snapshot.runs)) {
+    const runs = event.snapshot.runs.filter(isRecord);
+    const starts = runs.flatMap((candidate) => projectTaskView("run_created", candidate));
+    const transcript = Array.isArray(event.snapshot.events)
+      ? event.snapshot.events.flatMap((candidate) => {
+          if (
+            !isRecord(candidate) ||
+            !isRecord(candidate.view) ||
+            !isRecord(candidate.activity) ||
+            typeof candidate.managerId !== "string" ||
+            typeof candidate.sequence !== "number" ||
+            typeof candidate.timestamp !== "string" ||
+            typeof candidate.kind !== "string" ||
+            typeof candidate.runId !== "string"
+          ) {
+            return [];
+          }
+          const replayEvent = candidate as PiTaskBridgeEvent;
+          return projectTaskView(
+            replayEvent.kind,
+            replayEvent.view!,
+            replayEvent.runId,
+            taskTranscriptEvent(replayEvent),
+          );
+        })
+      : [];
+    const states = runs.flatMap((candidate) => {
+      const state = candidate.state;
+      const lifecycleKind =
+        state === "done" || state === "failed" || state === "killed" || state === "interrupted"
+          ? state === "done" || state === "failed"
+            ? "terminal"
+            : state
+          : state === "needs_input"
+            ? "needs_input"
+            : "run_running";
+      return projectTaskView(lifecycleKind, candidate);
+    });
+    return [...starts, ...transcript, ...states];
+  }
+  return event.view
+    ? projectTaskView(event.kind, event.view, event.runId, taskTranscriptEvent(event))
+    : [];
+}
+
 export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOptions) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("pi");
@@ -255,10 +574,6 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
 
     const sessions = new Map<ThreadId, PiSessionContext>();
     const runtimeEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
-    const subagentEvents = yield* PubSub.unbounded<{
-      readonly threadId: ThreadId;
-      readonly event: PiSubagentEvent;
-    }>();
     const backgroundTerminalEvents = yield* makeBackgroundTerminalEventPubSub();
     const backgroundTerminalControlWaiters = new Map<
       string,
@@ -451,6 +766,36 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
 
     // ── Pi RPC event → canonical runtime event translation ──────────────
 
+    const emitTaskBridgeEvent = (ctx: PiSessionContext, event: PiTaskBridgeEvent) =>
+      Effect.forEach(
+        projectPiTaskBridgeEvent(event),
+        (projection) =>
+          Effect.gen(function* () {
+            const eventBase = {
+              ...(yield* makeStamp()),
+              provider: PROVIDER,
+              threadId: ctx.threadId,
+              ...(ctx.activeTurnId ? { turnId: ctx.activeTurnId } : {}),
+              raw: { source: "pi.rpc" as const, messageType: event.kind, payload: event },
+            };
+            switch (projection.type) {
+              case "task.started":
+                yield* emit({ ...eventBase, ...projection });
+                return;
+              case "task.progress":
+                yield* emit({ ...eventBase, ...projection });
+                return;
+              case "task.updated":
+                yield* emit({ ...eventBase, ...projection });
+                return;
+              case "task.completed":
+                yield* emit({ ...eventBase, ...projection });
+                return;
+            }
+          }),
+        { discard: true },
+      );
+
     const handleExtensionUiRequest = (ctx: PiSessionContext, request: PiExtensionUiRequest) =>
       Effect.gen(function* () {
         const claudeTool = parseClaudeAgentSdkToolNotification(request);
@@ -505,16 +850,21 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             yield* emitWarning(ctx.threadId, ctx.activeTurnId, message, request);
           }
         }
-        const subagentEvent = parsePiSubagentNotification(request);
-        if (subagentEvent) {
-          yield* PubSub.publish(subagentEvents, { threadId: ctx.threadId, event: subagentEvent });
+        const taskBridgeEvent = parsePiTaskBridgeNotification(request);
+        if (taskBridgeEvent) {
+          const normalized = normalizeTaskBridgeTranscriptEvent(
+            taskBridgeEvent,
+            ctx.subagentLiveMessages,
+            ctx.subagentLivePublishedAtByKey,
+          );
+          if (normalized) yield* emitTaskBridgeEvent(ctx, normalized);
           return;
         }
         const backgroundTerminalEvent = parsePiBackgroundTerminalNotification(request);
         if (backgroundTerminalEvent) {
           const activeManagerId = backgroundTerminalManagerIds.get(ctx.threadId);
-          // A manager switch is authoritative only when announced by a snapshot.
-          // Ignore late non-snapshot events from a stopped/replaced Pi process.
+          // A manager switch is authoritative only when announced by a
+          // snapshot. Ignore late updates from a replaced Pi process.
           if (
             activeManagerId !== undefined &&
             activeManagerId !== backgroundTerminalEvent.managerId &&
@@ -612,6 +962,51 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           });
         }
       });
+
+    const emitAssistantEventDelta = (
+      ctx: PiSessionContext,
+      event: unknown,
+    ): Effect.Effect<void, ProviderAdapterRequestError> => {
+      if (!isRecord(event) || typeof event.type !== "string") return Effect.void;
+      if (
+        (event.type === "thinking_delta" || event.type === "text_delta") &&
+        typeof event.delta === "string" &&
+        event.delta.length > 0
+      ) {
+        const thinking =
+          event.type === "thinking_delta" ? ctx.reasoningText + event.delta : ctx.reasoningText;
+        const text =
+          event.type === "text_delta" ? ctx.assistantText + event.delta : ctx.assistantText;
+        return emitAssistantDelta(ctx, {
+          role: "assistant",
+          content: [
+            ...(thinking.length > 0 ? [{ type: "thinking", thinking }] : []),
+            ...(text.length > 0 ? [{ type: "text", text }] : []),
+          ],
+        });
+      }
+      if (
+        (event.type === "thinking_end" || event.type === "text_end") &&
+        typeof event.content === "string"
+      ) {
+        const thinking = event.type === "thinking_end" ? event.content : ctx.reasoningText;
+        const text = event.type === "text_end" ? event.content : ctx.assistantText;
+        return emitAssistantDelta(ctx, {
+          role: "assistant",
+          content: [
+            ...(thinking.length > 0 ? [{ type: "thinking", thinking }] : []),
+            ...(text.length > 0 ? [{ type: "text", text }] : []),
+          ],
+        });
+      }
+      if (event.type === "done" && isRecord(event.message)) {
+        return emitAssistantDelta(ctx, event.message);
+      }
+      if (event.type === "error" && isRecord(event.error)) {
+        return emitAssistantDelta(ctx, event.error);
+      }
+      return Effect.void;
+    };
 
     const finishAssistantItem = (ctx: PiSessionContext) =>
       Effect.gen(function* () {
@@ -840,6 +1235,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     const handlePiMessage = (ctx: PiSessionContext) => (message: unknown) =>
       Effect.gen(function* () {
         if (ctx.stopped || !isRecord(message) || typeof message.type !== "string") return;
+        if (options?.nativeEventLogger) {
+          yield* options.nativeEventLogger.write(message, ctx.threadId);
+        }
         switch (message.type) {
           case "extension_ui_request":
             yield* handleExtensionUiRequest(ctx, message as unknown as PiExtensionUiRequest);
@@ -862,6 +1260,13 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             // those messages must not invent autonomous work on their own.
             return;
           case "message_update":
+            if (ctx.activeTurnId === undefined) return;
+            if (isRecord(message.message) && message.message.role === "assistant") {
+              yield* emitAssistantDelta(ctx, message.message);
+            } else {
+              yield* emitAssistantEventDelta(ctx, message.assistantMessageEvent);
+            }
+            return;
           case "message_end":
             if (
               ctx.activeTurnId === undefined ||
@@ -871,9 +1276,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               return;
             }
             yield* emitAssistantDelta(ctx, message.message);
-            if (message.type === "message_end") {
-              yield* finishAssistantItem(ctx);
-            }
+            yield* finishAssistantItem(ctx);
             return;
           case "tool_execution_start":
             if (ctx.activeTurnId !== undefined) {
@@ -1028,6 +1431,13 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               });
               sessions.delete(ctx.threadId);
               yield* resetBackgroundTerminals(ctx.threadId);
+              ctx.stopped = true;
+              // The session scope is independent from startSession's request
+              // scope. Close it on spontaneous exit as well as explicit stop,
+              // otherwise its queues and transport fibers survive after the
+              // context is removed from `sessions` and can never be reached by
+              // the adapter finalizer.
+              yield* Scope.close(ctx.scope, Exit.void).pipe(Effect.ignore);
             }),
           ),
           Effect.forkIn(ctx.scope),
@@ -1125,6 +1535,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           assistantItemId: undefined,
           assistantText: "",
           reasoningText: "",
+          subagentLiveMessages: new Map(),
+          subagentLivePublishedAtByKey: new Map(),
           toolArgsByCallId: new Map(),
           toolUpdateEmittedAtByCallId: new Map(),
           lastAgentEndOutcome: undefined,
@@ -1137,9 +1549,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           stopped: false,
         };
 
-        // A Pi process owns its extension-local terminal manager. Clear the
-        // previous process epoch before wiring onMessage so a real startup
-        // snapshot from the new extension always wins this ordering race.
+        // The extension-local manager belongs to one Pi subprocess. Clear
+        // any prior process epoch before the new process can emit events.
         yield* resetBackgroundTerminals(input.threadId);
 
         const connection = yield* makePiRpcConnection({
@@ -1252,36 +1663,41 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             yield* syncFastService(ctx, fastServiceEnabled);
 
             const text = input.input?.trim();
-            const images = yield* Effect.forEach(input.attachments ?? [], (attachment) =>
-              Effect.gen(function* () {
-                const attachmentPath = resolveAttachmentPath({
-                  attachmentsDir: serverConfig.attachmentsDir,
-                  attachment,
-                });
-                if (!attachmentPath) {
-                  return yield* new ProviderAdapterRequestError({
-                    provider: PROVIDER,
-                    method: "prompt",
-                    detail: `Invalid attachment id '${attachment.id}'.`,
+            // Pi's RPC transport accepts image payloads only. Generic files
+            // are represented by the path text ProviderService adds to the
+            // prompt, matching the other image-only adapters.
+            const images = yield* Effect.forEach(
+              (input.attachments ?? []).filter((attachment) => attachment.type === "image"),
+              (attachment) =>
+                Effect.gen(function* () {
+                  const attachmentPath = resolveAttachmentPath({
+                    attachmentsDir: serverConfig.attachmentsDir,
+                    attachment,
                   });
-                }
-                const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderAdapterRequestError({
-                        provider: PROVIDER,
-                        method: "prompt",
-                        detail: cause.message,
-                        cause,
-                      }),
-                  ),
-                );
-                return {
-                  type: "image" as const,
-                  data: Buffer.from(bytes).toString("base64"),
-                  mimeType: attachment.mimeType,
-                };
-              }),
+                  if (!attachmentPath) {
+                    return yield* new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "prompt",
+                      detail: `Invalid attachment id '${attachment.id}'.`,
+                    });
+                  }
+                  const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderAdapterRequestError({
+                          provider: PROVIDER,
+                          method: "prompt",
+                          detail: cause.message,
+                          cause,
+                        }),
+                    ),
+                  );
+                  return {
+                    type: "image" as const,
+                    data: Buffer.from(bytes).toString("base64"),
+                    mimeType: attachment.mimeType,
+                  };
+                }),
             );
 
             if (!text && images.length === 0) {
@@ -1409,28 +1825,26 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         });
       });
 
-    const controlSubagent = (input: PiSubagentControlInput) =>
+    const controlTask: NonNullable<PiAdapterShape["controlTask"]> = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
-        // A prompt beginning with an unknown slash command is forwarded to the
-        // model by Pi. Verify the private bridge command exists before sending
-        // it so opening a thread without the optional pi-subagents extension
-        // can never create an unintended user turn.
+        // Pi forwards unknown slash commands to the model. Revalidate the
+        // private bridge command before every control so a missing extension
+        // can never turn a UI action into an unintended user prompt.
         if (!(yield* piAdvertisesCommand(ctx, "subagents-rpc", true))) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
-            operation: "controlSubagent",
+            operation: "controlTask",
             issue: "The Pi subagent control extension is not installed in this session.",
           });
         }
         const envelope = {
-          action: input.action,
-          ...(input.requestId ? { request_id: input.requestId } : {}),
-          ...(input.runId ? { run_id: input.runId } : {}),
+          action: input.action === "stop" ? "kill" : input.action,
+          request_id: yield* randomUUIDv4,
+          run_id: input.taskId,
           ...(input.action === "steer" || input.action === "reply"
             ? { message: input.message }
-            : {}),
-          ...(input.action === "kill" ? { reason: input.reason } : {}),
+            : { reason: input.reason ?? "Stopped from T3 Code" }),
         };
         const encoded = yield* encodeUnknownJsonString(envelope).pipe(
           Effect.mapError(
@@ -1438,7 +1852,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               new ProviderAdapterRequestError({
                 provider: PROVIDER,
                 method: "subagents-rpc",
-                detail: "Failed to encode Pi subagent control.",
+                detail: "Failed to encode Pi task control.",
                 cause,
               }),
           ),
@@ -1447,7 +1861,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           type: "prompt",
           message: `/subagents-rpc ${encoded}`,
         });
-      });
+      }).pipe(Effect.asVoid);
 
     const controlBackgroundTerminal = (input: PiBackgroundTerminalControlInput) =>
       Effect.gen(function* () {
@@ -1462,8 +1876,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             issue: "The selected background terminal belongs to a stale Pi process.",
           });
         }
-        // Pi treats unknown slash commands as model prompts. Only send this
-        // private extension command after it was advertised by the live session.
+        // Pi forwards unknown slash commands to the model. Never send the
+        // private control command until the live extension advertises it.
         if (!(yield* piAdvertisesCommand(ctx, "background-terminals-rpc", true))) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
@@ -1531,27 +1945,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }
       });
 
-    const nameSession: NonNullable<PiAdapterShape["nameSession"]> = (threadId, name) =>
-      Effect.gen(function* () {
-        const trimmed = name.trim();
-        if (!trimmed) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "nameSession",
-            issue: "Session name must be non-empty.",
-          });
-        }
-        const ctx = yield* requireSession(threadId);
-        yield* request(ctx, { type: "set_session_name", name: trimmed });
-      });
-
     const stopAll: PiAdapterShape["stopAll"] = () =>
       Effect.forEach(Array.from(sessions.values()), stopSessionInternal, { discard: true });
 
     yield* Effect.addFinalizer(() =>
       Effect.ignore(stopAll()).pipe(
         Effect.tap(() => PubSub.shutdown(runtimeEvents)),
-        Effect.tap(() => PubSub.shutdown(subagentEvents)),
         Effect.tap(() => PubSub.shutdown(backgroundTerminalEvents)),
       ),
     );
@@ -1561,14 +1960,6 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     return {
       provider: PROVIDER,
       capabilities: { sessionModelSwitch: "in-session" },
-      subagents: {
-        control: controlSubagent,
-        streamEvents: Stream.fromPubSub(subagentEvents),
-      },
-      backgroundTerminals: {
-        control: controlBackgroundTerminal,
-        streamEvents: Stream.fromPubSub(backgroundTerminalEvents),
-      },
       startSession,
       sendTurn,
       interruptTurn,
@@ -1579,7 +1970,11 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       hasSession,
       readThread,
       rollbackThread,
-      nameSession,
+      controlTask,
+      backgroundTerminals: {
+        control: controlBackgroundTerminal,
+        streamEvents: Stream.fromPubSub(backgroundTerminalEvents),
+      },
       stopAll,
       streamEvents,
     } satisfies PiAdapterShape;

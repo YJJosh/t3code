@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off -- A fixed instant keeps calendar-window assertions deterministic.
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   enumerateHourStarts,
@@ -47,21 +47,27 @@ describe("hourly usage formatting", () => {
     ).toBe("6 PM yesterday");
   });
 
-  it("builds an inclusive 30-day calendar request", () => {
-    const window = makeWindow(30, new Date(2026, 7, 14, 12, 0, 0), "day");
-
-    expect(window.resolution).toBe("day");
-    expect(window.sinceDay).toBe("2026-07-16");
-    expect(window.untilDay).toBe("2026-08-14");
-    expect(window.sinceTime).toBeUndefined();
-    expect(window.untilTime).toBeUndefined();
-  });
-
   it("builds an exact minute-aligned 24-hour request", () => {
     const window = makeWindow(1, new Date("2026-08-11T12:37:42.123Z"), "hour");
 
     expect(window.resolution).toBe("hour");
     expect(window.sinceTime).toBe("2026-08-10T12:37:00.000Z");
     expect(window.untilTime).toBe("2026-08-11T12:37:00.000Z");
+  });
+
+  it("degrades an unknown resolved zone to UTC instead of crashing", () => {
+    const resolved = new Intl.DateTimeFormat().resolvedOptions();
+    const resolvedOptions = vi
+      .spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions")
+      .mockReturnValue({ ...resolved, timeZone: "Etc/Unknown" });
+
+    try {
+      const now = new Date("2026-08-11T12:37:42.123Z");
+
+      expect(makeWindow(1, now, "hour").timeZone).toBe("UTC");
+      expect(makeWindow(30, now).timeZone).toBe("UTC");
+    } finally {
+      resolvedOptions.mockRestore();
+    }
   });
 });

@@ -22,7 +22,6 @@ import {
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
-import { resolveNewWorktreeDefaultBranch } from "../lib/chatThreadActions";
 import { readLocalApi } from "../localApi";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { shouldLoadNextBranchPageAfterScroll } from "../state/paginatedBranches";
@@ -43,7 +42,7 @@ import {
   resolveBranchToolbarValue,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
-  resolveWorktreeBranchToInitialize,
+  sanitizeNewRefName,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
 import {
@@ -53,6 +52,7 @@ import {
 } from "./ThreadStatusIndicators";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
+import { getVirtualizedScrollFadeClassName } from "./ui/scroll-area";
 import {
   Combobox,
   ComboboxEmpty,
@@ -75,7 +75,6 @@ interface BranchToolbarBranchSelectorProps {
   effectiveEnvModeOverride?: "local" | "worktree";
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (refName: string | null) => void;
-  startFromDefaultBranch: boolean;
   startFromOrigin: boolean;
   onStartFromOriginChange: (startFromOrigin: boolean) => void;
   onCheckoutPullRequestRequest?: (reference: string) => void;
@@ -95,7 +94,6 @@ export function BranchToolbarBranchSelector({
   effectiveEnvModeOverride,
   activeThreadBranchOverride,
   onActiveThreadBranchOverrideChange,
-  startFromDefaultBranch,
   startFromOrigin,
   onStartFromOriginChange,
   onCheckoutPullRequestRequest,
@@ -223,35 +221,27 @@ export function BranchToolbarBranchSelector({
   );
   const trimmedBranchQuery = branchQuery.trim();
   const deferredTrimmedBranchQuery = deferredBranchQuery.trim();
+  // The server filters refs by substring, so it has to be given the sanitized
+  // name as well: querying the raw "new branch" drops an existing new-branch
+  // from the response entirely, which would defeat the collision check below.
+  // Ref names cannot contain an ASCII space, so sanitizing loses no matches.
+  const branchRefQuery = sanitizeNewRefName(deferredTrimmedBranchQuery);
   const branchRefTarget = useMemo(
     () => ({
       environmentId,
       cwd: branchCwd,
-      query: deferredTrimmedBranchQuery,
+      query: branchRefQuery,
     }),
-    [branchCwd, deferredTrimmedBranchQuery, environmentId],
+    [branchCwd, branchRefQuery, environmentId],
   );
   const branchRefState = usePaginatedBranches(branchRefTarget);
   const refs = branchRefState.refs;
   const hasNextPage =
     branchRefState.data?.nextCursor !== null && branchRefState.data?.nextCursor !== undefined;
-  const hasLoadedInitialBranches = branchRefState.data !== null;
   const isFetchingNextPage = branchRefState.isFetchingNextPage;
   const isInitialBranchesLoadPending = branchRefState.isPending && branchRefState.data === null;
   const currentGitBranch =
     branchStatusQuery.data?.refName ?? refs.find((refName) => refName.current)?.name ?? null;
-  const defaultWorktreeBranch = startFromDefaultBranch
-    ? resolveNewWorktreeDefaultBranch(refs)
-    : null;
-  const initialWorktreeBranch = defaultWorktreeBranch ?? currentGitBranch;
-  const worktreeBranchToInitialize = resolveWorktreeBranchToInitialize({
-    effectiveEnvMode,
-    activeWorktreePath,
-    activeThreadBranch,
-    initialWorktreeBranch,
-    startFromDefaultBranch,
-    hasLoadedInitialBranches,
-  });
   const sourceControlPresentation = useMemo(
     () => getSourceControlPresentation(branchStatusQuery.data?.sourceControlProvider),
     [branchStatusQuery.data?.sourceControlProvider],
@@ -275,7 +265,11 @@ export function BranchToolbarBranchSelector({
   const checkoutPullRequestItemValue =
     prReference && onCheckoutPullRequestRequest ? `__checkout_pull_request__:${prReference}` : null;
   const canCreateBranch = !isSelectingWorktreeBase && trimmedBranchQuery.length > 0;
-  const hasExactBranchMatch = branchByName.has(trimmedBranchQuery);
+  // The ref is created under its sanitized name, so the collision check has to
+  // use that name too. Matching on the raw query would offer to create a ref
+  // that already exists whenever sanitizing changes the name.
+  const newRefName = sanitizeNewRefName(trimmedBranchQuery);
+  const hasExactBranchMatch = branchByName.has(newRefName);
   const createBranchItemValue = canCreateBranch
     ? `__create_new_branch__:${trimmedBranchQuery}`
     : null;
@@ -457,7 +451,7 @@ export function BranchToolbarBranchSelector({
   };
 
   const createRef = (rawName: string) => {
-    const name = rawName.trim();
+    const name = sanitizeNewRefName(rawName);
     if (!branchCwd || !name || isBranchActionPending) return;
 
     setIsBranchMenuOpen(false);
@@ -492,12 +486,33 @@ export function BranchToolbarBranchSelector({
     });
   };
 
+  // Default the worktree base to the repo default branch (origin/HEAD), only
+  // falling back to the checked-out branch when no default is known.
+  const defaultBranchName = useMemo(
+    () => refs.find((refName) => refName.isDefault)?.name ?? null,
+    [refs],
+  );
+  const worktreeBaseBranchCandidate = isInitialBranchesLoadPending
+    ? null
+    : (defaultBranchName ?? currentGitBranch);
+
   useEffect(() => {
-    if (worktreeBranchToInitialize === null) {
+    if (
+      effectiveEnvMode !== "worktree" ||
+      activeWorktreePath ||
+      activeThreadBranch ||
+      !worktreeBaseBranchCandidate
+    ) {
       return;
     }
-    setThreadBranch(worktreeBranchToInitialize, null);
-  }, [setThreadBranch, worktreeBranchToInitialize]);
+    setThreadBranch(worktreeBaseBranchCandidate, null);
+  }, [
+    activeThreadBranch,
+    activeWorktreePath,
+    effectiveEnvMode,
+    setThreadBranch,
+    worktreeBaseBranchCandidate,
+  ]);
 
   // ---------------------------------------------------------------------------
   // Combobox / list plumbing
@@ -654,7 +669,7 @@ export function BranchToolbarBranchSelector({
           className="pe-1.5"
           onClick={() => createRef(trimmedBranchQuery)}
         >
-          <span className="truncate">Create new ref &quot;{trimmedBranchQuery}&quot;</span>
+          <span className="truncate">Create new ref &quot;{newRefName}&quot;</span>
         </ComboboxItem>
       );
     }
@@ -810,9 +825,11 @@ export function BranchToolbarBranchSelector({
                   maybeFetchNextBranchPage();
                 }}
                 className={cn(
-                  "scrollbar-gutter-stable overflow-x-hidden overscroll-y-contain ps-1 pe-0 pt-2 pb-1 [--fade-size:1.5rem]",
-                  showTopBranchScrollFade && "mask-t-from-[calc(100%-var(--fade-size))]",
-                  showBottomBranchScrollFade && "mask-b-from-[calc(100%-var(--fade-size))]",
+                  "scrollbar-gutter-stable overflow-x-hidden overscroll-y-contain ps-1 pe-0 pt-2 pb-1",
+                  getVirtualizedScrollFadeClassName({
+                    top: showTopBranchScrollFade,
+                    bottom: showBottomBranchScrollFade,
+                  }),
                 )}
                 style={{ maxHeight: "14rem" }}
               />
@@ -834,15 +851,15 @@ export function BranchToolbarBranchSelector({
                       id={startFromOriginSwitchId}
                       checked={startFromOrigin}
                       className="[--thumb-size:--spacing(3.5)]"
-                      aria-label="Start workspace from origin"
+                      aria-label="Start worktree from origin"
                       onCheckedChange={(checked) => onStartFromOriginChange(Boolean(checked))}
                     />
                   </label>
                 }
               />
               <TooltipPopup side="top" className="max-w-72 whitespace-normal leading-tight">
-                Creates the workspace from the latest matching branch on origin instead of your
-                local branch.
+                Creates the worktree from the latest matching branch on origin instead of your local
+                branch.
               </TooltipPopup>
             </Tooltip>
           ) : null}

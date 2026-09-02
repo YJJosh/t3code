@@ -13,7 +13,6 @@ import {
   ModelSelection,
   NonNegativeInt,
   PiBackgroundTerminalControlInput,
-  PiSubagentControlInput,
   ThreadId,
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
@@ -21,6 +20,8 @@ import {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
+  ProviderTaskControlInput,
+  ProviderUploadFeedbackInput,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
@@ -35,9 +36,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
@@ -53,7 +52,7 @@ import {
 } from "../../observability/Metrics.ts";
 import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
 import { makeBackgroundTerminalEventPubSub } from "../backgroundTerminalEvents.ts";
-import type { ProviderAdapterShape, ProviderSubagentEvent } from "../Services/ProviderAdapter.ts";
+import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
@@ -62,6 +61,7 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
 /**
@@ -71,6 +71,15 @@ const isModelSelection = Schema.is(ModelSelection);
  */
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogger?: EventNdjsonLogger;
+  /**
+   * Overrides MCP credential issuance. The real issuer reads a module-global
+   * registry that only a running MCP server installs, which makes the
+   * agent-browser-access gate unobservable from a unit test; this seam lets a
+   * test see whether a credential was requested at all.
+   */
+  readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
+  /** Same seam as `issueMcpCredential`, for observing the deny path's revoke. */
+  readonly revokeMcpCredential?: typeof McpSessionRegistry.revokeActiveMcpThread;
 }
 
 type ProviderServiceMethod<Name extends keyof ProviderService.ProviderService["Service"]> =
@@ -220,18 +229,59 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const issueMcpCredential =
+    options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
+  const revokeMcpCredential =
+    options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpThread;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
-  const subagentEventPubSub = yield* PubSub.unbounded<ProviderSubagentEvent>();
   const backgroundTerminalEventPubSub = yield* makeBackgroundTerminalEventPubSub();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+  /**
+   * Attach the `t3-code` MCP server to the session that is about to start.
+   *
+   * This is the only place a credential is minted, so withholding one here is
+   * what disables agent browser access everywhere: every adapter already
+   * treats a missing session as "no MCP server", and the `/mcp` endpoint
+   * accepts nothing but tokens issued from this path.
+   */
+  /**
+   * Deny on an unreadable settings file rather than letting the read failure
+   * escape: adding `ServerSettingsError` to `ProviderServiceError` would widen
+   * a union every caller handles, for a branch that only decides whether one
+   * optional toolset is attached. Denying is the safe direction — an explicit
+   * "off" silently becoming "on" would violate the user's stated choice,
+   * whereas the reverse costs an agent one toolset and is visible immediately.
+   */
+  const agentBrowserAccessEnabled = serverSettings.getSettings.pipe(
+    Effect.map((settings) => settings.enableAgentBrowserAccess),
+    Effect.catch((cause) =>
+      Effect.logWarning(
+        "Could not read server settings; withholding agent browser access for this session.",
+        { cause },
+      ).pipe(Effect.as(false)),
+    ),
+  );
+
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
-    McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId }).pipe(
-      Effect.tap((credential) =>
-        credential
-          ? Effect.sync(() => McpProviderSession.setMcpProviderSession(credential.config))
-          : Effect.void,
-      ),
-    );
+    Effect.gen(function* () {
+      if (!(yield* agentBrowserAccessEnabled)) {
+        // Revoke as well as clear. Every other prepare path reaches
+        // `issueActiveMcpCredential`, which revokes the thread first, so
+        // skipping it here would leave a previously issued bearer token valid
+        // against `/mcp` for the rest of its liveness window — and later turns
+        // would keep refreshing it. A session restart (runtime mode, cwd,
+        // model) re-prepares without stopping, so it relies on this.
+        yield* revokeMcpCredential(threadId);
+        yield* Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId));
+        return undefined;
+      }
+      const credential = yield* issueMcpCredential({ threadId, providerInstanceId });
+      if (credential) {
+        yield* Effect.sync(() => McpProviderSession.setMcpProviderSession(credential.config));
+      }
+      return credential;
+    });
   const clearMcpSession = (threadId: ThreadId) =>
     McpSessionRegistry.revokeActiveMcpThread(threadId).pipe(
       Effect.tap(() => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
@@ -350,12 +400,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             event,
           ),
         ).pipe(Effect.forkScoped);
-        if (adapter.subagents) {
-          yield* Stream.runForEach(adapter.subagents.streamEvents, (event) =>
-            PubSub.publish(subagentEventPubSub, event),
-          ).pipe(Effect.forkScoped);
-        }
-        if (adapter.backgroundTerminals) {
+        if (adapter.backgroundTerminals !== undefined) {
           yield* Stream.runForEach(adapter.backgroundTerminals.streamEvents, (event) =>
             PubSub.publish(backgroundTerminalEventPubSub, event),
           ).pipe(Effect.forkScoped);
@@ -371,33 +416,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     Stream.fromSubscription(instanceChanges),
     () => reconcileInstanceSubscriptions,
   ).pipe(Effect.forkScoped);
-
-  // Recovery is a check-then-start operation. Serialize it per thread so
-  // reconnect-time consumers (for example subagent and background-terminal
-  // replay) cannot both resume the same persisted provider session.
-  const sessionRoutingLocksRef = yield* SynchronizedRef.make(
-    new Map<ThreadId, Semaphore.Semaphore>(),
-  );
-  const getSessionRoutingLock = (threadId: ThreadId) =>
-    SynchronizedRef.modifyEffect(sessionRoutingLocksRef, (current) => {
-      const existing = Option.fromNullishOr(current.get(threadId));
-      return Option.match(existing, {
-        onNone: () =>
-          Semaphore.make(1).pipe(
-            Effect.map((semaphore) => {
-              const next = new Map(current);
-              next.set(threadId, semaphore);
-              return [semaphore, next] as const;
-            }),
-          ),
-        onSome: (semaphore) => Effect.succeed([semaphore, current] as const),
-      });
-    });
-  const withSessionRoutingLock = <A, E, R>(
-    threadId: ThreadId,
-    effect: Effect.Effect<A, E, R>,
-  ): Effect.Effect<A, E, R> =>
-    Effect.flatMap(getSessionRoutingLock(threadId), (semaphore) => semaphore.withPermit(effect));
 
   const recoverSessionForThread = Effect.fn("recoverSessionForThread")(function* (input: {
     readonly binding: ProviderSessionDirectory.ProviderRuntimeBinding;
@@ -484,64 +502,54 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
-  const resolveRoutableSessionUnlocked = Effect.fn("resolveRoutableSessionUnlocked")(
-    function* (input: {
-      readonly threadId: ThreadId;
-      readonly operation: string;
-      readonly allowRecovery: boolean;
-    }) {
-      const bindingOption = yield* directory.getBinding(input.threadId);
-      const binding = Option.getOrUndefined(bindingOption);
-      if (!binding) {
-        return yield* toValidationError(
-          input.operation,
-          `Cannot route thread '${input.threadId}' because no persisted provider binding exists.`,
-        );
-      }
-      const instanceId = yield* requireBindingInstanceId(input.operation, binding);
-      const adapter = yield* registry.getByInstance(instanceId);
-
-      const hasRequestedSession = yield* adapter.hasSession(input.threadId);
-      if (hasRequestedSession) {
-        return {
-          adapter,
-          instanceId,
-          threadId: input.threadId,
-          runtimeMode: binding.runtimeMode,
-          isActive: true,
-        } as const;
-      }
-
-      if (!input.allowRecovery) {
-        return {
-          adapter,
-          instanceId,
-          threadId: input.threadId,
-          runtimeMode: binding.runtimeMode,
-          isActive: false,
-        } as const;
-      }
-
-      const recovered = yield* recoverSessionForThread({
-        binding,
-        operation: input.operation,
-      });
-      return {
-        adapter: recovered.adapter,
-        instanceId,
-        threadId: input.threadId,
-        runtimeMode: recovered.session.runtimeMode,
-        isActive: true,
-      } as const;
-    },
-  );
-
   const resolveRoutableSession = Effect.fn("resolveRoutableSession")(function* (input: {
     readonly threadId: ThreadId;
     readonly operation: string;
     readonly allowRecovery: boolean;
   }) {
-    return yield* withSessionRoutingLock(input.threadId, resolveRoutableSessionUnlocked(input));
+    const bindingOption = yield* directory.getBinding(input.threadId);
+    const binding = Option.getOrUndefined(bindingOption);
+    if (!binding) {
+      return yield* toValidationError(
+        input.operation,
+        `Cannot route thread '${input.threadId}' because no persisted provider binding exists.`,
+      );
+    }
+    const instanceId = yield* requireBindingInstanceId(input.operation, binding);
+    const adapter = yield* registry.getByInstance(instanceId);
+
+    const hasRequestedSession = yield* adapter.hasSession(input.threadId);
+    if (hasRequestedSession) {
+      return {
+        adapter,
+        instanceId,
+        threadId: input.threadId,
+        runtimeMode: binding.runtimeMode,
+        isActive: true,
+      } as const;
+    }
+
+    if (!input.allowRecovery) {
+      return {
+        adapter,
+        instanceId,
+        threadId: input.threadId,
+        runtimeMode: binding.runtimeMode,
+        isActive: false,
+      } as const;
+    }
+
+    const recovered = yield* recoverSessionForThread({
+      binding,
+      operation: input.operation,
+    });
+    return {
+      adapter: recovered.adapter,
+      instanceId,
+      threadId: input.threadId,
+      runtimeMode: recovered.session.runtimeMode,
+      isActive: true,
+    } as const;
   });
 
   const stopStaleSessionsForThread = Effect.fn("stopStaleSessionsForThread")(function* (input: {
@@ -730,13 +738,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
 
-    // Adapters inline attachment pixels into the model prompt, but the model's
-    // tools cannot dereference pixels. Appending the on-disk path is what lets
-    // a turn like "include this screenshot in the PR" copy the actual file.
-    // This runs after schema decode, so the appended lines are exempt from the
-    // PROVIDER_SEND_TURN_MAX_INPUT_CHARS check; attachment count is capped, so
-    // the overhead is bounded. Unresolvable ids are skipped here and surface
-    // as adapter errors when the file is read for inlining.
+    // Every attachment gets an on-disk path in the prompt so the model's tools
+    // can dereference the actual file. All attachments then go to the adapter,
+    // and each adapter decides what its provider ingests natively: OpenCode
+    // sends generic files as file parts, the others send images only and rely
+    // on the path line for everything else. Unresolvable ids are skipped here
+    // and surface as adapter errors when the file is read.
     const attachmentPathLines = attachments.flatMap((attachment) => {
       const attachmentPath = resolveAttachmentPath({
         attachmentsDir: serverConfig.attachmentsDir,
@@ -758,13 +765,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       ...(inputTextWithAttachmentPaths !== undefined
         ? { input: inputTextWithAttachmentPaths }
         : {}),
-      attachments,
     };
     yield* Effect.annotateCurrentSpan({
       "provider.operation": "send-turn",
       "provider.thread_id": input.threadId,
       "provider.interaction_mode": input.interactionMode,
-      "provider.attachment_count": input.attachments.length,
+      "provider.attachment_count": attachments.length,
     });
     let metricProvider = "unknown";
     let metricModel = input.modelSelection?.model;
@@ -808,7 +814,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         // often, since every toggle restarts the session. Recording it per turn
         // gives a usage-weighted view and lets it cross with interactionMode.
         runtimeMode: routed.runtimeMode,
-        attachmentCount: input.attachments.length,
+        attachmentCount: attachments.length,
         hasInput: typeof input.input === "string" && input.input.trim().length > 0,
       });
       return turn;
@@ -1119,41 +1125,41 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
-  const nameThreadSession: ProviderServiceMethod<"nameThreadSession"> = Effect.fn(
-    "nameThreadSession",
-  )(function* (input) {
-    const routed = yield* resolveRoutableSession({
-      threadId: input.threadId,
-      operation: "ProviderService.nameThreadSession",
-      allowRecovery: false,
-    });
-    // Naming is a label sync, never a reason to spin up or recover a session;
-    // callers re-apply the label when the next session starts.
-    if (!routed.isActive || routed.adapter.nameSession === undefined) {
-      return;
-    }
-    yield* routed.adapter.nameSession(routed.threadId, input.name);
-  });
-
-  const controlSubagent: ProviderServiceMethod<"controlSubagent"> = Effect.fn("controlSubagent")(
+  const controlTask: ProviderServiceMethod<"controlTask"> = Effect.fn("controlTask")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
-        operation: "ProviderService.controlSubagent",
-        schema: PiSubagentControlInput,
+        operation: "ProviderService.controlTask",
+        schema: ProviderTaskControlInput,
         payload: rawInput,
       });
       const routed = yield* resolveRoutableSession({
         threadId: input.threadId,
-        operation: "ProviderService.controlSubagent",
-        allowRecovery: true,
+        operation: "ProviderService.controlTask",
+        // A recovered provider session cannot own an in-memory child task
+        // from the previous process, so never restart one to deliver control.
+        allowRecovery: false,
       });
-      if (!routed.adapter.subagents) {
+      if (!routed.isActive) {
         return yield* toValidationError(
-          "ProviderService.controlSubagent",
-          `Provider '${routed.adapter.provider}' does not expose subagent controls.`,
+          "ProviderService.controlTask",
+          `Thread '${input.threadId}' does not have an active provider session.`,
         );
       }
-      yield* routed.adapter.subagents.control(input);
+      const controlTask = routed.adapter.controlTask;
+      if (controlTask === undefined) {
+        return yield* toValidationError(
+          "ProviderService.controlTask",
+          `Provider '${routed.adapter.provider}' does not support task controls.`,
+        );
+      }
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "control-task",
+        "provider.kind": routed.adapter.provider,
+        "provider.thread_id": input.threadId,
+        "provider.task_id": input.taskId,
+        "provider.task_action": input.action,
+      });
+      yield* controlTask(input);
     },
   );
 
@@ -1168,16 +1174,66 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     const routed = yield* resolveRoutableSession({
       threadId: input.threadId,
       operation: "ProviderService.controlBackgroundTerminal",
-      allowRecovery: true,
+      // A restarted Pi process cannot own the extension-local terminal shown
+      // by a prior process epoch, so never recover a session for this control.
+      allowRecovery: false,
     });
-    if (!routed.adapter.backgroundTerminals) {
+    if (!routed.isActive) {
       return yield* toValidationError(
         "ProviderService.controlBackgroundTerminal",
-        `Provider '${routed.adapter.provider}' does not expose background-terminal controls.`,
+        `Thread '${input.threadId}' does not have an active provider session.`,
       );
     }
-    yield* routed.adapter.backgroundTerminals.control(input);
+    const backgroundTerminals = routed.adapter.backgroundTerminals;
+    if (backgroundTerminals === undefined) {
+      return yield* toValidationError(
+        "ProviderService.controlBackgroundTerminal",
+        `Provider '${routed.adapter.provider}' does not support background terminals.`,
+      );
+    }
+    yield* backgroundTerminals.control(input);
   });
+
+  const uploadFeedback: ProviderServiceMethod<"uploadFeedback"> = Effect.fn("uploadFeedback")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.uploadFeedback",
+        schema: ProviderUploadFeedbackInput,
+        payload: rawInput,
+      });
+      let routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.uploadFeedback",
+        allowRecovery: false,
+      });
+      if (routed.adapter.uploadFeedback === undefined) {
+        return yield* toValidationError(
+          "ProviderService.uploadFeedback",
+          `Provider '${routed.adapter.provider}' does not support feedback uploads.`,
+        );
+      }
+      if (!routed.isActive) {
+        routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.uploadFeedback",
+          allowRecovery: true,
+        });
+      }
+      const uploadFeedback = routed.adapter.uploadFeedback;
+      if (uploadFeedback === undefined) {
+        return yield* toValidationError(
+          "ProviderService.uploadFeedback",
+          `Provider '${routed.adapter.provider}' does not support feedback uploads.`,
+        );
+      }
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "upload-feedback",
+        "provider.kind": routed.adapter.provider,
+        "provider.thread_id": input.threadId,
+      });
+      return yield* uploadFeedback(input);
+    },
+  );
 
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();
@@ -1250,11 +1306,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
-    nameThreadSession,
-    controlSubagent,
-    get streamSubagentEvents(): ProviderServiceMethod<"streamSubagentEvents"> {
-      return Stream.fromPubSub(subagentEventPubSub);
-    },
+    controlTask,
+    uploadFeedback,
     controlBackgroundTerminal,
     get streamBackgroundTerminalEvents(): ProviderServiceMethod<"streamBackgroundTerminalEvents"> {
       return Stream.fromPubSub(backgroundTerminalEventPubSub);

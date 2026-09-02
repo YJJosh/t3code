@@ -1,4 +1,3 @@
-import { useAtomValue } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { LinkIcon, PlusIcon, RotateCcwIcon } from "lucide-react";
@@ -9,6 +8,7 @@ import { sortScopedProjectsForSidebar } from "../components/Sidebar.logic";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
+import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import {
   useAllEnvironmentShellsBootstrapped,
@@ -16,12 +16,8 @@ import {
   useThreadShells,
 } from "../state/entities";
 import { useEnvironments } from "../state/environments";
-import { primaryServerConfigAtom } from "../state/server";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
-import { canAutoStartIndexDraft } from "~/lib/indexDraftLanding";
-import { cn } from "~/lib/utils";
-import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 
 function ChatIndexRouteView() {
   const { authGateState } = Route.useRouteContext();
@@ -43,21 +39,16 @@ function IndexDraftLanding() {
   const projects = useProjects();
   const threads = useThreadShells();
   const bootstrapped = useAllEnvironmentShellsBootstrapped();
-  const primaryServerConfigReady = useAtomValue(primaryServerConfigAtom) !== null;
-  const readyToCreateDraft = canAutoStartIndexDraft({
-    shellsBootstrapped: bootstrapped,
-    primaryServerConfigReady,
-  });
   const handleNewThread = useNewThreadHandler();
   const startingRef = useRef(false);
   const [startState, setStartState] = useState({ failed: false, retryRequest: 0 });
 
   const mostRecentProject = useMemo(
     () =>
-      readyToCreateDraft
+      bootstrapped
         ? (sortScopedProjectsForSidebar(projects, threads, "updated_at")[0] ?? null)
         : null,
-    [projects, readyToCreateDraft, threads],
+    [bootstrapped, projects, threads],
   );
 
   useEffect(() => {
@@ -73,7 +64,7 @@ function IndexDraftLanding() {
     });
   }, [handleNewThread, mostRecentProject, startState.retryRequest]);
 
-  if (!bootstrapped || (projects.length > 0 && !primaryServerConfigReady)) {
+  if (!bootstrapped) {
     return null;
   }
   if (mostRecentProject !== null) {
@@ -151,18 +142,13 @@ function HostedStaticOnboardingState() {
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
-        <header
-          className={cn(
-            "workspace-topbar border-b border-border px-3 transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none sm:px-5",
-            COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
-          )}
-        >
+        <WorkspacePageHeader className="border-b border-border">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-foreground md:text-muted-foreground/60">
               {APP_DISPLAY_NAME}
             </span>
           </div>
-        </header>
+        </WorkspacePageHeader>
 
         <Empty className="flex-1">
           <div className="w-full max-w-xl rounded-3xl border border-border/55 bg-card/20 px-8 py-12 shadow-sm/5">

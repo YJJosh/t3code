@@ -19,6 +19,7 @@ import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -39,6 +40,7 @@ import {
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { forkParked, ServerActivation } from "../../serverActivation.ts";
+import { canReplaceThreadTitle, DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import {
   resolveSourceControlWriterModelSelection,
   ServerSettingsService,
@@ -58,8 +60,7 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
-      | "thread.session-stop-requested"
-      | "thread.meta-updated";
+      | "thread.session-stop-requested";
   }
 >;
 
@@ -92,7 +93,6 @@ const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
-const DEFAULT_THREAD_TITLE = "New thread";
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
 const MAX_FIRST_USER_TITLE_CONTEXT_CHARS = 2_000;
@@ -228,18 +228,6 @@ export function providerErrorLabelFromInstanceHint(input: {
   );
 }
 
-function canReplaceThreadTitle(currentTitle: string, titleSeed?: string): boolean {
-  const trimmedCurrentTitle = currentTitle.trim();
-  if (trimmedCurrentTitle === DEFAULT_THREAD_TITLE) {
-    return true;
-  }
-
-  const trimmedTitleSeed = titleSeed?.trim();
-  return trimmedTitleSeed !== undefined && trimmedTitleSeed.length > 0
-    ? trimmedCurrentTitle === trimmedTitleSeed
-    : false;
-}
-
 function findProviderAdapterRequestError(
   cause: Cause.Cause<ProviderServiceError>,
 ): ProviderAdapterRequestError | undefined {
@@ -253,13 +241,15 @@ function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderService
     const detail = error.detail.toLowerCase();
     return (
       detail.includes("unknown pending approval request") ||
-      detail.includes("unknown pending permission request")
+      detail.includes("unknown pending permission request") ||
+      detail.includes("unknown pending codex approval request")
     );
   }
-  const message = Cause.pretty(cause);
+  const message = Cause.pretty(cause).toLowerCase();
   return (
     message.includes("unknown pending approval request") ||
-    message.includes("unknown pending permission request")
+    message.includes("unknown pending permission request") ||
+    message.includes("unknown pending codex approval request")
   );
 }
 
@@ -295,6 +285,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
   const gitWorkflow = yield* GitWorkflowService;
+  const fileSystem = yield* FileSystem.FileSystem;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
@@ -358,21 +349,11 @@ const make = Effect.gen(function* () {
 
   const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
     const failReason = cause.reasons.find(Cause.isFailReason);
-    const error = failReason?.error;
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "detail" in error &&
-      typeof error.detail === "string" &&
-      error.detail.trim()
-    ) {
-      return error.detail;
-    }
-    if (error instanceof Error && error.message.trim()) {
-      return error.message;
-    }
-    if (typeof error === "string" && error.trim()) {
-      return error;
+    const providerError = isProviderAdapterRequestError(failReason?.error)
+      ? failReason.error
+      : undefined;
+    if (providerError) {
+      return providerError.detail;
     }
     return Cause.pretty(cause);
   };
@@ -428,6 +409,52 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
+  /**
+   * Recreates a thread's worktree from its branch when the directory has
+   * disappeared. Provider sessions resume into the persisted cwd, so a missing
+   * worktree makes every later turn fail as a bogus "session not found".
+   * Best-effort: on failure the turn proceeds and reports the real error.
+   */
+  const ensureThreadWorktree = Effect.fnUntraced(function* (thread: {
+    readonly id: ThreadId;
+    readonly projectId: ProjectId;
+    readonly branch: string | null;
+    readonly worktreePath: string | null;
+  }) {
+    const { worktreePath, branch } = thread;
+    if (!worktreePath || !branch) {
+      return;
+    }
+    const exists = yield* fileSystem.exists(worktreePath).pipe(Effect.orElseSucceed(() => true));
+    if (exists) {
+      return;
+    }
+    const project = yield* resolveProject(thread.projectId);
+    if (!project) {
+      return;
+    }
+    const cwd = project.workspaceRoot;
+    yield* Effect.logWarning("provider command reactor recreating missing worktree", {
+      threadId: thread.id,
+      worktreePath,
+      branch,
+    });
+    // A directory deleted without `git worktree remove` leaves an admin entry
+    // that makes `git worktree add` refuse the path; prune clears it.
+    yield* gitWorkflow.pruneWorktrees({ cwd }).pipe(
+      Effect.andThen(gitWorkflow.createWorktree({ cwd, refName: branch, path: worktreePath })),
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("provider command reactor failed to recreate worktree", {
+              threadId: thread.id,
+              worktreePath,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
+  });
+
   const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
       .getThreadDetailById(threadId)
@@ -464,28 +491,6 @@ const make = Effect.gen(function* () {
       method: "thread.turn.start",
       detail: `Thread '${input.threadId}' cannot switch models after the conversation has started. Start a new thread to use '${requestedModelSelection.model}'.`,
     });
-  });
-
-  // Keep the provider-native session label (e.g. Pi's session name shown by
-  // `pi -r`) in sync with the T3 thread title, so conversations stay
-  // recognizable in the provider's own tooling. Always best-effort: a thread
-  // without a live session or a label-less provider is not an error.
-  const syncThreadTitleToProviderSession = Effect.fn("syncThreadTitleToProviderSession")(function* (
-    threadId: ThreadId,
-    title: string,
-  ) {
-    const trimmed = title.trim();
-    if (!trimmed || trimmed === DEFAULT_THREAD_TITLE) {
-      return;
-    }
-    yield* providerService.nameThreadSession({ threadId, name: trimmed }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logDebug("provider command reactor could not label the provider session", {
-          threadId,
-          cause: Cause.pretty(cause),
-        }),
-      ),
-    );
   });
 
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
@@ -636,6 +641,7 @@ const make = Effect.gen(function* () {
         ...(preferredProvider ? { provider: preferredProvider } : {}),
         providerInstanceId: desiredInstanceId,
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+        ...(thread.title ? { title: thread.title } : {}),
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
@@ -734,13 +740,11 @@ const make = Effect.gen(function* () {
         cwd: restartedSession.cwd,
       });
       yield* bindSessionToThread(restartedSession);
-      yield* syncThreadTitleToProviderSession(threadId, thread.title);
       return restartedSession.threadId;
     }
 
     const startedSession = yield* startProviderSession(undefined);
     yield* bindSessionToThread(startedSession);
-    yield* syncThreadTitleToProviderSession(threadId, thread.title);
     return startedSession.threadId;
   });
 
@@ -837,14 +841,15 @@ const make = Effect.gen(function* () {
         cwd,
         message: input.messageText,
         ...(attachments.length > 0 ? { attachments } : {}),
-        modelSelection,
+        includeT3CodeBranchPrefix: settings.includeT3CodeBranchPrefix,
         useConventionalBranchPrefixes: settings.useConventionalBranchPrefixes,
+        modelSelection,
       });
       if (!generated) return;
 
       const targetBranch = buildGeneratedWorktreeBranchName(generated.branch, {
-        includeT3CodePrefix: settings.includeT3CodeBranchPrefix,
-        useConventionalPrefix: settings.useConventionalBranchPrefixes,
+        includeT3CodeBranchPrefix: settings.includeT3CodeBranchPrefix,
+        useConventionalBranchPrefixes: settings.useConventionalBranchPrefixes,
       });
       if (targetBranch === oldBranch) return;
 
@@ -1110,6 +1115,8 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    yield* ensureThreadWorktree(thread);
+
     const isFirstUserMessageTurn =
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {
@@ -1207,8 +1214,8 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
-    const hasSession = thread.session && thread.session.status !== "stopped";
-    if (!hasSession) {
+    const session = thread.session;
+    if (!session || session.status === "stopped") {
       return yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.interrupt.failed",
@@ -1219,8 +1226,80 @@ const make = Effect.gen(function* () {
       });
     }
 
+    const recoverInterruptFailure = (cause: Cause.Cause<unknown>) => {
+      if (Cause.hasInterruptsOnly(cause)) {
+        return Effect.interrupt;
+      }
+
+      const detail = formatFailureDetail(cause);
+      return Effect.gen(function* () {
+        const latestThread = yield* resolveThread(event.payload.threadId);
+        const latestSession = latestThread?.session;
+        if (
+          !latestSession ||
+          latestSession.status === "stopped" ||
+          latestSession.status === "ready" ||
+          (event.payload.turnId !== undefined &&
+            latestSession.activeTurnId !== null &&
+            latestSession.activeTurnId !== event.payload.turnId)
+        ) {
+          return;
+        }
+
+        yield* providerService.stopSession({ threadId: event.payload.threadId }).pipe(
+          Effect.catchCause((stopCause) => {
+            if (Cause.hasInterruptsOnly(stopCause)) {
+              return Effect.interrupt;
+            }
+            return Effect.logWarning(
+              "provider command reactor failed to stop session after interrupt failure",
+              {
+                threadId: event.payload.threadId,
+                cause: Cause.pretty(stopCause),
+                originalCause: Cause.pretty(cause),
+              },
+            );
+          }),
+        );
+        const stoppedThread = yield* resolveThread(event.payload.threadId);
+        const stoppedSession = stoppedThread?.session;
+        if (
+          !stoppedSession ||
+          stoppedSession.status === "stopped" ||
+          stoppedSession.status === "ready" ||
+          (event.payload.turnId !== undefined &&
+            stoppedSession.activeTurnId !== null &&
+            stoppedSession.activeTurnId !== event.payload.turnId)
+        ) {
+          return;
+        }
+
+        yield* setThreadSession({
+          threadId: event.payload.threadId,
+          session: {
+            ...stoppedSession,
+            status: "stopped",
+            activeTurnId: null,
+            lastError: detail,
+            updatedAt: event.payload.createdAt,
+          },
+          createdAt: event.payload.createdAt,
+        });
+        yield* appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.turn.interrupt.failed",
+          summary: "Provider turn interrupt failed",
+          detail,
+          turnId: event.payload.turnId ?? null,
+          createdAt: event.payload.createdAt,
+        });
+      });
+    };
+
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    yield* providerService
+      .interruptTurn({ threadId: event.payload.threadId })
+      .pipe(Effect.catchCause(recoverInterruptFailure));
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (
@@ -1355,12 +1434,7 @@ const make = Effect.gen(function* () {
     });
     switch (event.type) {
       case "thread.meta-updated":
-        if (event.payload.regenerateTitle === true) {
-          yield* threadTitleRegenerationWorker.enqueue(event);
-        }
-        if (event.payload.title !== undefined) {
-          yield* syncThreadTitleToProviderSession(event.payload.threadId, event.payload.title);
-        }
+        yield* threadTitleRegenerationWorker.enqueue(event);
         return;
       case "thread.runtime-mode-set": {
         const thread = yield* resolveThread(event.payload.threadId);
@@ -1428,8 +1502,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
-        event.type === "thread.session-stop-requested" ||
-        event.type === "thread.meta-updated"
+        event.type === "thread.session-stop-requested"
       ) {
         return yield* worker.enqueue(event);
       }

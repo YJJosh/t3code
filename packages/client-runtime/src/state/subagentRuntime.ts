@@ -44,6 +44,46 @@ export interface SubagentActivityEntry {
   readonly summary: string;
 }
 
+export type SubagentTranscriptPart =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "thinking"; readonly text: string; readonly redacted?: boolean }
+  | {
+      readonly type: "toolCall";
+      readonly id: string;
+      readonly name: string;
+      readonly argsPreview?: string;
+    };
+
+export type SubagentTranscriptItem =
+  | { readonly sourceId: string; readonly kind: "user"; readonly text: string }
+  | {
+      readonly sourceId: string;
+      readonly kind: "assistant";
+      readonly parts: ReadonlyArray<SubagentTranscriptPart>;
+    }
+  | {
+      readonly sourceId: string;
+      readonly kind: "toolResult";
+      readonly id: string;
+      readonly name: string;
+      readonly isError: boolean;
+      readonly outputPreview?: string;
+    };
+
+export interface SubagentLiveTool {
+  readonly id: string;
+  readonly name: string;
+  readonly argsPreview?: string;
+  readonly outputPreview?: string;
+}
+
+export interface SubagentTranscript {
+  readonly items: ReadonlyArray<SubagentTranscriptItem>;
+  readonly droppedItems: number;
+  readonly liveAssistant: { readonly text: string; readonly thinking: string } | null;
+  readonly liveTools: ReadonlyArray<SubagentLiveTool>;
+}
+
 export interface SubagentWorkflowPhase {
   readonly index: number;
   readonly title: string;
@@ -60,6 +100,7 @@ export interface RuntimeSubagent {
   readonly id: string;
   readonly kind: "subagent" | "workflow" | "workflow_agent";
   readonly title: string;
+  readonly prompt: string | null;
   readonly role: string | null;
   readonly model: string | null;
   readonly effort: string | null;
@@ -77,9 +118,12 @@ export interface RuntimeSubagent {
   readonly phaseTitle: string | null;
   readonly attempt: number | null;
   readonly workflowName: string | null;
+  /** Turn that first introduced this task, used to separate prompt-spawn batches. */
+  readonly originTurnId?: string | null;
   readonly phases: ReadonlyArray<SubagentWorkflowPhase>;
   readonly runHandles: SubagentRunHandles | null;
   readonly recentActivity: ReadonlyArray<SubagentActivityEntry>;
+  readonly transcript: SubagentTranscript;
   /** First retained observation, used as the roster's stable display order. */
   readonly firstSeenAt: string;
   readonly startedAt: string | null;
@@ -144,6 +188,208 @@ function asString(value: unknown): string | undefined {
 
 function asCount(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/* eslint-disable no-control-regex -- Terminal transcript sanitization intentionally strips control sequences. */
+function sanitizeTranscriptText(value: string): string {
+  return value
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, "");
+}
+/* eslint-enable no-control-regex */
+
+function transcriptPreview(value: unknown, maxLength = 2_000): string | undefined {
+  if (value === undefined) return undefined;
+  let raw: string;
+  try {
+    raw = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    raw = String(value);
+  }
+  const clean = sanitizeTranscriptText(raw).trim();
+  if (!clean) return undefined;
+  return clean.length > maxLength ? `${clean.slice(0, maxLength - 1)}…` : clean;
+}
+
+function transcriptContentText(value: unknown): string {
+  if (typeof value === "string") return sanitizeTranscriptText(value);
+  if (!Array.isArray(value)) return "";
+  return value
+    .flatMap((candidate) => {
+      const part = asRecord(candidate);
+      if (part?.type === "text" && typeof part.text === "string") {
+        return [sanitizeTranscriptText(part.text)];
+      }
+      return part?.type === "image" ? ["[image]"] : [];
+    })
+    .join("\n");
+}
+
+function transcriptAssistantParts(
+  message: Record<string, unknown>,
+): ReadonlyArray<SubagentTranscriptPart> {
+  if (!Array.isArray(message.content)) return [];
+  return message.content.flatMap((candidate): ReadonlyArray<SubagentTranscriptPart> => {
+    const part = asRecord(candidate);
+    if (!part) return [];
+    if (part.type === "text" && typeof part.text === "string") {
+      return [{ type: "text", text: sanitizeTranscriptText(part.text) }];
+    }
+    if (part.type === "thinking") {
+      const thinking =
+        typeof part.thinking === "string"
+          ? part.thinking
+          : typeof part.text === "string"
+            ? part.text
+            : "";
+      return thinking
+        ? [
+            {
+              type: "thinking",
+              text: sanitizeTranscriptText(thinking),
+              ...(part.redacted === true ? { redacted: true } : {}),
+            },
+          ]
+        : [];
+    }
+    if (part.type === "toolCall") {
+      const argsPreview = transcriptPreview(part.arguments ?? part.args, 500);
+      return [
+        {
+          type: "toolCall",
+          id: asString(part.id) ?? "?",
+          name: asString(part.name) ?? "tool",
+          ...(argsPreview ? { argsPreview } : {}),
+        },
+      ];
+    }
+    return [];
+  });
+}
+
+const MAX_TRANSCRIPT_ITEMS = 1_000;
+const MAX_TRANSCRIPT_CHARS = 2 * 1024 * 1024;
+
+function transcriptItemChars(item: SubagentTranscriptItem): number {
+  if (item.kind === "user") return item.text.length;
+  if (item.kind === "toolResult") return item.name.length + (item.outputPreview?.length ?? 0);
+  return item.parts.reduce(
+    (total, part) =>
+      total +
+      (part.type === "toolCall"
+        ? part.name.length + (part.argsPreview?.length ?? 0)
+        : part.text.length),
+    0,
+  );
+}
+
+function pushTranscriptItem(state: MutableTranscript, item: SubagentTranscriptItem): void {
+  state.items.push(item);
+  state.retainedChars += transcriptItemChars(item);
+  while (state.items.length > MAX_TRANSCRIPT_ITEMS || state.retainedChars > MAX_TRANSCRIPT_CHARS) {
+    const removed = state.items.shift();
+    if (!removed) break;
+    state.retainedChars -= transcriptItemChars(removed);
+    state.droppedItems += 1;
+  }
+}
+
+function applyTranscriptEvent(state: MutableTranscript, value: unknown): void {
+  const event = asRecord(value);
+  const activity = asRecord(event?.activity);
+  const data = asRecord(activity?.data) ?? {};
+  const sourceId = `${asString(event?.managerId) ?? "unknown"}:${asCount(event?.sequence) ?? state.items.length}`;
+  switch (activity?.type) {
+    case "message_update": {
+      const message = asRecord(data.message);
+      if (message?.role !== "assistant") break;
+      const parts = transcriptAssistantParts(message);
+      state.liveAssistant = {
+        text: parts
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("\n"),
+        thinking: parts
+          .filter((part) => part.type === "thinking")
+          .map((part) => (part.redacted ? "[redacted reasoning]" : part.text))
+          .join("\n"),
+      };
+      break;
+    }
+    case "message_end": {
+      const message = asRecord(data.message);
+      if (!message) break;
+      if (message.role === "user") {
+        const text = transcriptContentText(message.content);
+        if (text) pushTranscriptItem(state, { sourceId, kind: "user", text });
+      } else if (message.role === "assistant") {
+        const parts = transcriptAssistantParts(message);
+        if (parts.length > 0) {
+          pushTranscriptItem(state, { sourceId, kind: "assistant", parts });
+        }
+        state.liveAssistant = null;
+      } else if (message.role === "toolResult") {
+        const outputPreview = transcriptPreview(transcriptContentText(message.content));
+        pushTranscriptItem(state, {
+          sourceId,
+          kind: "toolResult",
+          id: asString(message.toolCallId) ?? "?",
+          name: asString(message.toolName) ?? "tool",
+          isError: message.isError === true,
+          ...(outputPreview ? { outputPreview } : {}),
+        });
+      }
+      break;
+    }
+    case "tool_execution_start":
+    case "provider_tool_execution_start": {
+      const id = asString(data.toolCallId) ?? "?";
+      const argsPreview = transcriptPreview(data.args, 500);
+      const next: SubagentLiveTool = {
+        id,
+        name: asString(data.toolName) ?? "tool",
+        ...(argsPreview ? { argsPreview } : {}),
+      };
+      state.liveTools = [...state.liveTools.filter((tool) => tool.id !== id), next];
+      break;
+    }
+    case "tool_execution_update": {
+      const id = asString(data.toolCallId) ?? "?";
+      const partial = asRecord(data.partialResult);
+      const outputPreview = transcriptPreview(transcriptContentText(partial?.content), 500);
+      state.liveTools = state.liveTools.map((tool) =>
+        tool.id === id && outputPreview ? { ...tool, outputPreview } : tool,
+      );
+      break;
+    }
+    case "tool_execution_end": {
+      const id = asString(data.toolCallId) ?? "?";
+      state.liveTools = state.liveTools.filter((tool) => tool.id !== id);
+      break;
+    }
+    case "provider_tool_execution_end": {
+      const id = asString(data.toolCallId) ?? "?";
+      const current = state.liveTools.find((tool) => tool.id === id);
+      const outputPreview = transcriptPreview(data.error ?? data.result);
+      pushTranscriptItem(state, {
+        sourceId,
+        kind: "toolResult",
+        id,
+        name: asString(data.toolName) ?? current?.name ?? "tool",
+        isError: data.isError === true,
+        ...(outputPreview ? { outputPreview } : {}),
+      });
+      state.liveTools = state.liveTools.filter((tool) => tool.id !== id);
+      break;
+    }
+  }
 }
 
 function asUsage(value: unknown): SubagentUsage | undefined {
@@ -225,10 +471,19 @@ function mergeUsageMax(
   return merged;
 }
 
+interface MutableTranscript {
+  items: SubagentTranscriptItem[];
+  retainedChars: number;
+  droppedItems: number;
+  liveAssistant: { text: string; thinking: string } | null;
+  liveTools: SubagentLiveTool[];
+}
+
 interface MutableAgent {
   id: string;
   kind: RuntimeSubagent["kind"];
   title: string;
+  prompt: string | null;
   role: string | null;
   model: string | null;
   effort: string | null;
@@ -246,9 +501,11 @@ interface MutableAgent {
   phaseTitle: string | null;
   attempt: number | null;
   workflowName: string | null;
+  originTurnId: string | null;
   phases: ReadonlyArray<SubagentWorkflowPhase>;
   runHandles: SubagentRunHandles | null;
   recentActivity: ReadonlyArray<SubagentActivityEntry>;
+  transcriptState: MutableTranscript;
   firstSeenAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -274,6 +531,7 @@ function getOrCreate(
   id: string,
   payload: Record<string, unknown>,
   at: string,
+  originTurnId: string | null,
 ): MutableAgent {
   const existing = agents.get(id);
   if (existing) {
@@ -283,6 +541,7 @@ function getOrCreate(
     id,
     kind: kindFromPayload(payload, id),
     title: asString(payload.title) ?? asString(payload.detail) ?? id,
+    prompt: asString(payload.detail) ?? null,
     role: asString(payload.role) ?? null,
     model: asString(payload.model) ?? null,
     effort: asString(payload.effort) ?? null,
@@ -300,9 +559,17 @@ function getOrCreate(
     phaseTitle: asString(payload.phaseTitle) ?? null,
     attempt: asCount(payload.attempt) ?? null,
     workflowName: asString(payload.workflowName) ?? null,
+    originTurnId,
     phases: [],
     runHandles: null,
     recentActivity: [],
+    transcriptState: {
+      items: [],
+      retainedChars: 0,
+      droppedItems: 0,
+      liveAssistant: null,
+      liveTools: [],
+    },
     firstSeenAt: at,
     startedAt: null,
     completedAt: null,
@@ -318,6 +585,8 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   if (title) agent.title = title;
   const role = asString(payload.role);
   if (role) agent.role = role;
+  const detail = asString(payload.detail);
+  if (detail && agent.prompt === null) agent.prompt = detail;
   const model = asString(payload.model);
   if (model) agent.model = model;
   const effort = asString(payload.effort);
@@ -394,6 +663,10 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
 function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: string): void {
   const wasTerminal = isTerminalSubagentStatus(agent.status);
   const isTerminal = isTerminalSubagentStatus(status);
+  if (isTerminal) {
+    agent.transcriptState.liveAssistant = null;
+    agent.transcriptState.liveTools = [];
+  }
   if (wasTerminal && isTerminal) {
     // Duplicate terminal events are idempotent: first write wins, timestamps
     // don't slide.
@@ -477,7 +750,7 @@ export function foldSubagentActivities(
         // tasks are background work — they render in the ordinary work log,
         // not the Agents surface (a "Run 12s stall" shell is not a subagent).
         if (isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at);
+        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
         fillMetadata(agent, payload);
         // Order-robustness: a start row arriving after a terminal state is a
         // late/out-of-order delivery and only fills metadata — it must not
@@ -506,8 +779,11 @@ export function foldSubagentActivities(
         // first row's classification instead of being re-judged.
         const existed = agents.has(taskId);
         if (!existed && isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at);
+        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
         fillMetadata(agent, payload);
+        if (payload.transcriptEvent !== undefined) {
+          applyTranscriptEvent(agent.transcriptState, payload.transcriptEvent);
+        }
         if (agent.activationCount === 0) agent.activationCount = 1;
         const explicitStatus = asRuntimeStatus(payload.status);
         if (explicitStatus) {
@@ -544,7 +820,7 @@ export function foldSubagentActivities(
         // rows often carry only taskId+status, no marker fields) inherit the
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at);
+        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
         fillMetadata(agent, payload);
         // A task first seen via task.updated (start row aged out) has run at
         // least once — zero activations would misreport "run 0" and let a
@@ -572,7 +848,7 @@ export function foldSubagentActivities(
         // rows often carry only taskId+status, no marker fields) inherit the
         // first row's classification instead of being re-judged.
         if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at);
+        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
         fillMetadata(agent, payload);
         if (agent.activationCount === 0) agent.activationCount = 1;
         // Already-terminal: status and timestamps are frozen (first write
@@ -644,6 +920,8 @@ export function foldSubagentActivities(
       }
       member.status = agent.status === "completed" ? "completed" : "interrupted";
       member.completedAt = member.completedAt ?? agent.completedAt ?? agent.updatedAt;
+      member.transcriptState.liveAssistant = null;
+      member.transcriptState.liveTools = [];
       member.updatedAt = agent.updatedAt;
     }
   }
@@ -656,6 +934,8 @@ export function foldSubagentActivities(
       if (isActiveSubagentStatus(agent.status)) {
         agent.status = "interrupted";
         agent.completedAt = agent.completedAt ?? agent.updatedAt;
+        agent.transcriptState.liveAssistant = null;
+        agent.transcriptState.liveTools = [];
       }
     }
   }
@@ -671,7 +951,15 @@ export function foldSubagentActivities(
       .slice(0, ROSTER_LIMIT);
   }
 
-  return roster.map((agent) => ({ ...agent }));
+  return roster.map(({ transcriptState, ...agent }) => ({
+    ...agent,
+    transcript: {
+      items: transcriptState.items,
+      droppedItems: transcriptState.droppedItems,
+      liveAssistant: transcriptState.liveAssistant,
+      liveTools: transcriptState.liveTools,
+    },
+  }));
 }
 
 export interface AgentPanelWorkflowGroup {
@@ -689,9 +977,17 @@ export interface AgentPanelWorkflowGroup {
   readonly unphasedMembers: ReadonlyArray<RuntimeSubagent>;
 }
 
+export interface AgentPanelDirectGroup {
+  readonly id: string;
+  readonly turnId: string | null;
+  readonly firstSeenAt: string;
+  readonly agents: ReadonlyArray<RuntimeSubagent>;
+}
+
 export interface AgentPanelModel {
   readonly workflows: ReadonlyArray<AgentPanelWorkflowGroup>;
   readonly directAgents: ReadonlyArray<RuntimeSubagent>;
+  readonly directAgentGroups: ReadonlyArray<AgentPanelDirectGroup>;
   readonly runningCount: number;
   readonly waitingCount: number;
   readonly idleCount: number;
@@ -704,6 +1000,7 @@ export interface AgentPanelModel {
 const EMPTY_PANEL_MODEL: AgentPanelModel = {
   workflows: [],
   directAgents: [],
+  directAgentGroups: [],
   runningCount: 0,
   waitingCount: 0,
   idleCount: 0,
@@ -735,10 +1032,82 @@ export function deriveAgentPanelModel({
     return EMPTY_PANEL_MODEL;
   }
 
-  const workflows = source
-    .filter((agent) => agent.kind === "workflow")
-    .slice()
-    .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
+  const explicitWorkflows = source.filter((agent) => agent.kind === "workflow");
+  const explicitWorkflowIds = new Set(explicitWorkflows.map((workflow) => workflow.id));
+  const syntheticWorkflowMembers = new Map<string, RuntimeSubagent[]>();
+  for (const agent of source) {
+    if (
+      agent.kind !== "workflow" &&
+      agent.parentAgentId !== null &&
+      !explicitWorkflowIds.has(agent.parentAgentId) &&
+      agent.workflowName !== null
+    ) {
+      const entries = syntheticWorkflowMembers.get(agent.parentAgentId) ?? [];
+      entries.push(agent);
+      syntheticWorkflowMembers.set(agent.parentAgentId, entries);
+    }
+  }
+  const syntheticWorkflows = Array.from(syntheticWorkflowMembers, ([id, children]) => {
+    const ordered = children
+      .slice()
+      .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
+    const first = ordered[0]!;
+    const allTerminal = ordered.every((child) => isTerminalSubagentStatus(child.status));
+    const hasFailure = ordered.some((child) => child.status === "failed");
+    return {
+      id,
+      kind: "workflow" as const,
+      title: first.workflowName ?? id,
+      prompt: null,
+      role: null,
+      model: null,
+      effort: null,
+      status: hasFailure
+        ? ("failed" as const)
+        : allTerminal
+          ? ("completed" as const)
+          : ("running" as const),
+      activationCount: 1,
+      usage: null,
+      progress: null,
+      lastToolName: null,
+      result: null,
+      error: null,
+      outputFile: null,
+      parentAgentId: null,
+      agentIndex: null,
+      phaseIndex: null,
+      phaseTitle: null,
+      attempt: null,
+      workflowName: first.workflowName,
+      originTurnId: first.originTurnId ?? null,
+      phases: [],
+      runHandles: null,
+      recentActivity: [],
+      transcript: {
+        items: [],
+        droppedItems: 0,
+        liveAssistant: null,
+        liveTools: [],
+      },
+      firstSeenAt: first.firstSeenAt,
+      startedAt: first.startedAt,
+      completedAt: allTerminal
+        ? (ordered
+            .map((child) => child.completedAt)
+            .filter((value): value is string => value !== null)
+            .sort()
+            .at(-1) ?? null)
+        : null,
+      updatedAt: ordered
+        .map((child) => child.updatedAt)
+        .sort()
+        .at(-1)!,
+    } satisfies RuntimeSubagent;
+  });
+  const workflows = [...explicitWorkflows, ...syntheticWorkflows].sort(
+    (a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id),
+  );
   const workflowIds = new Set(workflows.map((workflow) => workflow.id));
   const members = new Map<string, RuntimeSubagent[]>();
   const direct: RuntimeSubagent[] = [];
@@ -759,31 +1128,54 @@ export function deriveAgentPanelModel({
 
   const workflowGroups: AgentPanelWorkflowGroup[] = workflows.map((workflow) => {
     const workflowMembers = members.get(workflow.id) ?? [];
-    const knownPhases =
-      workflow.phases.length > 0
-        ? workflow.phases
-        : (() => {
-            const derived = new Map<number, string>();
-            for (const member of workflowMembers) {
-              if (member.phaseIndex !== null && !derived.has(member.phaseIndex)) {
-                derived.set(
-                  member.phaseIndex,
-                  member.phaseTitle ?? `Phase ${member.phaseIndex + 1}`,
-                );
-              }
-            }
-            return Array.from(derived.entries())
-              .map(([index, title]) => ({ index, title }))
-              .slice()
-              .sort((a, b) => a.index - b.index);
-          })();
+    // Some bridges (including Pi) report workflow phase names but no numeric
+    // index. Build stable first-seen indices for those names so children stay
+    // nested under the workflow instead of falling back to top-level agents.
+    const phaseTitlesByIndex = new Map<number, string>(
+      workflow.phases.map((phase) => [phase.index, phase.title]),
+    );
+    const phaseIndicesByTitle = new Map<string, number>(
+      workflow.phases.map((phase) => [phase.title.trim().toLocaleLowerCase(), phase.index]),
+    );
+    let nextDerivedPhaseIndex = Math.max(-1, ...workflow.phases.map((phase) => phase.index)) + 1;
+    for (const member of workflowMembers) {
+      if (member.phaseIndex !== null) {
+        if (!phaseTitlesByIndex.has(member.phaseIndex)) {
+          phaseTitlesByIndex.set(
+            member.phaseIndex,
+            member.phaseTitle ?? `Phase ${member.phaseIndex + 1}`,
+          );
+        }
+        if (member.phaseTitle) {
+          phaseIndicesByTitle.set(member.phaseTitle.trim().toLocaleLowerCase(), member.phaseIndex);
+        }
+        continue;
+      }
+      if (!member.phaseTitle) continue;
+      const titleKey = member.phaseTitle.trim().toLocaleLowerCase();
+      if (phaseIndicesByTitle.has(titleKey)) continue;
+      phaseIndicesByTitle.set(titleKey, nextDerivedPhaseIndex);
+      phaseTitlesByIndex.set(nextDerivedPhaseIndex, member.phaseTitle);
+      nextDerivedPhaseIndex += 1;
+    }
 
+    const resolveMemberPhaseIndex = (member: RuntimeSubagent): number | null => {
+      if (member.phaseIndex !== null) return member.phaseIndex;
+      if (!member.phaseTitle) return null;
+      return phaseIndicesByTitle.get(member.phaseTitle.trim().toLocaleLowerCase()) ?? null;
+    };
+    const knownPhases = Array.from(phaseTitlesByIndex, ([index, title]) => ({ index, title })).sort(
+      (a, b) => a.index - b.index,
+    );
     const knownPhaseIndices = new Set(knownPhases.map((phase) => phase.index));
     const phases = knownPhases.map((phase) => {
       const phaseMembers = workflowMembers
-        .filter((member) => member.phaseIndex === phase.index)
+        .filter((member) => resolveMemberPhaseIndex(member) === phase.index)
         .slice()
-        .sort((a, b) => (a.agentIndex ?? 0) - (b.agentIndex ?? 0));
+        .sort(
+          (a, b) =>
+            (a.agentIndex ?? 0) - (b.agentIndex ?? 0) || a.firstSeenAt.localeCompare(b.firstSeenAt),
+        );
       const activeCount = phaseMembers.filter(
         // Idle members count as active for phase-liveness: a resumable Codex
         // member has not finished the phase.
@@ -810,12 +1202,17 @@ export function deriveAgentPanelModel({
       };
     });
 
-    // Unknown phase indices land here too — a member must never vanish just
-    // because its phase row was lost (review finding).
+    // Members with neither a numeric nor named phase still remain visible.
     const unphasedMembers = workflowMembers
-      .filter((member) => member.phaseIndex === null || !knownPhaseIndices.has(member.phaseIndex))
+      .filter((member) => {
+        const phaseIndex = resolveMemberPhaseIndex(member);
+        return phaseIndex === null || !knownPhaseIndices.has(phaseIndex);
+      })
       .slice()
-      .sort((a, b) => (a.agentIndex ?? 0) - (b.agentIndex ?? 0));
+      .sort(
+        (a, b) =>
+          (a.agentIndex ?? 0) - (b.agentIndex ?? 0) || a.firstSeenAt.localeCompare(b.firstSeenAt),
+      );
 
     return { workflow, phases, unphasedMembers };
   });
@@ -826,24 +1223,45 @@ export function deriveAgentPanelModel({
   let settledCount = 0;
   let totalTokens = 0;
   for (const agent of source) {
+    // A workflow coordinator with members is a container for those members, not
+    // work of its own: it reports running for the whole run and aggregates their
+    // usage upstream in some providers. Counting it would report one more agent
+    // working than there are, and double count tokens.
+    if (agent.kind === "workflow" && (members.get(agent.id) ?? []).length > 0) continue;
     if (agent.status === "running" || agent.status === "pending") runningCount += 1;
     else if (agent.status === "waiting") waitingCount += 1;
     else if (agent.status === "idle") idleCount += 1;
     else settledCount += 1;
-    // Workflow coordinators aggregate member usage upstream in some providers;
-    // avoid double counting by only summing leaf agents when members exist.
-    if (agent.kind !== "workflow" || (members.get(agent.id) ?? []).length === 0) {
-      totalTokens += agent.usage?.totalTokens ?? 0;
-    }
+    totalTokens += agent.usage?.totalTokens ?? 0;
+  }
+
+  // Updates and the >100-agent retention ranking must never reshuffle rows
+  // that remain visible.
+  const directAgents = direct
+    .slice()
+    .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
+  const directGroupsByTurn = new Map<string, AgentPanelDirectGroup>();
+  for (const agent of directAgents) {
+    const turnId = agent.originTurnId ?? null;
+    const key = turnId ?? "unattributed";
+    const existing = directGroupsByTurn.get(key);
+    directGroupsByTurn.set(
+      key,
+      existing
+        ? { ...existing, agents: [...existing.agents, agent] }
+        : {
+            id: `direct-turn:${key}`,
+            turnId,
+            firstSeenAt: agent.firstSeenAt,
+            agents: [agent],
+          },
+    );
   }
 
   return {
     workflows: workflowGroups,
-    // Updates and the >100-agent retention ranking must never reshuffle rows
-    // that remain visible.
-    directAgents: direct
-      .slice()
-      .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)),
+    directAgents,
+    directAgentGroups: Array.from(directGroupsByTurn.values()),
     runningCount,
     waitingCount,
     idleCount,

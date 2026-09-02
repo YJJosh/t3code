@@ -41,10 +41,6 @@ export const BRAND_ASSET_PATHS = {
 
 export type WebAssetBrand = "development" | "nightly" | "production" | "dulli";
 
-export function brandDulliClientText(contents: string): string {
-  return contents.replaceAll("T3 Code", "T3 Dulli");
-}
-
 export const WEB_ASSET_CHANNELS = ["latest", "nightly"] as const;
 
 export type WebAssetChannel = (typeof WEB_ASSET_CHANNELS)[number];

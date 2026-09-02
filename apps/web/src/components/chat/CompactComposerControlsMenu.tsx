@@ -14,8 +14,8 @@ import {
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
+  showRuntimeMode: boolean;
   showInteractionModeToggle: boolean;
-  showRuntimeModeToggle: boolean;
   traitsMenuContent?: ReactNode;
   profileMenuContent?: ReactNode;
   onToggleInteractionMode: () => void;
@@ -39,7 +39,11 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
         {props.traitsMenuContent ? (
           <>
             {props.traitsMenuContent}
-            <MenuDivider />
+            {props.showInteractionModeToggle ||
+            props.profileMenuContent ||
+            props.showRuntimeMode ? (
+              <MenuDivider />
+            ) : null}
           </>
         ) : null}
         {props.showInteractionModeToggle ? (
@@ -55,10 +59,16 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
               <MenuRadioItem value="default">Chat</MenuRadioItem>
               <MenuRadioItem value="plan">Plan</MenuRadioItem>
             </MenuRadioGroup>
-            <MenuDivider />
+            {props.profileMenuContent || props.showRuntimeMode ? <MenuDivider /> : null}
           </>
         ) : null}
-        {props.showRuntimeModeToggle ? (
+        {props.profileMenuContent ? (
+          <>
+            {props.profileMenuContent}
+            {props.showRuntimeMode ? <MenuDivider /> : null}
+          </>
+        ) : null}
+        {props.showRuntimeMode ? (
           <>
             <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
             <MenuRadioGroup
@@ -73,12 +83,6 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
               <MenuRadioItem value="auto">Auto</MenuRadioItem>
               <MenuRadioItem value="full-access">Full access</MenuRadioItem>
             </MenuRadioGroup>
-          </>
-        ) : null}
-        {props.profileMenuContent ? (
-          <>
-            {props.showRuntimeModeToggle ? <MenuDivider /> : null}
-            {props.profileMenuContent}
           </>
         ) : null}
       </MenuPopup>

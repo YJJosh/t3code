@@ -63,15 +63,15 @@ export function shouldShowComposerContextStrip(input: {
 }
 
 export function resolveEnvModeLabel(mode: EnvMode): string {
-  return mode === "worktree" ? "New workspace" : "Current checkout";
+  return mode === "worktree" ? "New worktree" : "Current checkout";
 }
 
 export function resolveCurrentWorkspaceLabel(activeWorktreePath: string | null): string {
-  return activeWorktreePath ? "Current workspace" : resolveEnvModeLabel("local");
+  return activeWorktreePath ? "Current worktree" : resolveEnvModeLabel("local");
 }
 
 export function resolveLockedWorkspaceLabel(activeWorktreePath: string | null): string {
-  return activeWorktreePath ? "Workspace" : "Local checkout";
+  return activeWorktreePath ? "Worktree" : "Local checkout";
 }
 
 export interface PreviousWorktreeSeed {
@@ -164,25 +164,6 @@ export function resolveBranchToolbarValue(input: {
   return currentGitBranch ?? activeThreadBranch;
 }
 
-export function resolveWorktreeBranchToInitialize(input: {
-  effectiveEnvMode: EnvMode;
-  activeWorktreePath: string | null;
-  activeThreadBranch: string | null;
-  initialWorktreeBranch: string | null;
-  startFromDefaultBranch: boolean;
-  hasLoadedInitialBranches: boolean;
-}): string | null {
-  if (
-    input.effectiveEnvMode !== "worktree" ||
-    input.activeWorktreePath !== null ||
-    input.activeThreadBranch !== null ||
-    (input.startFromDefaultBranch && !input.hasLoadedInitialBranches)
-  ) {
-    return null;
-  }
-  return input.initialWorktreeBranch;
-}
-
 export function resolveBranchTriggerLabel(input: {
   activeWorktreePath: string | null;
   effectiveEnvMode: EnvMode;
@@ -262,6 +243,19 @@ export function resolveBranchSelectionTarget(input: {
   };
 }
 
+// Git rejects ASCII space and the ASCII control characters (tab, newline and
+// friends) in ref names, so the picker's "Create new ref" entry can only fail
+// for a typed name like "new branch". Replacing runs of those with a dash makes
+// the name usable without reimplementing check-ref-format: names invalid for
+// other reasons still surface the git error. Only the whitespace git actually
+// rejects is replaced — git accepts U+00A0 and friends, and rewriting those
+// would silently create a ref the user never asked for. Case and existing
+// dashes are left alone, since ref names are case sensitive and consecutive
+// dashes are valid.
+export function sanitizeNewRefName(rawName: string): string {
+  return rawName.trim().replace(/[ \t\n\r\f\v]+/g, "-");
+}
+
 export function shouldIncludeBranchPickerItem(input: {
   itemValue: string;
   normalizedQuery: string;
@@ -282,5 +276,18 @@ export function shouldIncludeBranchPickerItem(input: {
     return true;
   }
 
-  return itemValue.toLowerCase().includes(normalizedQuery);
+  const lowerItemValue = itemValue.toLowerCase();
+  if (lowerItemValue.includes(normalizedQuery)) {
+    return true;
+  }
+
+  // A query containing whitespace can only ever match a ref under its sanitized
+  // name, because that is the name such a ref would have been created with.
+  // Without this, typing "new branch" hides an existing "new-branch".
+  const sanitizedQuery = sanitizeNewRefName(normalizedQuery);
+  return (
+    sanitizedQuery.length > 0 &&
+    sanitizedQuery !== normalizedQuery &&
+    lowerItemValue.includes(sanitizedQuery)
+  );
 }

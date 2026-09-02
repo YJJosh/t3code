@@ -40,6 +40,7 @@ const makeElectronAppLayer = (calls: ElectronAppCalls) =>
   Layer.succeed(ElectronApp.ElectronApp, {
     metadata: Effect.die("unexpected metadata read"),
     name: Effect.succeed("T3 Code"),
+    systemLocale: Effect.succeed("en-US"),
     whenReady: Effect.void,
     quit: Effect.void,
     exit: () => Effect.void,
@@ -155,6 +156,30 @@ describe("DesktopAppIdentity", () => {
     ),
   );
 
+  it.effect("uses Dulli's isolated user-data path without probing upstream legacy state", () => {
+    const upstreamProbeFailure = PlatformError.systemError({
+      _tag: "PermissionDenied",
+      module: "FileSystem",
+      method: "exists",
+      description: "upstream path must not be inspected",
+      pathOrDescriptor: "/Users/alice/Library/Application Support/T3 Code (Alpha)",
+    });
+
+    return withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        assert.equal(
+          yield* identity.resolveUserDataPath,
+          "/Users/alice/Library/Application Support/t3-dulli",
+        );
+      }),
+      {
+        environment: { appName: "T3 Dulli" },
+        legacyPathProbeError: upstreamProbeFailure,
+      },
+    );
+  });
+
   it.effect("preserves failures while inspecting the legacy userData path", () => {
     const legacyPath = "/Users/alice/Library/Application Support/T3 Code (Alpha)";
     const cause = PlatformError.systemError({
@@ -198,6 +223,8 @@ describe("DesktopAppIdentity", () => {
         assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Code (Alpha)");
         assert.equal(calls.setAboutPanelOptions[0]?.applicationVersion, "1.2.3");
         assert.equal(calls.setAboutPanelOptions[0]?.version, "0123456789ab");
+        // Packaged: the bundle's own icon stands, so a custom one the user
+        // attached survives.
         assert.deepEqual(calls.setDockIcon, []);
       }),
       {
@@ -212,7 +239,7 @@ describe("DesktopAppIdentity", () => {
     );
   });
 
-  it.effect("overrides the macOS Dock icon only during development", () => {
+  it.effect("configures packaged Dulli product text while preserving its bundled icon", () => {
     const calls: ElectronAppCalls = {
       setAboutPanelOptions: [],
       setDockIcon: [],
@@ -224,16 +251,37 @@ describe("DesktopAppIdentity", () => {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
         yield* identity.configure;
 
+        assert.deepEqual(calls.setName, ["T3 Dulli"]);
+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Dulli");
+        assert.deepEqual(calls.setDockIcon, []);
+      }),
+      {
+        calls,
+        environment: { appName: "T3 Dulli" },
+        pngIconPath: Option.some("/dulli-icon.png"),
+      },
+    );
+  });
+
+  it.effect("sets the dock icon only when running unpackaged", () => {
+    const calls: ElectronAppCalls = {
+      setAboutPanelOptions: [],
+      setDockIcon: [],
+      setName: [],
+    };
+
+    return withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        yield* identity.configure;
+
+        // Electron shows a generic icon for an unpackaged run, which is the
+        // reason this call exists at all.
         assert.deepEqual(calls.setDockIcon, ["/icon.png"]);
       }),
       {
         calls,
-        environment: {
-          isPackaged: false,
-          env: {
-            VITE_DEV_SERVER_URL: "http://localhost:5173",
-          },
-        },
+        environment: { isPackaged: false },
         pngIconPath: Option.some("/icon.png"),
       },
     );

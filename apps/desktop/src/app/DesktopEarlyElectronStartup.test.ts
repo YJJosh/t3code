@@ -86,6 +86,24 @@ describe("DesktopEarlyElectronStartup", () => {
     });
   });
 
+  it("uses Dulli state and WM class before packaged Linux startup", () => {
+    const options = resolveEarlyLinuxElectronOptions({
+      appName: "T3 Dulli",
+      env: {},
+      homeDirectory: "/home/user",
+      joinPath,
+      readFileString: (path) => {
+        assert.equal(path, "/home/user/.t3-dulli/userdata/desktop-settings.json");
+        return JSON.stringify({ linuxPasswordStore: "kwallet6" });
+      },
+    });
+
+    assert.deepEqual(options, {
+      linuxWmClass: "t3-dulli",
+      passwordStore: "kwallet6",
+    });
+  });
+
   it("keeps implicit development state under ~/.t3/dev when T3CODE_HOME is unset", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
       env: {

@@ -24,7 +24,15 @@ import {
   FilesystemBrowseResult,
   FilesystemBrowseError,
 } from "./filesystem.ts";
-import { AssetAccessError, AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
+import {
+  AssetAccessError,
+  AssetCreateUrlInput,
+  AssetCreateUrlResult,
+  AttachmentCreateUploadUrlInput,
+  AttachmentCreateUploadUrlResult,
+  AttachmentDeleteInput,
+  AttachmentUploadSigningKeyError,
+} from "./assets.ts";
 import {
   GitActionProgressEvent,
   VcsSwitchRefInput,
@@ -72,13 +80,14 @@ import {
   OrchestrationRpcSchemas,
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
 import {
-  PiSubagentControlError,
-  PiSubagentControlInput,
-  PiSubagentEvent,
-  PiSubagentSubscribeInput,
-} from "./subagents.ts";
+  ProviderTaskControlError,
+  ProviderTaskControlInput,
+  ProviderUploadFeedbackError,
+  ProviderUploadFeedbackInput,
+  ProviderUploadFeedbackResult,
+} from "./provider.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   PullRequestActionInput,
   PullRequestActivity,
@@ -98,6 +107,8 @@ import {
   PullRequestReviewerCandidateList,
   PullRequestReviewerRequestInput,
   PullRequestSubmitReviewInput,
+  PullRequestThreadCommentsInput,
+  PullRequestThreadCommentsResult,
   PullRequestThreadReplyInput,
   PullRequestThreadResolutionInput,
   PullRequestUnavailableError,
@@ -141,6 +152,7 @@ import {
 } from "./terminal.ts";
 import {
   DiscoveredLocalServerList,
+  ConfiguredLocalServerUrls,
   PreviewCloseInput,
   PreviewError,
   PreviewEvent,
@@ -219,6 +231,14 @@ export const WS_METHODS = {
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
   assetsCreateUrl: "assets.createUrl",
+  attachmentsCreateUploadUrl: "attachments.createUploadUrl",
+  attachmentsDelete: "attachments.delete",
+
+  // Provider methods
+  providerControlTask: "provider.controlTask",
+  providerUploadFeedback: "provider.uploadFeedback",
+  backgroundTerminalsControl: "backgroundTerminals.control",
+  subscribeBackgroundTerminalEvents: "subscribeBackgroundTerminalEvents",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -229,12 +249,6 @@ export const WS_METHODS = {
   vcsCreateRef: "vcs.createRef",
   vcsSwitchRef: "vcs.switchRef",
   vcsInit: "vcs.init",
-
-  // Child-agent methods
-  subagentsControl: "subagents.control",
-  subscribeSubagentEvents: "subscribeSubagentEvents",
-  backgroundTerminalsControl: "backgroundTerminals.control",
-  subscribeBackgroundTerminalEvents: "subscribeBackgroundTerminalEvents",
 
   // Git workflow methods
   gitRunStackedAction: "git.runStackedAction",
@@ -298,6 +312,7 @@ export const WS_METHODS = {
   pullRequestsListStats: "pullRequests.listStats",
   pullRequestsDetail: "pullRequests.detail",
   pullRequestsActivity: "pullRequests.activity",
+  pullRequestsThreadComments: "pullRequests.threadComments",
   pullRequestsDiffFileContents: "pullRequests.diffFileContents",
   pullRequestsRunAction: "pullRequests.runAction",
   pullRequestsUpdate: "pullRequests.update",
@@ -519,6 +534,12 @@ export const WsPullRequestsActivityRpc = Rpc.make(WS_METHODS.pullRequestsActivit
   error: PullRequestRpcError,
 });
 
+export const WsPullRequestsThreadCommentsRpc = Rpc.make(WS_METHODS.pullRequestsThreadComments, {
+  payload: PullRequestThreadCommentsInput,
+  success: PullRequestThreadCommentsResult,
+  error: PullRequestRpcError,
+});
+
 export const WsPullRequestsDiffFileContentsRpc = Rpc.make(WS_METHODS.pullRequestsDiffFileContents, {
   payload: PullRequestDiffFileContentsInput,
   success: PullRequestDiffFileContentsResult,
@@ -673,6 +694,43 @@ export const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
   error: Schema.Union([AssetAccessError, EnvironmentAuthorizationError]),
 });
 
+export const WsAttachmentsCreateUploadUrlRpc = Rpc.make(WS_METHODS.attachmentsCreateUploadUrl, {
+  payload: AttachmentCreateUploadUrlInput,
+  success: AttachmentCreateUploadUrlResult,
+  error: Schema.Union([AttachmentUploadSigningKeyError, EnvironmentAuthorizationError]),
+});
+
+export const WsAttachmentsDeleteRpc = Rpc.make(WS_METHODS.attachmentsDelete, {
+  payload: AttachmentDeleteInput,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsProviderControlTaskRpc = Rpc.make(WS_METHODS.providerControlTask, {
+  payload: ProviderTaskControlInput,
+  error: Schema.Union([ProviderTaskControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
+  payload: ProviderUploadFeedbackInput,
+  success: ProviderUploadFeedbackResult,
+  error: Schema.Union([ProviderUploadFeedbackError, EnvironmentAuthorizationError]),
+});
+
+export const WsBackgroundTerminalsControlRpc = Rpc.make(WS_METHODS.backgroundTerminalsControl, {
+  payload: PiBackgroundTerminalControlInput,
+  error: Schema.Union([PiBackgroundTerminalControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsSubscribeBackgroundTerminalEventsRpc = Rpc.make(
+  WS_METHODS.subscribeBackgroundTerminalEvents,
+  {
+    payload: PiBackgroundTerminalSubscribeInput,
+    success: PiBackgroundTerminalEvent,
+    error: EnvironmentAuthorizationError,
+    stream: true,
+  },
+);
+
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   payload: VcsStatusInput,
   success: VcsStatusStreamEvent,
@@ -750,33 +808,6 @@ export const WsVcsInitRpc = Rpc.make(WS_METHODS.vcsInit, {
  * Not the persisted T3 Review model. Future review sessions should use
  * review.open* + review.getSnapshot.
  */
-export const WsSubagentsControlRpc = Rpc.make(WS_METHODS.subagentsControl, {
-  payload: PiSubagentControlInput,
-  error: Schema.Union([PiSubagentControlError, EnvironmentAuthorizationError]),
-});
-
-export const WsSubscribeSubagentEventsRpc = Rpc.make(WS_METHODS.subscribeSubagentEvents, {
-  payload: PiSubagentSubscribeInput,
-  success: PiSubagentEvent,
-  error: EnvironmentAuthorizationError,
-  stream: true,
-});
-
-export const WsBackgroundTerminalsControlRpc = Rpc.make(WS_METHODS.backgroundTerminalsControl, {
-  payload: PiBackgroundTerminalControlInput,
-  error: Schema.Union([PiBackgroundTerminalControlError, EnvironmentAuthorizationError]),
-});
-
-export const WsSubscribeBackgroundTerminalEventsRpc = Rpc.make(
-  WS_METHODS.subscribeBackgroundTerminalEvents,
-  {
-    payload: PiBackgroundTerminalSubscribeInput,
-    success: PiBackgroundTerminalEvent,
-    error: EnvironmentAuthorizationError,
-    stream: true,
-  },
-);
-
 export const WsReviewGetDiffPreviewRpc = Rpc.make(WS_METHODS.reviewGetDiffPreview, {
   payload: ReviewDiffPreviewInput,
   success: ReviewDiffPreviewResult,
@@ -894,7 +925,9 @@ export const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewE
 export const WsSubscribeDiscoveredLocalServersRpc = Rpc.make(
   WS_METHODS.subscribeDiscoveredLocalServers,
   {
-    payload: Schema.Struct({}),
+    payload: Schema.Struct({
+      configuredUrls: Schema.optional(ConfiguredLocalServerUrls),
+    }),
     success: DiscoveredLocalServerList,
     error: EnvironmentAuthorizationError,
     stream: true,
@@ -1043,6 +1076,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestsListStatsRpc,
   WsPullRequestsDetailRpc,
   WsPullRequestsActivityRpc,
+  WsPullRequestsThreadCommentsRpc,
   WsPullRequestsDiffFileContentsRpc,
   WsPullRequestsRunActionRpc,
   WsPullRequestsUpdateRpc,
@@ -1066,6 +1100,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsAssetsCreateUrlRpc,
+  WsAttachmentsCreateUploadUrlRpc,
+  WsAttachmentsDeleteRpc,
+  WsProviderControlTaskRpc,
+  WsProviderUploadFeedbackRpc,
+  WsBackgroundTerminalsControlRpc,
+  WsSubscribeBackgroundTerminalEventsRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,
@@ -1078,10 +1118,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsCreateRefRpc,
   WsVcsSwitchRefRpc,
   WsVcsInitRpc,
-  WsSubagentsControlRpc,
-  WsSubscribeSubagentEventsRpc,
-  WsBackgroundTerminalsControlRpc,
-  WsSubscribeBackgroundTerminalEventsRpc,
   WsReviewGetDiffPreviewRpc,
   WsReviewGetDiffFileContentsRpc,
   WsTerminalOpenRpc,

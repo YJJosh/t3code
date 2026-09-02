@@ -1,31 +1,89 @@
-/**
- * Pure Pi RPC protocol helpers: process spawn arguments, environment, thinking
- * levels, and the yolo-mode `extension_ui_request` auto-responder.
- *
- * Kept free of Effect and I/O so every branch is unit-testable in isolation
- * (see piRpcProtocol.test.ts). The stateful transport lives in
- * `../Layers/PiRpcConnection.ts`.
- *
- * @module provider/pi/piRpcProtocol
- */
+/** Pure helpers for Pi 0.84.4's JSONL RPC protocol. */
 import {
   PiBackgroundTerminalEvent,
-  PiSubagentEvent,
-  type PiSettings,
   type PiBackgroundTerminalEvent as PiBackgroundTerminalEventType,
-  type PiSubagentEvent as PiSubagentEventType,
+  type PiSettings,
 } from "@t3tools/contracts";
-import type {
-  RpcCommand,
-  RpcExtensionUIRequest,
-  RpcExtensionUIResponse,
-} from "@earendil-works/pi-coding-agent";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-export type PiRpcCommand = RpcCommand;
-export type PiExtensionUiRequest = RpcExtensionUIRequest;
-export type PiExtensionUiResponse = RpcExtensionUIResponse;
+export type PiRpcImage = {
+  readonly type: "image";
+  readonly data: string;
+  readonly mimeType: string;
+};
+
+/** Commands used by the adapter, kept structurally aligned with Pi 0.84.4. */
+export type PiRpcCommand =
+  | {
+      readonly id?: string;
+      readonly type: "prompt";
+      readonly message: string;
+      readonly images?: PiRpcImage[];
+    }
+  | {
+      readonly id?: string;
+      readonly type: "steer";
+      readonly message: string;
+      readonly images?: PiRpcImage[];
+    }
+  | { readonly id?: string; readonly type: "abort" }
+  | { readonly id?: string; readonly type: "get_state" }
+  | {
+      readonly id?: string;
+      readonly type: "set_model";
+      readonly provider: string;
+      readonly modelId: string;
+    }
+  | { readonly id?: string; readonly type: "set_thinking_level"; readonly level: PiThinkingLevel }
+  | { readonly id?: string; readonly type: "set_session_name"; readonly name: string }
+  | { readonly id?: string; readonly type: "get_commands" };
+
+export type PiExtensionUiRequest =
+  | {
+      readonly type: "extension_ui_request";
+      readonly id: string;
+      readonly method: "select";
+      readonly title: string;
+      readonly options: string[];
+    }
+  | {
+      readonly type: "extension_ui_request";
+      readonly id: string;
+      readonly method: "confirm";
+      readonly title: string;
+      readonly message: string;
+    }
+  | {
+      readonly type: "extension_ui_request";
+      readonly id: string;
+      readonly method: "input";
+      readonly title: string;
+    }
+  | {
+      readonly type: "extension_ui_request";
+      readonly id: string;
+      readonly method: "editor";
+      readonly title: string;
+    }
+  | {
+      readonly type: "extension_ui_request";
+      readonly id: string;
+      readonly method: "notify";
+      readonly message: string;
+      readonly notifyType?: "info" | "warning" | "error";
+    }
+  | {
+      readonly type: "extension_ui_request";
+      readonly id: string;
+      readonly method: "setStatus" | "setWidget" | "setTitle" | "set_editor_text";
+      readonly [key: string]: unknown;
+    };
+
+export type PiExtensionUiResponse =
+  | { readonly type: "extension_ui_response"; readonly id: string; readonly value: string }
+  | { readonly type: "extension_ui_response"; readonly id: string; readonly confirmed: boolean }
+  | { readonly type: "extension_ui_response"; readonly id: string; readonly cancelled: true };
 
 export const DEFAULT_PI_BINARY = "pi";
 export const DEFAULT_PI_PROFILE = "coder";
@@ -34,14 +92,10 @@ export const PI_SUBAGENTS_RPC_EVENT_PREFIX = "pi-subagents:event:v1:";
 export const PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV = "PI_BACKGROUND_TERMINALS_RPC_BRIDGE";
 export const PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX = "pi-background-terminals:event:v1:";
 
-const decodePiSubagentEventJson = Schema.decodeUnknownOption(
-  Schema.fromJsonString(PiSubagentEvent),
-);
 const decodePiBackgroundTerminalEventJson = Schema.decodeUnknownOption(
   Schema.fromJsonString(PiBackgroundTerminalEvent),
 );
 
-/** Pi's `ThinkingLevel` union, mirrored so we can validate without importing runtime code. */
 export const PI_THINKING_LEVELS = [
   "off",
   "minimal",
@@ -53,13 +107,7 @@ export const PI_THINKING_LEVELS = [
 ] as const;
 export type PiThinkingLevel = (typeof PI_THINKING_LEVELS)[number];
 
-/**
- * The provider-option id under which the UI carries a per-turn thinking level.
- * Matches the descriptor id built in `../Layers/PiProvider.ts`.
- */
 export const PI_THINKING_OPTION_ID = "reasoning";
-
-/** Pi model options + extension commands exposed in the composer. */
 export const PI_CONTEXT_WINDOW_OPTION_ID = "contextWindow";
 export const PI_CONTEXT_COMMAND = "context";
 export const PI_AUTO_CONTEXT_WINDOW = "auto";
@@ -67,6 +115,7 @@ export const PI_SERVICE_TIER_OPTION_ID = "serviceTier";
 export const PI_STANDARD_SERVICE_TIER = "default";
 export const PI_FAST_SERVICE_TIER = "priority";
 export const PI_CODEX_FAST_COMMAND = "fast";
+
 const PI_CODEX_FAST_MODEL_SLUGS = new Set([
   "openai-codex/gpt-5.4",
   "openai-codex/gpt-5.5",
@@ -85,13 +134,11 @@ export function parsePiFastServiceEnabled(value: unknown): boolean | undefined {
   return undefined;
 }
 
-/** Validate a composer value before interpolating it into Pi's `/context` command. */
 export function parsePiContextWindow(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
   if (normalized === PI_AUTO_CONTEXT_WINDOW) return normalized;
   if (!/^[0-9]+(?:\.[0-9]+)?(?:k|m)?$/.test(normalized)) return undefined;
-
   const suffix = normalized.at(-1);
   const numericText = suffix === "k" || suffix === "m" ? normalized.slice(0, -1) : normalized;
   const numericValue = Number(numericText);
@@ -105,62 +152,28 @@ export function parsePiThinkingLevel(value: unknown): PiThinkingLevel | undefine
 }
 
 export interface PiSpawnOptions {
-  /** Profile selected for this thread, overriding the provider setting. */
   readonly profile?: string | undefined;
-  /**
-   * Resolved model slug (e.g. `anthropic/claude-sonnet-5`) or `undefined` to
-   * let Pi use its configured default.
-   */
   readonly model?: string | undefined;
-  /** Thinking level for the initial run, appended as `--thinking`. */
   readonly thinkingLevel?: PiThinkingLevel | undefined;
-  /**
-   * When set, resume this exact Pi session id/path (`--session`). Used to
-   * re-attach a thread's conversation after a subprocess restart.
-   */
   readonly resumeSessionId?: string | undefined;
+  readonly sessionName?: string | undefined;
 }
 
-/**
- * Build the argument vector for a long-lived `pi --mode rpc` subprocess.
- *
- * Invariants required by the task:
- *  - always `--mode rpc`
- *  - always `--approve` (trust project-local `.pi` resources for the run)
- *  - always `--profile <profile>` (default `coder`)
- *  - normal extensions / skills / prompt templates / context files stay
- *    ENABLED — we never pass `--no-extensions`, `--no-skills`, etc.
- *  - the agent directory is selected via the `PI_CODING_AGENT_DIR` env var
- *    (see {@link buildPiRpcEnv}), NOT a CLI flag.
- */
+/** Build arguments for one long-lived Pi RPC process. */
 export function buildPiRpcArgs(config: PiSettings, options: PiSpawnOptions = {}): string[] {
   const profile = options.profile?.trim() || config.profile?.trim() || DEFAULT_PI_PROFILE;
   const args = ["--mode", "rpc", "--approve", "--profile", profile];
-
-  if (options.resumeSessionId?.trim()) {
-    args.push("--session", options.resumeSessionId.trim());
-  }
-  if (options.model?.trim()) {
-    args.push("--model", options.model.trim());
-  }
-  if (options.thinkingLevel) {
-    args.push("--thinking", options.thinkingLevel);
-  }
+  if (options.resumeSessionId?.trim()) args.push("--session", options.resumeSessionId.trim());
+  if (options.sessionName?.trim()) args.push("--name", options.sessionName.trim());
+  if (options.model?.trim()) args.push("--model", options.model.trim());
+  if (options.thinkingLevel) args.push("--thinking", options.thinkingLevel);
   return args;
 }
 
-/** Resolve the Pi binary path from config, falling back to the PATH lookup. */
 export function resolvePiBinary(config: PiSettings): string {
   return config.binaryPath?.trim() || DEFAULT_PI_BINARY;
 }
 
-/**
- * Build the child environment.
- *
- * A blank `agentDir` means "use the real default `~/.pi/agent`", so we leave
- * `PI_CODING_AGENT_DIR` untouched (never copy/isolate the agent config). Only
- * when the user configured an explicit override do we set it.
- */
 export function buildPiRpcEnv(
   config: PiSettings,
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -168,28 +181,45 @@ export function buildPiRpcEnv(
   const agentDir = config.agentDir?.trim();
   return {
     ...baseEnv,
-    // Opt in to structured pi-subagents notifications. Extensions that do not
-    // implement the bridge simply ignore this environment variable.
+    // Optional Pi extensions can emit structured workflow notifications. The
+    // adapter translates their lifecycle to canonical task.* events; controls
+    // remain a later slice on top of the native Agents panel.
     [PI_SUBAGENTS_RPC_BRIDGE_ENV]: "1",
-    // Opt in independently to the structured Pi background-terminal bridge.
     [PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV]: "1",
     ...(agentDir ? { PI_CODING_AGENT_DIR: agentDir } : {}),
   };
 }
 
-/** Decode a structured pi-subagents envelope from an RPC UI notification. */
-export function parsePiSubagentNotification(
+const PiTaskBridgeEventSchema = Schema.Struct({
+  contractVersion: Schema.Literal(1),
+  managerId: Schema.NonEmptyString,
+  sequence: Schema.Int,
+  timestamp: Schema.String,
+  kind: Schema.String,
+  runId: Schema.optional(Schema.String),
+  view: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  activity: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  snapshot: Schema.optional(Schema.Unknown),
+  replay: Schema.optional(Schema.Boolean),
+});
+export type PiTaskBridgeEvent = typeof PiTaskBridgeEventSchema.Type;
+const decodePiTaskBridgeEvent = Schema.decodeUnknownOption(
+  Schema.fromJsonString(PiTaskBridgeEventSchema),
+);
+
+/**
+ * Parse the optional pi-subagents notification without importing its fork-only
+ * contracts. The adapter intentionally consumes only stable lifecycle fields
+ * and projects them into upstream task.* events.
+ */
+export function parsePiTaskBridgeNotification(
   request: PiExtensionUiRequest,
-): PiSubagentEventType | undefined {
-  if (
-    request.method !== "notify" ||
-    typeof request.message !== "string" ||
-    !request.message.startsWith(PI_SUBAGENTS_RPC_EVENT_PREFIX)
-  ) {
+): PiTaskBridgeEvent | undefined {
+  if (request.method !== "notify" || !request.message.startsWith(PI_SUBAGENTS_RPC_EVENT_PREFIX)) {
     return undefined;
   }
   return Option.getOrUndefined(
-    decodePiSubagentEventJson(request.message.slice(PI_SUBAGENTS_RPC_EVENT_PREFIX.length)),
+    decodePiTaskBridgeEvent(request.message.slice(PI_SUBAGENTS_RPC_EVENT_PREFIX.length)),
   );
 }
 
@@ -199,7 +229,6 @@ export function parsePiBackgroundTerminalNotification(
 ): PiBackgroundTerminalEventType | undefined {
   if (
     request.method !== "notify" ||
-    typeof request.message !== "string" ||
     !request.message.startsWith(PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX)
   ) {
     return undefined;
@@ -211,18 +240,6 @@ export function parsePiBackgroundTerminalNotification(
   );
 }
 
-/**
- * Compute the auto-response to an `extension_ui_request` for a session running
- * in yolo mode.
- *
- * Policy (per task):
- *  - `confirm`  → auto-confirm (`confirmed: true`)
- *  - `select`   → choose the first offered option
- *  - `input` / `editor` → cancel safely — we must NOT silently invent arbitrary
- *    text, so we return the `cancelled` response rather than a fabricated value
- *  - `notify` / `setStatus` / `setWidget` / `setTitle` / `set_editor_text` are
- *    fire-and-forget notifications with no response channel → `undefined`
- */
 export function autoRespondToExtensionUi(
   request: PiExtensionUiRequest,
 ): PiExtensionUiResponse | undefined {
@@ -231,23 +248,18 @@ export function autoRespondToExtensionUi(
       return { type: "extension_ui_response", id: request.id, confirmed: true };
     case "select": {
       const first = request.options[0];
-      if (first === undefined) {
-        return { type: "extension_ui_response", id: request.id, cancelled: true };
-      }
-      return { type: "extension_ui_response", id: request.id, value: first };
+      return first === undefined
+        ? { type: "extension_ui_response", id: request.id, cancelled: true }
+        : { type: "extension_ui_response", id: request.id, value: first };
     }
     case "input":
     case "editor":
-      // Do not fabricate free-form text. Cancel so the extension handles the
-      // absence of input deterministically instead of receiving junk.
       return { type: "extension_ui_response", id: request.id, cancelled: true };
     default:
-      // notify / setStatus / setWidget / setTitle / set_editor_text: no reply.
       return undefined;
   }
 }
 
-/** Extract plain text from a Pi assistant message while preserving thinking-block boundaries. */
 export function extractPiAssistantText(message: unknown): { text: string; thinking: string } {
   let text = "";
   const thinkingParts: string[] = [];
@@ -260,9 +272,8 @@ export function extractPiAssistantText(message: unknown): { text: string; thinki
     for (const part of (message as { content: ReadonlyArray<unknown> }).content) {
       if (!part || typeof part !== "object") continue;
       const record = part as Record<string, unknown>;
-      if (record.type === "text" && typeof record.text === "string") {
-        text += record.text;
-      } else if (
+      if (record.type === "text" && typeof record.text === "string") text += record.text;
+      if (
         record.type === "thinking" &&
         typeof record.thinking === "string" &&
         record.thinking.length > 0

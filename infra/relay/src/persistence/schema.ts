@@ -93,11 +93,6 @@ export const relayManagedEndpointAllocations = pgTable(
     tunnelName: text("tunnel_name").notNull(),
     dnsRecordId: varchar("dns_record_id", { length: 191 }),
     readyAt: varchar("ready_at", { length: 64 }),
-    state: varchar("state", { length: 32 })
-      .$type<"provisioning" | "ready" | "releasing" | "deprovisioning" | "offline">()
-      .notNull()
-      .default("ready"),
-    generation: integer("generation").notNull().default(0),
     createdAt: varchar("created_at", { length: 64 }).notNull(),
     updatedAt: varchar("updated_at", { length: 64 }).notNull(),
   },

@@ -1,4 +1,9 @@
-import { ApprovalRequestId, isToolLifecycleItemType } from "@t3tools/contracts";
+import {
+  ApprovalRequestId,
+  isToolLifecycleItemType,
+  ProviderApprovalOption,
+  ProviderRequestKind,
+} from "@t3tools/contracts";
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
@@ -11,13 +16,19 @@ import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
+import * as Schema from "effect/Schema";
 
 export interface PendingApproval {
   readonly requestId: ApprovalRequestId;
-  readonly requestKind: "command" | "file-read" | "file-change";
+  readonly requestKind: ProviderRequestKind;
   readonly createdAt: string;
   readonly detail?: string;
+  readonly appName?: string;
+  readonly options?: ReadonlyArray<ProviderApprovalOption>;
 }
+
+const isProviderRequestKind = Schema.is(ProviderRequestKind);
+const isProviderApprovalOption = Schema.is(ProviderApprovalOption);
 
 export interface PendingUserInput {
   readonly requestId: ApprovalRequestId;
@@ -53,7 +64,6 @@ export interface ThreadFeedActivity {
     | "wrench"
     | "zap";
   readonly toolLike: boolean;
-  readonly reasoning?: boolean;
   readonly status: "success" | "failure" | "neutral" | null;
 }
 
@@ -148,6 +158,8 @@ function requestKindFromRequestType(requestType: unknown): PendingApproval["requ
     case "file_change_approval":
     case "apply_patch_approval":
       return "file-change";
+    case "mcp_elicitation_approval":
+      return "mcp-elicitation";
     default:
       return null;
   }
@@ -315,12 +327,10 @@ function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean
 
 function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-  options?: { readonly showAgentReasoning?: boolean },
 ): DerivedWorkLogEntry[] {
   const ordered = Arr.sort(activities, activityOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
-    if (activity.kind === "reasoning" && options?.showAgentReasoning === false) continue;
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     // Terminal bypassed updates pass: Codex children's only terminal signal.
@@ -328,11 +338,23 @@ function deriveWorkLogEntries(
     if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
+    if (isNoContentRuntimeWarning(activity)) continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     if (isAgentInternalActivity(activity)) continue;
     entries.push(toDerivedWorkLogEntry(activity));
   }
   return collapseDerivedWorkLogEntries(entries);
+}
+
+/** Adapters forward unknown wire-only SDK messages (background_tasks_changed,
+ *  commands_changed, ...) as runtime warnings. The suffix comes from
+ *  describeUnknownSdkMessage in the Claude adapter; a row with no displayable
+ *  text carries nothing a user can act on, so it does not render. */
+function isNoContentRuntimeWarning(activity: OrchestrationThreadActivity): boolean {
+  return (
+    activity.kind === "runtime.warning" &&
+    activity.summary.endsWith("(no displayable text content)")
+  );
 }
 
 function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {
@@ -385,7 +407,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     ...(taskId ? { taskId } : {}),
     label: taskLabel || activity.summary,
     tone:
-      activity.kind === "task.progress" || activity.kind === "reasoning"
+      activity.kind === "task.progress"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"
@@ -1077,7 +1099,6 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
   // long tool runs). The array is only mutated while it is the trailing group.
   let openGroupActivities: ThreadFeedActivity[] | null = null;
   let openGroupTurnId: TurnId | null = null;
-  let openGroupHasReasoning = false;
 
   for (const entry of entries) {
     // Skip empty messages so they don't break activity grouping.
@@ -1088,23 +1109,16 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
     if (entry.type !== "activity") {
       grouped.push(entry);
       openGroupActivities = null;
-      openGroupHasReasoning = false;
       continue;
     }
 
-    if (
-      openGroupActivities !== null &&
-      openGroupTurnId === entry.turnId &&
-      !entry.activity.reasoning &&
-      !openGroupHasReasoning
-    ) {
+    if (openGroupActivities !== null && openGroupTurnId === entry.turnId) {
       openGroupActivities.push(entry.activity);
       continue;
     }
 
     openGroupActivities = [entry.activity];
     openGroupTurnId = entry.turnId;
-    openGroupHasReasoning = entry.activity.reasoning === true;
     grouped.push({
       type: "activity-group",
       id: entry.id,
@@ -1155,9 +1169,13 @@ function deriveThreadFeedTurnFolds(
   feed: ReadonlyArray<ThreadFeedEntry>,
   latestTurn: ThreadFeedLatestTurn | null,
 ): ReadonlyMap<string, ThreadFeedTurnFold> {
+  const firstAssistantMessageIdByTurn = new Map<TurnId, string>();
   const terminalAssistantMessageIdByTurn = new Map<TurnId, string>();
   for (const entry of feed) {
     if (entry.type === "message" && entry.message.role === "assistant" && entry.message.turnId) {
+      if (!firstAssistantMessageIdByTurn.has(entry.message.turnId)) {
+        firstAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
+      }
       terminalAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
     }
   }
@@ -1205,17 +1223,24 @@ function deriveThreadFeedTurnFolds(
       continue;
     }
 
+    const firstAssistantMessageId = firstAssistantMessageIdByTurn.get(turnId);
     const terminalAssistantMessageId = terminalAssistantMessageIdByTurn.get(turnId);
     const hiddenEntryIds = new Set(
-      entries.filter((entry) => entry.id !== terminalAssistantMessageId).map((entry) => entry.id),
+      entries
+        .filter(
+          (entry) =>
+            entry.id !== firstAssistantMessageId && entry.id !== terminalAssistantMessageId,
+        )
+        .map((entry) => entry.id),
     );
     if (hiddenEntryIds.size === 0) {
       continue;
     }
 
     const firstEntry = entries[0];
+    const firstHiddenEntry = entries.find((entry) => hiddenEntryIds.has(entry.id));
     const lastEntry = entries.at(-1);
-    if (!firstEntry || !lastEntry) {
+    if (!firstEntry || !firstHiddenEntry || !lastEntry) {
       continue;
     }
     const terminalEntry = terminalAssistantMessageId
@@ -1244,9 +1269,9 @@ function deriveThreadFeedTurnFolds(
         ? `Worked for ${duration}`
         : "Worked";
 
-    foldsByAnchorId.set(firstEntry.id, {
+    foldsByAnchorId.set(firstHiddenEntry.id, {
       turnId,
-      createdAt: firstEntry.createdAt,
+      createdAt: firstHiddenEntry.createdAt,
       hiddenEntryIds,
       label,
     });
@@ -1375,13 +1400,14 @@ export function derivePendingApprovals(
         ? (activity.payload as Record<string, unknown>)
         : null;
     const requestId = parseApprovalRequestId(payload?.requestId);
-    const requestKind =
-      payload?.requestKind === "command" ||
-      payload?.requestKind === "file-read" ||
-      payload?.requestKind === "file-change"
-        ? payload.requestKind
-        : requestKindFromRequestType(payload?.requestType);
+    const requestKind = isProviderRequestKind(payload?.requestKind)
+      ? payload.requestKind
+      : requestKindFromRequestType(payload?.requestType);
     const detail = typeof payload?.detail === "string" ? payload.detail : undefined;
+    const appName = typeof payload?.appName === "string" ? payload.appName : undefined;
+    const options = Array.isArray(payload?.options)
+      ? payload.options.filter(isProviderApprovalOption)
+      : undefined;
 
     if (activity.kind === "approval.requested" && requestId && requestKind) {
       openByRequestId.set(requestId, {
@@ -1389,6 +1415,8 @@ export function derivePendingApprovals(
         requestKind,
         createdAt: activity.createdAt,
         ...(detail ? { detail } : {}),
+        ...(appName ? { appName } : {}),
+        ...(options && options.length > 0 ? { options } : {}),
       });
       continue;
     }
@@ -1526,18 +1554,19 @@ export function buildThreadFeed(
   thread: OrchestrationThread,
   options?: {
     readonly loadedMessages?: ReadonlyArray<OrchestrationThread["messages"][number]>;
-    readonly showAgentReasoning?: boolean;
+    readonly localMessages?: ReadonlyArray<OrchestrationThread["messages"][number]>;
   },
 ): ThreadFeedEntry[] {
   const loadedMessages = options?.loadedMessages ?? thread.messages;
+  const messages = options?.localMessages
+    ? [...loadedMessages, ...options.localMessages]
+    : loadedMessages;
   const oldestLoadedMessageCreatedAt =
     options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
-  const workLogEntries = deriveWorkLogEntries(thread.activities, {
-    showAgentReasoning: options?.showAgentReasoning,
-  });
+  const workLogEntries = deriveWorkLogEntries(thread.activities);
   const entries = Arr.sortWith(
     [
-      ...loadedMessages.map<RawThreadFeedEntry>((message) => ({
+      ...messages.map<RawThreadFeedEntry>((message) => ({
         type: "message",
         id: message.id,
         createdAt: message.createdAt,
@@ -1578,8 +1607,7 @@ export function buildThreadFeed(
               getFullDetail,
               getCopyText,
               icon: workEntryIcon(entry),
-              toolLike: entry.tone !== "thinking" && workLogEntryIsToolLike(entry),
-              reasoning: entry.activityKind === "reasoning",
+              toolLike: workLogEntryIsToolLike(entry),
               status: workEntryStatus(entry),
             },
           };

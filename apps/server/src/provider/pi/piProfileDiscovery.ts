@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import { resolvePiAgentDir } from "./piPaths.ts";
 import { DEFAULT_PI_PROFILE } from "./piRpcProtocol.ts";
 
 export interface PiProfileChoice {
@@ -113,21 +114,7 @@ export const discoverPiProfileChoices = Effect.fn("discoverPiProfileChoices")(fu
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const paths = yield* Path.Path;
-  const environment = options.environment ?? process.env;
-  const home =
-    environment.HOME?.trim() ||
-    environment.USERPROFILE?.trim() ||
-    process.env.HOME?.trim() ||
-    process.env.USERPROFILE?.trim() ||
-    ".";
-  const configuredAgentDir = options.agentDir?.trim();
-  const agentDir = configuredAgentDir
-    ? configuredAgentDir === "~"
-      ? home
-      : configuredAgentDir.startsWith("~/") || configuredAgentDir.startsWith("~\\")
-        ? paths.join(home, configuredAgentDir.slice(2))
-        : configuredAgentDir
-    : paths.join(home, ".pi", "agent");
+  const agentDir = resolvePiAgentDir(paths, options);
   const contents = yield* fileSystem
     .readFileString(paths.join(agentDir, "profiles.json"))
     .pipe(Effect.orElseSucceed(() => ""));

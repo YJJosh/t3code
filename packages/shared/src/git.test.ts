@@ -41,6 +41,15 @@ describe("normalizeGitRemoteUrl", () => {
       "gitlab.company.com/team/project",
     );
   });
+
+  it("normalizes SCP-like remotes with non-git SSH users", () => {
+    expect(normalizeGitRemoteUrl("gitlab@gitlab.example.com:group/project.git")).toBe(
+      "gitlab.example.com/group/project",
+    );
+    expect(normalizeGitRemoteUrl("deploy@bitbucket.org:workspace/repo.git")).toBe(
+      "bitbucket.org/workspace/repo",
+    );
+  });
 });
 
 describe("parseGitHubRepositoryNameWithOwnerFromRemoteUrl", () => {
@@ -55,49 +64,47 @@ describe("parseGitHubRepositoryNameWithOwnerFromRemoteUrl", () => {
 });
 
 describe("buildGeneratedWorktreeBranchName", () => {
-  it("preserves the default t3code namespace", () => {
-    expect(
-      buildGeneratedWorktreeBranchName("feature/add-login", {
-        includeT3CodePrefix: true,
-        useConventionalPrefix: false,
-      }),
-    ).toBe("t3code/feature/add-login");
+  it.each([
+    {
+      includeT3CodeBranchPrefix: true,
+      useConventionalBranchPrefixes: false,
+      expected: "t3code/add-login",
+    },
+    {
+      includeT3CodeBranchPrefix: false,
+      useConventionalBranchPrefixes: false,
+      expected: "add-login",
+    },
+    {
+      includeT3CodeBranchPrefix: true,
+      useConventionalBranchPrefixes: true,
+      expected: "t3code/feature/add-login",
+    },
+    {
+      includeT3CodeBranchPrefix: false,
+      useConventionalBranchPrefixes: true,
+      expected: "feature/add-login",
+    },
+  ])("applies the complete generated-branch policy", (options) => {
+    expect(buildGeneratedWorktreeBranchName("Add login", options)).toBe(options.expected);
   });
 
-  it("can omit the t3code namespace", () => {
+  it("preserves an allowed conventional category and removes a model-supplied namespace", () => {
     expect(
-      buildGeneratedWorktreeBranchName("t3code/add-login", {
-        includeT3CodePrefix: false,
-        useConventionalPrefix: false,
+      buildGeneratedWorktreeBranchName("refs/heads/t3code/fix: reconnect", {
+        includeT3CodeBranchPrefix: false,
+        useConventionalBranchPrefixes: true,
       }),
-    ).toBe("add-login");
+    ).toBe("fix/reconnect");
   });
 
-  it("preserves an allowed conventional prefix", () => {
+  it("keeps the conventional policy valid when the model returns no usable description", () => {
     expect(
-      buildGeneratedWorktreeBranchName("refs/heads/refactor/simplify-auth", {
-        includeT3CodePrefix: false,
-        useConventionalPrefix: true,
+      buildGeneratedWorktreeBranchName("t3code/fix/!!!", {
+        includeT3CodeBranchPrefix: true,
+        useConventionalBranchPrefixes: true,
       }),
-    ).toBe("refactor/simplify-auth");
-  });
-
-  it("normalizes conventional-commit punctuation without losing the chosen category", () => {
-    expect(
-      buildGeneratedWorktreeBranchName("chore: update dependencies", {
-        includeT3CodePrefix: false,
-        useConventionalPrefix: true,
-      }),
-    ).toBe("chore/update-dependencies");
-  });
-
-  it("enforces a conventional prefix when the model omits one", () => {
-    expect(
-      buildGeneratedWorktreeBranchName("Add login", {
-        includeT3CodePrefix: true,
-        useConventionalPrefix: true,
-      }),
-    ).toBe("t3code/feature/add-login");
+    ).toBe("t3code/fix/update");
   });
 });
 

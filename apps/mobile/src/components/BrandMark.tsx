@@ -3,13 +3,12 @@ import { Image } from "expo-image";
 import { View } from "react-native";
 
 import { AppText as Text } from "./AppText";
-import { resolveMobileBrand, resolveMobileBrandName } from "../lib/mobileBranding";
+import { resolveMobileBrandName } from "../lib/mobileBranding";
 
 const appVariant = Constants.expoConfig?.extra?.appVariant;
-const appBrand = resolveMobileBrand(Constants.expoConfig?.extra?.appBrand);
-const appName = resolveMobileBrandName(appBrand);
+const brandName = resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand);
 const BRAND_MARK_SOURCE =
-  appBrand === "dulli"
+  Constants.expoConfig?.extra?.appBrand === "dulli"
     ? require("../../../../assets/dulli/dulli-universal-1024.png")
     : appVariant === "development"
       ? require("../../../../assets/dev/blueprint-ios-1024.png")
@@ -37,7 +36,9 @@ export function BrandMark(props: { readonly compact?: boolean; readonly stageLab
       />
       <View className="gap-1">
         <View className="flex-row items-center gap-2">
-          <Text className="text-lg font-t3-bold tracking-[-0.4px] text-foreground">{appName}</Text>
+          <Text className="text-lg font-t3-bold tracking-[-0.4px] text-foreground">
+            {brandName}
+          </Text>
           <View className="rounded-full bg-subtle px-2 py-1">
             <Text className="text-3xs font-t3-bold tracking-[1.1px] uppercase text-foreground-muted">
               {stageLabel}

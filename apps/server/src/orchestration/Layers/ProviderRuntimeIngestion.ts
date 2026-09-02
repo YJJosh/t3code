@@ -41,8 +41,10 @@ import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
+import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { canReplaceThreadTitle } from "../threadTitles.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -307,7 +309,7 @@ function sessionStatusAllowsActiveTurn(
 
 function requestKindFromCanonicalRequestType(
   requestType: string | undefined,
-): "command" | "file-read" | "file-change" | undefined {
+): "command" | "file-read" | "file-change" | "mcp-elicitation" | undefined {
   switch (requestType) {
     case "command_execution_approval":
     case "exec_command_approval":
@@ -317,6 +319,8 @@ function requestKindFromCanonicalRequestType(
     case "file_change_approval":
     case "apply_patch_approval":
       return "file-change";
+    case "mcp_elicitation_approval":
+      return "mcp-elicitation";
     default:
       return undefined;
   }
@@ -397,12 +401,16 @@ export function runtimeEventToActivities(
                 ? "File-read approval requested"
                 : requestKind === "file-change"
                   ? "File-change approval requested"
-                  : "Approval requested",
+                  : requestKind === "mcp-elicitation"
+                    ? "App access approval requested"
+                    : "Approval requested",
           payload: {
             requestId: toApprovalRequestId(event.requestId),
             ...(requestKind ? { requestKind } : {}),
             requestType: event.payload.requestType,
             ...(event.payload.detail ? { detail: event.payload.detail } : {}),
+            ...(event.payload.appName ? { appName: event.payload.appName } : {}),
+            ...(event.payload.options ? { options: event.payload.options } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -548,6 +556,7 @@ export function runtimeEventToActivities(
     }
 
     case "task.started": {
+      const linkage = taskLinkageActivityFields(event.payload as Record<string, unknown>);
       return [
         {
           id: event.eventId,
@@ -564,9 +573,14 @@ export function runtimeEventToActivities(
             taskId: event.payload.taskId,
             ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
             ...(event.payload.description
-              ? { detail: truncateDetail(event.payload.description) }
+              ? {
+                  detail: truncateDetail(
+                    event.payload.description,
+                    linkage.agentKind === "agent" ? 4_000 : 180,
+                  ),
+                }
               : {}),
-            ...taskLinkageActivityFields(event.payload as Record<string, unknown>),
+            ...linkage,
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -589,11 +603,27 @@ export function runtimeEventToActivities(
           ? { title: truncateDetail(event.payload.description, 120) }
           : {};
       const hasProgressState =
-        event.payload.typedUsage === undefined ||
-        event.payload.summary !== undefined ||
-        event.payload.lastToolName !== undefined ||
-        event.payload.status !== undefined ||
-        event.payload.error !== undefined;
+        event.payload.transcriptEvent === undefined &&
+        (event.payload.typedUsage === undefined ||
+          event.payload.summary !== undefined ||
+          event.payload.lastToolName !== undefined ||
+          event.payload.status !== undefined ||
+          event.payload.error !== undefined);
+      const transcriptEvent = event.payload.transcriptEvent;
+      const transcriptActivity = transcriptEvent?.activity;
+      const transcriptData = transcriptActivity?.data;
+      const transcriptToolCallId =
+        transcriptData && typeof transcriptData.toolCallId === "string"
+          ? transcriptData.toolCallId
+          : undefined;
+      const transcriptRowId =
+        transcriptEvent && transcriptActivity
+          ? EventId.make(
+              transcriptActivity.liveOnly
+                ? `task-transcript-live:${event.threadId}:${event.payload.taskId}:${encodeURIComponent(transcriptActivity.type)}:${encodeURIComponent(transcriptToolCallId ?? "assistant")}`
+                : `task-transcript:${event.threadId}:${event.payload.taskId}:${encodeURIComponent(transcriptEvent.managerId)}:${transcriptEvent.sequence}`,
+            )
+          : undefined;
       return [
         ...(hasProgressState
           ? [
@@ -623,6 +653,24 @@ export function runtimeEventToActivities(
                   ...(event.payload.error ? { error: event.payload.error } : {}),
                   ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
                   ...identityLinkage,
+                },
+                turnId: toTurnId(event.turnId) ?? null,
+                ...maybeSequence,
+              },
+            ]
+          : []),
+        ...(transcriptEvent && transcriptRowId
+          ? [
+              {
+                id: transcriptRowId,
+                createdAt: event.createdAt,
+                tone: "info" as const,
+                kind: "task.progress" as const,
+                summary: "Agent transcript updated",
+                payload: {
+                  taskId: event.payload.taskId,
+                  ...identityLinkage,
+                  transcriptEvent,
                 },
                 turnId: toTurnId(event.turnId) ?? null,
                 ...maybeSequence,
@@ -796,8 +844,15 @@ export function runtimeEventToActivities(
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
+      // A streaming update's `data` carries the full tool output accumulated
+      // so far (adapters merge state forward), and a new activity is emitted
+      // per chunk, so persisting `data` verbatim writes O(N²) bytes per tool
+      // call into both the event store and the projection table. No reader
+      // needs it: ws.ts and http.ts apply `projectActivityPayload` before any
+      // payload reaches a client. Persist the projected form for non-terminal
+      // updates; `item.completed` below still persists the full payload.
       return [
-        {
+        projectActivityPayload({
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "tool",
@@ -805,6 +860,7 @@ export function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool updated",
           payload: {
             itemType: event.payload.itemType,
+            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
@@ -815,7 +871,7 @@ export function runtimeEventToActivities(
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
-        },
+        }),
       ];
     }
 
@@ -832,6 +888,7 @@ export function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool",
           payload: {
             itemType: event.payload.itemType,
+            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
@@ -859,6 +916,8 @@ export function runtimeEventToActivities(
           summary: `${event.payload.title ?? "Tool"} started`,
           payload: {
             itemType: event.payload.itemType,
+            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
+            ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
             ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
@@ -2028,12 +2087,14 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "thread.metadata.updated" && event.payload.name) {
-        yield* orchestrationEngine.dispatch({
-          type: "thread.meta.update",
-          commandId: yield* providerCommandId(event, "thread-meta-update"),
-          threadId: thread.id,
-          title: event.payload.name,
-        });
+        if (canReplaceThreadTitle(thread.title)) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.meta.update",
+            commandId: yield* providerCommandId(event, "thread-meta-update"),
+            threadId: thread.id,
+            title: event.payload.name,
+          });
+        }
       }
 
       if (event.type === "turn.diff.updated") {
