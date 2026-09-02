@@ -22,15 +22,14 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
  * client renders partial coverage when an environment reports an older version
  * rather than failing the whole page.
  */
-export const USAGE_CONTRACT_VERSION = 6 as const;
+export const USAGE_CONTRACT_VERSION = 7 as const;
 
 /**
  * Oldest {@link UsageSummary} version a current client will still merge.
  *
- * Each bump since v4 has only *added* a provider to {@link UsageProviderKind}
- * (v5 `grok`, v6 `pi`); the older Claude/Codex/Grok buckets stay valid, so
- * mixed-version environments keep those totals instead of being treated as
- * stale whenever one environment lags a release behind.
+ * Provider additions in v5 (`grok`) and v6 (`pi`) left older buckets valid.
+ * v7 adds optional source attribution so a client can de-duplicate individual
+ * transcript roots while retaining the provider-level fallback for v4-v6.
  */
 export const USAGE_MERGE_COMPATIBLE_SINCE = 4 as const;
 
@@ -94,6 +93,8 @@ export const UsageBucket = Schema.Struct({
   day: UsageDay,
   hourStart: Schema.optional(TrimmedNonEmptyString),
   provider: UsageProviderKind,
+  /** Index into the owning summary's `sources`; absent on v4-v6 summaries. */
+  sourceIndex: Schema.optional(NonNegativeInt),
   model: TrimmedNonEmptyString,
   totals: UsageTokenTotals,
   costUsd: Schema.Number,
@@ -133,14 +134,30 @@ export const UsageSourceFingerprint = Schema.Struct({
    * effectively never collides across machines. Empty when it cannot be read.
    */
   volumeId: Schema.String,
+  /**
+   * Filesystem identities of parent directories, nearest first. These let a
+   * client prove that differently rooted scans overlap without trusting path
+   * strings or hostnames alone.
+   */
+  ancestorVolumeIds: Schema.optional(Schema.Array(Schema.String)),
 });
 export type UsageSourceFingerprint = typeof UsageSourceFingerprint.Type;
+
+export const UsageSourceScan = Schema.Struct({
+  /** Maximum directory depth below the source root that was scanned. */
+  maxDepth: NonNegativeInt,
+  /** File selection applied within that depth. */
+  filePattern: Schema.Literals(["jsonl", "pi-subagent-session"]),
+});
+export type UsageSourceScan = typeof UsageSourceScan.Type;
 
 export const UsageSourceStatus = Schema.Literals(["ok", "missing", "partial", "failed"]);
 export type UsageSourceStatus = typeof UsageSourceStatus.Type;
 
 export const UsageSource = Schema.Struct({
   fingerprint: UsageSourceFingerprint,
+  /** Present when this source has bounded, comparable scan coverage. */
+  scan: Schema.optional(UsageSourceScan),
   status: UsageSourceStatus,
   scannedFiles: NonNegativeInt,
   skippedFiles: NonNegativeInt,

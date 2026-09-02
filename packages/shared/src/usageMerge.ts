@@ -11,6 +11,7 @@ import {
   type EnvironmentId,
   type UsageBucket,
   type UsageProviderKind,
+  type UsageSource,
   type UsageSourceFingerprint,
   type UsageSummary,
 } from "@t3tools/contracts";
@@ -100,55 +101,157 @@ function fingerprintKey(fingerprint: UsageSourceFingerprint): string {
   ].join(" ");
 }
 
-/**
- * Decides which environment owns each physical transcript directory.
- *
- * Several environments on one machine (worktree servers, for instance) resolve
- * the same provider home and would otherwise double count every token. The
- * first environment in a stable order claims a fingerprint; the rest have that
- * provider's buckets dropped. Environments are sorted by id so the winner does
- * not change between renders.
- */
-function claimSources(environments: readonly EnvironmentUsage[]): {
-  readonly ownerByFingerprint: ReadonlyMap<string, EnvironmentId>;
-  readonly duplicates: readonly string[];
-} {
-  const ownerByFingerprint = new Map<string, EnvironmentId>();
-  const duplicates: string[] = [];
+function normalizePortablePath(value: string): string {
+  let normalized = value.replaceAll("\\", "/").replace(/\/{2,}/g, "/");
+  if (/^[a-z]:\//i.test(normalized)) normalized = normalized.toLowerCase();
+  while (normalized.length > 1 && normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  return normalized;
+}
 
-  const ordered = [...environments].sort((a, b) => a.environmentId.localeCompare(b.environmentId));
+/** Returns how many directories `descendant` is below `ancestor`. */
+function descendantDepth(ancestor: string, descendant: string): number | undefined {
+  const normalizedAncestor = normalizePortablePath(ancestor);
+  const normalizedDescendant = normalizePortablePath(descendant);
+  if (normalizedAncestor === normalizedDescendant) return 0;
+  const prefix = normalizedAncestor === "/" ? "/" : `${normalizedAncestor}/`;
+  if (!normalizedDescendant.startsWith(prefix)) return undefined;
+  return normalizedDescendant.slice(prefix.length).split("/").filter(Boolean).length;
+}
 
-  for (const environment of ordered) {
-    for (const source of environment.summary.sources) {
-      if (source.status === "missing") continue;
-      const key = fingerprintKey(source.fingerprint);
-      if (ownerByFingerprint.has(key)) {
-        duplicates.push(`${environment.label}: ${source.fingerprint.resolvedHomePath}`);
-        continue;
-      }
-      ownerByFingerprint.set(key, environment.environmentId);
-    }
+function pathDepth(value: string): number {
+  return normalizePortablePath(value).split("/").filter(Boolean).length;
+}
+
+/** True when the first source's bounded scan includes every file in the second. */
+function sourceCovers(covering: UsageSource, covered: UsageSource): boolean {
+  if (covering.status !== "ok") return false;
+  const coveringFingerprint = covering.fingerprint;
+  const coveredFingerprint = covered.fingerprint;
+  if (
+    coveringFingerprint.hostId !== coveredFingerprint.hostId ||
+    coveringFingerprint.provider !== coveredFingerprint.provider
+  ) {
+    return false;
   }
 
-  return { ownerByFingerprint, duplicates };
+  const depth = descendantDepth(
+    coveringFingerprint.resolvedHomePath,
+    coveredFingerprint.resolvedHomePath,
+  );
+  if (depth === undefined) return false;
+
+  const samePhysicalDirectory =
+    depth === 0 &&
+    coveringFingerprint.volumeId.length > 0 &&
+    coveringFingerprint.volumeId === coveredFingerprint.volumeId;
+  const provenPhysicalAncestor =
+    depth > 0 &&
+    coveringFingerprint.volumeId.length > 0 &&
+    coveredFingerprint.ancestorVolumeIds?.[depth - 1] === coveringFingerprint.volumeId;
+  if (!samePhysicalDirectory && !provenPhysicalAncestor) return false;
+
+  if (covering.scan === undefined || covered.scan === undefined) {
+    return (
+      depth === 0 && fingerprintKey(coveringFingerprint) === fingerprintKey(coveredFingerprint)
+    );
+  }
+  if (covering.scan.filePattern === "pi-subagent-session") {
+    return (
+      depth === 0 &&
+      covered.scan.filePattern === "pi-subagent-session" &&
+      covering.scan.maxDepth >= covered.scan.maxDepth
+    );
+  }
+  return covering.scan.maxDepth >= depth + covered.scan.maxDepth;
+}
+
+interface SourceClaim {
+  readonly environment: EnvironmentUsage;
+  readonly source: UsageSource;
+  readonly sourceIndex: number;
+}
+
+function sourceClaimKey(environmentId: EnvironmentId, sourceIndex: number): string {
+  return `${environmentId}\0${String(sourceIndex)}`;
+}
+
+/**
+ * Decides which environment owns each physical transcript scan.
+ *
+ * Broader proven scans claim contained roots first, so environments that choose
+ * differently nested Pi roots cannot count the contained files twice. Parent
+ * inode chains prove containment across environment boundaries; path strings
+ * and hostnames alone are intentionally insufficient. Legacy summaries without
+ * source attribution retain the provider-level fallback.
+ */
+function claimSources(environments: readonly EnvironmentUsage[]): {
+  readonly ownedSourceKeys: ReadonlySet<string>;
+  readonly duplicates: readonly string[];
+} {
+  const candidates: SourceClaim[] = [];
+  for (const environment of environments) {
+    for (const [sourceIndex, source] of environment.summary.sources.entries()) {
+      if (source.status !== "missing") candidates.push({ environment, source, sourceIndex });
+    }
+  }
+  candidates.sort((a, b) => {
+    const pathOrder =
+      pathDepth(a.source.fingerprint.resolvedHomePath) -
+      pathDepth(b.source.fingerprint.resolvedHomePath);
+    if (pathOrder !== 0) return pathOrder;
+    const patternOrder =
+      Number(a.source.scan?.filePattern === "pi-subagent-session") -
+      Number(b.source.scan?.filePattern === "pi-subagent-session");
+    if (patternOrder !== 0) return patternOrder;
+    const depthOrder = (b.source.scan?.maxDepth ?? -1) - (a.source.scan?.maxDepth ?? -1);
+    if (depthOrder !== 0) return depthOrder;
+    return (
+      a.environment.environmentId.localeCompare(b.environment.environmentId) ||
+      a.sourceIndex - b.sourceIndex
+    );
+  });
+
+  const claimed: SourceClaim[] = [];
+  const ownedSourceKeys = new Set<string>();
+  const duplicates: string[] = [];
+  for (const candidate of candidates) {
+    const duplicate = claimed.some(
+      (existing) =>
+        existing.environment.environmentId !== candidate.environment.environmentId &&
+        sourceCovers(existing.source, candidate.source),
+    );
+    if (duplicate) {
+      duplicates.push(
+        `${candidate.environment.label}: ${candidate.source.fingerprint.resolvedHomePath}`,
+      );
+      continue;
+    }
+    claimed.push(candidate);
+    ownedSourceKeys.add(sourceClaimKey(candidate.environment.environmentId, candidate.sourceIndex));
+  }
+
+  return { ownedSourceKeys, duplicates };
 }
 
 /** Sources this environment owns after fingerprint claims, plus their buckets. */
 function ownedContribution(
   environment: EnvironmentUsage,
-  ownerByFingerprint: ReadonlyMap<string, EnvironmentId>,
+  ownedSourceKeys: ReadonlySet<string>,
 ): {
   readonly buckets: readonly UsageBucket[];
   readonly sessionsByProvider: ReadonlyMap<UsageProviderKind, number>;
 } {
   const ownedProviders = new Set<UsageProviderKind>();
+  const ownedSourceIndexes = new Set<number>();
   const sessionsByProvider = new Map<UsageProviderKind, number>();
-  for (const source of environment.summary.sources) {
-    if (source.status === "missing") continue;
-    const key = fingerprintKey(source.fingerprint);
-    if (ownerByFingerprint.get(key) === environment.environmentId) {
+  for (const [sourceIndex, source] of environment.summary.sources.entries()) {
+    if (
+      source.status !== "missing" &&
+      ownedSourceKeys.has(sourceClaimKey(environment.environmentId, sourceIndex))
+    ) {
       const provider = source.fingerprint.provider;
       ownedProviders.add(provider);
+      ownedSourceIndexes.add(sourceIndex);
       // Distinct within a directory. Summing per-bucket session counts instead
       // would count a session once per day and model it spans.
       sessionsByProvider.set(
@@ -158,7 +261,14 @@ function ownedContribution(
     }
   }
   return {
-    buckets: environment.summary.buckets.filter((bucket) => ownedProviders.has(bucket.provider)),
+    buckets: environment.summary.buckets.filter((bucket) => {
+      if (bucket.sourceIndex === undefined) return ownedProviders.has(bucket.provider);
+      const source = environment.summary.sources[bucket.sourceIndex];
+      return (
+        ownedSourceIndexes.has(bucket.sourceIndex) &&
+        source?.fingerprint.provider === bucket.provider
+      );
+    }),
     sessionsByProvider,
   };
 }
@@ -227,7 +337,7 @@ export function mergeUsage(
     }
   }
 
-  const { ownerByFingerprint, duplicates } = claimSources(current);
+  const { ownedSourceKeys, duplicates } = claimSources(current);
 
   let costUsd = 0;
   let uncachedInputTokens = 0;
@@ -270,7 +380,7 @@ export function mergeUsage(
   const contributingEnvironments: EnvironmentId[] = [];
 
   for (const environment of current) {
-    const { buckets, sessionsByProvider } = ownedContribution(environment, ownerByFingerprint);
+    const { buckets, sessionsByProvider } = ownedContribution(environment, ownedSourceKeys);
     if (buckets.length > 0) contributingEnvironments.push(environment.environmentId);
 
     for (const [providerKind, providerSessions] of sessionsByProvider) {

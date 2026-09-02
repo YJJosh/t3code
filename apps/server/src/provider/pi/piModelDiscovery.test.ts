@@ -1,6 +1,13 @@
+import * as NodeCrypto from "node:crypto";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 
 import {
+  discoverPiModels,
   discoverPiModelsWithSdk,
   piModelCapabilities,
   toServerProviderModel,
@@ -284,6 +291,42 @@ describe("discoverPiModelsWithSdk", () => {
       },
     ]);
   });
+
+  it.effect("loads extensions with the instance environment in an isolated worker", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const variableName = `T3_PI_MODEL_DISCOVERY_ENV_TEST_${NodeCrypto.randomUUID().replaceAll("-", "_")}`;
+      const commandName = "instance-environment-test";
+      const previous = process.env[variableName];
+      const agentDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-pi-model-discovery-",
+      });
+      yield* fileSystem.makeDirectory(path.join(agentDir, "extensions"), { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(agentDir, "extensions", "environment-test.ts"),
+        `export default function (pi) {
+  if (process.env.${variableName} === "instance-secret") {
+    pi.registerCommand("${commandName}", {
+      description: "Loaded from the instance environment",
+      handler: async () => {},
+    });
+  }
+}\n`,
+      );
+      const result = yield* discoverPiModels({
+        agentDir,
+        environment: { ...process.env, [variableName]: "instance-secret" },
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.slashCommands).toContainEqual({
+        name: commandName,
+        description: "Loaded from the instance environment",
+      });
+      expect(process.env[variableName]).toBe(previous);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 
   it("loads extension-registered providers before enumerating available models", async () => {
     let receivedOptions:

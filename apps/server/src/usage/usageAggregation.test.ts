@@ -212,6 +212,19 @@ describe("UsageAggregator", () => {
     expect(aggregator.add(record({ timestampMs: Date.parse("2026-07-01T12:00:00Z") }))).toBe(false);
   });
 
+  it("keeps source-attributed records in separate buckets", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+    });
+    aggregator.add(record(), 0);
+    aggregator.add(record(), 1);
+
+    expect(aggregator.finish().buckets.map((bucket) => bucket.sourceIndex)).toEqual([0, 1]);
+  });
+
   it("separates providers and models into their own buckets", () => {
     const result = aggregate([
       record(),

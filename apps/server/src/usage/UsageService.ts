@@ -14,6 +14,10 @@
 import * as NodeOS from "node:os";
 
 import {
+  PiSettings,
+  ProviderDriverKind,
+  type ProviderInstanceConfig,
+  type ServerSettings as ServerSettingsContract,
   USAGE_CONTRACT_VERSION,
   type UsageProviderKind,
   type UsageSource,
@@ -41,6 +45,7 @@ import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { parseRateTable, type RateTable } from "./usagePricing.ts";
+import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { resolvePiAgentDir as resolveConfiguredPiAgentDir } from "../provider/pi/piPaths.ts";
 import {
   listTranscriptFiles,
@@ -89,6 +94,43 @@ const PI_SUBAGENT_SESSION_SCAN_OPTIONS: TranscriptFileOptions = {
   piSubagentSessionsOnly: true,
 };
 const MAX_PI_PROJECT_ANCESTOR_DEPTH = 32;
+const MAX_USAGE_SOURCE_ANCESTORS = 8;
+const decodePiSettingsOption = Schema.decodeUnknownOption(PiSettings);
+
+interface TranscriptDirectory {
+  readonly provider: UsageProviderKind;
+  readonly dir: string;
+  readonly scanOptions?: TranscriptFileOptions;
+  /** False when the scan only covers direct files and cannot prove descendant deletion. */
+  readonly completeForCachePruning?: boolean;
+}
+
+interface PiTranscriptSettings {
+  readonly providers: Pick<ServerSettingsContract["providers"], "pi">;
+  readonly providerInstances: ServerSettingsContract["providerInstances"];
+}
+
+function piSourceScan(scanOptions: TranscriptFileOptions | undefined) {
+  if (scanOptions?.maxDepth === undefined) return undefined;
+  return {
+    maxDepth: scanOptions.maxDepth,
+    filePattern: scanOptions.piSubagentSessionsOnly
+      ? ("pi-subagent-session" as const)
+      : ("jsonl" as const),
+  };
+}
+
+async function readAncestorVolumeIds(dir: string, path: Path.Path): Promise<readonly string[]> {
+  const ancestors: string[] = [];
+  let current = dir;
+  for (let depth = 0; depth < MAX_USAGE_SOURCE_ANCESTORS; depth += 1) {
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    ancestors.push(parent);
+    current = parent;
+  }
+  return Promise.all(ancestors.map(readDirectoryVolumeId));
+}
 
 /** Expands a leading `~` and resolves relative paths as Pi's `normalizePath` does. */
 function resolvePiPath(value: string, homePath: string, path: Path.Path): string {
@@ -137,6 +179,83 @@ export function resolvePiTranscriptDir(
   const sessionOverride = firstDefinedEnvironmentPath(environment, PI_SESSION_DIR_ENV_NAMES);
   if (sessionOverride !== undefined) return resolvePiPath(sessionOverride, homePath, path);
   return path.join(resolvePiAgentDir(environment, path, configuredAgentDir), "sessions");
+}
+
+/** Resolves and de-duplicates the transcript roots used by every configured Pi instance. */
+export function resolveConfiguredPiTranscriptDirs(
+  settings: PiTranscriptSettings,
+  hostEnvironment: NodeJS.ProcessEnv,
+  path: Path.Path,
+): readonly TranscriptDirectory[] {
+  const configuredInstances: ProviderInstanceConfig[] = Object.values(settings.providerInstances);
+  // The runtime synthesizes the default instance from the legacy settings only
+  // when an explicit entry has not claimed the canonical `pi` slot.
+  if (!("pi" in settings.providerInstances)) {
+    configuredInstances.push({
+      driver: ProviderDriverKind.make("pi"),
+      config: settings.providers.pi,
+    });
+  }
+
+  const directories = new Map<string, TranscriptDirectory>();
+  const append = (directory: TranscriptDirectory, kind: "sessions" | "legacy" | "subagents") => {
+    // Session and legacy scans both accept ordinary Pi transcripts. When they
+    // resolve to the same root, one max-depth scan covers both layouts. Keep
+    // subagent scans separate because their filename filter excludes journals.
+    const key = `${kind === "subagents" ? kind : "transcripts"}\0${directory.dir}`;
+    const existing = directories.get(key);
+    if (existing === undefined) {
+      directories.set(key, directory);
+      return;
+    }
+    if (kind === "subagents") return;
+    directories.set(key, {
+      ...existing,
+      scanOptions: {
+        maxDepth: Math.max(
+          existing.scanOptions?.maxDepth ?? 0,
+          directory.scanOptions?.maxDepth ?? 0,
+        ),
+      },
+      ...(existing.completeForCachePruning === false || directory.completeForCachePruning === false
+        ? { completeForCachePruning: false }
+        : {}),
+    });
+  };
+
+  for (const instance of configuredInstances) {
+    if (instance.driver !== "pi") continue;
+    const decoded = decodePiSettingsOption(instance.config ?? {});
+    if (Option.isNone(decoded)) continue;
+
+    const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
+    const configuredAgentDir = decoded.value.agentDir || undefined;
+    const agentDir = resolvePiAgentDir(environment, path, configuredAgentDir);
+    const sessionDir = resolvePiTranscriptDir(environment, path, configuredAgentDir);
+
+    append({ provider: "pi", dir: sessionDir, scanOptions: PI_SESSION_SCAN_OPTIONS }, "sessions");
+    append(
+      {
+        provider: "pi",
+        dir: agentDir,
+        scanOptions: PI_LEGACY_SESSION_SCAN_OPTIONS,
+        // This root only lists direct files, so it cannot establish that
+        // cached descendants such as `<agent>/sessions/**` disappeared.
+        completeForCachePruning: false,
+      },
+      "legacy",
+    );
+    append(
+      {
+        provider: "pi",
+        dir: path.join(agentDir, ".pi-subagents", "runs"),
+        scanOptions: PI_SUBAGENT_SESSION_SCAN_OPTIONS,
+      },
+      "subagents",
+    );
+  }
+
+  return [...directories.values()];
 }
 
 /** Finds bounded, de-duplicated Pi subagent roots reachable from project paths. */
@@ -300,14 +419,6 @@ export const make = Effect.gen(function* () {
       return nestedExists ? nested : path.join(homePath, "projects");
     });
 
-  interface TranscriptDirectory {
-    readonly provider: UsageProviderKind;
-    readonly dir: string;
-    readonly scanOptions?: TranscriptFileOptions;
-    /** False when the scan only covers direct files and cannot prove descendant deletion. */
-    readonly completeForCachePruning?: boolean;
-  }
-
   /** Resolves the transcript directory for each provider. */
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* () {
     // A settings failure must surface as an error: swallowing it here would
@@ -337,12 +448,7 @@ export const make = Effect.gen(function* () {
         ? path.resolve(expandHomePath(grokHomeEnv))
         : path.join(NodeOS.homedir(), ".grok");
 
-    // Scan Pi's configured/env/default layout, the v0.30 direct-file layout,
-    // and any subagent runs rooted in the agent directory. A dedicated session
-    // directory environment override still wins over the configured agent dir.
-    const configuredPiAgentDir = settings.providers.pi.agentDir;
-    const piAgentDir = resolvePiAgentDir(hostEnvironment, path, configuredPiAgentDir);
-    const piDir = resolvePiTranscriptDir(hostEnvironment, path, configuredPiAgentDir);
+    const piDirs = resolveConfiguredPiTranscriptDirs(settings, hostEnvironment, path);
 
     return [
       { provider: "claude" as const, dir: claudeDir },
@@ -352,20 +458,7 @@ export const make = Effect.gen(function* () {
         dir: path.join(grokHome, "sessions"),
         scanOptions: { fileName: "updates.jsonl" },
       },
-      { provider: "pi" as const, dir: piDir, scanOptions: PI_SESSION_SCAN_OPTIONS },
-      {
-        provider: "pi" as const,
-        dir: piAgentDir,
-        scanOptions: PI_LEGACY_SESSION_SCAN_OPTIONS,
-        // This root only lists direct files, so it cannot establish that
-        // cached descendants such as `<agent>/sessions/**` disappeared.
-        completeForCachePruning: false,
-      },
-      {
-        provider: "pi" as const,
-        dir: path.join(piAgentDir, ".pi-subagents", "runs"),
-        scanOptions: PI_SUBAGENT_SESSION_SCAN_OPTIONS,
-      },
+      ...piDirs,
     ] satisfies readonly TranscriptDirectory[];
   });
 
@@ -515,6 +608,7 @@ export const make = Effect.gen(function* () {
 
     const sources: UsageSource[] = [];
     const livePaths = new Set<string>();
+    const processedFiles = new Set<string>();
     const walkedRoots: string[] = [];
 
     // Index-based: discovered Pi subagent roots can extend the work list while we iterate.
@@ -522,14 +616,28 @@ export const make = Effect.gen(function* () {
       const transcriptDir = dirs[dirIndex];
       if (transcriptDir === undefined) continue;
       const { provider, dir, scanOptions } = transcriptDir;
+      const sourceIndex = sources.length;
       const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
       const exists = yield* fileSystem
         .exists(dir)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
+      const scan = provider === "pi" ? piSourceScan(scanOptions) : undefined;
+      const ancestorVolumeIds =
+        exists && provider === "pi"
+          ? yield* Effect.promise(() => readAncestorVolumeIds(dir, path))
+          : undefined;
+      const fingerprint = {
+        hostId,
+        provider,
+        resolvedHomePath: dir,
+        volumeId,
+        ...(ancestorVolumeIds === undefined ? {} : { ancestorVolumeIds }),
+      };
 
       if (!exists) {
         sources.push({
-          fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
+          fingerprint,
+          ...(scan === undefined ? {} : { scan }),
           status: "missing",
           scannedFiles: 0,
           skippedFiles: 0,
@@ -555,6 +663,9 @@ export const make = Effect.gen(function* () {
 
       for (const file of listing.files) {
         livePaths.add(file.path);
+        const processedFileKey = `${provider}\0${file.path}`;
+        if (processedFiles.has(processedFileKey)) continue;
+        processedFiles.add(processedFileKey);
         const read = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
         for (const projectPath of read.projectPaths) projectPaths.add(projectPath);
         if (read.records.length === 0) {
@@ -565,14 +676,15 @@ export const make = Effect.gen(function* () {
         for (const record of read.records) {
           // Only sessions that contributed in-window count: the mtime slack
           // admits boundary files whose records fall outside the range.
-          if (aggregator.add(record) && record.sessionId.length > 0) {
+          if (aggregator.add(record, sourceIndex) && record.sessionId.length > 0) {
             sessionIds.add(record.sessionId);
           }
         }
       }
 
       sources.push({
-        fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
+        fingerprint,
+        ...(scan === undefined ? {} : { scan }),
         status: "ok",
         scannedFiles,
         skippedFiles,

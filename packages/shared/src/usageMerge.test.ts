@@ -1,5 +1,6 @@
 import {
   USAGE_CONTRACT_VERSION,
+  USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
   type UsageDay,
@@ -39,6 +40,11 @@ function summary(
     hostId: string;
     homePath: string;
     volumeId?: string;
+    ancestorVolumeIds?: readonly string[];
+    scan?: {
+      readonly maxDepth: number;
+      readonly filePattern: "jsonl" | "pi-subagent-session";
+    };
     distinctSessions?: number;
   }[],
   contractVersion: number = USAGE_CONTRACT_VERSION,
@@ -56,7 +62,11 @@ function summary(
         provider: source.provider,
         resolvedHomePath: source.homePath,
         volumeId: source.volumeId ?? `vol-${source.hostId}`,
+        ...(source.ancestorVolumeIds === undefined
+          ? {}
+          : { ancestorVolumeIds: [...source.ancestorVolumeIds] }),
       },
+      ...(source.scan === undefined ? {} : { scan: source.scan }),
       status: "ok" as const,
       scannedFiles: 1,
       skippedFiles: 0,
@@ -112,6 +122,142 @@ describe("mergeUsage", () => {
     expect(merged.contributingEnvironments).toEqual(["env-a"]);
   });
 
+  it("drops only the shared root when one environment has another root for the same provider", () => {
+    const shared = {
+      provider: "pi" as const,
+      hostId: "mac",
+      homePath: "/home/theo/.pi/agent/sessions",
+    };
+    const unique = {
+      provider: "pi" as const,
+      hostId: "mac",
+      homePath: "/home/theo/.pi/work/sessions",
+    };
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
+            [shared],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [
+              bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 }),
+              bucket({
+                provider: "pi",
+                model: "anthropic/claude-sonnet-5",
+                sourceIndex: 1,
+                costUsd: 4,
+              }),
+            ],
+            [shared, unique],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(14);
+    expect(merged.records).toBe(10);
+    expect(merged.sessions).toBe(2);
+    expect(merged.duplicateSources).toHaveLength(1);
+    expect(merged.contributingEnvironments).toEqual(["env-a", "env-b"]);
+  });
+
+  it("lets a proven parent scan own a contained Pi root across environments", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
+            [
+              {
+                provider: "pi",
+                hostId: "mac",
+                homePath: "/home/theo/.pi/agent/sessions/project",
+                volumeId: "device:project",
+                ancestorVolumeIds: ["device:sessions"],
+                scan: { maxDepth: 0, filePattern: "jsonl" },
+              },
+            ],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
+            [
+              {
+                provider: "pi",
+                hostId: "mac",
+                homePath: "/home/theo/.pi/agent/sessions",
+                volumeId: "device:sessions",
+                scan: { maxDepth: 1, filePattern: "jsonl" },
+              },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(10);
+    expect(merged.records).toBe(5);
+    expect(merged.sessions).toBe(1);
+    expect(merged.duplicateSources).toEqual(["env-a: /home/theo/.pi/agent/sessions/project"]);
+    expect(merged.contributingEnvironments).toEqual(["env-b"]);
+  });
+
+  it("keeps a contained root when the parent scan depth cannot cover it", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
+            [
+              {
+                provider: "pi",
+                hostId: "mac",
+                homePath: "/home/theo/.pi/agent",
+                volumeId: "device:agent",
+                scan: { maxDepth: 0, filePattern: "jsonl" },
+              },
+            ],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
+            [
+              {
+                provider: "pi",
+                hostId: "mac",
+                homePath: "/home/theo/.pi/agent/sessions",
+                volumeId: "device:sessions",
+                ancestorVolumeIds: ["device:agent"],
+                scan: { maxDepth: 1, filePattern: "jsonl" },
+              },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(20);
+    expect(merged.records).toBe(10);
+    expect(merged.sessions).toBe(2);
+    expect(merged.duplicateSources).toEqual([]);
+    expect(merged.contributingEnvironments).toEqual(["env-a", "env-b"]);
+  });
+
   it("drops only the duplicated provider, keeping the environment's other one", () => {
     const sharedClaude = {
       provider: "claude" as const,
@@ -158,7 +304,7 @@ describe("mergeUsage", () => {
           summary(
             [bucket()],
             [{ provider: "claude", hostId: "linux", homePath: "/b" }],
-            USAGE_CONTRACT_VERSION - 2,
+            USAGE_MERGE_COMPATIBLE_SINCE - 1,
           ),
         ),
       ],

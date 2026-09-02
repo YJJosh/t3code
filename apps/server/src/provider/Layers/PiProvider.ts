@@ -245,6 +245,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   const discovery = yield* discoverPiModels({
     agentDir: settings.agentDir || undefined,
     profile: settings.profile || undefined,
+    environment,
   }).pipe(
     Effect.timeoutOption(MODEL_DISCOVERY_TIMEOUT_MS),
     Effect.catchCause((cause) => {

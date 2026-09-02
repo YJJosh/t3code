@@ -14,6 +14,9 @@
  *
  * @module provider/pi/piModelDiscovery
  */
+import * as NodeTimers from "node:timers";
+import * as NodeWorkerThreads from "node:worker_threads";
+
 import type {
   ModelCapabilities,
   ServerProviderAuth,
@@ -63,6 +66,7 @@ export interface PiModelDiscoveryOptions {
   readonly agentDir?: string | undefined;
   readonly cwd?: string | undefined;
   readonly profile?: string | undefined;
+  readonly environment?: NodeJS.ProcessEnv | undefined;
 }
 
 interface PiSdkCreateAgentSessionServicesOptions {
@@ -87,39 +91,38 @@ interface PiResourceSourceInfo {
   readonly scope: "user" | "project" | "temporary";
 }
 
+interface PiExtensionCommand {
+  readonly description?: string | undefined;
+  readonly sourceInfo?: PiResourceSourceInfo | undefined;
+}
+
+interface PiResourceSnapshot {
+  readonly extensions: ReadonlyArray<{
+    readonly commands: ReadonlyMap<string, PiExtensionCommand>;
+  }>;
+  readonly skills: ReadonlyArray<{
+    readonly name: string;
+    readonly description: string;
+    readonly filePath: string;
+    readonly sourceInfo: PiResourceSourceInfo;
+  }>;
+  readonly prompts: ReadonlyArray<{
+    readonly name: string;
+    readonly description: string;
+    readonly argumentHint?: string | undefined;
+    readonly sourceInfo: PiResourceSourceInfo;
+  }>;
+}
+
+interface PiSdkResourceLoader {
+  readonly getExtensions: () => Pick<PiResourceSnapshot, "extensions">;
+  readonly getSkills?: () => Pick<PiResourceSnapshot, "skills">;
+  readonly getPrompts?: () => Pick<PiResourceSnapshot, "prompts">;
+}
+
 interface PiSdkRuntimeServices {
   readonly modelRuntime: PiSdkModelRuntime;
-  readonly resourceLoader?:
-    | {
-        readonly getExtensions: () => {
-          readonly extensions: ReadonlyArray<{
-            readonly commands: ReadonlyMap<
-              string,
-              {
-                readonly description?: string | undefined;
-                readonly sourceInfo?: PiResourceSourceInfo | undefined;
-              }
-            >;
-          }>;
-        };
-        readonly getSkills?: () => {
-          readonly skills: ReadonlyArray<{
-            readonly name: string;
-            readonly description: string;
-            readonly filePath: string;
-            readonly sourceInfo: PiResourceSourceInfo;
-          }>;
-        };
-        readonly getPrompts?: () => {
-          readonly prompts: ReadonlyArray<{
-            readonly name: string;
-            readonly description: string;
-            readonly argumentHint?: string | undefined;
-            readonly sourceInfo: PiResourceSourceInfo;
-          }>;
-        };
-      }
-    | undefined;
+  readonly resourceLoader?: PiSdkResourceLoader | undefined;
   readonly diagnostics: ReadonlyArray<{
     readonly type: "info" | "warning" | "error";
     readonly message: string;
@@ -132,13 +135,12 @@ export interface PiSdkModule {
   ) => Promise<PiSdkRuntimeServices>;
 }
 
-const importPiSdk = (): Promise<unknown> =>
-  // Keep discovery off startup and let focused tests run without installing Pi
-  // into this shared worktree. Production installs the declared 0.84.4 package.
-  Function(
-    "specifier",
-    "return import(specifier)",
-  )("@earendil-works/pi-coding-agent") as Promise<unknown>;
+interface PiSdkDiscoverySnapshot {
+  readonly available: ReadonlyArray<PiSdkModel>;
+  readonly resources: PiResourceSnapshot;
+  readonly diagnostics: PiSdkRuntimeServices["diagnostics"];
+  readonly runtimeError?: string | undefined;
+}
 
 function piModelSlug(model: PiSdkModel): string {
   return `${model.provider}/${model.id}`;
@@ -153,12 +155,18 @@ function isProviderScopedResource(sourceInfo: PiResourceSourceInfo | undefined):
   return sourceInfo?.scope !== "project";
 }
 
-function piProviderResources(resourceLoader: PiSdkRuntimeServices["resourceLoader"]): {
+function snapshotPiResources(resourceLoader: PiSdkResourceLoader | undefined): PiResourceSnapshot {
+  return {
+    extensions: resourceLoader?.getExtensions().extensions ?? [],
+    skills: resourceLoader?.getSkills?.().skills ?? [],
+    prompts: resourceLoader?.getPrompts?.().prompts ?? [],
+  };
+}
+
+function piProviderResources(resources: PiResourceSnapshot): {
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
 } {
-  if (!resourceLoader) return { slashCommands: [], skills: [] };
-
   const commands = new Map<string, ServerProviderSlashCommand>();
   const appendCommand = (command: ServerProviderSlashCommand) => {
     const name = nonEmpty(command.name);
@@ -167,7 +175,7 @@ function piProviderResources(resourceLoader: PiSdkRuntimeServices["resourceLoade
     if (!commands.has(key)) commands.set(key, { ...command, name });
   };
 
-  for (const extension of resourceLoader.getExtensions().extensions) {
+  for (const extension of resources.extensions) {
     for (const [registeredName, command] of extension.commands) {
       if (!isProviderScopedResource(command.sourceInfo)) continue;
       const description = nonEmpty(command.description);
@@ -178,7 +186,7 @@ function piProviderResources(resourceLoader: PiSdkRuntimeServices["resourceLoade
     }
   }
 
-  for (const prompt of resourceLoader.getPrompts?.().prompts ?? []) {
+  for (const prompt of resources.prompts) {
     if (!isProviderScopedResource(prompt.sourceInfo)) continue;
     const description = nonEmpty(prompt.description);
     const argumentHint = nonEmpty(prompt.argumentHint);
@@ -189,7 +197,7 @@ function piProviderResources(resourceLoader: PiSdkRuntimeServices["resourceLoade
     });
   }
 
-  const skills = (resourceLoader.getSkills?.().skills ?? []).flatMap((skill) => {
+  const skills = resources.skills.flatMap((skill) => {
     if (!isProviderScopedResource(skill.sourceInfo)) return [];
     const name = nonEmpty(skill.name);
     const path = nonEmpty(skill.filePath);
@@ -362,10 +370,35 @@ export function toServerProviderModel(
   };
 }
 
-export async function discoverPiModelsWithSdk(
+function finishPiModelDiscovery(snapshot: PiSdkDiscoverySnapshot): PiModelDiscoveryResult {
+  const extensions = snapshot.resources.extensions;
+  const codexFastCommandAvailable = extensions.some((extension) =>
+    extension.commands.has(PI_CODEX_FAST_COMMAND),
+  );
+  const contextCommandAvailable = extensions.some((extension) =>
+    extension.commands.has(PI_CONTEXT_COMMAND),
+  );
+  const models = snapshot.available.map((model) =>
+    toServerProviderModel(model, { codexFastCommandAvailable, contextCommandAvailable }),
+  );
+  const resources = piProviderResources(snapshot.resources);
+  const errors = [
+    snapshot.runtimeError,
+    ...snapshot.diagnostics
+      .filter((diagnostic) => diagnostic.type === "error")
+      .map((diagnostic) => diagnostic.message),
+  ].filter((message): message is string => typeof message === "string" && message.length > 0);
+  const auth: ServerProviderAuth =
+    snapshot.available.length > 0 ? { status: "authenticated" } : { status: "unauthenticated" };
+  return errors.length > 0
+    ? { models, auth, ...resources, error: errors.join("\n") }
+    : { models, auth, ...resources };
+}
+
+async function loadPiDiscoverySnapshot(
   sdk: PiSdkModule,
-  options: PiModelDiscoveryOptions = {},
-): Promise<PiModelDiscoveryResult> {
+  options: PiModelDiscoveryOptions,
+): Promise<PiSdkDiscoverySnapshot> {
   const agentDir = options.agentDir?.trim();
   const profile = options.profile?.trim();
   const services = await sdk.createAgentSessionServices({
@@ -383,44 +416,162 @@ export async function discoverPiModelsWithSdk(
       noContextFiles: true,
     },
   });
-  const available = await services.modelRuntime.getAvailable();
-  const extensions = services.resourceLoader?.getExtensions().extensions ?? [];
-  const codexFastCommandAvailable = extensions.some((extension) =>
-    extension.commands.has(PI_CODEX_FAST_COMMAND),
+  return {
+    available: await services.modelRuntime.getAvailable(),
+    resources: snapshotPiResources(services.resourceLoader),
+    diagnostics: services.diagnostics,
+    runtimeError: services.modelRuntime.getError(),
+  };
+}
+
+export async function discoverPiModelsWithSdk(
+  sdk: PiSdkModule,
+  options: PiModelDiscoveryOptions = {},
+): Promise<PiModelDiscoveryResult> {
+  return finishPiModelDiscovery(await loadPiDiscoverySnapshot(sdk, options));
+}
+
+const PI_DISCOVERY_WORKER_TIMEOUT_MS = 14_000;
+const PI_DISCOVERY_WORKER_SOURCE = String.raw`
+"use strict";
+const { parentPort, workerData } = require("node:worker_threads");
+const sourceInfo = (value) => value && typeof value.path === "string" && typeof value.scope === "string"
+  ? { path: value.path, scope: value.scope }
+  : undefined;
+const sendError = (error) => parentPort.postMessage({
+  _tag: "error",
+  error: error instanceof Error ? error.message : String(error),
+});
+(async () => {
+  const sdk = await import(workerData.sdkUrl);
+  const options = workerData.options;
+  const services = await sdk.createAgentSessionServices({
+    cwd: options.cwd,
+    ...(options.agentDir ? { agentDir: options.agentDir } : {}),
+    ...(options.profile
+      ? { extensionFlagValues: new Map([["profile", options.profile]]) }
+      : {}),
+    resourceLoaderOptions: {
+      noSkills: false,
+      noPromptTemplates: false,
+      noThemes: true,
+      noContextFiles: true,
+    },
+  });
+  const loader = services.resourceLoader;
+  const extensions = (loader?.getExtensions().extensions ?? []).map((extension) => ({
+    commands: new Map([...extension.commands].map(([name, command]) => [name, {
+      ...(typeof command.description === "string" ? { description: command.description } : {}),
+      ...(sourceInfo(command.sourceInfo) ? { sourceInfo: sourceInfo(command.sourceInfo) } : {}),
+    }])),
+  }));
+  const prompts = (loader?.getPrompts?.().prompts ?? []).map((prompt) => ({
+    name: prompt.name,
+    description: prompt.description,
+    ...(typeof prompt.argumentHint === "string" ? { argumentHint: prompt.argumentHint } : {}),
+    ...(sourceInfo(prompt.sourceInfo) ? { sourceInfo: sourceInfo(prompt.sourceInfo) } : {}),
+  }));
+  const skills = (loader?.getSkills?.().skills ?? []).map((skill) => ({
+    name: skill.name,
+    description: skill.description,
+    filePath: skill.filePath,
+    ...(sourceInfo(skill.sourceInfo) ? { sourceInfo: sourceInfo(skill.sourceInfo) } : {}),
+  }));
+  const available = (await services.modelRuntime.getAvailable()).map((model) => ({
+    id: model.id,
+    ...(typeof model.name === "string" ? { name: model.name } : {}),
+    provider: model.provider,
+    ...(typeof model.reasoning === "boolean" ? { reasoning: model.reasoning } : {}),
+    ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
+    ...(typeof model.contextWindow === "number" ? { contextWindow: model.contextWindow } : {}),
+  }));
+  parentPort.postMessage({
+    _tag: "success",
+    snapshot: {
+      available,
+      resources: { extensions, prompts, skills },
+      diagnostics: services.diagnostics.map((diagnostic) => ({
+        type: diagnostic.type,
+        message: diagnostic.message,
+      })),
+      ...(services.modelRuntime.getError()
+        ? { runtimeError: services.modelRuntime.getError() }
+        : {}),
+    },
+  });
+})().catch(sendError);
+`;
+
+function piDiscoveryWorkerEnvironment(environment: NodeJS.ProcessEnv | undefined) {
+  return Object.fromEntries(
+    Object.entries(environment ?? process.env).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined,
+    ),
   );
-  const contextCommandAvailable = extensions.some((extension) =>
-    extension.commands.has(PI_CONTEXT_COMMAND),
-  );
-  const models = available.map((model) =>
-    toServerProviderModel(model, { codexFastCommandAvailable, contextCommandAvailable }),
-  );
-  const resources = piProviderResources(services.resourceLoader);
-  const errors = [
-    services.modelRuntime.getError(),
-    ...services.diagnostics
-      .filter((diagnostic) => diagnostic.type === "error")
-      .map((diagnostic) => diagnostic.message),
-  ].filter((message): message is string => typeof message === "string" && message.length > 0);
-  const auth: ServerProviderAuth =
-    available.length > 0 ? { status: "authenticated" } : { status: "unauthenticated" };
-  return errors.length > 0
-    ? { models, auth, ...resources, error: errors.join("\n") }
-    : { models, auth, ...resources };
+}
+
+function loadPiDiscoverySnapshotInWorker(
+  options: PiModelDiscoveryOptions,
+): Promise<PiSdkDiscoverySnapshot> {
+  return new Promise((resolve, reject) => {
+    const worker = new NodeWorkerThreads.Worker(PI_DISCOVERY_WORKER_SOURCE, {
+      eval: true,
+      env: piDiscoveryWorkerEnvironment(options.environment),
+      workerData: {
+        sdkUrl: import.meta.resolve("@earendil-works/pi-coding-agent"),
+        options: {
+          cwd: options.cwd?.trim() || process.cwd(),
+          agentDir: options.agentDir?.trim() || undefined,
+          profile: options.profile?.trim() || undefined,
+        },
+      },
+    });
+    let settled = false;
+    // A native worker needs a hard wall even if its imported SDK never settles.
+    // @effect-diagnostics-next-line globalTimers:off
+    const timeout = NodeTimers.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      void worker.terminate();
+      reject(new Error("Pi SDK discovery worker timed out."));
+    }, PI_DISCOVERY_WORKER_TIMEOUT_MS);
+    const settle = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
+      NodeTimers.clearTimeout(timeout);
+      void worker.terminate();
+      complete();
+    };
+    worker.once("message", (message: unknown) => {
+      if (typeof message !== "object" || message === null || !("_tag" in message)) {
+        settle(() => reject(new Error("Pi SDK discovery worker returned an invalid response.")));
+        return;
+      }
+      if (message._tag === "success" && "snapshot" in message) {
+        settle(() => resolve(message.snapshot as PiSdkDiscoverySnapshot));
+        return;
+      }
+      const error = "error" in message ? String(message.error) : "Unknown worker error";
+      settle(() => reject(new Error(error)));
+    });
+    worker.once("error", (error) => settle(() => reject(error)));
+    worker.once("exit", (code) => {
+      if (code !== 0) settle(() => reject(new Error(`Pi SDK discovery worker exited ${code}.`)));
+    });
+  });
 }
 
 /**
- * Discover Pi models and derive auth status. Never throws — a failed SDK load
- * degrades to an empty model list with an `unknown` auth status and an `error`
- * message the probe can surface.
+ * Discover Pi models and derive auth status. SDK loading and extension execution
+ * happen in a worker with the provider instance's environment, keeping those
+ * overrides out of the long-lived server process.
  */
 export const discoverPiModels = Effect.fn("discoverPiModels")(function* (
   options: PiModelDiscoveryOptions = {},
 ) {
   return yield* Effect.tryPromise({
-    try: async (): Promise<PiModelDiscoveryResult> => {
-      const sdk = (await importPiSdk()) as PiSdkModule;
-      return discoverPiModelsWithSdk(sdk, options);
-    },
+    try: async (): Promise<PiModelDiscoveryResult> =>
+      finishPiModelDiscovery(await loadPiDiscoverySnapshotInWorker(options)),
     catch: (cause): PiModelDiscoveryResult => ({
       models: [],
       auth: { status: "unknown" },
