@@ -4190,6 +4190,70 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe("# Plan title");
   });
 
+  it("persists Antigravity batch settlement statuses and disconnect errors", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const base = {
+      type: "task.updated" as const,
+      provider: ProviderDriverKind.make("antigravity"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-antigravity-batches"),
+    };
+
+    await harness.emitAndDrain([
+      {
+        ...base,
+        eventId: asEventId("evt-antigravity-batch-idle"),
+        payload: {
+          taskId: "antigravity-batch-idle",
+          taskType: "subagent_batch",
+          title: "Antigravity subagent batch",
+          status: "idle",
+        },
+      },
+      {
+        ...base,
+        eventId: asEventId("evt-antigravity-batch-cancelled"),
+        payload: {
+          taskId: "antigravity-batch-cancelled",
+          taskType: "subagent_batch",
+          title: "Antigravity subagent batch",
+          status: "cancelled",
+        },
+      },
+      {
+        ...base,
+        eventId: asEventId("evt-antigravity-batch-failed"),
+        payload: {
+          taskId: "antigravity-batch-failed",
+          taskType: "subagent_batch",
+          title: "Antigravity subagent batch",
+          status: "failed",
+          error: "Antigravity process stopped.",
+        },
+      },
+    ]);
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === "thread-1");
+    const activityPayload = (eventId: string) =>
+      thread?.activities.find((activity) => activity.id === eventId)?.payload;
+
+    expect(activityPayload("evt-antigravity-batch-idle")).toMatchObject({
+      taskId: "antigravity-batch-idle",
+      status: "idle",
+    });
+    expect(activityPayload("evt-antigravity-batch-cancelled")).toMatchObject({
+      taskId: "antigravity-batch-cancelled",
+      status: "cancelled",
+    });
+    expect(activityPayload("evt-antigravity-batch-failed")).toMatchObject({
+      taskId: "antigravity-batch-failed",
+      status: "failed",
+      error: "Antigravity process stopped.",
+    });
+  });
+
   it("persists durable child transcript events and replaces live transcript state in place", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
