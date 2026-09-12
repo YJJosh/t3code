@@ -15,7 +15,10 @@ import { tailwindPlugins } from "../vite/tailwind";
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 
-it("initializes React refresh before a shared UI chunk runs in bundled dev", async () => {
+it.each([
+  { brand: "code", displayName: "T3 Code (Dev)" },
+  { brand: "dulli", displayName: "T3 Dulli" },
+])("boots shared UI with React refresh ready ($brand)", async ({ brand, displayName }) => {
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-bootstrap-"));
   const output = NodePath.join(root, "output");
   let resolveBundle!: (files: Map<string, string>) => void;
@@ -29,7 +32,13 @@ it("initializes React refresh before a shared UI chunk runs in bundled dev", asy
   try {
     await NodeFSP.mkdir(NodePath.join(root, "src/lib"), { recursive: true });
     await NodeFSP.writeFile(NodePath.join(root, "package.json"), '{"type":"module"}');
-    for (const file of ["index.html", "src/bootstrap.ts", "src/lib/bootError.ts"]) {
+    for (const file of [
+      "index.html",
+      "src/bootstrap.ts",
+      "src/branding.ts",
+      "src/branding.logic.ts",
+      "src/lib/bootError.ts",
+    ]) {
       await NodeFSP.copyFile(new URL(`../${file}`, import.meta.url), NodePath.join(root, file));
     }
     await NodeFSP.writeFile(
@@ -47,6 +56,10 @@ export const startup = Promise.resolve().then(() => globalThis.onStarted(Shared(
       root,
       publicDir: NodeURL.fileURLToPath(new URL("../public", import.meta.url)),
       logLevel: "silent",
+      define: {
+        "import.meta.env.VITE_DESKTOP_BUILD_BRAND": JSON.stringify(brand),
+        "import.meta.env.VITE_HOSTED_APP_CHANNEL": JSON.stringify(""),
+      },
       resolve: {
         alias: { react: NodePath.dirname(NodeURL.fileURLToPath(import.meta.resolve("react"))) },
       },
@@ -78,7 +91,11 @@ export const startup = Promise.resolve().then(() => globalThis.onStarted(Shared(
             codeSplitting: {
               groups: [
                 { name: "vendor", test: /node_modules|@react-refresh/, priority: 10 },
-                { name: "shared-ui", test: /shared\.tsx$/, includeDependenciesRecursively: false },
+                {
+                  name: "shared-ui",
+                  test: /shared\.tsx$/,
+                  includeDependenciesRecursively: false,
+                },
               ],
             },
           },
@@ -116,6 +133,7 @@ await import("./assets/index.js");
 const element = await started.promise;
 assert.equal(element.props.children, "ready");
 assert.equal(typeof window.$RefreshReg$, "function");
+assert.equal(document.title, ${JSON.stringify(displayName)});
 console.log("App started with React refresh ready.");`,
     );
     const result = await execFile("node", [runner]);
