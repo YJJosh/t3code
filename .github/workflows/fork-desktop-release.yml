@@ -304,19 +304,22 @@ jobs:
           $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
           $proc = Start-Process -FilePath $setupExe `
             -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", `
-            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64.Spectre", "--quiet", "--norestart" `
+            "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre", "--quiet", "--norestart" `
             -Wait -PassThru -NoNewWindow
           if ($null -eq $proc -or $proc.ExitCode -ne 0) {
             $code = if ($null -ne $proc) { $proc.ExitCode } else { 1 }
             throw "Visual Studio Installer failed with exit code $code"
           }
 
-      - name: Install ImageMagick
+      # The Linux artifact compiles the browser import secret helper against
+      # the host's libsecret during packaging.
+      - name: Install Linux desktop build libraries
         if: matrix.platform == 'linux'
         shell: bash
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config
           if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
-            sudo apt-get update
             sudo apt-get install -y imagemagick
           fi
 

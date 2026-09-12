@@ -5,6 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
 import {
   discoverPiModels,
@@ -12,6 +13,8 @@ import {
   piModelCapabilities,
   toServerProviderModel,
 } from "./piModelDiscovery.ts";
+
+const encodeStringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 describe("piModelCapabilities", () => {
   it("returns empty capabilities for non-reasoning models", () => {
@@ -143,10 +146,10 @@ describe("piModelCapabilities", () => {
     );
   });
 
-  it("does not advertise Fast service for unsupported Codex model ids", () => {
+  it.each(["gpt-5.4-mini", "gpt-6-astra"])("does not advertise Fast service for %s", (id) => {
     const capabilities = piModelCapabilities(
       {
-        id: "gpt-5.4-mini",
+        id,
         provider: "openai-codex",
         reasoning: true,
       },
@@ -236,6 +239,8 @@ describe("discoverPiModelsWithSdk", () => {
               {
                 commands: new Map([
                   ["review", { description: "Review the change", sourceInfo: userSource }],
+                  ["subagents-rpc", { description: "Private subagent control" }],
+                  ["background-terminals-rpc", { description: "Private terminal control" }],
                   ["project-only", { sourceInfo: projectSource }],
                 ]),
               },
@@ -325,6 +330,44 @@ describe("discoverPiModelsWithSdk", () => {
         description: "Loaded from the instance environment",
       });
       expect(process.env[variableName]).toBe(previous);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("shares normalized agent paths with extensions and discovers the current catalog", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
+      const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pi-path-discovery-" });
+      const agentDir = paths.join(home, "agent");
+      yield* fileSystem.makeDirectory(paths.join(agentDir, "extensions"), { recursive: true });
+      yield* fileSystem.writeFileString(
+        paths.join(agentDir, "extensions", "normalized-path.ts"),
+        `export default function (pi) {
+  if (process.env.PI_CODING_AGENT_DIR === ${encodeStringLiteral(agentDir)}) {
+    pi.registerCommand("normalized-path", { handler: async () => {} });
+  }
+}\n`,
+      );
+      const environment = {
+        HOME: home,
+        TAU_CODING_AGENT_DIR: "~/agent",
+        PI_OFFLINE: "1",
+        // Discovery checks configured auth presence; it never sends a model request.
+        OPENAI_API_KEY: "t3-discovery-fixture-not-a-credential",
+      };
+      for (const configuredAgentDir of [undefined, "~/agent"]) {
+        const result = yield* discoverPiModels({
+          agentDir: configuredAgentDir,
+          cwd: home,
+          environment,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.slashCommands).toContainEqual({ name: "normalized-path" });
+        expect(result.models).toContainEqual(
+          expect.objectContaining({ slug: "openai/gpt-6-astra" }),
+        );
+      }
+      expect(environment).not.toHaveProperty("PI_CODING_AGENT_DIR");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

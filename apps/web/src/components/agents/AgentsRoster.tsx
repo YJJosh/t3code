@@ -13,7 +13,7 @@ import { ScrollArea } from "~/components/ui/scroll-area";
 import { cn } from "~/lib/utils";
 
 import {
-  AGENT_STATUS_VISUALS,
+  agentStatusLabel,
   AgentElapsed,
   agentActivityText,
   agentElapsedBetween,
@@ -21,6 +21,7 @@ import {
   AgentStatusDot,
   workflowIsLive,
   workflowMembers,
+  workflowStatus,
 } from "./agentsPresentation";
 
 function AgentRosterRow({
@@ -34,7 +35,7 @@ function AgentRosterRow({
   autoFocus: boolean;
   onSelect: (agent: RuntimeSubagent) => void;
 }) {
-  const visuals = AGENT_STATUS_VISUALS[agent.status];
+  const statusLabel = agentStatusLabel(agent);
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const metadata = [
@@ -49,7 +50,7 @@ function AgentRosterRow({
       onClick={() => onSelect(agent)}
       autoFocus={autoFocus}
       aria-current={selected ? "true" : undefined}
-      aria-label={`${agent.title}. ${visuals.label}`}
+      aria-label={`${agent.title}. ${statusLabel}`}
       data-agent-run-id={agent.id}
       className={cn(
         "grid h-[3.875rem] w-full grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-2 py-1 text-left hover:bg-accent/55 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -72,7 +73,7 @@ function AgentRosterRow({
           agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
         )}
       >
-        {activity ?? visuals.label}
+        {activity ?? statusLabel}
       </span>
       <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
         {metadata.join(" · ") || "Subagent"}
@@ -83,24 +84,21 @@ function AgentRosterRow({
 
 function WorkflowRosterRow({
   group,
+  workflowMembersAuthoritative,
   selected,
   autoFocus,
   onSelect,
 }: {
   group: AgentPanelWorkflowGroup;
+  workflowMembersAuthoritative: boolean;
   selected: boolean;
   autoFocus: boolean;
   onSelect: (group: AgentPanelWorkflowGroup) => void;
 }) {
   const members = workflowMembers(group);
   const failed = members.filter((member) => member.status === "failed").length;
-  const live = workflowIsLive(group);
-  const status: RuntimeSubagent["status"] =
-    failed > 0 || group.workflow.status === "failed"
-      ? "failed"
-      : live
-        ? "running"
-        : group.workflow.status;
+  const live = workflowIsLive(group, workflowMembersAuthoritative);
+  const status = workflowStatus(group, workflowMembersAuthoritative);
   const active = members.filter((member) =>
     ["pending", "running", "waiting"].includes(member.status),
   );
@@ -141,7 +139,9 @@ function WorkflowRosterRow({
           ? `${Math.max(1, failed)} failed`
           : active.length > 0
             ? `${active.length} agent${active.length === 1 ? "" : "s"} working`
-            : `${members.length} agent${members.length === 1 ? "" : "s"} settled`}
+            : live
+              ? "Workflow working"
+              : `${members.length} agent${members.length === 1 ? "" : "s"} settled`}
       </span>
       <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] text-muted-foreground/70">
         Workflow · {formatSubagentTokenCount(totalTokens)} tok
@@ -152,6 +152,7 @@ function WorkflowRosterRow({
 
 export function AgentsRoster({
   model,
+  workflowMembersAuthoritative = false,
   selectedAgentId,
   selectedWorkflowId,
   autoFocusTargetId,
@@ -159,6 +160,7 @@ export function AgentsRoster({
   onSelectWorkflow,
 }: {
   model: AgentPanelModel;
+  workflowMembersAuthoritative?: boolean;
   selectedAgentId: string | null;
   selectedWorkflowId: string | null;
   autoFocusTargetId: string | null;
@@ -199,6 +201,7 @@ export function AgentsRoster({
                 <div role="listitem" key={group.workflow.id}>
                   <WorkflowRosterRow
                     group={group}
+                    workflowMembersAuthoritative={workflowMembersAuthoritative}
                     selected={selectedWorkflowId === group.workflow.id}
                     autoFocus={autoFocusTargetId === group.workflow.id}
                     onSelect={onSelectWorkflow}

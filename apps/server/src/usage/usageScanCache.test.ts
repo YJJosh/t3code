@@ -5,6 +5,7 @@ import {
   dedupeWithinFile,
   encodeScanCache,
   pruneScanCache,
+  type CachedFile,
   type ScanCache,
 } from "./usageScanCache.ts";
 import type { UsageRecord } from "./usageTranscripts.ts";
@@ -28,6 +29,17 @@ function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
   };
 }
 
+function position(overrides: Partial<CachedFile["position"]> = {}): CachedFile["position"] {
+  return {
+    resumeOffset: 120,
+    guardLength: 64,
+    guardHash: 0xdeadbeef,
+    codexState: null,
+    piState: null,
+    ...overrides,
+  };
+}
+
 function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][]): ScanCache {
   const cache: ScanCache = new Map();
   for (const [path, mtimeMs, records] of entries) {
@@ -37,6 +49,8 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
       provider: "claude",
       records,
       projectPaths: [],
+      tailRecords: [],
+      position: position(),
     });
   }
   return cache;
@@ -52,28 +66,103 @@ describe("scan cache round trip", () => {
       size: 40,
       mtimeMs: 300,
       provider: "grok",
+      projectPaths: [],
       records: [
         record({ provider: "grok", model: "grok-4.5-build", dedupeKey: "s:p:grok-4.5-build" }),
       ],
-      projectPaths: [],
+      tailRecords: [record({ provider: "grok", model: "grok-4.5-build", dedupeKey: null })],
+      position: position({ resumeOffset: 30, guardLength: 30, guardHash: 123 }),
     });
+    original.set("/codex.jsonl", {
+      size: 80,
+      mtimeMs: 400,
+      provider: "codex",
+      projectPaths: [],
+      records: [record({ provider: "codex", model: "gpt-5.2-codex", dedupeKey: null })],
+      tailRecords: [],
+      position: position({
+        codexState: {
+          model: "gpt-5.2-codex",
+          sessionId: "session-c",
+          lastUsageSignature: '{"input_tokens":1}',
+          sawSessionMeta: true,
+          suppressingForkCopies: false,
+          forkCopyAnchorMs: 0,
+        },
+      }),
+    });
+
     original.set("/pi.jsonl", {
-      size: 50,
+      size: 150,
       mtimeMs: 400,
       provider: "pi",
-      records: [record({ provider: "pi", model: "anthropic/claude-fable-5", dedupeKey: null })],
+      records: [
+        record({ provider: "pi", model: "anthropic/claude-fable-5", dedupeKey: "pi:entry" }),
+      ],
       projectPaths: ["/home/theo/project"],
+      tailRecords: [],
+      position: position({
+        piState: {
+          sessionId: "pi-session",
+          projectPath: "/home/theo/project",
+          provider: "anthropic",
+          model: "claude-fable-5",
+        },
+      }),
     });
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
 
-    expect(restored.size).toBe(4);
+    expect(restored.size).toBe(5);
     expect(restored.get("/a.jsonl")).toEqual(original.get("/a.jsonl"));
     expect(restored.get("/b.jsonl")).toEqual(original.get("/b.jsonl"));
     expect(restored.get("/grok.jsonl")).toEqual(original.get("/grok.jsonl"));
-    // Pi project paths survive the round trip so warm scans can still reach
-    // subagent sessions without reparsing unchanged primary transcripts.
+    expect(restored.get("/codex.jsonl")).toEqual(original.get("/codex.jsonl"));
+    // A warm Pi scan still needs its project roots to discover child sessions.
     expect(restored.get("/pi.jsonl")).toEqual(original.get("/pi.jsonl"));
+  });
+
+  it("drops an entry whose persisted parse state is corrupt", () => {
+    // Resuming with a bad reducer state would attach appended usage to the
+    // wrong model or replay fork-copied history; that entry must cold parse.
+    const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record()]]]));
+    const poisoned = {
+      ...encoded,
+      files: {
+        "/a.jsonl": { ...encoded.files["/a.jsonl"]!, cs: { model: 42 } },
+      },
+    };
+
+    expect(decodeScanCache(JSON.parse(JSON.stringify(poisoned))).has("/a.jsonl")).toBe(false);
+  });
+
+  it("drops an entry whose persisted Pi state is corrupt", () => {
+    const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record()]]]));
+    const poisoned = {
+      ...encoded,
+      files: { "/a.jsonl": { ...encoded.files["/a.jsonl"]!, ps: { model: 42 } } },
+    };
+
+    expect(decodeScanCache(JSON.parse(JSON.stringify(poisoned))).has("/a.jsonl")).toBe(false);
+  });
+
+  it("drops an entry whose guard length is outside the supported range", () => {
+    // The guard length sizes a Buffer in the reader; a bogus value would make
+    // every parse of that file fail and silently drop its usage.
+    const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record()]]]));
+    const poisoned = {
+      ...encoded,
+      files: { "/a.jsonl": { ...encoded.files["/a.jsonl"]!, gl: 1e20 } },
+    };
+
+    expect(decodeScanCache(JSON.parse(JSON.stringify(poisoned))).has("/a.jsonl")).toBe(false);
+  });
+
+  it.each([2, 3])("rejects a document from cache version %i", (version) => {
+    const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record()]]]));
+    const previous = { ...encoded, version };
+
+    expect(decodeScanCache(JSON.parse(JSON.stringify(previous))).size).toBe(0);
   });
 
   it("interns repeated model and session strings", () => {
@@ -105,7 +194,7 @@ describe("scan cache round trip", () => {
 
   it("rejects the whole cache when an intern table holds a non-string", () => {
     // models: [1] would pass the undefined guard, put a number in a record's
-    // model, and crash normalizeModelName at aggregate time.
+    // model, and crash lookupRate at aggregate time.
     const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record()]]]));
     const poisoned = { ...encoded, models: [1] };
 
@@ -209,6 +298,20 @@ describe("pruneScanCache with an unwalked root", () => {
     // A missing provider root or failed settings read leaves livePaths without
     // that provider's files. Its warm entries must survive the pass.
     const cache = cacheWith([["/codex/sessions/a.jsonl", 5000, [record()]]]);
+
+    const removed = pruneScanCache(cache, {
+      livePaths: new Set(),
+      walkedRoots: ["/claude/projects"],
+      windowStartMs: 4000,
+      retentionCutoffMs: 1000,
+    });
+
+    expect(removed).toBe(0);
+    expect(cache.size).toBe(1);
+  });
+
+  it("keeps entries under a sibling path that only shares the walked root prefix", () => {
+    const cache = cacheWith([["/claude/projects-copy/a.jsonl", 5000, [record()]]]);
 
     const removed = pruneScanCache(cache, {
       livePaths: new Set(),

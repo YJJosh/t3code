@@ -3,6 +3,7 @@ import type {
   AgentPanelWorkflowGroup,
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import { isTerminalSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
 import { Check } from "lucide-react";
 import { useEffect, useRef } from "react";
 
@@ -21,6 +22,12 @@ export const AGENT_STATUS_VISUALS: Record<
   cancelled: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
   interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
 };
+
+export function agentStatusLabel(agent: Pick<RuntimeSubagent, "kind" | "status">): string {
+  return agent.kind === "subagent_batch" && agent.status === "idle"
+    ? "Idle"
+    : AGENT_STATUS_VISUALS[agent.status].label;
+}
 
 export function AgentStatusDot({ status }: { status: RuntimeSubagent["status"] }) {
   return (
@@ -111,14 +118,35 @@ export function workflowMembers(group: AgentPanelWorkflowGroup): ReadonlyArray<R
   return [...group.phases.flatMap((phase) => phase.members), ...group.unphasedMembers];
 }
 
-export function workflowIsLive(group: AgentPanelWorkflowGroup): boolean {
+export function workflowStatus(
+  group: AgentPanelWorkflowGroup,
+  membersAuthoritative = true,
+): RuntimeSubagent["status"] {
   const members = workflowMembers(group);
-  if (members.length > 0) {
-    return members.some(
-      (member) => !["completed", "failed", "cancelled", "interrupted"].includes(member.status),
-    );
+  const coordinatorStatus = group.workflow.status;
+  if (!membersAuthoritative || members.length === 0) return coordinatorStatus;
+  if (coordinatorStatus === "failed" || members.some((member) => member.status === "failed")) {
+    return "failed";
   }
-  return !["completed", "failed", "cancelled", "interrupted"].includes(group.workflow.status);
+  if (members.some((member) => !isTerminalSubagentStatus(member.status))) return "running";
+  if (coordinatorStatus === "cancelled" || coordinatorStatus === "interrupted") {
+    return coordinatorStatus;
+  }
+  if (members.some((member) => member.status === "cancelled" || member.status === "interrupted")) {
+    return "cancelled";
+  }
+  return "completed";
+}
+
+export function workflowIsLive(
+  group: AgentPanelWorkflowGroup,
+  membersAuthoritative = true,
+): boolean {
+  const members = workflowMembers(group);
+  if (membersAuthoritative && members.length > 0) {
+    return members.some((member) => !isTerminalSubagentStatus(member.status));
+  }
+  return !isTerminalSubagentStatus(group.workflow.status);
 }
 
 export interface AgentRosterBatch {

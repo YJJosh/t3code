@@ -59,6 +59,7 @@ const PROFILE_CONFIG_KEYS = new Set([
   "mcpServers",
   "mcp",
   "agentSdk",
+  "backgroundThreads",
   "modelOverrides",
 ]);
 

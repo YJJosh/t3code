@@ -1,31 +1,223 @@
-// @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics nodeBuiltinImport:off - resume coverage writes, appends
+// to, and truncates real transcript files byte-exactly, mirroring the reader's
+// own deliberate node:fs usage.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
+import { afterEach, assert, beforeEach, describe, expect, it } from "@effect/vitest";
 
 import { listTranscriptFiles, readTranscriptRecords } from "./usageTranscriptReader.ts";
 
-let root = "";
+let dir: string;
 
-beforeAll(async () => {
-  root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-usage-reader-"));
+beforeEach(async () => {
+  dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "usage-reader-test-"));
 });
 
-afterAll(async () => {
-  if (root.length > 0) await NodeFSP.rm(root, { recursive: true, force: true });
+afterEach(async () => {
+  await NodeFSP.rm(dir, { recursive: true, force: true });
+});
+
+function claudeLine(id: number, outputTokens: number): string {
+  return `${JSON.stringify({
+    type: "assistant",
+    timestamp: "2026-08-01T10:00:00Z",
+    requestId: `req_${id}`,
+    sessionId: "session-1",
+    message: {
+      id: `msg_${id}`,
+      model: "claude-fable-5",
+      usage: { input_tokens: 10, output_tokens: outputTokens },
+    },
+  })}\n`;
+}
+
+function codexMetaLine(): string {
+  return `${JSON.stringify({
+    type: "session_meta",
+    timestamp: "2026-08-01T10:00:00Z",
+    payload: { type: "session_meta", id: "codex-session-1" },
+  })}\n`;
+}
+
+function codexModelLine(model: string): string {
+  return `${JSON.stringify({
+    type: "turn_context",
+    timestamp: "2026-08-01T10:00:01Z",
+    payload: { type: "turn_context", model },
+  })}\n`;
+}
+
+function codexUsageLine(outputTokens: number, secondsOffset: number): string {
+  return `${JSON.stringify({
+    type: "event_msg",
+    timestamp: `2026-08-01T10:00:${String(secondsOffset).padStart(2, "0")}Z`,
+    payload: {
+      type: "token_count",
+      info: { last_token_usage: { input_tokens: 100, output_tokens: outputTokens } },
+    },
+  })}\n`;
+}
+
+describe("readTranscriptRecords resume", () => {
+  it("parses only appended lines when resuming a grown file", async () => {
+    const path = NodePath.join(dir, "claude.jsonl");
+    await NodeFSP.writeFile(path, claudeLine(1, 5) + claudeLine(2, 7));
+    const first = await readTranscriptRecords(path, "claude");
+    assert.isNotNull(first);
+    assert.strictEqual(first.records.length, 2);
+    assert.isFalse(first.resumed);
+
+    await NodeFSP.appendFile(path, claudeLine(3, 11));
+    const second = await readTranscriptRecords(path, "claude", first.position);
+    assert.isNotNull(second);
+    assert.isTrue(second.resumed);
+    assert.strictEqual(second.records.length, 1);
+    assert.strictEqual(second.records[0]?.totals.outputTokens, 11);
+
+    // The stitched result matches a from-scratch parse of the whole file.
+    const full = await readTranscriptRecords(path, "claude");
+    assert.isNotNull(full);
+    assert.deepStrictEqual([...first.records, ...second.records], [...full.records]);
+  });
+
+  it("carries the Codex reducer state across the resume boundary", async () => {
+    const path = NodePath.join(dir, "rollout.jsonl");
+    await NodeFSP.writeFile(path, codexMetaLine() + codexModelLine("gpt-5.2-codex"));
+    const first = await readTranscriptRecords(path, "codex");
+    assert.isNotNull(first);
+    assert.strictEqual(first.records.length, 0);
+
+    // The appended usage event has no turn_context or session_meta of its own;
+    // model and session must come from the state captured before the boundary.
+    await NodeFSP.appendFile(path, codexUsageLine(9, 5));
+    const second = await readTranscriptRecords(path, "codex", first.position);
+    assert.isNotNull(second);
+    assert.isTrue(second.resumed);
+    assert.strictEqual(second.records.length, 1);
+    assert.strictEqual(second.records[0]?.model, "gpt-5.2-codex");
+    assert.strictEqual(second.records[0]?.sessionId, "codex-session-1");
+  });
+
+  it("suppresses a Codex duplicate usage event that straddles the boundary", async () => {
+    const path = NodePath.join(dir, "rollout.jsonl");
+    await NodeFSP.writeFile(
+      path,
+      codexMetaLine() + codexModelLine("gpt-5.2-codex") + codexUsageLine(9, 5),
+    );
+    const first = await readTranscriptRecords(path, "codex");
+    assert.isNotNull(first);
+    assert.strictEqual(first.records.length, 1);
+
+    // Codex re-emits an unchanged token_count on stream boundaries; the copy
+    // lands after the resume point and must still be dropped.
+    await NodeFSP.appendFile(path, codexUsageLine(9, 5) + codexUsageLine(21, 8));
+    const second = await readTranscriptRecords(path, "codex", first.position);
+    assert.isNotNull(second);
+    assert.isTrue(second.resumed);
+    assert.deepStrictEqual(
+      second.records.map((record) => record.totals.outputTokens),
+      [21],
+    );
+  });
+
+  it("defers an unterminated trailing line to tailRecords, then consumes it once terminated", async () => {
+    const path = NodePath.join(dir, "claude.jsonl");
+    const unterminated = claudeLine(2, 7).trimEnd();
+    await NodeFSP.writeFile(path, claudeLine(1, 5) + unterminated);
+    const first = await readTranscriptRecords(path, "claude");
+    assert.isNotNull(first);
+    assert.strictEqual(first.records.length, 1);
+    assert.strictEqual(first.tailRecords.length, 1);
+    assert.strictEqual(first.tailRecords[0]?.totals.outputTokens, 7);
+
+    // Completing the line and appending another re-reads from the resume
+    // point, so the once-tail record arrives exactly once as a line record.
+    await NodeFSP.appendFile(path, `\n${claudeLine(3, 11)}`);
+    const second = await readTranscriptRecords(path, "claude", first.position);
+    assert.isNotNull(second);
+    assert.isTrue(second.resumed);
+    assert.deepStrictEqual(
+      second.records.map((record) => record.totals.outputTokens),
+      [7, 11],
+    );
+    assert.strictEqual(second.tailRecords.length, 0);
+  });
+
+  it("re-parses from the start when the guard bytes no longer match", async () => {
+    const path = NodePath.join(dir, "claude.jsonl");
+    await NodeFSP.writeFile(path, claudeLine(1, 5));
+    const first = await readTranscriptRecords(path, "claude");
+    assert.isNotNull(first);
+
+    // Same path, larger size, different content: a replaced file, not growth.
+    await NodeFSP.writeFile(path, claudeLine(4, 13) + claudeLine(5, 17));
+    const second = await readTranscriptRecords(path, "claude", first.position);
+    assert.isNotNull(second);
+    assert.isFalse(second.resumed);
+    assert.deepStrictEqual(
+      second.records.map((record) => record.totals.outputTokens),
+      [13, 17],
+    );
+  });
+
+  it("re-parses from the start when the file shrank below the resume point", async () => {
+    const path = NodePath.join(dir, "claude.jsonl");
+    await NodeFSP.writeFile(path, claudeLine(1, 5) + claudeLine(2, 7));
+    const first = await readTranscriptRecords(path, "claude");
+    assert.isNotNull(first);
+
+    await NodeFSP.writeFile(path, claudeLine(3, 11));
+    const second = await readTranscriptRecords(path, "claude", first.position);
+    assert.isNotNull(second);
+    assert.isFalse(second.resumed);
+    assert.deepStrictEqual(
+      second.records.map((record) => record.totals.outputTokens),
+      [11],
+    );
+  });
+
+  it("parses a line larger than one stream chunk", async () => {
+    // Tool-heavy transcripts carry multi-megabyte single lines; they arrive
+    // split across many chunks and must reassemble into one record.
+    const path = NodePath.join(dir, "claude.jsonl");
+    const bigLine = `${JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-08-01T10:00:00Z",
+      requestId: "req_big",
+      sessionId: "session-1",
+      padding: "x".repeat(512 * 1024),
+      message: {
+        id: "msg_big",
+        model: "claude-fable-5",
+        usage: { input_tokens: 10, output_tokens: 42 },
+      },
+    })}\n`;
+    await NodeFSP.writeFile(path, bigLine + claudeLine(2, 7));
+
+    const parsed = await readTranscriptRecords(path, "claude");
+    assert.isNotNull(parsed);
+    assert.deepStrictEqual(
+      parsed.records.map((record) => record.totals.outputTokens),
+      [42, 7],
+    );
+  });
+
+  it("returns null for an unreadable file", async () => {
+    assert.isNull(await readTranscriptRecords(NodePath.join(dir, "missing.jsonl"), "claude"));
+  });
 });
 
 describe("listTranscriptFiles", () => {
   it("returns an empty listing for a missing root", async () => {
-    const listing = await listTranscriptFiles(NodePath.join(root, "does-not-exist"), 0);
+    const listing = await listTranscriptFiles(NodePath.join(dir, "does-not-exist"), 0);
 
     expect(listing).toEqual({ files: [], unreadableDirectories: 1 });
   });
 
   it("limits Pi subagent discovery to run session transcripts", async () => {
-    const runs = NodePath.join(root, "subagent-runs");
+    const runs = NodePath.join(dir, "subagent-runs");
     const session = NodePath.join(runs, "run-1", "session", "child.jsonl");
     const eventJournal = NodePath.join(runs, "run-1", "events.v1.jsonl");
     const nestedLog = NodePath.join(runs, "run-1", "workflow", "trace.jsonl");
@@ -47,7 +239,7 @@ describe("listTranscriptFiles", () => {
   });
 
   it("can inspect only direct Pi v0.30 legacy session files", async () => {
-    const agent = NodePath.join(root, "legacy-agent");
+    const agent = NodePath.join(dir, "legacy-agent");
     const directSession = NodePath.join(agent, "legacy.jsonl");
     const nestedSession = NodePath.join(agent, "sessions", "project", "new.jsonl");
     await NodeFSP.mkdir(NodePath.dirname(nestedSession), { recursive: true });
@@ -64,8 +256,76 @@ describe("listTranscriptFiles", () => {
 });
 
 describe("readTranscriptRecords for Pi", () => {
+  it("carries Pi identity and project discovery across a resume boundary", async () => {
+    const path = NodePath.join(dir, "pi-resume.jsonl");
+    await NodeFSP.writeFile(
+      path,
+      [
+        JSON.stringify({ type: "session", id: "pi-session", cwd: "/workspace/project" }),
+        JSON.stringify({ type: "model_change", provider: "anthropic", modelId: "claude-fable-5" }),
+        "",
+      ].join("\n"),
+    );
+    const first = await readTranscriptRecords(path, "pi");
+    assert.isNotNull(first);
+
+    await NodeFSP.appendFile(
+      path,
+      `${JSON.stringify({
+        type: "message",
+        id: "pi-entry",
+        timestamp: "2026-08-01T10:00:05Z",
+        message: { role: "assistant", usage: { input: 30, output: 12 } },
+      })}\n`,
+    );
+    const second = await readTranscriptRecords(path, "pi", first.position);
+    assert.isNotNull(second);
+    assert.isTrue(second.resumed);
+    assert.deepStrictEqual(second.projectPaths, ["/workspace/project"]);
+    assert.strictEqual(second.records[0]?.model, "anthropic/claude-fable-5");
+    assert.strictEqual(second.records[0]?.sessionId, "pi-session");
+    assert.strictEqual(second.records[0]?.dedupeKey, "pi:pi-entry");
+    const full = await readTranscriptRecords(path, "pi");
+    assert.isNotNull(full);
+    assert.deepStrictEqual([...first.records, ...second.records], full.records);
+  });
+
+  it("keeps an unterminated Pi model update out of the persisted reducer state", async () => {
+    const path = NodePath.join(dir, "pi-tail.jsonl");
+    const header = [
+      JSON.stringify({ type: "session", id: "pi-session", cwd: "/workspace/project" }),
+      JSON.stringify({ type: "model_change", provider: "anthropic", modelId: "claude-fable-5" }),
+      "",
+    ].join("\n");
+    const tail = (model: string) =>
+      JSON.stringify({
+        type: "message",
+        id: "tail-entry",
+        timestamp: "2026-08-01T10:00:05Z",
+        message: { role: "assistant", model, usage: { input: 30, output: 12 } },
+      });
+    await NodeFSP.writeFile(path, header + tail("tail-model"));
+    const first = await readTranscriptRecords(path, "pi");
+    assert.isNotNull(first);
+    assert.strictEqual(first.tailRecords[0]?.model, "anthropic/tail-model");
+    assert.strictEqual(first.position.piState?.model, "claude-fable-5");
+
+    // Only bytes before the tail are committed. Replacing the unfinished tail
+    // must not carry its model into the next parse's starting state.
+    await NodeFSP.writeFile(path, `${header}${tail("finished-model")}\n`);
+    const second = await readTranscriptRecords(path, "pi", first.position);
+    assert.isNotNull(second);
+    assert.isTrue(second.resumed);
+    assert.strictEqual(second.tailRecords.length, 0);
+    assert.strictEqual(second.records[0]?.model, "anthropic/finished-model");
+    const full = await readTranscriptRecords(path, "pi");
+    assert.isNotNull(full);
+    assert.deepStrictEqual(second.records, full.records);
+    assert.deepStrictEqual(second.position.piState, full.position.piState);
+  });
+
   it("captures the project path and parses usage", async () => {
-    const filePath = NodePath.join(root, "pi-session.jsonl");
+    const filePath = NodePath.join(dir, "pi-session.jsonl");
     const lines = [
       JSON.stringify({ type: "session", id: "s1", cwd: "/home/theo/proj" }),
       JSON.stringify({ type: "model_change", provider: "anthropic", modelId: "claude-fable-5" }),
@@ -88,6 +348,6 @@ describe("readTranscriptRecords for Pi", () => {
   });
 
   it("returns null when the file cannot be read", async () => {
-    expect(await readTranscriptRecords(NodePath.join(root, "gone.jsonl"), "pi")).toBeNull();
+    expect(await readTranscriptRecords(NodePath.join(dir, "gone.jsonl"), "pi")).toBeNull();
   });
 });

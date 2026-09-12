@@ -15,10 +15,11 @@ import { cn } from "~/lib/utils";
 
 import {
   AGENT_STATUS_VISUALS,
+  agentStatusLabel,
   AgentElapsed,
   agentActivityText,
   AgentStatusDot,
-  workflowIsLive,
+  workflowStatus,
   workflowMembers,
 } from "./agentsPresentation";
 
@@ -43,7 +44,7 @@ function WorkflowAgentNode({
   selected: boolean;
   onSelect: (agent: RuntimeSubagent) => void;
 }) {
-  const visuals = AGENT_STATUS_VISUALS[agent.status];
+  const statusLabel = agentStatusLabel(agent);
   const activity = agentActivityText(agent);
   const model = formatSubagentModelLabel(agent.model, agent.effort);
   return (
@@ -51,7 +52,7 @@ function WorkflowAgentNode({
       type="button"
       onClick={() => onSelect(agent)}
       aria-current={selected ? "true" : undefined}
-      aria-label={`${agent.title}. ${visuals.label}`}
+      aria-label={`${agent.title}. ${statusLabel}`}
       className={cn(
         "relative grid min-h-[3.5rem] w-full grid-cols-[0.5rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1rem] items-center gap-x-2 rounded-md border border-transparent px-2 py-1.5 text-left before:absolute before:-left-7 before:top-1/2 before:w-7 before:border-t before:border-border/65 hover:border-border/55 hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         selected && "border-border/70 bg-accent text-accent-foreground",
@@ -67,7 +68,7 @@ function WorkflowAgentNode({
           <span className="max-w-[55%] shrink-0 truncate font-mono text-[.68rem]">{model}</span>
         ) : null}
         {model && activity ? <span aria-hidden>·</span> : null}
-        <span className="min-w-0 truncate">{activity ?? (model ? null : visuals.label)}</span>
+        <span className="min-w-0 truncate">{activity ?? (model ? null : statusLabel)}</span>
       </span>
     </button>
   );
@@ -142,28 +143,23 @@ function WorkflowPhaseBranch({
 
 export function WorkflowDetail({
   group,
+  workflowMembersAuthoritative = false,
   selectedAgentId,
   onSelectAgent,
   onBack,
 }: {
   group: AgentPanelWorkflowGroup;
+  workflowMembersAuthoritative?: boolean;
   selectedAgentId: string | null;
   onSelectAgent: (agent: RuntimeSubagent) => void;
   onBack?: (() => void) | undefined;
 }) {
   const members = workflowMembers(group);
-  const live = workflowIsLive(group);
-  const failed = members.filter((member) => member.status === "failed").length;
   const settled = members.filter((member) =>
     ["completed", "failed", "cancelled", "interrupted"].includes(member.status),
   ).length;
   const tokens = members.reduce((sum, member) => sum + (member.usage?.totalTokens ?? 0), 0);
-  const status: RuntimeSubagent["status"] =
-    failed > 0 || group.workflow.status === "failed"
-      ? "failed"
-      : live
-        ? "running"
-        : group.workflow.status;
+  const status = workflowStatus(group, workflowMembersAuthoritative);
   const visuals = AGENT_STATUS_VISUALS[status];
 
   return (

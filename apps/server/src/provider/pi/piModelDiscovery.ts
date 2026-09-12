@@ -26,8 +26,10 @@ import type {
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
+import * as Path from "effect/Path";
 
 import { buildSelectOptionDescriptor } from "../providerSnapshot.ts";
+import { resolvePiAgentDir } from "./piPaths.ts";
 import {
   PI_AUTO_CONTEXT_WINDOW,
   PI_CODEX_FAST_COMMAND,
@@ -42,6 +44,7 @@ import {
 } from "./piRpcProtocol.ts";
 
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({ optionDescriptors: [] });
+const PRIVATE_RPC_COMMAND_NAMES = new Set(["subagents-rpc", "background-terminals-rpc"]);
 
 /** Minimal structural view of the SDK `Model` we depend on. */
 interface PiSdkModel {
@@ -170,7 +173,7 @@ function piProviderResources(resources: PiResourceSnapshot): {
   const commands = new Map<string, ServerProviderSlashCommand>();
   const appendCommand = (command: ServerProviderSlashCommand) => {
     const name = nonEmpty(command.name);
-    if (!name) return;
+    if (!name || PRIVATE_RPC_COMMAND_NAMES.has(name)) return;
     const key = name.toLowerCase();
     if (!commands.has(key)) commands.set(key, { ...command, name });
   };
@@ -569,9 +572,14 @@ function loadPiDiscoverySnapshotInWorker(
 export const discoverPiModels = Effect.fn("discoverPiModels")(function* (
   options: PiModelDiscoveryOptions = {},
 ) {
+  const paths = yield* Path.Path;
+  const agentDir = resolvePiAgentDir(paths, options);
+  const environment = { ...(options.environment ?? process.env), PI_CODING_AGENT_DIR: agentDir };
   return yield* Effect.tryPromise({
     try: async (): Promise<PiModelDiscoveryResult> =>
-      finishPiModelDiscovery(await loadPiDiscoverySnapshotInWorker(options)),
+      finishPiModelDiscovery(
+        await loadPiDiscoverySnapshotInWorker({ ...options, agentDir, environment }),
+      ),
     catch: (cause): PiModelDiscoveryResult => ({
       models: [],
       auth: { status: "unknown" },

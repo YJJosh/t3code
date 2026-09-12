@@ -11,11 +11,13 @@ import {
 import { PiSettings } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
@@ -34,11 +36,18 @@ const encodeBackgroundTerminalEvent = Schema.encodeSync(
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+interface FakeTaskControlRequest {
+  readonly action: "steer" | "reply" | "kill";
+  readonly requestId: string;
+  readonly runId: string;
+}
+
 interface FakePi {
   readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly args: ReadonlyArray<string>;
   readonly env: Record<string, string>;
   readonly written: ReadonlyArray<Record<string, unknown>>;
+  readonly taskControlRequests: Queue.Dequeue<FakeTaskControlRequest>;
   readonly pushFrame: (frame: unknown) => Effect.Effect<void>;
 }
 
@@ -46,13 +55,29 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
   options: {
     readonly subagentsCommand?: boolean;
     readonly backgroundTerminalsCommand?: boolean;
+    readonly commands?: ReadonlyArray<{
+      readonly name: string;
+      readonly source?: "extension" | "prompt" | "skill";
+    }>;
+    readonly extensionCommand?: {
+      readonly name: string;
+      readonly infoMessage?: string;
+      readonly startsAgent?: boolean;
+    };
+    readonly taskControl?: {
+      readonly acknowledgment?: "success" | "failure";
+      readonly result?: "success" | "failure" | "none";
+      readonly order?: "before-acknowledgment" | "after-acknowledgment";
+    };
   } = {},
 ) {
   const stdout = yield* Queue.unbounded<Uint8Array>();
+  const taskControlRequests = yield* Queue.unbounded<FakeTaskControlRequest>();
   const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
   const args: string[] = [];
   const env: Record<string, string> = {};
   const written: Array<Record<string, unknown>> = [];
+  let isStreaming = false;
 
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
@@ -74,28 +99,94 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
           if (typeof request.id !== "string" || typeof request.type !== "string") {
             return Effect.void;
           }
+          const taskControlMessage =
+            request.type === "prompt" &&
+            typeof request.message === "string" &&
+            request.message.startsWith("/subagents-rpc ")
+              ? request.message.slice("/subagents-rpc ".length)
+              : null;
+          const taskControlPayload =
+            taskControlMessage === null
+              ? null
+              : (JSON.parse(taskControlMessage) as Record<string, unknown>);
+          const taskControl: FakeTaskControlRequest | null =
+            taskControlPayload !== null &&
+            (taskControlPayload.action === "steer" ||
+              taskControlPayload.action === "reply" ||
+              taskControlPayload.action === "kill")
+              ? {
+                  action: taskControlPayload.action,
+                  requestId: String(taskControlPayload.request_id),
+                  runId: String(taskControlPayload.run_id),
+                }
+              : null;
+          const promptRejected =
+            taskControl !== null && options.taskControl?.acknowledgment === "failure";
+          const extensionCommand = options.extensionCommand;
+          const extensionPrefix = extensionCommand ? `/${extensionCommand.name}` : undefined;
+          const runsExtensionCommand =
+            request.type === "prompt" &&
+            typeof request.message === "string" &&
+            extensionPrefix !== undefined &&
+            (request.message === extensionPrefix ||
+              request.message.startsWith(`${extensionPrefix} `));
+          if (runsExtensionCommand && extensionCommand?.startsAgent) isStreaming = true;
           const response = {
             type: "response",
             id: request.id,
             command: request.type,
-            success: true,
-            ...(request.type === "get_state"
-              ? { data: { sessionId: "pi-session-test" } }
-              : request.type === "get_commands"
+            success: !promptRejected,
+            ...(promptRejected
+              ? { error: "Pi rejected the subagent RPC command." }
+              : request.type === "get_state"
                 ? {
                     data: {
-                      commands: [
-                        ...(options.subagentsCommand === false
-                          ? []
-                          : [{ name: "subagents-rpc", source: "extension" }]),
-                        ...(options.backgroundTerminalsCommand === false
-                          ? []
-                          : [{ name: "background-terminals-rpc", source: "extension" }]),
-                      ],
+                      sessionId: "pi-session-test",
+                      isStreaming,
+                      isCompacting: false,
+                      pendingMessageCount: 0,
                     },
                   }
-                : {}),
+                : request.type === "get_commands"
+                  ? {
+                      data: {
+                        commands: [
+                          ...(options.subagentsCommand === false
+                            ? []
+                            : [{ name: "subagents-rpc", source: "extension" }]),
+                          ...(options.backgroundTerminalsCommand === false
+                            ? []
+                            : [{ name: "background-terminals-rpc", source: "extension" }]),
+                          ...(options.commands ?? []),
+                        ],
+                      },
+                    }
+                  : {}),
           };
+          const taskControlResult =
+            taskControl === null || promptRejected || options.taskControl?.result === "none"
+              ? null
+              : {
+                  type: "extension_ui_request",
+                  id: `control-${taskControl.requestId}`,
+                  method: "notify",
+                  message: `${PI_SUBAGENTS_RPC_EVENT_PREFIX}${JSON.stringify({
+                    contractVersion: 1,
+                    managerId: "manager-control",
+                    sequence: 1,
+                    timestamp: "2026-01-01T00:00:00.000Z",
+                    kind: "control_result",
+                    runId: taskControl.runId,
+                    control: {
+                      requestId: taskControl.requestId,
+                      action: taskControl.action,
+                      success: options.taskControl?.result !== "failure",
+                      ...(options.taskControl?.result === "failure"
+                        ? { error: "The child is no longer waiting for input." }
+                        : {}),
+                    },
+                  })}`,
+                };
           const backgroundControlMessage =
             request.type === "prompt" &&
             typeof request.message === "string" &&
@@ -113,36 +204,68 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
                   request_id: backgroundRequestId,
                 }
               : null;
-          const frames = [
-            response,
-            ...(backgroundControl === null
-              ? []
-              : [
-                  {
-                    type: "extension_ui_request",
-                    id: `control-${backgroundControl.request_id}`,
-                    method: "notify",
-                    message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${encodeBackgroundTerminalEvent(
-                      {
-                        contractVersion: 1,
-                        managerId: "manager-1",
-                        sequence: 2,
-                        timestamp: "2026-01-01T00:00:01.000Z",
-                        kind: "control_result",
-                        control: {
-                          requestId: backgroundControl.request_id,
-                          action: backgroundControl.action,
-                          success: true,
-                        },
+          const backgroundControlResult =
+            backgroundControl === null
+              ? null
+              : {
+                  type: "extension_ui_request",
+                  id: `control-${backgroundControl.request_id}`,
+                  method: "notify",
+                  message: `${PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX}${encodeBackgroundTerminalEvent(
+                    {
+                      contractVersion: 1,
+                      managerId: "manager-1",
+                      sequence: 2,
+                      timestamp: "2026-01-01T00:00:01.000Z",
+                      kind: "control_result",
+                      control: {
+                        requestId: backgroundControl.request_id,
+                        action: backgroundControl.action,
+                        success: true,
                       },
-                    )}`,
-                  },
-                ]),
+                    },
+                  )}`,
+                };
+          const extensionFrames =
+            runsExtensionCommand && extensionCommand
+              ? [
+                  ...(extensionCommand.infoMessage
+                    ? [
+                        {
+                          type: "extension_ui_request",
+                          id: `info-${extensionCommand.name}`,
+                          method: "notify",
+                          notifyType: "info",
+                          message: extensionCommand.infoMessage,
+                        },
+                      ]
+                    : []),
+                  ...(extensionCommand.startsAgent ? [{ type: "agent_start" }] : []),
+                ]
+              : [];
+          const frames = [
+            ...(taskControlResult !== null && options.taskControl?.order === "before-acknowledgment"
+              ? [taskControlResult]
+              : []),
+            ...extensionFrames,
+            response,
+            ...(taskControlResult !== null && options.taskControl?.order !== "before-acknowledgment"
+              ? [taskControlResult]
+              : []),
+            ...(backgroundControlResult === null ? [] : [backgroundControlResult]),
           ];
-          return Effect.forEach(
-            frames,
-            (frame) => Queue.offer(stdout, encoder.encode(serializeJsonlLine(frame))),
-            { discard: true },
+          return (
+            taskControl === null
+              ? Effect.void
+              : Queue.offer(taskControlRequests, taskControl).pipe(Effect.asVoid)
+          ).pipe(
+            Effect.andThen(
+              Effect.forEach(
+                frames,
+                (frame) => Queue.offer(stdout, encoder.encode(serializeJsonlLine(frame))),
+                { discard: true },
+              ),
+            ),
           );
         }),
         stdout: Stream.fromQueue(stdout),
@@ -159,8 +282,17 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
     args,
     env,
     written,
+    taskControlRequests,
     pushFrame: (frame) =>
-      Queue.offer(stdout, encoder.encode(serializeJsonlLine(frame))).pipe(Effect.asVoid),
+      Effect.sync(() => {
+        if (typeof frame === "object" && frame !== null && "type" in frame) {
+          if (frame.type === "agent_start") isStreaming = true;
+          if (frame.type === "agent_settled") isStreaming = false;
+        }
+      }).pipe(
+        Effect.andThen(Queue.offer(stdout, encoder.encode(serializeJsonlLine(frame)))),
+        Effect.asVoid,
+      ),
   } satisfies FakePi;
 });
 
@@ -207,6 +339,11 @@ describe("Pi adapter", () => {
           close: () => Effect.void,
         },
       }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+      expect(adapter.capabilities).toEqual({
+        sessionModelSwitch: "in-session",
+        supportsConversationRollback: false,
+      });
+      expect(adapter.compaction).toEqual({ type: "slash-command", command: "/compact" });
       const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
       yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
         Effect.forkScoped,
@@ -301,9 +438,216 @@ describe("Pi adapter", () => {
     }).pipe(Effect.provide(TestEnv)),
   );
 
-  it.effect("sends task controls through the advertised Pi extension command", () =>
+  it.effect("settles an idle extension command and surfaces only its scoped info", () =>
     Effect.gen(function* () {
-      const fake = yield* makeFakePi();
+      const fake = yield* makeFakePi({
+        commands: [{ name: "ps", source: "extension" }],
+        extensionCommand: { name: "ps", infoMessage: "No subagents are running." },
+      });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* Queue.takeAll(events);
+
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        id: "startup-info",
+        method: "notify",
+        notifyType: "info",
+        message: "Profile manager loaded.",
+      });
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        id: "startup-barrier",
+        method: "notify",
+        notifyType: "warning",
+        message: "startup barrier",
+      });
+      const startupEvents = yield* takeThroughType(events, "runtime.warning");
+      expect(startupEvents.some((event) => event.type === "content.delta")).toBe(false);
+
+      yield* adapter.sendTurn({ threadId: THREAD, input: "/ps" });
+      const commandEvents = yield* takeThroughType(events, "turn.completed");
+
+      expect(commandEvents.filter((event) => event.type === "turn.started")).toHaveLength(1);
+      expect(commandEvents).toContainEqual(
+        expect.objectContaining({
+          type: "content.delta",
+          payload: { streamKind: "assistant_text", delta: "No subagents are running." },
+        }),
+      );
+      expect(commandEvents.at(-1)).toEqual(
+        expect.objectContaining({ type: "turn.completed", payload: { state: "completed" } }),
+      );
+      expect(fake.written).toContainEqual(
+        expect.objectContaining({ type: "prompt", message: "/ps" }),
+      );
+      expect(fake.written.some((command) => command.type === "steer")).toBe(false);
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("keeps an agent-starting extension command open until true settlement", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({
+        commands: [{ name: "profile", source: "extension" }],
+        extensionCommand: { name: "profile", startsAgent: true },
+      });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* Queue.takeAll(events);
+
+      yield* adapter.sendTurn({ threadId: THREAD, input: "/profile run research" });
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        id: "agent-started-barrier",
+        method: "notify",
+        notifyType: "warning",
+        message: "agent started barrier",
+      });
+      const beforeSettlement = yield* takeThroughType(events, "runtime.warning");
+      expect(beforeSettlement.some((event) => event.type === "turn.completed")).toBe(false);
+
+      yield* fake.pushFrame({ type: "agent_settled" });
+      const throughSettlement = yield* takeThroughType(events, "turn.completed");
+      expect(throughSettlement.at(-1)).toEqual(
+        expect.objectContaining({
+          type: "turn.completed",
+          payload: expect.objectContaining({ state: "completed" }),
+        }),
+      );
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("prompts extension commands during an active model turn without settling it", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({
+        commands: [{ name: "ps", source: "extension" }],
+        extensionCommand: { name: "ps", infoMessage: "One subagent is running." },
+      });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* Queue.takeAll(events);
+
+      const active = yield* adapter.sendTurn({ threadId: THREAD, input: "Implement it" });
+      yield* takeThroughType(events, "turn.started");
+      yield* adapter.sendTurn({ threadId: THREAD, input: "/ps" });
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        id: "active-command-barrier",
+        method: "notify",
+        notifyType: "warning",
+        message: "active command barrier",
+      });
+      const commandEvents = yield* takeThroughType(events, "runtime.warning");
+
+      expect(commandEvents.some((event) => event.type === "turn.started")).toBe(false);
+      expect(commandEvents.some((event) => event.type === "turn.completed")).toBe(false);
+      expect(commandEvents).toContainEqual(
+        expect.objectContaining({
+          type: "content.delta",
+          turnId: active.turnId,
+          payload: { streamKind: "assistant_text", delta: "One subagent is running." },
+        }),
+      );
+      expect(fake.written).toContainEqual(
+        expect.objectContaining({ type: "prompt", message: "/ps" }),
+      );
+
+      yield* fake.pushFrame({ type: "agent_settled" });
+      const throughSettlement = yield* takeThroughType(events, "turn.completed");
+      expect(throughSettlement.at(-1)).toEqual(expect.objectContaining({ turnId: active.turnId }));
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect(
+    "leaves normal prompts, templates, skills, and legacy commands on the normal path",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi({
+          commands: [
+            { name: "review", source: "prompt" },
+            { name: "skill:inspect", source: "skill" },
+            { name: "legacy" },
+          ],
+        });
+        const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+        const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+        yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+          Effect.forkScoped,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* Queue.takeAll(events);
+
+        yield* adapter.sendTurn({ threadId: THREAD, input: "Implement it" });
+        yield* takeThroughType(events, "turn.started");
+        yield* adapter.sendTurn({ threadId: THREAD, input: "Adjust the implementation" });
+        expect(fake.written.at(-1)).toEqual(
+          expect.objectContaining({ type: "steer", message: "Adjust the implementation" }),
+        );
+        yield* fake.pushFrame({ type: "agent_settled" });
+        yield* takeThroughType(events, "turn.completed");
+
+        for (const command of ["/review focused", "/skill:inspect src", "/legacy"]) {
+          yield* adapter.sendTurn({ threadId: THREAD, input: command });
+          yield* takeThroughType(events, "turn.started");
+          yield* fake.pushFrame({
+            type: "extension_ui_request",
+            id: `barrier-${command}`,
+            method: "notify",
+            notifyType: "warning",
+            message: `${command} barrier`,
+          });
+          const beforeSettlement = yield* takeThroughType(events, "runtime.warning");
+          expect(beforeSettlement.some((event) => event.type === "turn.completed")).toBe(false);
+          expect(fake.written).toContainEqual(
+            expect.objectContaining({ type: "prompt", message: command }),
+          );
+          yield* fake.pushFrame({ type: "agent_settled" });
+          yield* takeThroughType(events, "turn.completed");
+        }
+      }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("awaits task control results that arrive after prompt acknowledgment", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({
+        taskControl: { order: "after-acknowledgment" },
+      });
       const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
       );
@@ -330,6 +674,158 @@ describe("Pi adapter", () => {
       expect(control?.message).toContain('"action":"reply"');
       expect(control?.message).toContain('"run_id":"rmre1dz89-9"');
       expect(control?.message).toContain('"message":"Use the upstream lifecycle"');
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("awaits task control results that arrive before prompt acknowledgment", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({
+        taskControl: { order: "before-acknowledgment" },
+      });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.controlTask!({
+        threadId: THREAD,
+        taskId: "run-result-first",
+        action: "stop",
+        reason: "No longer needed",
+      });
+
+      expect(yield* Queue.take(fake.taskControlRequests)).toMatchObject({
+        action: "kill",
+        runId: "run-result-first",
+      });
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("returns the Pi task control rejection as a typed request error", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ taskControl: { result: "failure" } });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const error = yield* adapter.controlTask!({
+        threadId: THREAD,
+        taskId: "run-rejected",
+        action: "reply",
+        message: "Continue",
+      }).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "ProviderAdapterRequestError",
+        method: "subagents-rpc",
+        detail: "The child is no longer waiting for input.",
+      });
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("returns prompt rejection as a typed request error", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({
+        taskControl: { acknowledgment: "failure" },
+      });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const error = yield* adapter.controlTask!({
+        threadId: THREAD,
+        taskId: "run-command-rejected",
+        action: "steer",
+        message: "Change direction",
+      }).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "ProviderAdapterRequestError",
+        method: "prompt",
+        detail: "Pi rejected the subagent RPC command.",
+      });
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("times out when Pi acknowledges a task control without reporting a result", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ taskControl: { result: "none" } });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const control = yield* adapter.controlTask!({
+        threadId: THREAD,
+        taskId: "run-missing-result",
+        action: "reply",
+        message: "Continue",
+      }).pipe(Effect.forkChild);
+      yield* Queue.take(fake.taskControlRequests);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("13 seconds");
+
+      expect(yield* Fiber.join(control).pipe(Effect.flip)).toMatchObject({
+        _tag: "ProviderAdapterRequestError",
+        method: "subagents-rpc",
+        detail: "Timed out waiting for the Pi task control result.",
+      });
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("fails and clears pending task controls when their Pi session stops", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ taskControl: { result: "none" } });
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      const control = yield* adapter.controlTask!({
+        threadId: THREAD,
+        taskId: "run-stopped",
+        action: "stop",
+      }).pipe(Effect.forkChild);
+      yield* Queue.take(fake.taskControlRequests);
+      yield* fake.pushFrame({
+        type: "extension_ui_request",
+        id: "control-stop-barrier",
+        method: "notify",
+        notifyType: "warning",
+        message: "task control acknowledgment processed",
+      });
+      yield* takeThroughType(events, "runtime.warning");
+      yield* adapter.stopSession(THREAD);
+
+      expect(yield* Fiber.join(control).pipe(Effect.flip)).toMatchObject({
+        _tag: "ProviderAdapterRequestError",
+        method: "subagents-rpc",
+        detail: "The Pi session stopped before the task control completed.",
+      });
     }).pipe(Effect.provide(TestEnv)),
   );
 
@@ -638,14 +1134,32 @@ describe("Pi adapter", () => {
         }),
       ],
     );
-    expect(projectPiTaskBridgeEvent({ ...base, kind: "needs_input" } as PiTaskBridgeEvent)).toEqual(
-      [
-        expect.objectContaining({
-          type: "task.updated",
-          payload: expect.objectContaining({ status: "waiting" }),
+    const waiting = projectPiTaskBridgeEvent({
+      ...base,
+      kind: "needs_input",
+    } as PiTaskBridgeEvent);
+    expect(waiting).toEqual([
+      expect.objectContaining({
+        type: "task.updated",
+        payload: expect.objectContaining({ status: "waiting" }),
+      }),
+    ]);
+    expect(waiting[0]?.payload).not.toHaveProperty("description");
+    expect(
+      projectPiTaskBridgeEvent({
+        ...base,
+        kind: "run_running",
+        view: { ...base.view, progressNote: "Running the focused adapter tests" },
+      } as PiTaskBridgeEvent),
+    ).toEqual([
+      expect.objectContaining({
+        type: "task.updated",
+        payload: expect.objectContaining({
+          status: "running",
+          description: "Running the focused adapter tests",
         }),
-      ],
-    );
+      }),
+    ]);
     expect(
       projectPiTaskBridgeEvent({
         ...base,
@@ -686,6 +1200,25 @@ describe("Pi adapter", () => {
         payload: expect.objectContaining({
           status: "completed",
           typedUsage: expect.objectContaining({ totalTokens: 17, durationMs: 250 }),
+        }),
+      }),
+    ]);
+    expect(
+      projectPiTaskBridgeEvent({
+        ...base,
+        kind: "killed",
+        view: {
+          ...base.view,
+          state: "failed",
+          result: { reason: "Stopped by the manager" },
+        },
+      } as PiTaskBridgeEvent),
+    ).toEqual([
+      expect.objectContaining({
+        type: "task.completed",
+        payload: expect.objectContaining({
+          status: "failed",
+          summary: "Stopped by the manager",
         }),
       }),
     ]);

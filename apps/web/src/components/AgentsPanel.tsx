@@ -49,11 +49,13 @@ export function AgentsPanel({
   environmentId = null,
   threadId = null,
   taskControlsEnabled = false,
+  workflowMembersAuthoritative = false,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
   taskControlsEnabled?: boolean;
+  workflowMembersAuthoritative?: boolean;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const splitLayout = useSplitInspectorLayout(rootRef);
@@ -165,6 +167,7 @@ export function AgentsPanel({
   const roster = (
     <AgentsRoster
       model={model}
+      workflowMembersAuthoritative={workflowMembersAuthoritative}
       selectedAgentId={selectedAgent?.id ?? null}
       selectedWorkflowId={selectedWorkflow?.workflow.id ?? parentWorkflow?.workflow.id ?? null}
       autoFocusTargetId={returnFocusTargetId}
@@ -175,6 +178,7 @@ export function AgentsPanel({
   const detail = selectedWorkflow ? (
     <WorkflowDetail
       group={selectedWorkflow}
+      workflowMembersAuthoritative={workflowMembersAuthoritative}
       selectedAgentId={null}
       onSelectAgent={(agent) => selectWorkflowAgent(selectedWorkflow, agent)}
       {...(!splitLayout ? { onBack: showRoster } : {})}

@@ -33,7 +33,7 @@ import { cn } from "~/lib/utils";
 import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 
-import { AGENT_STATUS_VISUALS, AgentElapsed, AgentStatusDot } from "./agentsPresentation";
+import { agentStatusLabel, AgentElapsed, AgentStatusDot } from "./agentsPresentation";
 
 function ToolGlyph({ name }: { name: string }) {
   const normalized = name.toLocaleLowerCase();
@@ -345,7 +345,7 @@ export function AgentDetail({
   onBack?: (() => void) | undefined;
   backLabel?: string;
 }) {
-  const visuals = AGENT_STATUS_VISUALS[agent.status];
+  const statusLabel = agentStatusLabel(agent);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const model = formatSubagentModelLabel(agent.model, agent.effort) ?? "Provider default";
@@ -425,7 +425,7 @@ export function AgentDetail({
                 {agent.title}
               </h2>
               <span className="shrink-0 rounded-full border border-border/65 px-2 py-0.5 text-[.65rem] text-muted-foreground">
-                {visuals.label}
+                {statusLabel}
               </span>
             </div>
             <p className="mt-1 truncate font-mono text-[.65rem] text-muted-foreground">

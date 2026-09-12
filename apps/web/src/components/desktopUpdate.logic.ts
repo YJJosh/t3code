@@ -3,13 +3,11 @@ import { APP_BASE_NAME } from "../branding";
 
 export type DesktopUpdateButtonAction = "download" | "install" | "none";
 
-const UPSTREAM_DESKTOP_RELEASE_TAG_URL = "https://github.com/pingdotgg/t3code/releases/tag";
-const DULLI_DESKTOP_RELEASE_TAG_URL = "https://github.com/YJJosh/t3code/releases/tag";
+const UPSTREAM_DESKTOP_RELEASE_HISTORY_URL = "https://github.com/pingdotgg/t3code/releases";
+const DULLI_DESKTOP_RELEASE_HISTORY_URL = "https://github.com/YJJosh/t3code/releases";
 
 function resolveDesktopReleaseTagUrl(appBaseName: string): string {
-  return appBaseName === "T3 Dulli"
-    ? DULLI_DESKTOP_RELEASE_TAG_URL
-    : UPSTREAM_DESKTOP_RELEASE_TAG_URL;
+  return `${getDesktopUpdateReleaseHistoryUrl(appBaseName)}/tag`;
 }
 
 /**
@@ -29,6 +27,12 @@ export function getDesktopUpdateReleaseUrl(
   const normalizedVersion = version?.trim();
   if (!normalizedVersion) return null;
   return `${resolveDesktopReleaseTagUrl(appBaseName)}/v${encodeURIComponent(normalizedVersion)}`;
+}
+
+export function getDesktopUpdateReleaseHistoryUrl(appBaseName = APP_BASE_NAME): string {
+  return appBaseName === "T3 Dulli"
+    ? DULLI_DESKTOP_RELEASE_HISTORY_URL
+    : UPSTREAM_DESKTOP_RELEASE_HISTORY_URL;
 }
 
 export function resolveDesktopUpdateButtonAction(
@@ -51,16 +55,6 @@ export function resolveDesktopUpdateButtonAction(
     }
   }
   return "none";
-}
-
-export function shouldShowDesktopUpdateButton(state: DesktopUpdateState | null): boolean {
-  if (!state || !state.enabled) {
-    return false;
-  }
-  if (state.status === "downloading") {
-    return true;
-  }
-  return resolveDesktopUpdateButtonAction(state) !== "none";
 }
 
 export function shouldShowArm64IntelBuildWarning(state: DesktopUpdateState | null): boolean {
@@ -133,11 +127,6 @@ export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): 
 
 export function shouldToastDesktopUpdateActionResult(result: DesktopUpdateActionResult): boolean {
   return getDesktopUpdateActionError(result) !== null;
-}
-
-export function shouldHighlightDesktopUpdateError(state: DesktopUpdateState | null): boolean {
-  if (!state || state.status !== "error") return false;
-  return state.errorContext === "download" || state.errorContext === "install";
 }
 
 export function canCheckForUpdate(state: DesktopUpdateState | null): boolean {

@@ -15,6 +15,7 @@ import { extractJsonObject } from "@t3tools/shared/schemaJson";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -48,7 +49,8 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
 ) {
   // Resolve up-front so the returned closures don't leak the spawner into R.
   yield* ChildProcessSpawner.ChildProcessSpawner;
-  const env = buildPiRpcEnv(piSettings, environment);
+  const paths = yield* Path.Path;
+  const env = buildPiRpcEnv(paths, piSettings, environment);
   const binary = resolvePiBinary(piSettings);
 
   const runPiJson = <S extends Schema.Top>({

@@ -2,6 +2,10 @@
 
 T3 Dulli is the branded distribution maintained in `YJJosh/t3code`. This repository owns its desktop and mobile identity, Pi and Workler integration, npm CLI, packaging, and release automation. Upstream publishing, T3 Connect relay deployment, and EAS/App Store submission remain disabled.
 
+## Upstream baseline
+
+The current upstream baseline is stable **v0.0.40**, not a nightly or preview release. Upstream updates retain the fork's Pi provider, subagent/workflow inspector, background-terminal controls, Workler defaults, and Dulli identities and release channels. Resolve overlapping changes at their integration boundaries rather than replacing fork-owned features with upstream equivalents.
+
 ## Identity and coexistence
 
 Build Dulli with `--brand dulli`. The default remains the upstream `t3code` brand.

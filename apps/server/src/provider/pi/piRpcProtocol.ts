@@ -1,11 +1,14 @@
-/** Pure helpers for Pi 0.84.4's JSONL RPC protocol. */
+/** Pure helpers for Pi's JSONL RPC protocol (verified with 0.85.1). */
 import {
   PiBackgroundTerminalEvent,
   type PiBackgroundTerminalEvent as PiBackgroundTerminalEventType,
   type PiSettings,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+
+import { resolvePiAgentDir } from "./piPaths.ts";
 
 export type PiRpcImage = {
   readonly type: "image";
@@ -13,7 +16,7 @@ export type PiRpcImage = {
   readonly mimeType: string;
 };
 
-/** Commands used by the adapter, kept structurally aligned with Pi 0.84.4. */
+/** Commands used by the adapter, kept structurally aligned with Pi 0.85.1. */
 export type PiRpcCommand =
   | {
       readonly id?: string;
@@ -175,20 +178,28 @@ export function resolvePiBinary(config: PiSettings): string {
 }
 
 export function buildPiRpcEnv(
+  paths: Path.Path,
   config: PiSettings,
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  const agentDir = config.agentDir?.trim();
+  const agentDir = resolvePiAgentDir(paths, { agentDir: config.agentDir, environment: baseEnv });
   return {
     ...baseEnv,
     // Optional Pi extensions can emit structured workflow notifications. The
-    // adapter translates their lifecycle to canonical task.* events; controls
-    // remain a later slice on top of the native Agents panel.
+    // adapter translates their lifecycle and correlated control results for
+    // the client inspectors.
     [PI_SUBAGENTS_RPC_BRIDGE_ENV]: "1",
     [PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV]: "1",
-    ...(agentDir ? { PI_CODING_AGENT_DIR: agentDir } : {}),
+    PI_CODING_AGENT_DIR: agentDir,
   };
 }
+
+const PiTaskBridgeControlResultSchema = Schema.Struct({
+  requestId: Schema.optional(Schema.String),
+  action: Schema.Literals(["status", "replay", "steer", "reply", "kill"]),
+  success: Schema.Boolean,
+  error: Schema.optional(Schema.String),
+});
 
 const PiTaskBridgeEventSchema = Schema.Struct({
   contractVersion: Schema.Literal(1),
@@ -199,6 +210,7 @@ const PiTaskBridgeEventSchema = Schema.Struct({
   runId: Schema.optional(Schema.String),
   view: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   activity: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  control: Schema.optional(PiTaskBridgeControlResultSchema),
   snapshot: Schema.optional(Schema.Unknown),
   replay: Schema.optional(Schema.Boolean),
 });
