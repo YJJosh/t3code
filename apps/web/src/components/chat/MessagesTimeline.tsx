@@ -307,6 +307,7 @@ interface MessagesTimelineProps {
   ) => boolean;
   agentPanelModel?: AgentPanelModel;
   workflowMembersAuthoritative?: boolean;
+  preserveAssistantMessages?: boolean;
   onOpenAgents?: () => void;
   isWorking: boolean;
   isPreparingWorktree?: boolean;
@@ -370,6 +371,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeTurnStartedAt,
   agentPanelModel = EMPTY_AGENT_PANEL_MODEL,
   workflowMembersAuthoritative = false,
+  preserveAssistantMessages = false,
   onOpenAgents = NOOP_OPEN_AGENTS,
   listRef,
   timelineEntries,
@@ -546,6 +548,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         latestTurn,
         runningTurnId,
         expandedTurnIds,
+        preserveAssistantMessages,
         expandedWorkGroupIds,
         isWorking,
         activeTurnStartedAt,
@@ -566,6 +569,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     latestTurn,
     runningTurnId,
     expandedTurnIds,
+    preserveAssistantMessages,
     expandedWorkGroupIds,
     isWorking,
     activeTurnStartedAt,
@@ -3046,6 +3050,7 @@ const toolCallExpandedBodyClassName =
   "max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-secondary-label text-[length:var(--font-size-code,0.6875rem)] leading-relaxed select-text";
 
 function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconName {
+  if (workLogEntryIsReasoning(workEntry)) return "brain";
   if (
     workEntry.sourceActivityKind === "user-input.requested" ||
     workEntry.sourceActivityKind === "user-input.resolved"
@@ -3154,29 +3159,6 @@ const AgentSpawnCtaRow = memo(function AgentSpawnCtaRow(props: { workEntry: Time
   );
 });
 
-const ReasoningWorkEntryRow = memo(function ReasoningWorkEntryRow(props: {
-  workEntry: TimelineWorkEntry;
-}) {
-  const ctx = use(TimelineRowCtx);
-  const text = props.workEntry.detail?.trim() || props.workEntry.label.trim();
-  if (text.length === 0) return null;
-
-  return (
-    <div
-      data-reasoning-entry="true"
-      className="border-s-2 border-border/55 px-3 py-0.5 text-[13px] italic leading-relaxed text-muted-foreground"
-    >
-      <ChatMarkdown
-        text={text}
-        cwd={ctx.markdownCwd}
-        threadRef={ctx.threadRef ?? undefined}
-        skills={ctx.skills}
-        className="text-[13px] leading-relaxed [&_p]:my-0"
-      />
-    </div>
-  );
-});
-
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
@@ -3188,9 +3170,6 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   // Before any hooks: spawn CTA rows render their own component.
   if (workEntry.agentSpawn) {
     return <AgentSpawnCtaRow workEntry={workEntry} />;
-  }
-  if (workLogEntryIsReasoning(workEntry)) {
-    return <ReasoningWorkEntryRow workEntry={workEntry} />;
   }
   return (
     <PlainWorkEntryRow
@@ -3211,7 +3190,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   onToggleEntry?: ((collapsed: boolean) => void) | undefined;
 }) {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry, displayLabel } = props;
-  const { threadRef, onImageExpand } = use(TimelineRowCtx);
+  const { threadRef, onImageExpand, markdownCwd, skills } = use(TimelineRowCtx);
   const groupView = use(WorkGroupViewCtx);
   const [expanded, setExpanded] = useState(
     () => groupView?.state.expandedEntries.has(workEntry.id) ?? false,
@@ -3239,7 +3218,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
     showWarningIndicator || showDestructiveRowStyle
       ? undefined
       : (workEntry.toolIcon ?? workEntry.toolSource?.icon);
-  const isToolEntry = workLogEntryIsToolLike(workEntry);
+  const isToolEntry = !workLogEntryIsReasoning(workEntry) && workLogEntryIsToolLike(workEntry);
   const heading = normalizeCompactToolLabel(workEntry.toolTitle || workEntry.label);
   const showSuccessIndicator = isToolEntry && workEntryIndicatesToolSuccess(workEntry);
   const previewText = displayLabel ?? workEntryDisplayLabel(workEntry, workspaceRoot);
@@ -3262,13 +3241,16 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
       workEntry.changedFiles?.length ||
       viewedImage,
     );
+  const isReasoning = workLogEntryIsReasoning(workEntry);
   const expandedBody = expanded
-    ? buildToolCallExpandedBody(
-        workEntry,
-        workspaceRoot,
-        previewText,
-        viewedImage ? viewedImagePath : null,
-      )
+    ? isReasoning
+      ? workEntry.detail?.trim() || null
+      : buildToolCallExpandedBody(
+          workEntry,
+          workspaceRoot,
+          previewText,
+          viewedImage ? viewedImagePath : null,
+        )
     : null;
   // Reserve destructive row styling for severe failures, not routine tool errors.
   const iconWrapperClass = cn(
@@ -3404,7 +3386,17 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
           onClick={stopRowToggle}
           onPointerDown={stopRowToggle}
         >
-          <pre className={toolCallExpandedBodyClassName}>{expandedBody}</pre>
+          {isReasoning ? (
+            <ChatMarkdown
+              text={expandedBody}
+              cwd={markdownCwd}
+              threadRef={threadRef ?? undefined}
+              skills={skills}
+              className="text-[13px] leading-relaxed"
+            />
+          ) : (
+            <pre className={toolCallExpandedBodyClassName}>{expandedBody}</pre>
+          )}
         </div>
       ) : null}
     </div>

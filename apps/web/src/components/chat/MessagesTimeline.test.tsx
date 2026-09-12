@@ -240,6 +240,112 @@ function buildAssistantTimelineEntry(text: string) {
 
 describe("MessagesTimeline", () => {
   it.each([
+    ["**Inspecting final results**\n\n", "Inspecting final results"],
+    [
+      "I should verify the implementation carefully.\n\nThen review the final results.",
+      "I should verify the implementation carefully.",
+    ],
+  ])(
+    "discloses persisted reasoning with keyboard and keeps its scroll anchor: %s",
+    async (detail, title) => {
+      const frames = new Map<number, FrameRequestCallback>();
+      let nextFrame = 0;
+      vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+        frames.set(++nextFrame, callback);
+        return nextFrame;
+      });
+      vi.stubGlobal("cancelAnimationFrame", (frame: number) => frames.delete(frame));
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      let renderer: ReactTestRenderer | undefined;
+      try {
+        await act(() => {
+          renderer = create(
+            <MessagesTimeline
+              {...buildProps()}
+              timelineEntries={[
+                {
+                  id: "reasoning-entry",
+                  kind: "work",
+                  createdAt: MESSAGE_CREATED_AT,
+                  entry: {
+                    id: "reasoning",
+                    createdAt: MESSAGE_CREATED_AT,
+                    label: "Thinking",
+                    detail,
+                    tone: "thinking",
+                    sourceActivityKind: "reasoning",
+                  },
+                },
+              ]}
+            />,
+          );
+        });
+        const disclosure = renderer!.root.findByProps({ "aria-label": title });
+        expect(disclosure.props["aria-expanded"]).toBe(false);
+        expect(disclosure.props.tabIndex).toBe(0);
+        const reasoningBody = () =>
+          renderer!.root.findAll(
+            (node) =>
+              node.type === "div" &&
+              node.props.className === "mt-1 ms-7 cursor-default rounded-md bg-muted/40 px-3 py-2",
+          );
+        expect(reasoningBody()).toHaveLength(0);
+        const preventDefault = vi.fn();
+        await act(() => disclosure.props.onKeyDown({ key: "Enter", preventDefault }));
+        expect(preventDefault).toHaveBeenCalledOnce();
+        expect(disclosure.props["aria-expanded"]).toBe(true);
+        expect(reasoningBody()).toHaveLength(1);
+        const rendered = JSON.stringify(renderer!.toJSON());
+        for (const paragraph of detail.replace(/\*\*/gu, "").trim().split("\n\n")) {
+          expect(rendered).toContain(paragraph);
+        }
+        const list = renderer!.root.findByProps({ "data-testid": "legend-list" });
+        expect(list.props["data-maintain-scroll-at-end"]).toBeUndefined();
+        await act(() => disclosure.props.onKeyDown({ key: " ", preventDefault }));
+        expect(disclosure.props["aria-expanded"]).toBe(false);
+        expect(reasoningBody()).toHaveLength(0);
+      } finally {
+        await act(() => renderer?.unmount());
+      }
+    },
+  );
+
+  it("keeps no-content reasoning as Thinking without inventing a disclosure body", async () => {
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline
+            {...buildProps()}
+            timelineEntries={[
+              {
+                id: "reasoning-entry",
+                kind: "work",
+                createdAt: MESSAGE_CREATED_AT,
+                entry: {
+                  id: "reasoning",
+                  createdAt: MESSAGE_CREATED_AT,
+                  label: "Thinking",
+                  tone: "thinking",
+                  sourceActivityKind: "reasoning",
+                },
+              },
+            ]}
+          />,
+        );
+      });
+      expect(
+        renderer!.root.findAll(
+          (node) => node.type === "span" && node.children.includes("Thinking"),
+        ),
+      ).toHaveLength(1);
+      expect(renderer!.root.findAllByProps({ "aria-expanded": false })).toHaveLength(0);
+    } finally {
+      await act(() => renderer?.unmount());
+    }
+  });
+
+  it.each([
     { toolLifecycleStatus: "inProgress", isAtEnd: true },
     { toolLifecycleStatus: "inProgress", isAtEnd: false },
     { toolLifecycleStatus: "completed", isAtEnd: true },

@@ -818,6 +818,55 @@ describe("shouldPreserveAssistantLineBreaks", () => {
   });
 });
 
+describe("reasoning rows", () => {
+  it.each([false, true])(
+    "keeps reasoning out of generic tool summaries while working=%s",
+    (isWorking) => {
+      const turnId = TurnId.make("reasoning-turn");
+      const createdAt = "2026-01-01T00:00:00Z";
+      const detail = "**Inspecting final results**\n\nReview every result before answering.";
+      const entry: WorkLogEntry = {
+        id: "reasoning",
+        createdAt,
+        turnId,
+        label: "Thinking",
+        detail,
+        tone: "thinking",
+        sourceActivityKind: "reasoning",
+      };
+      const input = {
+        timelineEntries: [{ id: "reasoning-entry", kind: "work" as const, createdAt, entry }],
+        isWorking,
+        runningTurnId: turnId,
+        activeTurnStartedAt: createdAt,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+      };
+      const initial = deriveMessagesTimelineRowsWithState(input);
+      const row = initial.rows.find((row) => row.id === "reasoning-entry");
+      expect(row).toMatchObject({ kind: "work", groupedEntries: [{ detail }] });
+      expect(initial.rows.some((row) => row.kind === "work-live" || row.kind === "thinking")).toBe(
+        false,
+      );
+      expect(workEntryDisplayLabel(entry, undefined)).toBe("Inspecting final results");
+      const updatedDetail = `${detail}\n\nThe checks passed.`;
+      const updated = deriveMessagesTimelineRowsWithState(
+        {
+          ...input,
+          timelineEntries: [
+            { ...input.timelineEntries[0]!, entry: { ...entry, detail: updatedDetail } },
+          ],
+        },
+        initial,
+      );
+      expect(updated.rows.find((updatedRow) => updatedRow.id === row?.id)).toMatchObject({
+        kind: "work",
+        groupedEntries: [{ detail: updatedDetail }],
+      });
+    },
+  );
+});
+
 describe("workEntryIsVisibleInGroup", () => {
   it("keeps persisted reasoning visible in expanded work groups", () => {
     expect(
@@ -1312,6 +1361,63 @@ describe("deriveMessagesTimelineRows", () => {
     expect(userRow?.revertTurnCount).toBe(1);
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
+
+  it.each([false, true])(
+    "preserves Pi answers and late notifications only when opted in: %s",
+    (preserveAssistantMessages) => {
+      const turnId = TurnId.make("pi-turn");
+      const createdAt = "2026-01-01T00:00:00Z";
+      const assistant = (id: string, text: string) => ({
+        id,
+        kind: "message" as const,
+        createdAt,
+        message: {
+          id: MessageId.make(id),
+          role: "assistant" as const,
+          text,
+          turnId,
+          createdAt,
+          updatedAt: createdAt,
+          streaming: false,
+        },
+      });
+      const timelineEntries = [
+        assistant("narration", "I will inspect the results."),
+        {
+          id: "tool",
+          kind: "work" as const,
+          createdAt,
+          entry: { id: "tool", createdAt, turnId, label: "Ran command", tone: "tool" as const },
+        },
+        assistant("primary", "Full primary answer with all results."),
+        assistant("notification", "Background task finished."),
+      ];
+      const input = {
+        timelineEntries,
+        preserveAssistantMessages,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+      };
+      const collapsed = deriveMessagesTimelineRows(input);
+      expect(collapsed.filter((row) => row.kind === "message").map((row) => row.id)).toEqual(
+        preserveAssistantMessages ? ["narration", "primary", "notification"] : ["notification"],
+      );
+      expect(collapsed.find((row) => row.kind === "turn-fold")).toMatchObject({ expanded: false });
+      expect(collapsed.some((row) => row.kind === "work")).toBe(false);
+      const expanded = deriveMessagesTimelineRows({ ...input, expandedTurnIds: new Set([turnId]) });
+      expect(expanded.filter((row) => row.kind === "message").map((row) => row.id)).toEqual([
+        "narration",
+        "primary",
+        "notification",
+      ]);
+      expect(expanded.some((row) => row.kind === "work")).toBe(true);
+      expect(expanded.find((row) => row.kind === "turn-fold")?.id).toBe(
+        collapsed.find((row) => row.kind === "turn-fold")?.id,
+      );
+    },
+  );
 
   it("folds the first assistant message and settled work before the terminal response", () => {
     const timelineEntries = [

@@ -52,6 +52,13 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
+  applyPiAssistantBlockEvent,
+  applyPiAssistantSnapshot,
+  makePiAssistantContentState,
+  type PiAssistantContentDelta,
+  type PiAssistantContentState,
+} from "../pi/piAssistantContent.ts";
+import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
@@ -61,6 +68,7 @@ import {
   autoRespondToExtensionUi,
   buildPiRpcArgs,
   buildPiRpcEnv,
+  extractPiAssistantContent,
   extractPiAssistantText,
   parsePiBackgroundTerminalNotification,
   parsePiContextWindow,
@@ -129,10 +137,9 @@ interface PiSessionContext {
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   /** Pi session id (from get_state / session events) for resume. */
   piSessionId: string | undefined;
-  /** Current assistant item id + accumulated text/reasoning for delta diffing. */
+  /** Current assistant item id + indexed Pi content blocks for delta diffing. */
   assistantItemId: ProviderItemId | undefined;
-  assistantText: string;
-  reasoningText: string;
+  assistantContent: PiAssistantContentState;
   /** Cumulative, rate-limited live assistant state for each child transcript. */
   subagentLiveMessages: Map<string, SubagentLiveMessage>;
   /** Last published time for other high-frequency child transcript events. */
@@ -1058,103 +1065,100 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           );
       });
 
-    const emitAssistantDelta = (
+    const emitAssistantContentDeltas = Effect.fn("emitAssistantContentDeltas")(function* (
+      ctx: PiSessionContext,
+      deltas: ReadonlyArray<PiAssistantContentDelta>,
+    ) {
+      if (deltas.length === 0) return;
+      const turnId = ctx.activeTurnId;
+      if (ctx.assistantItemId === undefined) {
+        ctx.assistantItemId = ProviderItemId.make(yield* randomUUIDv4);
+        yield* emit({
+          type: "item.started",
+          ...(yield* makeStamp()),
+          provider: PROVIDER,
+          threadId: ctx.threadId,
+          ...(turnId ? { turnId } : {}),
+          itemId: RuntimeItemId.make(ctx.assistantItemId),
+          payload: { itemType: "assistant_message", status: "inProgress" },
+        });
+      }
+      const itemId = RuntimeItemId.make(ctx.assistantItemId);
+      yield* Effect.forEach(
+        deltas,
+        (delta) =>
+          Effect.gen(function* () {
+            yield* emit({
+              type: "content.delta",
+              ...(yield* makeStamp()),
+              provider: PROVIDER,
+              threadId: ctx.threadId,
+              ...(turnId ? { turnId } : {}),
+              itemId,
+              payload: {
+                streamKind: delta.streamKind,
+                delta: delta.delta,
+                ...(delta.contentIndex !== undefined ? { contentIndex: delta.contentIndex } : {}),
+              },
+            });
+          }),
+        { discard: true },
+      );
+    });
+
+    const emitAssistantSnapshot = Effect.fn("emitAssistantSnapshot")(function* (
       ctx: PiSessionContext,
       message: unknown,
-    ): Effect.Effect<void, ProviderAdapterRequestError> =>
-      Effect.gen(function* () {
-        if (!isRecord(message) || message.role !== "assistant") return;
-        const { text, thinking } = extractPiAssistantText(message);
-        const turnId = ctx.activeTurnId;
-        if (ctx.assistantItemId === undefined) {
-          ctx.assistantItemId = ProviderItemId.make(yield* randomUUIDv4);
-          yield* emit({
-            type: "item.started",
-            ...(yield* makeStamp()),
-            provider: PROVIDER,
-            threadId: ctx.threadId,
-            ...(turnId ? { turnId } : {}),
-            itemId: RuntimeItemId.make(ctx.assistantItemId),
-            payload: { itemType: "assistant_message", status: "inProgress" },
-          });
-        }
-        const itemId = RuntimeItemId.make(ctx.assistantItemId);
-        if (thinking.length > ctx.reasoningText.length) {
-          const delta = thinking.slice(ctx.reasoningText.length);
-          ctx.reasoningText = thinking;
-          yield* emit({
-            type: "content.delta",
-            ...(yield* makeStamp()),
-            provider: PROVIDER,
-            threadId: ctx.threadId,
-            ...(turnId ? { turnId } : {}),
-            itemId,
-            payload: { streamKind: "reasoning_text", delta },
-          });
-        }
-        if (text.length > ctx.assistantText.length) {
-          const delta = text.slice(ctx.assistantText.length);
-          ctx.assistantText = text;
-          yield* emit({
-            type: "content.delta",
-            ...(yield* makeStamp()),
-            provider: PROVIDER,
-            threadId: ctx.threadId,
-            ...(turnId ? { turnId } : {}),
-            itemId,
-            payload: { streamKind: "assistant_text", delta },
-          });
-        }
+    ) {
+      if (!isRecord(message) || message.role !== "assistant") return;
+      const { text, thinking, blocks } = extractPiAssistantContent(message);
+      const result = applyPiAssistantSnapshot(ctx.assistantContent, {
+        assistant_text: text,
+        reasoning_text: thinking,
+        blocks,
       });
+      ctx.assistantContent = result.state;
+      yield* emitAssistantContentDeltas(ctx, result.deltas);
+    });
 
-    const emitAssistantEventDelta = (
+    const emitAssistantEventDelta = Effect.fn("emitAssistantEventDelta")(function* (
       ctx: PiSessionContext,
       event: unknown,
-    ): Effect.Effect<void, ProviderAdapterRequestError> => {
-      if (!isRecord(event) || typeof event.type !== "string") return Effect.void;
+    ) {
+      if (!isRecord(event) || typeof event.type !== "string") return;
       if (
-        (event.type === "thinking_delta" || event.type === "text_delta") &&
-        typeof event.delta === "string" &&
-        event.delta.length > 0
+        event.type === "text_start" ||
+        event.type === "text_delta" ||
+        event.type === "text_end" ||
+        event.type === "thinking_start" ||
+        event.type === "thinking_delta" ||
+        event.type === "thinking_end"
       ) {
-        const thinking =
-          event.type === "thinking_delta" ? ctx.reasoningText + event.delta : ctx.reasoningText;
-        const text =
-          event.type === "text_delta" ? ctx.assistantText + event.delta : ctx.assistantText;
-        return emitAssistantDelta(ctx, {
-          role: "assistant",
-          content: [
-            ...(thinking.length > 0 ? [{ type: "thinking", thinking }] : []),
-            ...(text.length > 0 ? [{ type: "text", text }] : []),
-          ],
+        const result = applyPiAssistantBlockEvent(ctx.assistantContent, {
+          type: event.type,
+          ...(typeof event.contentIndex === "number" ? { contentIndex: event.contentIndex } : {}),
+          ...(typeof event.delta === "string" ? { delta: event.delta } : {}),
+          ...(typeof event.content === "string" ? { content: event.content } : {}),
         });
-      }
-      if (
-        (event.type === "thinking_end" || event.type === "text_end") &&
-        typeof event.content === "string"
-      ) {
-        const thinking = event.type === "thinking_end" ? event.content : ctx.reasoningText;
-        const text = event.type === "text_end" ? event.content : ctx.assistantText;
-        return emitAssistantDelta(ctx, {
-          role: "assistant",
-          content: [
-            ...(thinking.length > 0 ? [{ type: "thinking", thinking }] : []),
-            ...(text.length > 0 ? [{ type: "text", text }] : []),
-          ],
-        });
+        ctx.assistantContent = result.state;
+        yield* emitAssistantContentDeltas(ctx, result.deltas);
+        return;
       }
       if (event.type === "done" && isRecord(event.message)) {
-        return emitAssistantDelta(ctx, event.message);
+        yield* emitAssistantSnapshot(ctx, event.message);
+        return;
       }
       if (event.type === "error" && isRecord(event.error)) {
-        return emitAssistantDelta(ctx, event.error);
+        yield* emitAssistantSnapshot(ctx, event.error);
       }
-      return Effect.void;
-    };
+    });
 
     const finishAssistantItem = (ctx: PiSessionContext) =>
       Effect.gen(function* () {
-        if (ctx.assistantItemId === undefined) return;
+        if (ctx.assistantItemId === undefined) {
+          ctx.assistantContent = makePiAssistantContentState();
+          return;
+        }
         const itemId = RuntimeItemId.make(ctx.assistantItemId);
         const turnId = ctx.activeTurnId;
         yield* emit({
@@ -1167,8 +1171,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           payload: { itemType: "assistant_message", status: "completed" },
         });
         ctx.assistantItemId = undefined;
-        ctx.assistantText = "";
-        ctx.reasoningText = "";
+        ctx.assistantContent = makePiAssistantContentState();
       });
 
     const completeTurn = (
@@ -1411,10 +1414,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             return;
           case "message_update":
             if (ctx.activeTurnId === undefined) return;
+            // Legacy Pi frames carried both the block delta and a cumulative
+            // message. Apply the delta first, then reconcile the snapshot, so
+            // either delivery shape can take over without replaying content.
+            yield* emitAssistantEventDelta(ctx, message.assistantMessageEvent);
             if (isRecord(message.message) && message.message.role === "assistant") {
-              yield* emitAssistantDelta(ctx, message.message);
-            } else {
-              yield* emitAssistantEventDelta(ctx, message.assistantMessageEvent);
+              yield* emitAssistantSnapshot(ctx, message.message);
             }
             return;
           case "message_end":
@@ -1425,7 +1430,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             ) {
               return;
             }
-            yield* emitAssistantDelta(ctx, message.message);
+            yield* emitAssistantSnapshot(ctx, message.message);
             yield* finishAssistantItem(ctx);
             return;
           case "tool_execution_start":
@@ -1691,8 +1696,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           turns: [],
           piSessionId: resumeSessionId,
           assistantItemId: undefined,
-          assistantText: "",
-          reasoningText: "",
+          assistantContent: makePiAssistantContentState(),
           subagentLiveMessages: new Map(),
           subagentLivePublishedAtByKey: new Map(),
           toolArgsByCallId: new Map(),

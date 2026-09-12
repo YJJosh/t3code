@@ -272,27 +272,73 @@ export function autoRespondToExtensionUi(
   }
 }
 
-export function extractPiAssistantText(message: unknown): { text: string; thinking: string } {
-  let text = "";
+function joinPiContentBlocks(parts: ReadonlyArray<string>): string {
+  let result = "";
+  for (const part of parts) {
+    if (!result) {
+      result = part;
+    } else if (result.endsWith("\n\n")) {
+      result += part;
+    } else if (result.endsWith("\n")) {
+      result += `\n${part}`;
+    } else {
+      result += `\n\n${part}`;
+    }
+  }
+  return result;
+}
+
+export interface PiAssistantMessageContent {
+  readonly text: string;
+  readonly thinking: string;
+  readonly blocks: ReadonlyArray<{
+    readonly streamKind: "assistant_text" | "reasoning_text";
+    readonly contentIndex: number;
+    readonly content: string;
+  }>;
+}
+
+export function extractPiAssistantContent(message: unknown): PiAssistantMessageContent {
+  const textParts: string[] = [];
   const thinkingParts: string[] = [];
+  const blocks: PiAssistantMessageContent["blocks"][number][] = [];
   if (
     message &&
     typeof message === "object" &&
     "content" in message &&
     Array.isArray((message as { content: unknown }).content)
   ) {
-    for (const part of (message as { content: ReadonlyArray<unknown> }).content) {
+    for (const [contentIndex, part] of (
+      message as { content: ReadonlyArray<unknown> }
+    ).content.entries()) {
       if (!part || typeof part !== "object") continue;
       const record = part as Record<string, unknown>;
-      if (record.type === "text" && typeof record.text === "string") text += record.text;
+      if (record.type === "text" && typeof record.text === "string" && record.text.length > 0) {
+        textParts.push(record.text);
+        blocks.push({ streamKind: "assistant_text", contentIndex, content: record.text });
+      }
       if (
         record.type === "thinking" &&
         typeof record.thinking === "string" &&
         record.thinking.length > 0
       ) {
         thinkingParts.push(record.thinking);
+        blocks.push({
+          streamKind: "reasoning_text",
+          contentIndex,
+          content: record.thinking,
+        });
       }
     }
   }
-  return { text, thinking: thinkingParts.join("\n\n") };
+  return {
+    text: joinPiContentBlocks(textParts),
+    thinking: joinPiContentBlocks(thinkingParts),
+    blocks,
+  };
+}
+
+export function extractPiAssistantText(message: unknown): { text: string; thinking: string } {
+  const { text, thinking } = extractPiAssistantContent(message);
+  return { text, thinking };
 }

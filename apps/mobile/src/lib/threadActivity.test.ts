@@ -18,6 +18,7 @@ import {
   buildThreadFeed,
   deriveThreadFeedPresentation,
   isPendingUserInputOptionSelected,
+  providerKeepsAssistantMessagesVisible,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   workEntryRowLabel,
@@ -3312,5 +3313,297 @@ describe("quiet timeline: nested agents", () => {
         summary: { title: "Task completed", status: "completed", tone: "completed" },
       },
     ]);
+  });
+});
+
+describe("Pi answers and persisted reasoning", () => {
+  const turnId = TurnId.make("turn-pi");
+  const latestTurn = {
+    turnId,
+    state: "completed" as const,
+    requestedAt: "2026-04-01T00:00:00.000Z",
+    startedAt: "2026-04-01T00:00:01.000Z",
+    completedAt: "2026-04-01T00:00:20.000Z",
+    assistantMessageId: MessageId.make("assistant-final"),
+  };
+  const assistantMessage = (id: string, text: string, createdAt: string, updatedAt = createdAt) =>
+    ({
+      id: MessageId.make(id),
+      role: "assistant" as const,
+      text,
+      turnId,
+      streaming: false,
+      createdAt,
+      updatedAt,
+    }) satisfies OrchestrationThread["messages"][number];
+  const readTool = (id: string, createdAt: string) =>
+    makeActivity({
+      id: EventId.make(id),
+      kind: "tool.completed",
+      tone: "tool",
+      summary: "Read file",
+      createdAt,
+      turnId,
+      payload: {
+        itemType: "file_read",
+        toolCallId: id,
+        title: "Read file",
+        status: "completed",
+        detail: "src/index.ts",
+      },
+    });
+  // Pi extension wake-ups: the full answer lands first, then a later short
+  // notification completes as its own message inside the same turn.
+  const multiAnswerThread = makeThread({
+    id: ThreadId.make("thread-pi"),
+    projectId: ProjectId.make("project-1"),
+    title: "Pi wake-ups",
+    latestTurn,
+    messages: [
+      assistantMessage("assistant-first", "Looking into it.", "2026-04-01T00:00:02.000Z"),
+      assistantMessage(
+        "assistant-answer",
+        "The full answer with every detail.",
+        "2026-04-01T00:00:08.000Z",
+        // Edited after the trailing notification was created.
+        "2026-04-01T00:00:19.000Z",
+      ),
+      assistantMessage("assistant-final", "Done ✅", "2026-04-01T00:00:18.000Z"),
+    ],
+    activities: [
+      readTool("read-1", "2026-04-01T00:00:04.000Z"),
+      readTool("read-2", "2026-04-01T00:00:12.000Z"),
+    ],
+  });
+
+  it("keeps every Pi assistant message visible while tool work still folds", () => {
+    const feed = buildThreadFeed(multiAnswerThread);
+    const collapsed = deriveThreadFeedPresentation(feed, latestTurn, new Set(), new Set(), null, {
+      keepAssistantMessagesVisible: true,
+    });
+    expect(collapsed.map((entry) => entry.id)).toEqual([
+      "assistant-first",
+      "turn-fold:turn-pi",
+      "assistant-answer",
+      "assistant-final",
+    ]);
+    expect(collapsed[1]).toMatchObject({ type: "turn-fold", label: "Worked for 19s" });
+
+    const expanded = deriveThreadFeedPresentation(
+      feed,
+      latestTurn,
+      new Set([turnId]),
+      new Set(),
+      null,
+      { keepAssistantMessagesVisible: true },
+    );
+    expect(expanded.map((entry) => entry.id)).toEqual([
+      "assistant-first",
+      "turn-fold:turn-pi",
+      "work-toggle:work-group:tool:turn-pi:read-1",
+      "assistant-answer",
+      "work-toggle:work-group:tool:turn-pi:read-2",
+      "assistant-final",
+    ]);
+  });
+
+  it("does not fold a Pi turn made only of answers", () => {
+    const feed = buildThreadFeed({ ...multiAnswerThread, activities: [] });
+    expect(
+      deriveThreadFeedPresentation(feed, latestTurn, new Set(), new Set(), null, {
+        keepAssistantMessagesVisible: true,
+      }).map((entry) => entry.id),
+    ).toEqual(["assistant-first", "assistant-answer", "assistant-final"]);
+  });
+
+  it("keeps the first-and-last fold for other providers", () => {
+    const feed = buildThreadFeed(multiAnswerThread);
+    expect(
+      deriveThreadFeedPresentation(feed, latestTurn, new Set()).map((entry) => entry.id),
+    ).toEqual(["assistant-first", "turn-fold:turn-pi", "assistant-final"]);
+    expect(providerKeepsAssistantMessagesVisible("pi")).toBe(true);
+    expect(providerKeepsAssistantMessagesVisible("codex")).toBe(false);
+    expect(providerKeepsAssistantMessagesVisible(null)).toBe(false);
+  });
+
+  const reasoningText =
+    "**Planning the fix**\n\nThe fold hides every middle message, so I should keep them all visible.";
+  const reasoningActivity = (detail: string, createdAt = "2026-04-01T00:00:03.000Z") =>
+    makeActivity({
+      id: EventId.make("reasoning:assistant-final"),
+      kind: "reasoning",
+      tone: "info",
+      summary: "Thinking",
+      createdAt,
+      turnId,
+      payload: { detail, reasoning: true },
+    });
+
+  it("shows the provider's reasoning heading on its own expandable row", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-reasoning"),
+      projectId: ProjectId.make("project-1"),
+      title: "Reasoning",
+      latestTurn,
+      messages: [assistantMessage("assistant-final", "Done.", "2026-04-01T00:00:18.000Z")],
+      activities: [
+        reasoningActivity(reasoningText),
+        readTool("read-1", "2026-04-01T00:00:04.000Z"),
+      ],
+    });
+    const feed = buildThreadFeed(thread);
+
+    const collapsed = deriveThreadFeedPresentation(feed, latestTurn, new Set());
+    expect(collapsed.map((entry) => entry.id)).toEqual(["turn-fold:turn-pi", "assistant-final"]);
+
+    const expanded = deriveThreadFeedPresentation(feed, latestTurn, new Set([turnId]));
+    expect(expanded.map((entry) => entry.id)).toEqual([
+      "turn-fold:turn-pi",
+      "reasoning:assistant-final",
+      "work-toggle:work-group:tool:turn-pi:read-1",
+      "assistant-final",
+    ]);
+    const row = expanded[1];
+    if (row?.type !== "activity-group") throw new Error("expected a reasoning row");
+    const [activity] = row.activities;
+    expect(activity).toMatchObject({
+      summary: "Planning the fix",
+      icon: "brain",
+      toolLike: false,
+      canExpand: true,
+    });
+    expect(activity!.live).toBeUndefined();
+    expect(workEntryRowLabel(activity!.workEntry)).toBe("Planning the fix");
+    expect(workEntryRowLabel(activity!.workEntry, true)).toBe("Planning the fix");
+    expect(activity!.getFullDetail()).toBe(reasoningText);
+    expect(activity!.getCopyText()).toBe(`Thinking\n${reasoningText}`);
+  });
+
+  it("keeps single-line reasoning expandable when a narrow screen clips its title", () => {
+    const feed = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-short-reasoning"),
+        projectId: ProjectId.make("project-1"),
+        title: "Short reasoning",
+        latestTurn,
+        messages: [assistantMessage("assistant-final", "Done.", "2026-04-01T00:00:18.000Z")],
+        activities: [reasoningActivity("# Checking the diff")],
+      }),
+    );
+    const row = deriveThreadFeedPresentation(feed, latestTurn, new Set([turnId])).find(
+      (entry) => entry.type === "activity-group",
+    );
+    if (row?.type !== "activity-group") throw new Error("expected a reasoning row");
+    expect(row.activities[0]).toMatchObject({ summary: "Checking the diff", canExpand: true });
+    expect(row.activities[0]!.getFullDetail()).toBe("# Checking the diff");
+  });
+
+  it("cuts a long opening line to an excerpt that still expands to the full text", () => {
+    const longLine = `${"The model wrote one very long paragraph of reasoning ".repeat(4).trim()}.`;
+    const feed = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-long-reasoning"),
+        projectId: ProjectId.make("project-1"),
+        title: "Long reasoning",
+        latestTurn,
+        messages: [assistantMessage("assistant-final", "Done.", "2026-04-01T00:00:18.000Z")],
+        activities: [reasoningActivity(longLine)],
+      }),
+    );
+    const row = deriveThreadFeedPresentation(feed, latestTurn, new Set([turnId])).find(
+      (entry) => entry.type === "activity-group",
+    );
+    if (row?.type !== "activity-group") throw new Error("expected a reasoning row");
+    const heading = row.activities[0]!.summary;
+    expect(heading.endsWith("…")).toBe(true);
+    expect(heading.length).toBeLessThanOrEqual(101);
+    expect(longLine.startsWith(heading.slice(0, -1))).toBe(true);
+    expect(row.activities[0]).toMatchObject({ canExpand: true });
+    expect(row.activities[0]!.getFullDetail()).toBe(longLine);
+  });
+
+  it("lets streaming reasoning take the live slot and hands back to Thinking once text streams", () => {
+    const runningTurn = { ...latestTurn, state: "running" as const, completedAt: null };
+    const userMessage = {
+      id: MessageId.make("user-1"),
+      role: "user" as const,
+      text: "hello",
+      turnId,
+      streaming: false,
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z",
+    };
+    const reasoningOnly = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-live-reasoning"),
+        projectId: ProjectId.make("project-1"),
+        title: "Live reasoning",
+        latestTurn: runningTurn,
+        messages: [userMessage],
+        activities: [reasoningActivity(reasoningText)],
+      }),
+    );
+    const liveRows = deriveThreadFeedPresentation(
+      reasoningOnly,
+      runningTurn,
+      new Set(),
+      new Set(),
+      runningTurn.startedAt,
+    );
+    expect(liveRows.map((entry) => entry.type)).toEqual(["message", "activity-group"]);
+    const liveRow = liveRows[1];
+    if (liveRow?.type !== "activity-group") throw new Error("expected a reasoning row");
+    expect(liveRow.activities[0]).toMatchObject({ summary: "Planning the fix", live: true });
+    // No reasoning at all keeps the content-free Thinking row.
+    expect(
+      deriveThreadFeedPresentation(
+        buildThreadFeed(
+          makeThread({
+            id: ThreadId.make("thread-no-reasoning"),
+            projectId: ProjectId.make("project-1"),
+            title: "No reasoning",
+            latestTurn: runningTurn,
+            messages: [userMessage],
+          }),
+        ),
+        runningTurn,
+        new Set(),
+        new Set(),
+        runningTurn.startedAt,
+      ).map((entry) => entry.type),
+    ).toEqual(["message", "thinking"]);
+
+    const streaming = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-live-reasoning-text"),
+        projectId: ProjectId.make("project-1"),
+        title: "Live reasoning then text",
+        latestTurn: runningTurn,
+        messages: [
+          userMessage,
+          {
+            ...assistantMessage("assistant-final", "Here is what", "2026-04-01T00:00:05.000Z"),
+            streaming: true,
+          },
+        ],
+        activities: [reasoningActivity(reasoningText)],
+      }),
+    );
+    const streamingRows = deriveThreadFeedPresentation(
+      streaming,
+      runningTurn,
+      new Set(),
+      new Set(),
+      runningTurn.startedAt,
+    );
+    expect(streamingRows.map((entry) => entry.type)).toEqual([
+      "message",
+      "activity-group",
+      "message",
+      "thinking",
+    ]);
+    const settledRow = streamingRows[1];
+    if (settledRow?.type !== "activity-group") throw new Error("expected a reasoning row");
+    expect(settledRow.activities[0]!.live).toBeUndefined();
   });
 });

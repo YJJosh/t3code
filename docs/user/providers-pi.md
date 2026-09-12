@@ -12,7 +12,13 @@ Open **Settings → Providers**, add or select **Pi**, and configure any overrid
 
 Pi model names use `provider/model`, for example `openai-codex/gpt-6-astra`. Model discovery uses the bundled Pi SDK and your configured extensions and credentials. The picker also exposes profile, reasoning, context-window, and supported service-tier options. Fast is shown only for models supported by the loaded `/fast` extension; GPT-6 Astra does not currently expose it.
 
-Pi sessions always run with full local access because T3 owns the surrounding runtime approval boundary, so the composer does not show an access-mode selector for Pi. The Pi profile selector occupies that footer position, while reasoning, context-window, and service-tier controls remain separate. Pi reasoning streams into the work log while a turn is running, and tool calls appear as compact, expandable cards with action-specific icons and output previews. Extension input and editor prompts that cannot be represented safely in the provider protocol are cancelled rather than answered with fabricated values.
+Pi sessions always run with full local access because T3 owns the surrounding runtime approval boundary, so the composer does not show an access-mode selector for Pi. The Pi profile selector occupies that footer position, while reasoning, context-window, and service-tier controls remain separate. Extension input and editor prompts that cannot be represented safely in the provider protocol are cancelled rather than answered with fabricated values.
+
+## Conversation display
+
+Pi assistant responses stay visible in the conversation, including when a later subagent or workflow notification produces another reply. Completed tool activity still folds into the work log rather than hiding the earlier answer. Separate Pi text blocks retain paragraph breaks so headings, lists, and code blocks do not run into preceding text.
+
+Thinking rows show the reasoning summary or text supplied by the model and expand to reveal its available content. Models that do not expose reasoning have no reasoning text to display. Tool calls remain compact, expandable cards with action-specific icons and output previews.
 
 ## Extension commands
 

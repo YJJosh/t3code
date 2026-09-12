@@ -55,6 +55,7 @@ export interface ThreadFeedActivity {
   readonly icon:
     | "agent"
     | "alert"
+    | "brain"
     | "browser"
     | "check"
     | "command"
@@ -915,6 +916,7 @@ function workEntryStatus(entry: WorkLogEntry): ThreadFeedActivity["status"] {
 
 function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
   if (entry.agentSpawn) return "agent";
+  if (workLogEntryIsReasoning(entry)) return "brain";
   if (
     entry.sourceActivityKind === "user-input.requested" ||
     entry.sourceActivityKind === "user-input.resolved"
@@ -942,6 +944,7 @@ function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
 
 function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
   if (entry.agentSpawn) return agentSpawnExpandedBody(entry.agentSpawn);
+  if (workLogEntryIsReasoning(entry)) return reasoningBody(entry);
   const blocks: string[] = [];
   const visibleLabel = workEntryRowLabel(entry, true).trim();
   const appendBlock = (value: string | null | undefined) => {
@@ -970,6 +973,7 @@ function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
  */
 function workEntryCanExpand(entry: WorkLogEntry): boolean {
   if (entry.agentSpawn) return agentSpawnMembers(entry.agentSpawn).length > 0;
+  if (workLogEntryIsReasoning(entry)) return reasoningBody(entry) !== null;
   if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) return true;
   if (entry.changedFiles?.some((path) => path.trim().length > 0)) return true;
   return Boolean((entry.rawCommand ?? entry.command)?.trim() || entry.detail?.trim());
@@ -985,9 +989,45 @@ function stripShellWrapper(value: string): string {
   return (match?.[1] ?? trimmed).trim();
 }
 
+/**
+ * Persisted reasoning (server activity kind "reasoning", summary "Thinking",
+ * payload.detail holding the provider's reasoning markdown). Only providers
+ * that stream reasoning text produce one; a turn without it keeps the
+ * content-free "Thinking" live row, so nothing is ever invented for a model
+ * whose thinking is not exposed.
+ */
+export function workLogEntryIsReasoning(entry: Pick<WorkLogEntry, "sourceActivityKind">): boolean {
+  return entry.sourceActivityKind === "reasoning";
+}
+
+const REASONING_HEADING_MAX_CHARS = 100;
+
+/** Use the provider's opening line as a compact title, falling back to "Thinking" without text. */
+function reasoningHeading(entry: Pick<WorkLogEntry, "detail" | "label">): string {
+  const firstLine = entry.detail?.trim().split("\n", 1)[0]?.trim();
+  if (!firstLine) return entry.label;
+  const stripped = firstLine
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^(\*\*|__|\*|_)(.+?)\1:?$/, "$2")
+    .replace(/:$/, "")
+    .trim();
+  const heading = stripped.length > 0 ? stripped : firstLine;
+  if (heading.length <= REASONING_HEADING_MAX_CHARS) return heading;
+  const cut = heading.slice(0, REASONING_HEADING_MAX_CHARS);
+  const boundary = cut.lastIndexOf(" ");
+  const excerpt = boundary > REASONING_HEADING_MAX_CHARS / 2 ? cut.slice(0, boundary) : cut;
+  return `${excerpt.trimEnd()}\u2026`;
+}
+
+/** Even a short title can be visually truncated on a narrow screen; keep its full text expandable. */
+function reasoningBody(entry: Pick<WorkLogEntry, "detail">): string | null {
+  return entry.detail?.trim() || null;
+}
+
 /** Expanded rows retain detail formatting; commands stay in the separate body. */
 export function workEntryRowLabel(entry: WorkLogEntry, expanded = false): string {
   if (entry.agentSpawn) return agentSpawnLabel(entry.agentSpawn);
+  if (workLogEntryIsReasoning(entry)) return reasoningHeading(entry);
   const presentation = resolveWorkEntryToolPresentation(entry);
   if (presentation) return presentation.displayName;
   if (expanded && entry.command?.trim()) return "Command";
@@ -1584,6 +1624,7 @@ interface ThreadFeedTurnFold {
 function deriveThreadFeedTurnFolds(
   feed: ReadonlyArray<ThreadFeedEntry>,
   latestTurn: ThreadFeedLatestTurn | null,
+  keepAssistantMessagesVisible: boolean,
 ): ReadonlyMap<string, ThreadFeedTurnFold> {
   const firstAssistantMessageIdByTurn = new Map<TurnId, string>();
   const terminalAssistantMessageIdByTurn = new Map<TurnId, string>();
@@ -1643,9 +1684,10 @@ function deriveThreadFeedTurnFolds(
     const terminalAssistantMessageId = terminalAssistantMessageIdByTurn.get(turnId);
     const hiddenEntryIds = new Set(
       entries
-        .filter(
-          (entry) =>
-            entry.id !== firstAssistantMessageId && entry.id !== terminalAssistantMessageId,
+        .filter((entry) =>
+          keepAssistantMessagesVisible
+            ? entry.type !== "message"
+            : entry.id !== firstAssistantMessageId && entry.id !== terminalAssistantMessageId,
         )
         .map((entry) => entry.id),
     );
@@ -1705,12 +1747,31 @@ function deriveThreadFeedTurnFolds(
   return foldsByAnchorId;
 }
 
+export interface ThreadFeedPresentationOptions {
+  /**
+   * Keep every assistant message of a settled turn outside its "Worked for"
+   * fold instead of only the first and last. Tool work still folds.
+   */
+  readonly keepAssistantMessagesVisible?: boolean;
+}
+
+/**
+ * Pi extension wake-ups can complete several answers in one turn, so folding
+ * everything but the last would hide the full answer behind a short trailing
+ * notification. Other providers finish a turn with one answer and keep the
+ * default fold.
+ */
+export function providerKeepsAssistantMessagesVisible(driver: string | null | undefined): boolean {
+  return driver === "pi";
+}
+
 export function deriveThreadFeedPresentation(
   feed: ReadonlyArray<ThreadFeedEntry>,
   latestTurn: ThreadFeedLatestTurn | null,
   expandedTurnIds: ReadonlySet<TurnId>,
   expandedWorkGroupIds: ReadonlySet<string> = new Set(),
   activeWorkStartedAt: string | null = null,
+  options: ThreadFeedPresentationOptions = {},
 ): ThreadFeedEntry[] {
   const sourceFeed = feed.filter(
     (entry) =>
@@ -1722,7 +1783,11 @@ export function deriveThreadFeedPresentation(
   const activeTailGroup = sourceFeed.findLast(
     (entry) => entry.type !== "message" || !isEmptyMessage(entry),
   );
-  const foldsByAnchorId = deriveThreadFeedTurnFolds(sourceFeed, latestTurn);
+  const foldsByAnchorId = deriveThreadFeedTurnFolds(
+    sourceFeed,
+    latestTurn,
+    options.keepAssistantMessagesVisible === true,
+  );
   const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
   const isWorking = activeWorkStartedAt !== null;
   const collapsedEntryIds = new Set<string>();
@@ -1787,6 +1852,11 @@ export function deriveThreadFeedPresentation(
     !result.some(
       (row) =>
         (row.type === "work-toggle" && row.shimmer) ||
+        // A streaming reasoning row already shows what the model is doing.
+        (row.type === "activity-group" &&
+          row.activities.some(
+            (activity) => activity.live === true && workLogEntryIsReasoning(activity.workEntry),
+          )) ||
         // A working spawn card is the live activity: its status line shows
         // what the agents are doing, so a Thinking row under it would lie.
         (row.type === "agent-spawn" &&
@@ -1894,13 +1964,33 @@ function appendActivityGroupRows(
     );
     groupableRun = [];
   };
-  for (const activity of activities) {
+  for (const [index, activity] of activities.entries()) {
     const spawn = activity.workEntry.agentSpawn;
-    if (activity.workEntry.tone !== "error" && spawn === undefined) {
+    const reasoning = workLogEntryIsReasoning(activity.workEntry);
+    if (activity.workEntry.tone !== "error" && spawn === undefined && !reasoning) {
       groupableRun.push(activity);
       continue;
     }
     flushGroupableRun(false);
+    if (reasoning) {
+      // Reasoning keeps its own row (never counted into "Read 3 files") so
+      // its provider-supplied heading stays readable. While it is the turn's
+      // trailing activity it is the live slot: the heading shimmers in place
+      // of the content-free "Thinking" row.
+      const live =
+        isWorking &&
+        activeTail &&
+        index === activities.length - 1 &&
+        activity.turnId === unsettledTurnId;
+      result.push({
+        type: "activity-group",
+        id: activity.id,
+        createdAt: activity.createdAt,
+        turnId: activity.turnId,
+        activities: [live ? { ...activity, live } : activity],
+      });
+      continue;
+    }
     if (spawn !== undefined) {
       // Keyed by the batch, not the anchor activity: the anchor can change
       // as members arrive, and a changed key remounts the card.
@@ -2197,8 +2287,9 @@ function getThreadFeedActivityEntries(activities: ReadonlyArray<OrchestrationThr
 function toThreadFeedActivityEntry(
   entry: DerivedWorkLogEntry,
 ): Extract<RawThreadFeedEntry, { readonly type: "activity" }> {
-  const summary = workEntryHeading(entry);
-  const detail = workEntryPreview(entry);
+  const reasoning = workLogEntryIsReasoning(entry);
+  const summary = reasoning ? reasoningHeading(entry) : workEntryHeading(entry);
+  const detail = reasoning ? null : workEntryPreview(entry);
   const getFullDetail = memoizeValue(() => buildWorkEntryExpandedBody(entry));
   const getCopyText = memoizeValue(() => {
     const copyLabel = capitalizePhrase(normalizeCompactToolLabel(entry.toolTitle || entry.label));

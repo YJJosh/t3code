@@ -38,6 +38,7 @@ import {
   type AgentSpawnSummary,
   type ThreadFeedActivity,
   workEntryRowLabel,
+  workLogEntryIsReasoning,
 } from "../../lib/threadActivity";
 import {
   resolveThreadWorkGroupInitialScroll,
@@ -334,6 +335,8 @@ function workRowSymbolName(icon: ThreadFeedActivity["icon"]): AppSymbolName {
       return { ios: "sparkles", android: "auto_awesome" };
     case "alert":
       return { ios: "exclamationmark.triangle", android: "error" };
+    case "brain":
+      return "brain";
     case "browser":
       return { ios: "safari", android: "public" };
     case "check":
@@ -741,6 +744,8 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   const failed = row.status === "failure";
   const toolIcon = row.workEntry.toolIcon ?? row.workEntry.toolSource?.icon;
   const icon = toolPresentation?.icon ?? workRowSymbolName(row.icon);
+  // Reasoning is prose, not tool output: it reads in the body font, like web.
+  const proseDetail = workLogEntryIsReasoning(row.workEntry);
 
   return (
     <Animated.View
@@ -868,7 +873,13 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
             className="max-h-60"
             contentContainerStyle={{ paddingRight: 8 }}
           >
-            <Text selectable className="font-mono text-2xs leading-normal text-foreground-muted">
+            <Text
+              selectable
+              className={cn(
+                "text-2xs leading-normal text-foreground-muted",
+                proseDetail ? "italic" : "font-mono",
+              )}
+            >
               {fullDetail}
             </Text>
           </ScrollView>

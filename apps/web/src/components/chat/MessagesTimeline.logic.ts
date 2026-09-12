@@ -24,6 +24,7 @@ import {
   workEntryIndicatesToolSuccess,
   workEntryIndicatesToolNeutralStatus,
   workLogEntryIsToolLike,
+  workLogEntryIsReasoning,
   type TimelineEntry,
   type WorkLogEntry,
 } from "../../session-logic";
@@ -47,6 +48,15 @@ function singleToolCallLabel(entry: WorkLogEntry): string {
 }
 
 export function workEntryDisplayLabel(entry: WorkLogEntry, workspaceRoot: string | undefined) {
+  if (workLogEntryIsReasoning(entry)) {
+    const text = entry.detail?.trim() || entry.label.trim();
+    const firstLine = text.split(/\r?\n/u).find((line) => line.trim().length > 0) ?? "Thinking";
+    const title = firstLine
+      .trim()
+      .replace(/^#{1,6}\s+/u, "")
+      .replace(/\*\*|__/gu, "");
+    return title.length > 160 ? `${title.slice(0, 157)}…` : title;
+  }
   const toolPresentation = resolveWorkEntryToolPresentation(entry);
   if (toolPresentation) return toolPresentation.displayName;
   if (entry.command) return entry.command;
@@ -99,6 +109,7 @@ export function workEntryIsVisibleInGroup(
   expandedToolGroupEntry = false,
 ): boolean {
   return (
+    workLogEntryIsReasoning(entry) ||
     (expandedToolGroupEntry &&
       (entry.toolLifecycleStatus === "inProgress" ||
         entry.sourceActivityKind === "task.progress")) ||
@@ -553,6 +564,7 @@ function deriveTurnFolds(input: {
   terminalAssistantMessageIds: ReadonlySet<string>;
   latestTurn: TimelineLatestTurn | null;
   unfoldedTurnIds: ReadonlySet<TurnId>;
+  preserveAssistantMessages: boolean;
 }): ReadonlyMap<string, TurnFold> {
   interface TurnGroup {
     entries: Array<TimelineEntry>;
@@ -621,7 +633,10 @@ function deriveTurnFolds(input: {
       ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)
       : group.entries.length;
     for (const [index, entry] of group.entries.entries()) {
-      if (entry.id === group.terminalEntry?.id) {
+      if (
+        entry.id === group.terminalEntry?.id ||
+        (input.preserveAssistantMessages && entry.kind === "message")
+      ) {
         continue;
       }
       const isCompaction =
@@ -825,6 +840,8 @@ export function deriveMessagesTimelineRows(input: {
   latestTurn?: TimelineLatestTurn | null;
   runningTurnId?: TurnId | null;
   expandedTurnIds?: ReadonlySet<TurnId>;
+  /** Pi extensions can append notifications after the primary answer in the same turn. */
+  preserveAssistantMessages?: boolean;
   expandedWorkGroupIds?: ReadonlySet<string>;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
@@ -864,6 +881,7 @@ export function deriveMessagesTimelineRows(input: {
     terminalAssistantMessageIds,
     latestTurn: input.latestTurn ?? null,
     unfoldedTurnIds: activeVisualResponseTurnIds,
+    preserveAssistantMessages: input.preserveAssistantMessages ?? false,
   });
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorEntryId.values()) {
@@ -896,6 +914,7 @@ export function deriveMessagesTimelineRows(input: {
       entry.kind !== "work" ||
       entry.entry.agentSpawn !== undefined ||
       entry.entry.sourceActivityKind === "context-compaction" ||
+      workLogEntryIsReasoning(entry.entry) ||
       entry.entry.tone === "error"
     ) {
       break;
@@ -1019,7 +1038,11 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
-      if (timelineEntry.entry.agentSpawn !== undefined || timelineEntry.entry.tone === "error") {
+      if (
+        timelineEntry.entry.agentSpawn !== undefined ||
+        timelineEntry.entry.tone === "error" ||
+        workLogEntryIsReasoning(timelineEntry.entry)
+      ) {
         nextRows.push({
           kind: "work",
           id: timelineEntry.id,
@@ -1027,6 +1050,15 @@ export function deriveMessagesTimelineRows(input: {
           groupedEntries: [timelineEntry.entry],
           isExpandedToolGroup: false,
         });
+        // Actual reasoning already represents the live activity; do not add
+        // a second generic Thinking row while that is the latest entry.
+        if (
+          workLogEntryIsReasoning(timelineEntry.entry) &&
+          index === input.timelineEntries.length - 1 &&
+          entryBelongsToActiveTurn(timelineEntry, index)
+        ) {
+          hasActivityRow = true;
+        }
         continue;
       }
       const groupedEntries = [timelineEntry.entry];
@@ -1037,6 +1069,7 @@ export function deriveMessagesTimelineRows(input: {
           !nextEntry ||
           nextEntry.kind !== "work" ||
           nextEntry.entry.agentSpawn !== undefined ||
+          workLogEntryIsReasoning(nextEntry.entry) ||
           nextEntry.entry.sourceActivityKind === "context-compaction" ||
           nextEntry.entry.tone === "error" ||
           activeWorkEntryIds.has(nextEntry.id) ||

@@ -241,6 +241,8 @@ export interface ThreadFeedProps {
   readonly agentLabel: string;
   readonly latestTurn: ThreadFeedLatestTurn | null;
   readonly activeWorkStartedAt: string | null;
+  /** Provider policy from the caller; see providerKeepsAssistantMessagesVisible. */
+  readonly keepAssistantMessagesVisible?: boolean;
   readonly listRef: RefObject<LegendListRef | null>;
   readonly freeze: SharedValue<boolean>;
   readonly anchorMessageId: MessageId | null;
@@ -2437,6 +2439,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           expandedTurnIds,
           expandedWorkGroupIds,
           props.activeWorkStartedAt,
+          { keepAssistantMessagesVisible: props.keepAssistantMessagesVisible === true },
         ),
         props.feed,
         props.queuedMessages,
@@ -2447,6 +2450,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       expandedWorkGroupIds,
       props.activeWorkStartedAt,
       props.feed,
+      props.keepAssistantMessagesVisible,
       props.latestTurn,
     ],
   );

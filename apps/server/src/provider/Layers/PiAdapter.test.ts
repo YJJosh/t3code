@@ -395,7 +395,11 @@ describe("Pi adapter", () => {
       expect(throughReasoning.at(-1)).toEqual(
         expect.objectContaining({
           type: "content.delta",
-          payload: { streamKind: "reasoning_text", delta: "Inspecting the repository" },
+          payload: {
+            streamKind: "reasoning_text",
+            delta: "Inspecting the repository",
+            contentIndex: 0,
+          },
         }),
       );
 
@@ -411,7 +415,7 @@ describe("Pi adapter", () => {
       expect(throughText.at(-1)).toEqual(
         expect.objectContaining({
           type: "content.delta",
-          payload: { streamKind: "assistant_text", delta: "First pass" },
+          payload: { streamKind: "assistant_text", delta: "First pass", contentIndex: 1 },
         }),
       );
 
@@ -435,6 +439,131 @@ describe("Pi adapter", () => {
       expect(completed?.payload.state).toBe("completed");
       expect(nativeFrames).toContainEqual(expect.objectContaining({ type: "agent_settled" }));
       expect(fake.written.filter((command) => command.type === "prompt")).toHaveLength(1);
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("assembles indexed blocks and resets content state between assistant messages", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* Queue.takeAll(events);
+      yield* adapter.sendTurn({ threadId: THREAD, input: "Build the invoice" });
+      yield* takeThroughType(events, "turn.started");
+
+      const indexedEvents = [
+        { type: "thinking_delta", contentIndex: 0, delta: "Plan" },
+        { type: "text_delta", contentIndex: 1, delta: "Now I’ll verify the command." },
+        { type: "thinking_delta", contentIndex: 2, delta: "Verify" },
+        { type: "text_delta", contentIndex: 3, delta: "# Invoice Summary" },
+      ] as const;
+      const streamed: ProviderRuntimeEvent[] = [];
+      for (const assistantMessageEvent of indexedEvents) {
+        yield* fake.pushFrame({ type: "message_update", assistantMessageEvent });
+        streamed.push(...(yield* takeThroughType(events, "content.delta")));
+      }
+      expect(
+        streamed.filter((event) => event.type === "content.delta").map((event) => event.payload),
+      ).toEqual([
+        { streamKind: "reasoning_text", contentIndex: 0, delta: "Plan" },
+        {
+          streamKind: "assistant_text",
+          contentIndex: 1,
+          delta: "Now I’ll verify the command.",
+        },
+        { streamKind: "reasoning_text", contentIndex: 2, delta: "\n\nVerify" },
+        {
+          streamKind: "assistant_text",
+          contentIndex: 3,
+          delta: "\n\n# Invoice Summary",
+        },
+      ]);
+
+      yield* fake.pushFrame({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Plan" },
+            { type: "text", text: "Now I’ll verify the command." },
+            { type: "thinking", thinking: "Verify" },
+            { type: "text", text: "# Invoice Summary" },
+          ],
+        },
+      });
+      const firstCompletion = yield* takeThroughType(events, "item.completed");
+      expect(firstCompletion.some((event) => event.type === "content.delta")).toBe(false);
+      const firstItemId = firstCompletion.find((event) => event.type === "item.completed")?.itemId;
+
+      yield* fake.pushFrame({
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Legacy cumulative" }],
+        },
+      });
+      const legacyStart = yield* takeThroughType(events, "content.delta");
+      expect(legacyStart.at(-1)).toEqual(
+        expect.objectContaining({
+          payload: { streamKind: "assistant_text", delta: "Legacy cumulative" },
+        }),
+      );
+      yield* fake.pushFrame({
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Legacy cumulative snapshot" }],
+        },
+      });
+      const legacyExtension = yield* takeThroughType(events, "content.delta");
+      expect(legacyExtension.at(-1)).toEqual(
+        expect.objectContaining({
+          payload: { streamKind: "assistant_text", delta: " snapshot" },
+        }),
+      );
+      yield* fake.pushFrame({
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: 0,
+          delta: " plus delta",
+        },
+      });
+      const mixedDelta = yield* takeThroughType(events, "content.delta");
+      expect(mixedDelta.at(-1)).toEqual(
+        expect.objectContaining({
+          payload: {
+            streamKind: "assistant_text",
+            contentIndex: 0,
+            delta: " plus delta",
+          },
+        }),
+      );
+      yield* fake.pushFrame({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Legacy cumulative snapshot plus delta" }],
+        },
+      });
+      const secondCompletion = yield* takeThroughType(events, "item.completed");
+      expect(secondCompletion.some((event) => event.type === "content.delta")).toBe(false);
+      expect(secondCompletion.find((event) => event.type === "item.completed")?.itemId).not.toBe(
+        firstItemId,
+      );
+
+      yield* fake.pushFrame({ type: "agent_settled" });
+      yield* takeThroughType(events, "turn.completed");
     }).pipe(Effect.provide(TestEnv)),
   );
 

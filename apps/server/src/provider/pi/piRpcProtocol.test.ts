@@ -209,17 +209,21 @@ describe("Pi RPC protocol", () => {
     ).toEqual({ type: "extension_ui_response", id: "input-1", cancelled: true });
   });
 
-  it("extracts assistant text and separated thinking blocks defensively", () => {
+  it("extracts assistant text and thinking with explicit content-block boundaries", () => {
     expect(
       extractPiAssistantText({
         content: [
-          { type: "thinking", thinking: "first" },
+          { type: "thinking", thinking: "first\n\n" },
+          { type: "text", text: "Now I’ll verify the command." },
           { type: "thinking", thinking: "second" },
-          { type: "text", text: "Hello " },
-          { type: "text", text: "world" },
+          { type: "text", text: "# Invoice Summary" },
+          { type: "text", text: "| Total | $42 |" },
         ],
       }),
-    ).toEqual({ text: "Hello world", thinking: "first\n\nsecond" });
+    ).toEqual({
+      text: "Now I’ll verify the command.\n\n# Invoice Summary\n\n| Total | $42 |",
+      thinking: "first\n\nsecond",
+    });
     expect(extractPiAssistantText(null)).toEqual({ text: "", thinking: "" });
   });
 });

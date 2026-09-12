@@ -78,6 +78,7 @@ import type {
   PendingUserInputDraftAnswer,
   ThreadFeedEntry,
 } from "../../lib/threadActivity";
+import { providerKeepsAssistantMessagesVisible } from "../../lib/threadActivity";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 import { ComposerFeedback } from "./ComposerFeedback";
 import { ComposerUsageLimits } from "./ComposerUsageLimits";
@@ -650,14 +651,24 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const contentMaxWidth = isSplitLayout ? CHAT_CONTENT_MAX_WIDTH : undefined;
   const selectedInstanceId = props.selectedThread.modelSelection.instanceId;
   useStreamingHaptics(props.selectedThread.id, props.selectedThreadFeed);
-  const selectedProviderSkills = useMemo(() => {
-    const provider = props.serverConfig?.providers.find(
-      (candidate) => candidate.instanceId === selectedInstanceId,
-    );
-    return provider
-      ? resolveProviderSkillsForCwd(provider, props.threadCwd ?? props.projectWorkspaceRoot)
-      : [];
-  }, [props.projectWorkspaceRoot, props.serverConfig, props.threadCwd, selectedInstanceId]);
+  const selectedProvider = props.serverConfig?.providers.find(
+    (candidate) => candidate.instanceId === selectedInstanceId,
+  );
+  const selectedProviderSkills = useMemo(
+    () =>
+      selectedProvider
+        ? resolveProviderSkillsForCwd(
+            selectedProvider,
+            props.threadCwd ?? props.projectWorkspaceRoot,
+          )
+        : [],
+    [props.projectWorkspaceRoot, props.threadCwd, selectedProvider],
+  );
+  // Before the server config arrives the instance id is the only provider
+  // hint; default instances are named after their driver.
+  const keepAssistantMessagesVisible = providerKeepsAssistantMessagesVisible(
+    selectedProvider?.driver ?? selectedInstanceId,
+  );
 
   useLayoutEffect(() => {
     selectedThreadKeyRef.current = selectedThreadKey;
@@ -866,6 +877,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             agentLabel={agentLabel}
             latestTurn={props.selectedThread.latestTurn}
             activeWorkStartedAt={props.activeWorkStartedAt}
+            keepAssistantMessagesVisible={keepAssistantMessagesVisible}
             listRef={listRef}
             freeze={freeze}
             anchorMessageId={anchorMessageId}
