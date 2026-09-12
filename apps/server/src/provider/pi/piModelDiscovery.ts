@@ -27,6 +27,7 @@ import type {
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
 import { buildSelectOptionDescriptor } from "../providerSnapshot.ts";
 import { resolvePiAgentDir } from "./piPaths.ts";
@@ -506,11 +507,17 @@ const sendError = (error) => parentPort.postMessage({
 `;
 
 function piDiscoveryWorkerEnvironment(environment: NodeJS.ProcessEnv | undefined) {
-  return Object.fromEntries(
+  const workerEnvironment = Object.fromEntries(
     Object.entries(environment ?? process.env).filter(
       (entry): entry is [string, string] => entry[1] !== undefined,
     ),
   );
+  // Node's watch loader reports imports over the parent's IPC channel. In a
+  // worker this either throws or sends watch messages into our result protocol.
+  delete workerEnvironment.WATCH_REPORT_DEPENDENCIES;
+  delete workerEnvironment.NODE_CHANNEL_FD;
+  delete workerEnvironment.NODE_CHANNEL_SERIALIZATION_MODE;
+  return workerEnvironment;
 }
 
 function loadPiDiscoverySnapshotInWorker(
@@ -564,6 +571,11 @@ function loadPiDiscoverySnapshotInWorker(
   });
 }
 
+class PiModelDiscoveryError extends Schema.TaggedErrorClass<PiModelDiscoveryError>()(
+  "PiModelDiscoveryError",
+  { cause: Schema.Defect() },
+) {}
+
 /**
  * Discover Pi models and derive auth status. SDK loading and extension execution
  * happen in a worker with the provider instance's environment, keeping those
@@ -580,15 +592,9 @@ export const discoverPiModels = Effect.fn("discoverPiModels")(function* (
       finishPiModelDiscovery(
         await loadPiDiscoverySnapshotInWorker({ ...options, agentDir, environment }),
       ),
-    catch: (cause): PiModelDiscoveryResult => ({
-      models: [],
-      auth: { status: "unknown" },
-      slashCommands: [],
-      skills: [],
-      error: cause instanceof Error ? cause.message : String(cause),
-    }),
+    catch: (cause) => new PiModelDiscoveryError({ cause }),
   }).pipe(
-    Effect.catch((cause) =>
+    Effect.catch(({ cause }) =>
       Effect.succeed<PiModelDiscoveryResult>({
         models: [],
         auth: { status: "unknown" },
