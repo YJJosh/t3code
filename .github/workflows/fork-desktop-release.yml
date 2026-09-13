@@ -95,6 +95,7 @@ jobs:
             apps/server/src/vcs/GitVcsDriver.test.ts \
             apps/server/src/vcs/GitVcsDriverCore.test.ts \
             apps/server/src/vcs/WorklerWorkspaceService.test.ts \
+            apps/server/src/vcs/WorklerWorkspaceService.bundle.test.ts \
             apps/web/src/branding.test.ts \
             apps/web/src/components/settings/ProviderSettingsForm.test.ts \
             apps/mobile/plugins/withAndroidReleaseSigning.test.ts \
