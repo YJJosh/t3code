@@ -5,7 +5,7 @@
  *
  * - apps/server/vite.config.ts decides what stays external to the bundle.
  * - scripts/build-desktop-artifact.ts selects the runtime dependency roots for
- *   the Windows server sidecar.
+ *   the desktop packages and Windows/WSL server sidecar.
  *
  * A runtime package that is external but absent from the sidecar fails as soon
  * as Node resolves it from the emitted bundle. Keeping both consumers on one
@@ -23,9 +23,13 @@
  * package is loaded from the real filesystem, so its own `require` also
  * resolves from the real filesystem; a dependency that was bundled away exists
  * only inside the emitted bundle and is unreachable there. This closure is
- * enforced by a test, not by inspection.
+ * enforced by a test, not by inspection. Packages that read their own metadata
+ * relative to their module also need to retain their on-disk layout.
  */
 export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
+  // Workler reads ../package.json via __dirname at module load. Its CommonJS
+  // entry and metadata must stay together, not be inlined into an ES module.
+  "workler",
   "node-pty",
   "ffi-rs",
   "@yuuang/",

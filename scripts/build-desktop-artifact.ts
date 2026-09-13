@@ -622,7 +622,7 @@ export class InlinedExternalPackageError extends Schema.TaggedErrorClass<Inlined
   { packages: Schema.Array(Schema.String) },
 ) {
   override get message(): string {
-    return `The server bundle inlined packages that must stay external: ${this.packages.join(", ")}. These are native addons or their loaders; inlined, they resolve prebuilds relative to the bundle and silently lose native acceleration. Check the deps.neverBundle wiring in apps/server/vite.config.ts.`;
+    return `The server bundle inlined packages that must stay external: ${this.packages.join(", ")}. These packages rely on their on-disk layout for metadata or native binaries, which bundling does not preserve. Check the deps.neverBundle wiring in apps/server/vite.config.ts.`;
   }
 }
 

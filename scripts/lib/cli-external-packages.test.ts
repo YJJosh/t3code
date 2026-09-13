@@ -12,6 +12,7 @@ import serverPackageJson from "../../apps/server/package.json" with { type: "jso
 import {
   CLI_RUNTIME_EXTERNAL_PREFIXES,
   findInlinedExternalPackages,
+  isExternalCliDependency,
   selectCliRuntimeExternalDependencies,
   shouldBundleCliDependency,
 } from "./cli-external-packages.ts";
@@ -55,6 +56,11 @@ describe("shouldBundleCliDependency", () => {
     }
   });
 
+  it("keeps Workler external so it can resolve its own package metadata", () => {
+    assert.strictEqual(shouldBundleCliDependency("workler"), false);
+    assert.strictEqual(isExternalCliDependency("workler"), true);
+  });
+
   it("leaves bun-only entry points external", () => {
     assert.strictEqual(shouldBundleCliDependency("@effect/platform-bun"), false);
     assert.strictEqual(shouldBundleCliDependency("@effect/sql-sqlite-bun"), false);
@@ -76,10 +82,12 @@ describe("selectCliRuntimeExternalDependencies", () => {
         "@ff-labs/fff-node": "2.0.0",
         effect: "3.0.0",
         "node-pty": "4.0.0",
+        workler: "0.2.1",
       }),
       {
         "@ff-labs/fff-node": "2.0.0",
         "node-pty": "4.0.0",
+        workler: "0.2.1",
       },
     );
   });
@@ -87,7 +95,7 @@ describe("selectCliRuntimeExternalDependencies", () => {
   it("selects every external root declared by the server", () => {
     assert.deepStrictEqual(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackageJson.dependencies)).sort(),
-      ["@ff-labs/fff-node", "msgpackr-extract", "node-pty"],
+      ["@ff-labs/fff-node", "msgpackr-extract", "node-pty", "workler"],
     );
   });
 });
@@ -233,6 +241,13 @@ var x = 1;
 
     assert.deepStrictEqual(result.inlined, ["detect-libc", "msgpackr-extract"]);
     assert.strictEqual(result.regionCount, 2);
+  });
+
+  it("flags Workler when it is accidentally inlined into an ES module", () => {
+    const result = findInlinedExternalPackages(
+      region("../../node_modules/.pnpm/workler@0.2.1/node_modules/workler/dist/constants.js"),
+    );
+    assert.deepStrictEqual(result.inlined, ["workler"]);
   });
 
   it("flags scoped external packages", () => {

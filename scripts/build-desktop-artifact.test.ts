@@ -794,6 +794,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "@pierre/diffs": "1.3.0",
           "msgpackr-extract": "3.0.4",
           "node-pty": "1.1.0",
+          workler: "0.2.1",
         },
         desktopDependencies: {
           "@clerk/electron": "0.0.34",
@@ -806,6 +807,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "@ff-labs/fff-node": "0.9.4",
         "msgpackr-extract": "3.0.4",
         "node-pty": "1.1.0",
+        workler: "0.2.1",
         "@clerk/electron": "0.0.34",
         effect: "4.0.0-beta.103",
         "@ff-labs/fff-bin-darwin-arm64": "0.9.4",
