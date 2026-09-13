@@ -47,7 +47,11 @@ describe("highlightSourceFile", () => {
     ]);
   });
 
-  it("initializes source and snippet highlighting without a warmup", async () => {
+  it("initializes source and snippet highlighting without a warmup", async ({ onTestFinished }) => {
+    // Shiki's 500 ms wall-clock budget can truncate cold tokenization on busy CI workers.
+    // Compare initialization results independently of that performance safeguard.
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
+    onTestFinished(() => now.mockRestore());
     vi.resetModules();
     const highlighter = await import("./shikiReviewHighlighter");
     const source = "const answer: number = 42;";
