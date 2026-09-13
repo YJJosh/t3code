@@ -1,17 +1,21 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import { DulliGitHubProvider } from "../electron/DulliGitHubProvider.ts";
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopState from "../app/DesktopState.ts";
@@ -98,9 +102,70 @@ describe("DesktopUpdates", () => {
         assert.equal(harness.updaterChannel(), null);
         assert.equal(harness.allowPrerelease(), true);
         assert.equal(harness.allowDowngrade(), false);
+
+        yield* updates.check("manual");
+        assert.deepEqual(harness.lastCheckOptions(), { allowDulliTransition: true });
+
+        yield* updates.setChannel("nightly");
+        assert.deepEqual(harness.lastCheckOptions(), { allowDulliTransition: false });
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
+
+  it.effect("installs the Dulli GitHub provider without changing upstream feed wiring", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const resourcesPath = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-dulli-updater-",
+        });
+        yield* fileSystem.writeFileString(
+          path.join(resourcesPath, "app-update.yml"),
+          "provider: github\nowner: YJJosh\nrepo: t3code\nupdaterCacheDirName: t3-dulli-updater\n",
+        );
+
+        const dulliHarness = makeHarness({
+          appName: "T3 Dulli",
+          resourcesPath,
+          env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" },
+        });
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const updates = yield* DesktopUpdates.DesktopUpdates;
+            yield* updates.configure;
+          }).pipe(Effect.provide(Layer.merge(TestClock.layer(), dulliHarness.layer))),
+        );
+
+        const dulliFeed = dulliHarness.feedUrls().at(-1);
+        assert.isDefined(dulliFeed);
+        if (typeof dulliFeed === "string" || dulliFeed === undefined) {
+          return assert.fail("Expected a custom Dulli GitHub feed");
+        }
+        assert.equal(dulliFeed.provider, "custom");
+        if (dulliFeed.provider !== "custom") {
+          return assert.fail("Expected a custom Dulli GitHub feed");
+        }
+        assert.deepInclude(dulliFeed, {
+          updateProvider: DulliGitHubProvider,
+          owner: "YJJosh",
+          repo: "t3code",
+        });
+
+        const upstreamHarness = makeHarness({
+          resourcesPath,
+          env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" },
+        });
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const updates = yield* DesktopUpdates.DesktopUpdates;
+            yield* updates.configure;
+          }).pipe(Effect.provide(Layer.merge(TestClock.layer(), upstreamHarness.layer))),
+        );
+        assert.deepEqual(upstreamHarness.feedUrls(), []);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
 
   it.effect("subscribe delivers the latest state plus subsequent changes", () => {
     const harness = makeHarness();

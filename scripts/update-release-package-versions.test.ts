@@ -93,6 +93,23 @@ it.layer(ScriptTestLayer)("update-release-package-versions", (it) => {
     }),
   );
 
+  it.effect("aligns package versions through the pi to Dulli release sequence", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "dulli-release-versions-" });
+      yield* writePackageJsonFixtures(baseDir, "0.0.36-pi.2");
+
+      for (const version of ["0.0.40-pi.1", "0.0.40-dulli.2"]) {
+        yield* updateReleasePackageVersions(version, { rootDir: baseDir });
+        const versions = yield* readReleaseVersions(baseDir);
+        assert.deepStrictEqual(
+          Array.from(versions.entries()),
+          releasePackageFiles.map((relativePath) => [relativePath, version]),
+        );
+      }
+    }),
+  );
+
   it.effect("returns changed=false when all versions already match", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

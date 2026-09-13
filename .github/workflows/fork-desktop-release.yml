@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "T3 Dulli release version (for example 0.0.36-pi.1)"
+        description: "T3 Dulli version (first 0.0.40-pi.1, then 0.0.40-dulli.2)"
         required: true
         type: string
 
@@ -50,8 +50,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${RAW_VERSION#v}"
-          if [[ ! "$version" =~ ^0\.0\.(0|[1-9][0-9]*)-pi\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Fork releases require the 0.0.<patch>-pi.<build> sequence, such as 0.0.29-pi.1." >&2
+          if [[ "$version" != "0.0.40-pi.1" && ! "$version" =~ ^0\.0\.(0|[1-9][0-9]*)-dulli\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Fork releases require the 0.0.<patch>-dulli.<build> sequence, or the one-time 0.0.40-pi.1 migration release." >&2
+            exit 1
+          fi
+          if [[ "$version" == "0.0.40-dulli.0" || "$version" == "0.0.40-dulli.1" ]]; then
+            echo "The first Dulli-suffix release must be 0.0.40-dulli.2 or newer to upgrade 0.0.40-pi.1." >&2
             exit 1
           fi
           tag="v$version"
@@ -77,6 +81,8 @@ jobs:
             apps/desktop/src/app/DesktopEnvironment.test.ts \
             apps/desktop/src/electron/ElectronApp.test.ts \
             apps/desktop/src/electron/ElectronProtocol.test.ts \
+            apps/desktop/src/electron/ElectronUpdater.test.ts \
+            apps/desktop/src/electron/DulliGitHubProvider.test.ts \
             apps/desktop/src/updates/DesktopUpdates.test.ts \
             packages/contracts/src/settings.test.ts \
             packages/contracts/src/provider.test.ts \

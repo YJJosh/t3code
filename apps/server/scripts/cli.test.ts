@@ -47,7 +47,7 @@ describe("server publish CLI", () => {
     assert.deepEqual(
       resolvePublishIdentity(
         {
-          appVersion: Option.some("0.0.36-pi.1"),
+          appVersion: Option.some("0.0.40-dulli.2"),
           packageName: Option.some("@yjosh/t3"),
           repositoryUrl: Option.some("https://github.com/YJJosh/t3code"),
         },
@@ -58,7 +58,7 @@ describe("server publish CLI", () => {
         },
       ),
       {
-        version: "0.0.36-pi.1",
+        version: "0.0.40-dulli.2",
         packageName: "@yjosh/t3",
         repositoryUrl: "https://github.com/YJJosh/t3code",
       },

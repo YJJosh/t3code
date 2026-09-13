@@ -424,24 +424,28 @@ export const make = Effect.gen(function* () {
       yield* setState(reduceDesktopUpdateStateOnCheckStart(state, checkedAt));
       yield* logUpdaterInfo("checking for updates", { reason });
 
-      return yield* electronUpdater.checkForUpdates.pipe(
-        Effect.as(true),
-        Effect.catchTags({
-          ElectronUpdaterCheckForUpdatesError: Effect.fn(
-            "desktop.updates.handleCheckForUpdatesFailure",
-          )(function* (error) {
-            const failedAt = yield* currentIsoTimestamp;
-            yield* updateState((current) =>
-              reduceDesktopUpdateStateOnCheckFailure(current, error.message, failedAt),
-            );
-            yield* logUpdaterError(error.message, {
-              errorTag: error._tag,
-              channel: error.channel,
-            });
-            return true;
+      return yield* electronUpdater
+        .checkForUpdates({
+          allowDulliTransition: environment.isDulli && state.channel === "latest",
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catchTags({
+            ElectronUpdaterCheckForUpdatesError: Effect.fn(
+              "desktop.updates.handleCheckForUpdatesFailure",
+            )(function* (error) {
+              const failedAt = yield* currentIsoTimestamp;
+              yield* updateState((current) =>
+                reduceDesktopUpdateStateOnCheckFailure(current, error.message, failedAt),
+              );
+              yield* logUpdaterError(error.message, {
+                errorTag: error._tag,
+                channel: error.channel,
+              });
+              return true;
+            }),
           }),
-        }),
-      );
+        );
     });
 
     return yield* actionReservation === "held"
@@ -877,6 +881,16 @@ export const make = Effect.gen(function* () {
 
       const appUpdateYmlConfig = yield* readAppUpdateYml;
       yield* Ref.set(appUpdateYmlConfigRef, appUpdateYmlConfig);
+
+      if (
+        environment.isDulli &&
+        Option.isSome(appUpdateYmlConfig) &&
+        appUpdateYmlConfig.value.provider === "github"
+      ) {
+        yield* electronUpdater.setFeedURL(
+          ElectronUpdater.makeDulliGitHubFeedUrl(appUpdateYmlConfig.value),
+        );
+      }
 
       if (config.mockUpdates) {
         yield* electronUpdater.setFeedURL({

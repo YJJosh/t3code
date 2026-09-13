@@ -1,5 +1,7 @@
-// @effect-diagnostics nodeBuiltinImport:off - workflow fixtures are plain YAML files outside the Effect runtime.
+// @effect-diagnostics nodeBuiltinImport:off - workflow fixtures and shell validation run outside the Effect runtime.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { describe, expect, it } from "vite-plus/test";
@@ -8,6 +10,7 @@ import YAML from "yaml";
 interface WorkflowJob {
   readonly if?: string;
   readonly needs?: string | ReadonlyArray<string>;
+  readonly steps?: ReadonlyArray<{ readonly id?: string; readonly run?: string }>;
 }
 
 interface Workflow {
@@ -21,6 +24,31 @@ function readWorkflow(name: string): Workflow {
   return YAML.parse(NodeFS.readFileSync(NodePath.join(workflowsDir, name), "utf8")) as Workflow;
 }
 
+function validateReleaseVersion(version: string) {
+  const workflow = readWorkflow("fork-desktop-release.yml");
+  const script = workflow.jobs.preflight?.steps?.find((step) => step.id === "release_meta")?.run;
+  if (!script) throw new Error("Missing release validation step");
+
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "dulli-release-version-"));
+  const outputPath = NodePath.join(root, "output");
+  try {
+    NodeChildProcess.execFileSync("git", ["init", "--quiet", root]);
+    const result = NodeChildProcess.spawnSync("bash", ["-c", script], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, RAW_VERSION: version, GITHUB_OUTPUT: outputPath },
+    });
+    if (result.error) throw result.error;
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      output: NodeFS.existsSync(outputPath) ? NodeFS.readFileSync(outputPath, "utf8") : "",
+    };
+  } finally {
+    NodeFS.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 const hardDisabledWorkflows = {
   "cursor-hygiene-webhook.yml": ["forward"],
   "deploy-relay.yml": ["deploy_relay"],
@@ -32,6 +60,48 @@ const hardDisabledWorkflows = {
 } as const;
 
 describe("fork release workflow safety", () => {
+  it.each([
+    ["0.0.40-pi.1", "0.0.40-pi.1"],
+    ["v0.0.40-pi.1", "0.0.40-pi.1"],
+    ["0.0.40-dulli.2", "0.0.40-dulli.2"],
+    ["v0.0.40-dulli.2", "0.0.40-dulli.2"],
+    ["0.0.41-dulli.0", "0.0.41-dulli.0"],
+  ])("accepts the migration and Dulli release sequence (%s)", (version, normalized) => {
+    expect(validateReleaseVersion(version)).toEqual({
+      status: 0,
+      stderr: "",
+      output: `version=${normalized}\ntag=v${normalized}\n`,
+    });
+  });
+
+  it.each(["0.0.40-dulli.0", "0.0.40-dulli.1"])(
+    "rejects build slots that cannot upgrade the migration APK (%s)",
+    (version) => {
+      const result = validateReleaseVersion(version);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("0.0.40-dulli.2 or newer");
+      expect(result.output).toBe("");
+    },
+  );
+
+  it.each([
+    "0.0.36-pi.3",
+    "0.0.39-pi.1",
+    "0.0.40-pi.2",
+    "0.0.41-pi.1",
+    "0.0.40-beta.1",
+    "0.0.40",
+    "0.0.040-dulli.1",
+    "0.0.40-dulli.01",
+    "0.0.40-dulli.1+build",
+    "0.0.40-dulli.1\n",
+  ])("rejects non-canonical new release versions (%s)", (version) => {
+    const result = validateReleaseVersion(version);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("0.0.<patch>-dulli.<build>");
+    expect(result.output).toBe("");
+  });
+
   it("keeps Ubuntu CI setup independent of upstream's runner vendor", () => {
     const ci = NodeFS.readFileSync(NodePath.join(workflowsDir, "ci.yml"), "utf8");
     const aptSetup = NodeFS.readFileSync(
