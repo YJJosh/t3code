@@ -9,16 +9,16 @@ import * as Scope from "effect/Scope";
 import * as Electron from "electron";
 
 export const DESKTOP_HOST = "app";
-export const DESKTOP_PRODUCTION_SCHEME = "t3code";
-export const DESKTOP_DEVELOPMENT_SCHEME = "t3code-dev";
-export const DULLI_DESKTOP_SCHEME = "t3dulli";
+const DESKTOP_PRODUCTION_SCHEME = "t3code";
+const DESKTOP_DEVELOPMENT_SCHEME = "t3code-dev";
+const DULLI_DESKTOP_SCHEME = "t3dulli";
 
 export function getDesktopScheme(isDevelopment: boolean, isDulli = false): string {
   if (isDulli && !isDevelopment) return DULLI_DESKTOP_SCHEME;
   return isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME;
 }
 
-export function getDesktopOrigin(isDevelopment: boolean, isDulli = false): string {
+function getDesktopOrigin(isDevelopment: boolean, isDulli = false): string {
   return `${getDesktopScheme(isDevelopment, isDulli)}://${DESKTOP_HOST}`;
 }
 
@@ -89,6 +89,7 @@ export function makeDesktopContentSecurityPolicy(input: DesktopProtocolRegistrat
     `script-src ${scriptSources.join(" ")}`,
     `connect-src ${connectSources.join(" ")}`,
     `img-src 'self' ${input.scheme}: blob: data: http: https:`,
+    `media-src 'self' ${input.scheme}: blob: http: https:`,
     "style-src 'self' 'unsafe-inline'",
     `font-src 'self' ${input.scheme}: data:`,
     "worker-src 'self' blob:",
@@ -110,7 +111,7 @@ function withContentSecurityPolicy(response: Response, policy: string): Response
 /**
  * Must run synchronously during process bootstrap, before Electron emits `ready`.
  */
-export function registerDesktopSchemePrivilegesSync(): void {
+function registerDesktopSchemePrivilegesSync(): void {
   Electron.protocol.registerSchemesAsPrivileged([
     {
       scheme: DESKTOP_PRODUCTION_SCHEME,
@@ -119,6 +120,7 @@ export function registerDesktopSchemePrivilegesSync(): void {
         secure: true,
         supportFetchAPI: true,
         corsEnabled: true,
+        stream: true,
       },
     },
     {
@@ -128,6 +130,7 @@ export function registerDesktopSchemePrivilegesSync(): void {
         secure: true,
         supportFetchAPI: true,
         corsEnabled: true,
+        stream: true,
       },
     },
     {
@@ -137,6 +140,7 @@ export function registerDesktopSchemePrivilegesSync(): void {
         secure: true,
         supportFetchAPI: true,
         corsEnabled: true,
+        stream: true,
       },
     },
   ]);
@@ -213,6 +217,7 @@ async function fetchWithTransientRetry(url: string, init: RequestInit): Promise<
   throw lastError;
 }
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const registered = yield* Ref.make(false);
 

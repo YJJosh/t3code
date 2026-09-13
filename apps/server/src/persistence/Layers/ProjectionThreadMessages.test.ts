@@ -1,7 +1,8 @@
-import { MessageId, ThreadId } from "@t3tools/contracts";
+import { MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import { ProjectionThreadMessageRepository } from "../Services/ProjectionThreadMessages.ts";
 import { ProjectionThreadMessageRepositoryLive } from "./ProjectionThreadMessages.ts";
@@ -12,6 +13,163 @@ const layer = it.layer(
 );
 
 layer("ProjectionThreadMessageRepository", (it) => {
+  it.effect("preserves explicit phases through streaming append and phase-less upserts", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("phase-thread");
+      for (const phase of [undefined, "commentary", "final_answer"] as const) {
+        const row = {
+          messageId: MessageId.make(`phase-${phase ?? "legacy"}`),
+          threadId,
+          turnId: TurnId.make("phase-turn"),
+          role: "assistant" as const,
+          text: "First",
+          isStreaming: false,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        };
+        yield* repository.upsert({ ...row, ...(phase !== undefined ? { phase } : {}) });
+        yield* repository.appendStreaming({ ...row, text: " second" });
+        const streamed = Option.getOrThrow(
+          yield* repository.getByMessageId({ messageId: row.messageId }),
+        );
+        assert.strictEqual(streamed.phase, phase);
+        assert.strictEqual(streamed.text, "First second");
+        yield* repository.upsert({ ...row, text: streamed.text });
+        const completed = Option.getOrThrow(
+          yield* repository.getByMessageId({ messageId: row.messageId }),
+        );
+        assert.strictEqual(completed.phase, phase);
+        assert.isFalse(completed.isStreaming);
+      }
+      const rows = yield* repository.listByThreadId({ threadId });
+      assert.deepEqual(
+        rows.map(({ phase }) => phase),
+        ["commentary", "final_answer", undefined],
+      );
+    }),
+  );
+
+  it.effect("finds the latest live user-message time within one thread", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-latest-user-message");
+      assert.isNull(yield* repository.getLatestUserMessageAt({ threadId }));
+
+      yield* repository.upsert({
+        messageId: MessageId.make("import:codex:latest-user-message:000000"),
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "Imported prompt",
+        isStreaming: false,
+        createdAt: "2026-02-28T19:05:06.000Z",
+        updatedAt: "2026-02-28T19:05:06.000Z",
+      });
+      assert.isNull(yield* repository.getLatestUserMessageAt({ threadId }));
+
+      const messages = [
+        { role: "user", createdAt: "2026-02-28T19:05:02.000Z" },
+        { role: "user", createdAt: "2026-02-28T19:05:01.000Z" },
+        { role: "assistant", createdAt: "2026-02-28T19:05:03.000Z" },
+        { role: "system", createdAt: "2026-02-28T19:05:04.000Z" },
+      ] as const;
+      for (const [index, message] of messages.entries()) {
+        yield* repository.upsert({
+          messageId: MessageId.make(`latest-user-message-${index}`),
+          threadId,
+          turnId: null,
+          ...message,
+          text: "Message body",
+          isStreaming: false,
+          updatedAt: "2026-02-28T19:06:00.000Z",
+        });
+      }
+      yield* repository.upsert({
+        messageId: MessageId.make("latest-user-message-other-thread"),
+        threadId: ThreadId.make("thread-latest-user-message-other"),
+        turnId: null,
+        role: "user",
+        text: "Other thread",
+        isStreaming: false,
+        createdAt: "2026-02-28T19:05:05.000Z",
+        updatedAt: "2026-02-28T19:05:05.000Z",
+      });
+
+      assert.strictEqual(
+        yield* repository.getLatestUserMessageAt({ threadId }),
+        "2026-02-28T19:05:02.000Z",
+      );
+      yield* repository.deleteByThreadId({ threadId });
+      assert.isNull(yield* repository.getLatestUserMessageAt({ threadId }));
+    }),
+  );
+
+  it.effect("appends streaming text and applies attachment updates", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-streaming-append");
+      const messageId = MessageId.make("message-streaming-append");
+      const createdAt = "2026-02-28T19:05:00.000Z";
+      const attachments = [
+        {
+          type: "image" as const,
+          id: "thread-streaming-append-att-1",
+          name: "example.png",
+          mimeType: "image/png",
+          sizeBytes: 5,
+        },
+      ];
+
+      yield* repository.appendStreaming({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "hello",
+        attachments,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      yield* repository.appendStreaming({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: " world",
+        createdAt: "2026-02-28T19:05:01.000Z",
+        updatedAt: "2026-02-28T19:05:01.000Z",
+      });
+
+      const rowWithPreservedAttachments = yield* repository.getByMessageId({ messageId });
+      assert.equal(rowWithPreservedAttachments._tag, "Some");
+      if (rowWithPreservedAttachments._tag === "Some") {
+        assert.deepEqual(rowWithPreservedAttachments.value.attachments, attachments);
+      }
+
+      yield* repository.appendStreaming({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "",
+        attachments: [],
+        createdAt: "2026-02-28T19:05:02.000Z",
+        updatedAt: "2026-02-28T19:05:02.000Z",
+      });
+
+      const row = yield* repository.getByMessageId({ messageId });
+      assert.equal(row._tag, "Some");
+      if (row._tag === "Some") {
+        assert.equal(row.value.text, "hello world");
+        assert.deepEqual(row.value.attachments, []);
+        assert.equal(row.value.createdAt, createdAt);
+        assert.equal(row.value.updatedAt, "2026-02-28T19:05:02.000Z");
+        assert.isTrue(row.value.isStreaming);
+      }
+    }),
+  );
+
   it.effect("preserves existing attachments when upsert omits attachments", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;
@@ -109,6 +267,51 @@ layer("ProjectionThreadMessageRepository", (it) => {
       assert.equal(rows.length, 1);
       assert.equal(rows[0]?.text, "cleared");
       assert.deepEqual(rows[0]?.attachments, []);
+    }),
+  );
+
+  it.effect("checks assistant turn state without hydrating message text", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-assistant-turn-state");
+      const turnId = TurnId.make("turn-assistant-state");
+      const createdAt = "2026-03-01T00:00:00.000Z";
+
+      yield* repository.upsert({
+        messageId: MessageId.make("message-assistant-turn-state"),
+        threadId,
+        turnId,
+        role: "assistant",
+        text: "large text that the existence query must not select",
+        isStreaming: false,
+        createdAt,
+        updatedAt: createdAt,
+      });
+
+      assert.equal(
+        yield* repository.hasAssistantMessageForTurn({
+          threadId,
+          turnId,
+          streamingOnly: false,
+        }),
+        true,
+      );
+      assert.equal(
+        yield* repository.hasAssistantMessageForTurn({
+          threadId,
+          turnId,
+          streamingOnly: true,
+        }),
+        false,
+      );
+      assert.equal(
+        yield* repository.hasAssistantMessageForTurn({
+          threadId,
+          turnId: TurnId.make("turn-assistant-state-missing"),
+          streamingOnly: false,
+        }),
+        false,
+      );
     }),
   );
 });

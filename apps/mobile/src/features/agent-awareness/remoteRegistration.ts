@@ -140,16 +140,6 @@ export function mergeAgentAwarenessRegistrationPreferences(
   return { ...stored, ...override };
 }
 
-export function normalizeAgentAwarenessRelayBaseUrl(
-  value: string | null | undefined,
-): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return null;
-  }
-  return trimmed.replace(/\/+$/g, "");
-}
-
 function readRelayConfig(): { readonly url: string } | null {
   const relayUrl = resolveCloudPublicConfig().relay.url;
   if (!relayUrl) {
@@ -827,18 +817,6 @@ function removeAgentAwarenessConnection(environmentId: EnvironmentId): void {
 
 export function unregisterAgentAwarenessConnection(environmentId: EnvironmentId): void {
   removeAgentAwarenessConnection(environmentId);
-}
-
-export function unregisterAllAgentAwarenessConnections(): void {
-  environmentConnections.clear();
-  pushTokenSubscription?.remove();
-  pushTokenSubscription = null;
-  appStateSubscription?.remove();
-  appStateSubscription = null;
-  if (activeLiveActivityRegistrationRetry) {
-    clearTimeout(activeLiveActivityRegistrationRetry);
-    activeLiveActivityRegistrationRetry = null;
-  }
 }
 
 export function refreshAgentAwarenessRegistration(): Effect.Effect<

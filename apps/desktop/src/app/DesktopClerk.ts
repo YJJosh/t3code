@@ -53,7 +53,7 @@ export class DesktopClerk extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopClerk") {}
 
-export function resolveDesktopClerkFrontendApiHostname(
+function resolveDesktopClerkFrontendApiHostname(
   publishableKey: string | undefined,
 ): string | undefined {
   const normalizedKey = publishableKey?.trim();
@@ -72,11 +72,7 @@ export const desktopClerkFrontendApiHostname = resolveDesktopClerkFrontendApiHos
     : __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__,
 );
 
-export function createDesktopClerkBridge(
-  stateDir: string,
-  isDevelopment: boolean,
-  isDulli = false,
-) {
+function createDesktopClerkBridge(stateDir: string, isDevelopment: boolean, isDulli = false) {
   return createClerkBridge({
     storage: storage({ path: stateDir }),
     passkeys: true,
@@ -87,6 +83,7 @@ export function createDesktopClerkBridge(
   });
 }
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const electronApp = yield* ElectronApp.ElectronApp;

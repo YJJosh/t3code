@@ -2,6 +2,10 @@
 
 T3 Dulli is the branded distribution maintained in `YJJosh/t3code`. This repository owns its desktop and mobile identity, Pi and Workler integration, npm CLI, packaging, and release automation. Upstream publishing, T3 Connect relay deployment, and EAS/App Store submission remain disabled.
 
+## Upstream baseline
+
+The current upstream baseline is stable **v0.0.40**, not a nightly or preview release. Upstream updates retain the fork's Pi provider, subagent/workflow inspector, background-terminal controls, Workler defaults, and Dulli identities and release channels. Resolve overlapping changes at their integration boundaries rather than replacing fork-owned features with upstream equivalents.
+
 ## Identity and coexistence
 
 Build Dulli with `--brand dulli`. The default remains the upstream `t3code` brand.
@@ -41,6 +45,20 @@ The desktop build stages Dulli icons for macOS, Windows, Linux, and the bundled 
 ## Fork settings
 
 **Settings → General → Fork features** keeps Dulli-owned workspace and branch-naming controls separate from upstream General settings. It contains Workler workspace creation, the `t3code/` generated-branch prefix, and conventional generated-branch prefixes. Dulli defaults new threads to Workler-backed workspaces created from origin, omits the `t3code/` namespace, and uses conventional category prefixes. Provider-specific Pi configuration remains under **Settings → Providers**.
+
+## Local development with Portler
+
+With Node 24, repository dependencies, and [Portler](https://yjjosh.github.io/Portler/) installed, run these commands from the checkout root:
+
+```sh
+portler up -d
+portler ps
+portler logs server
+```
+
+Open the pairing URL printed in the server log. Browser auto-open is disabled so it cannot consume the one-time token. Portler allocates both ports, and Vite proxies backend requests through the web origin; do not configure `VITE_HTTP_URL` or `VITE_WS_URL`.
+
+Portler uses `.t3/portler` for application state, separate from the normal `vp run dev` preview and the installed app. Its disposable process/port metadata lives in `.portler/`. Stop the stack with `portler down`; application state survives stopping and Portler cleanup. For a fresh pairing URL, run `node apps/server/src/bin.ts pair --base-dir .t3/portler`.
 
 ## Building
 

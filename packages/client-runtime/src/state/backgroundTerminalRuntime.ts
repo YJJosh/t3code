@@ -30,7 +30,7 @@ import type {
  */
 
 export const DEFAULT_MAX_BACKGROUND_TERMINAL_OUTPUT_BYTES = 256 * 1024;
-export const DEFAULT_MAX_BACKGROUND_TERMINAL_CONTROL_RESULTS = 50;
+const DEFAULT_MAX_BACKGROUND_TERMINAL_CONTROL_RESULTS = 50;
 
 export interface BackgroundTerminalOutputBuffer {
   /** Client-retained text for this stream, bounded to the configured byte budget. */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { UsageAggregator } from "./usageAggregation.ts";
-import type { RateTable } from "./usagePricing.ts";
+import { createOverrideRateTable, type RateTable } from "./usagePricing.ts";
 import type { UsageRecord } from "./usageTranscripts.ts";
 
 const rates: RateTable = new Map([
@@ -112,6 +112,42 @@ describe("UsageAggregator", () => {
 
     expect(result.duplicatesDropped).toBe(1);
     expect(result.buckets[0]?.totals.outputTokens).toBe(50);
+  });
+
+  it("applies Pi price overrides while preserving source attribution and fork deduplication", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+      priceOverrides: createOverrideRateTable({
+        "anthropic/claude-fable-5": {
+          inputCostPerMillionTokens: 2,
+          outputCostPerMillionTokens: 8,
+          cacheReadCostPerMillionTokens: 1,
+          cacheWriteCostPerMillionTokens: 4,
+        },
+      }),
+    });
+    const parent = record({
+      provider: "pi",
+      model: "anthropic/claude-fable-5",
+      dedupeKey: "pi:parent",
+      reportedCostUsd: 1.25,
+    });
+    expect(aggregator.add(parent, 0)).toBe(true);
+    expect(aggregator.add({ ...parent, sessionId: "child" }, 1)).toBe(false);
+    expect(aggregator.add({ ...parent, sessionId: "child", dedupeKey: "pi:child" }, 1)).toBe(true);
+
+    const result = aggregator.finish();
+    expect(result.duplicatesDropped).toBe(1);
+    expect(result.buckets.map((bucket) => bucket.sourceIndex)).toEqual([0, 1]);
+    for (const bucket of result.buckets) {
+      expect(bucket.costUsd).toBeCloseTo(0.00164, 9);
+      expect(bucket.cacheSavingsUsd).toBeCloseTo(0.001, 9);
+      expect(bucket.costSource).toBe("modelPriced");
+      expect(bucket.records).toBe(1);
+    }
   });
 
   it("buckets by the day in the requested time zone", () => {

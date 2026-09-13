@@ -22,6 +22,7 @@ function readWorkflow(name: string): Workflow {
 }
 
 const hardDisabledWorkflows = {
+  "cursor-hygiene-webhook.yml": ["forward"],
   "deploy-relay.yml": ["deploy_relay"],
   "desktop-macos-preview.yml": ["build", "publish", "cleanup"],
   "mobile-eas-preview.yml": ["preview"],
@@ -31,6 +32,18 @@ const hardDisabledWorkflows = {
 } as const;
 
 describe("fork release workflow safety", () => {
+  it("keeps Ubuntu CI setup independent of upstream's runner vendor", () => {
+    const ci = NodeFS.readFileSync(NodePath.join(workflowsDir, "ci.yml"), "utf8");
+    const aptSetup = NodeFS.readFileSync(
+      NodePath.resolve(workflowsDir, "../actions/setup-apt-mirrors/action.yml"),
+      "utf8",
+    );
+    expect(ci).not.toMatch(/blacksmith|self-hosted/i);
+    expect(aptSetup).not.toMatch(/blacksmith|self-hosted/i);
+    expect(ci).toContain("libsecret-1-dev");
+    expect(aptSetup).toContain("/etc/apt/t3-ubuntu-mirrors.txt");
+  });
+
   it("keeps every upstream release job hard-disabled", () => {
     const workflow = readWorkflow("release.yml");
 

@@ -26,8 +26,11 @@ import type {
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
 import { buildSelectOptionDescriptor } from "../providerSnapshot.ts";
+import { resolvePiAgentDir } from "./piPaths.ts";
 import {
   PI_AUTO_CONTEXT_WINDOW,
   PI_CODEX_FAST_COMMAND,
@@ -42,6 +45,7 @@ import {
 } from "./piRpcProtocol.ts";
 
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({ optionDescriptors: [] });
+const PRIVATE_RPC_COMMAND_NAMES = new Set(["subagents-rpc", "background-terminals-rpc"]);
 
 /** Minimal structural view of the SDK `Model` we depend on. */
 interface PiSdkModel {
@@ -170,7 +174,7 @@ function piProviderResources(resources: PiResourceSnapshot): {
   const commands = new Map<string, ServerProviderSlashCommand>();
   const appendCommand = (command: ServerProviderSlashCommand) => {
     const name = nonEmpty(command.name);
-    if (!name) return;
+    if (!name || PRIVATE_RPC_COMMAND_NAMES.has(name)) return;
     const key = name.toLowerCase();
     if (!commands.has(key)) commands.set(key, { ...command, name });
   };
@@ -503,11 +507,17 @@ const sendError = (error) => parentPort.postMessage({
 `;
 
 function piDiscoveryWorkerEnvironment(environment: NodeJS.ProcessEnv | undefined) {
-  return Object.fromEntries(
+  const workerEnvironment = Object.fromEntries(
     Object.entries(environment ?? process.env).filter(
       (entry): entry is [string, string] => entry[1] !== undefined,
     ),
   );
+  // Node's watch loader reports imports over the parent's IPC channel. In a
+  // worker this either throws or sends watch messages into our result protocol.
+  delete workerEnvironment.WATCH_REPORT_DEPENDENCIES;
+  delete workerEnvironment.NODE_CHANNEL_FD;
+  delete workerEnvironment.NODE_CHANNEL_SERIALIZATION_MODE;
+  return workerEnvironment;
 }
 
 function loadPiDiscoverySnapshotInWorker(
@@ -561,6 +571,11 @@ function loadPiDiscoverySnapshotInWorker(
   });
 }
 
+class PiModelDiscoveryError extends Schema.TaggedErrorClass<PiModelDiscoveryError>()(
+  "PiModelDiscoveryError",
+  { cause: Schema.Defect() },
+) {}
+
 /**
  * Discover Pi models and derive auth status. SDK loading and extension execution
  * happen in a worker with the provider instance's environment, keeping those
@@ -569,18 +584,17 @@ function loadPiDiscoverySnapshotInWorker(
 export const discoverPiModels = Effect.fn("discoverPiModels")(function* (
   options: PiModelDiscoveryOptions = {},
 ) {
+  const paths = yield* Path.Path;
+  const agentDir = resolvePiAgentDir(paths, options);
+  const environment = { ...(options.environment ?? process.env), PI_CODING_AGENT_DIR: agentDir };
   return yield* Effect.tryPromise({
     try: async (): Promise<PiModelDiscoveryResult> =>
-      finishPiModelDiscovery(await loadPiDiscoverySnapshotInWorker(options)),
-    catch: (cause): PiModelDiscoveryResult => ({
-      models: [],
-      auth: { status: "unknown" },
-      slashCommands: [],
-      skills: [],
-      error: cause instanceof Error ? cause.message : String(cause),
-    }),
+      finishPiModelDiscovery(
+        await loadPiDiscoverySnapshotInWorker({ ...options, agentDir, environment }),
+      ),
+    catch: (cause) => new PiModelDiscoveryError({ cause }),
   }).pipe(
-    Effect.catch((cause) =>
+    Effect.catch(({ cause }) =>
       Effect.succeed<PiModelDiscoveryResult>({
         models: [],
         auth: { status: "unknown" },

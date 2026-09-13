@@ -1,10 +1,15 @@
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   resolveServerBackedAppDisplayName,
   resolveServerBackedAppStageLabel,
 } from "./branding.logic";
 
 const originalWindow = globalThis.window;
+
+beforeEach(() => {
+  vi.stubEnv("VITE_DESKTOP_BUILD_BRAND", "");
+  vi.stubEnv("VITE_HOSTED_APP_CHANNEL", "");
+});
 
 afterEach(() => {
   vi.resetModules();
@@ -19,15 +24,23 @@ afterEach(() => {
 });
 
 describe("branding", () => {
-  it("uses injected desktop branding when available", async () => {
+  it("uses Code beside the wordmark for unbranded builds", async () => {
+    const branding = await import("./branding");
+
+    expect(branding.APP_BASE_NAME).toBe("T3 Code");
+    expect(branding.APP_WORDMARK_LABEL).toBe("Code");
+  });
+
+  it("uses injected desktop branding ahead of build branding", async () => {
+    vi.stubEnv("VITE_DESKTOP_BUILD_BRAND", "dulli");
     Object.defineProperty(globalThis, "window", {
       configurable: true,
       value: {
         desktopBridge: {
           getAppBranding: () => ({
-            baseName: "T3 Code",
+            baseName: "T3 Custom Brand",
             stageLabel: "Nightly",
-            displayName: "T3 Code (Nightly)",
+            displayName: "T3 Custom Brand (Nightly)",
           }),
         },
       },
@@ -35,17 +48,19 @@ describe("branding", () => {
 
     const branding = await import("./branding");
 
-    expect(branding.APP_BASE_NAME).toBe("T3 Code");
+    expect(branding.APP_BASE_NAME).toBe("T3 Custom Brand");
+    expect(branding.APP_WORDMARK_LABEL).toBe("Custom Brand");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
-    expect(branding.APP_DISPLAY_NAME).toBe("T3 Code (Nightly)");
+    expect(branding.APP_DISPLAY_NAME).toBe("T3 Custom Brand (Nightly)");
   });
 
   it("uses source-level Dulli branding for desktop builds", async () => {
-    vi.stubEnv("VITE_DESKTOP_BUILD_BRAND", "dulli");
+    vi.stubEnv("VITE_DESKTOP_BUILD_BRAND", " DULLI ");
 
     const branding = await import("./branding");
 
     expect(branding.APP_BASE_NAME).toBe("T3 Dulli");
+    expect(branding.APP_WORDMARK_LABEL).toBe("Dulli");
     expect(branding.APP_STAGE_LABEL).toBe("Latest");
     expect(branding.APP_DISPLAY_NAME).toBe("T3 Dulli");
   });

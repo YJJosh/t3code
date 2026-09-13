@@ -7,6 +7,9 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   agentActivityText,
+  agentStatusLabel,
+  workflowIsLive,
+  workflowStatus,
   agentRosterBatches,
   formatAgentElapsedSeconds,
   preferredInspectorAgent,
@@ -131,6 +134,45 @@ describe("agent inspector presentation", () => {
     expect(batches).toHaveLength(1);
     expect(batches[0]?.directAgents.map((agent) => agent.id)).toEqual(["direct"]);
     expect(batches[0]?.workflows.map((group) => group.workflow.id)).toEqual(["workflow"]);
+  });
+
+  it("settles Pi workflow badges from members while respecting native coordinators", () => {
+    const group = {
+      workflow: makeAgent("workflow", "running", { kind: "workflow" }),
+      phases: [],
+      unphasedMembers: [makeAgent("child", "completed")],
+    };
+    expect(workflowStatus(group, true)).toBe("completed");
+    expect(workflowIsLive(group, true)).toBe(false);
+    expect(workflowStatus(group, false)).toBe("running");
+    expect(workflowIsLive(group, false)).toBe(true);
+    expect(
+      workflowStatus({ ...group, unphasedMembers: [makeAgent("child", "failed")] }, true),
+    ).toBe("failed");
+    expect(
+      workflowStatus({ ...group, unphasedMembers: [makeAgent("child", "cancelled")] }, true),
+    ).toBe("cancelled");
+  });
+
+  it.each(["cancelled", "interrupted"] as const)(
+    "preserves a %s Pi workflow after its members settle",
+    (status) => {
+      const group = {
+        workflow: makeAgent("workflow", status, { kind: "workflow" }),
+        phases: [],
+        unphasedMembers: [makeAgent("child", "completed")],
+      };
+      expect(workflowStatus(group, true)).toBe(status);
+      expect(workflowIsLive(group, true)).toBe(false);
+      expect(
+        workflowStatus({ ...group, unphasedMembers: [makeAgent("child", "running")] }, true),
+      ).toBe("running");
+    },
+  );
+
+  it("does not claim that native batches can be resumed", () => {
+    expect(agentStatusLabel({ kind: "subagent_batch", status: "idle" })).toBe("Idle");
+    expect(agentStatusLabel({ kind: "subagent", status: "idle" })).toBe("Idle · resumable");
   });
 
   it("formats elapsed time without sub-second churn", () => {

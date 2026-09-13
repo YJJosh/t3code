@@ -37,6 +37,15 @@ describe("parsePiProfileChoices", () => {
     ]);
   });
 
+  it("recognizes top-level profiles containing only Background Threads settings", () => {
+    expect(
+      parsePiProfileChoices({ foreground: { backgroundThreads: { enabled: false } } }, "coder"),
+    ).toEqual([
+      { id: "coder", label: "coder", isDefault: true },
+      { id: "foreground", label: "foreground" },
+    ]);
+  });
+
   it("keeps the configured profile available when the file is missing or does not define it", () => {
     expect(parsePiProfileChoices(undefined, "reviewer")).toEqual([
       { id: "reviewer", label: "reviewer", isDefault: true },

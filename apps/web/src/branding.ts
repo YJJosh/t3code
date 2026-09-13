@@ -19,6 +19,8 @@ export const HOSTED_APP_CHANNEL_LABEL =
   HOSTED_APP_CHANNEL === "nightly" ? "Nightly" : HOSTED_APP_CHANNEL === "latest" ? "Latest" : null;
 export const APP_BASE_NAME =
   injectedDesktopAppBranding?.baseName ?? (desktopBuildBrand === "dulli" ? "T3 Dulli" : "T3 Code");
+// Text displayed beside the shared T3 wordmark.
+export const APP_WORDMARK_LABEL = APP_BASE_NAME.replace(/^T3 /, "");
 export const APP_STAGE_LABEL =
   injectedDesktopAppBranding?.stageLabel ??
   HOSTED_APP_CHANNEL_LABEL ??

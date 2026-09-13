@@ -242,25 +242,57 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     });
   }
 
-  const discovery = yield* discoverPiModels({
+  const discoveryOutcome = yield* discoverPiModels({
     agentDir: settings.agentDir || undefined,
     profile: settings.profile || undefined,
     environment,
   }).pipe(
     Effect.timeoutOption(MODEL_DISCOVERY_TIMEOUT_MS),
-    Effect.catchCause((cause) => {
-      return Effect.logWarning("Pi model discovery failed", {
+    Effect.map((result) =>
+      Option.match(result, {
+        onNone: () => ({ _tag: "timeout" as const }),
+        onSome: (discovered) => ({ _tag: "success" as const, discovered }),
+      }),
+    ),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Pi model discovery failed", {
         errorTag: causeErrorTag(cause),
-      }).pipe(Effect.as(Option.none()));
-    }),
+      }).pipe(Effect.as({ _tag: "failure" as const })),
+    ),
   );
 
-  const discovered = Option.getOrUndefined(discovery);
+  const discovered = discoveryOutcome._tag === "success" ? discoveryOutcome.discovered : undefined;
   const models =
     discovered && discovered.models.length > 0
       ? piModelsFromSettings(settings.customModels, discovered.models, profileChoices)
       : fallbackModels;
   const auth = discovered?.auth ?? { status: "unknown" as const };
+  const discoveryError = discovered?.error?.trim();
+  const hasUsableModels = auth.status === "authenticated" && models.length > 0;
+
+  let status: "ready" | "warning" | "error";
+  let message: string | undefined;
+  if (discoveryOutcome._tag === "timeout") {
+    status = "error";
+    message = "Pi model discovery timed out after 15 seconds.";
+  } else if (discoveryOutcome._tag === "failure") {
+    status = "error";
+    message = "Pi model discovery failed unexpectedly.";
+  } else if (discoveryError) {
+    status = hasUsableModels ? "warning" : "error";
+    message = `Pi model discovery failed: ${discoveryError}`;
+  } else if (auth.status === "unauthenticated") {
+    status = "warning";
+    message = "Pi is installed but no model credentials are configured.";
+  } else if (auth.status === "unknown") {
+    status = "error";
+    message = "Pi model discovery could not determine credential status.";
+  } else if (models.length === 0) {
+    status = "error";
+    message = "Pi model discovery returned no available models.";
+  } else {
+    status = "ready";
+  }
 
   return buildServerProvider({
     presentation: PI_PRESENTATION,
@@ -272,11 +304,9 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     probe: {
       installed: true,
       version,
-      status: auth.status === "unauthenticated" ? "warning" : "ready",
+      status,
       auth,
-      ...(auth.status === "unauthenticated"
-        ? { message: "Pi is installed but no model credentials are configured." }
-        : {}),
+      ...(message ? { message } : {}),
     },
   });
 });

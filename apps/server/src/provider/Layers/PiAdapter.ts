@@ -52,6 +52,13 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
+  applyPiAssistantBlockEvent,
+  applyPiAssistantSnapshot,
+  makePiAssistantContentState,
+  type PiAssistantContentDelta,
+  type PiAssistantContentState,
+} from "../pi/piAssistantContent.ts";
+import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
@@ -61,6 +68,7 @@ import {
   autoRespondToExtensionUi,
   buildPiRpcArgs,
   buildPiRpcEnv,
+  extractPiAssistantContent,
   extractPiAssistantText,
   parsePiBackgroundTerminalNotification,
   parsePiContextWindow,
@@ -93,6 +101,15 @@ const CLAUDE_AGENT_SDK_RPC_EVENT_PREFIX = "claude-agent-sdk:tool-lifecycle:v1:";
 const TOOL_UPDATE_MIN_INTERVAL_NANOS = 1_000_000_000n;
 const TOOL_UPDATE_SUMMARY_MAX_CHARS = 4_000;
 const TOOL_UPDATE_TRUNCATION_MARKER = "…[truncated]\n";
+const PI_EXTENSION_CONTROL_TIMEOUT = "12 seconds";
+const PI_ASYNC_RESULT_CUSTOM_TYPES = new Set([
+  "subagents-result",
+  "subagents-workflow-result",
+  "background-terminal-result",
+]);
+
+type PiAssistantPhase = "commentary" | "final_answer";
+type PiAssistantOrigin = "normal" | "async_result";
 
 export interface PiAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
@@ -106,6 +123,19 @@ interface SubagentLiveMessage {
   readonly publishedAt: number;
 }
 
+type PiTaskControlResult = NonNullable<PiTaskBridgeEvent["control"]>;
+
+interface PiRpcCommandCatalog {
+  readonly allNames: ReadonlySet<string>;
+  readonly extensionNames: ReadonlySet<string>;
+}
+
+interface PendingUserExtensionCommand {
+  readonly turnId: TurnId;
+  readonly openedTurn: boolean;
+  agentStarted: boolean;
+}
+
 interface PiSessionContext {
   readonly threadId: ThreadId;
   readonly connection: PiRpcConnection;
@@ -115,10 +145,15 @@ interface PiSessionContext {
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   /** Pi session id (from get_state / session events) for resume. */
   piSessionId: string | undefined;
-  /** Current assistant item id + accumulated text/reasoning for delta diffing. */
+  /** Current canonical segment + indexed blocks for the whole native assistant message. */
   assistantItemId: ProviderItemId | undefined;
-  assistantText: string;
-  reasoningText: string;
+  assistantItemHasText: boolean;
+  assistantItemHasReasoning: boolean;
+  assistantWorkBoundaryPending: boolean;
+  assistantContent: PiAssistantContentState;
+  /** Native source of subsequent assistant replies; reset only by a real user message. */
+  assistantOrigin: PiAssistantOrigin;
+  hasPrimaryAssistantAnswer: boolean;
   /** Cumulative, rate-limited live assistant state for each child transcript. */
   subagentLiveMessages: Map<string, SubagentLiveMessage>;
   /** Last published time for other high-frequency child transcript events. */
@@ -144,8 +179,9 @@ interface PiSessionContext {
       }
     | undefined;
   interruptRequested: boolean;
-  /** Cached extension-command availability and synchronized session state. */
-  extensionCommandNames: ReadonlySet<string> | undefined;
+  /** Cached command metadata and synchronized session state. */
+  commandCatalog: PiRpcCommandCatalog | undefined;
+  pendingUserExtensionCommand: PendingUserExtensionCommand | undefined;
   contextWindowSelectionKey: string | undefined;
   fastServiceEnabled: boolean | undefined;
   /** Keeps model/thinking/context/service-tier synchronization atomic with its prompt. */
@@ -159,6 +195,38 @@ interface PiToolMeta {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function observePiMessageOrigin(ctx: PiSessionContext, message: unknown): void {
+  if (!isRecord(message)) return;
+  if (message.role === "user") {
+    ctx.assistantOrigin = "normal";
+    ctx.hasPrimaryAssistantAnswer = false;
+    return;
+  }
+  if (
+    message.role === "custom" &&
+    typeof message.customType === "string" &&
+    PI_ASYNC_RESULT_CUSTOM_TYPES.has(message.customType)
+  ) {
+    ctx.assistantOrigin = "async_result";
+  }
+}
+
+// A background result may supply the first answer rather than a late
+// acknowledgement. Unknown/partial replies remain unclassified so the client
+// does not fold the only answer without an explicit work boundary.
+function classifyPiAssistantPhase(
+  ctx: PiSessionContext,
+  stopReason?: unknown,
+): PiAssistantPhase | undefined {
+  if (ctx.assistantWorkBoundaryPending || stopReason === "toolUse" || !ctx.assistantItemHasText) {
+    return "commentary";
+  }
+  if (ctx.assistantOrigin === "async_result") {
+    return ctx.hasPrimaryAssistantAnswer ? "commentary" : undefined;
+  }
+  return stopReason === "stop" ? "final_answer" : undefined;
 }
 
 function toolItemType(toolName: unknown): "command_execution" | "dynamic_tool_call" {
@@ -239,14 +307,39 @@ export function splitPiModelSlug(slug: string): { provider: string; modelId: str
   return { provider: trimmed.slice(0, slashIndex), modelId: trimmed.slice(slashIndex + 1) };
 }
 
-function piRpcCommandNames(response: PiRpcResponse): ReadonlySet<string> {
+function piRpcCommandCatalog(response: PiRpcResponse): PiRpcCommandCatalog {
+  const allNames = new Set<string>();
+  const extensionNames = new Set<string>();
   if (!isRecord(response.data) || !Array.isArray(response.data.commands)) {
-    return new Set();
+    return { allNames, extensionNames };
   }
-  return new Set(
-    response.data.commands.flatMap((command) =>
-      isRecord(command) && typeof command.name === "string" ? [command.name] : [],
-    ),
+  for (const command of response.data.commands) {
+    if (!isRecord(command) || typeof command.name !== "string") continue;
+    allNames.add(command.name);
+    // Older Pi versions omitted source. Keep those entries available for
+    // internal capability checks, but never guess that they are extensions:
+    // sending an ordinary prompt/template through this lifecycle would risk
+    // completing a real agent turn from the prompt acknowledgement alone.
+    if (command.source === "extension") extensionNames.add(command.name);
+  }
+  return { allNames, extensionNames };
+}
+
+function piSlashCommandName(text: string): string | undefined {
+  if (!text.startsWith("/")) return undefined;
+  // Match Pi's extension-command parser exactly: only an ASCII space ends the
+  // command name. Tabs/newlines remain ordinary prompt text to Pi.
+  const spaceIndex = text.indexOf(" ");
+  const name = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+  return name.length > 0 ? name : undefined;
+}
+
+function piRpcStateIsIdle(response: PiRpcResponse): boolean {
+  return (
+    isRecord(response.data) &&
+    response.data.isStreaming === false &&
+    response.data.isCompacting === false &&
+    response.data.pendingMessageCount === 0
   );
 }
 
@@ -453,12 +546,14 @@ function projectTaskView(
   if (!runId) return [];
   const taskId = RuntimeTaskId.make(runId);
   const linkage = taskViewLinkage(view, runId);
-  const description =
-    nonEmptyString(view.progressNote) ?? nonEmptyString(view.task) ?? `Pi agent ${runId}`;
+  const progressDescription = nonEmptyString(view.progressNote);
+  const description = progressDescription ?? nonEmptyString(view.task) ?? `Pi agent ${runId}`;
   const summary =
     (isRecord(view.result) && isRecord(view.result.result)
       ? nonEmptyString(view.result.result.summary)
-      : undefined) ?? nonEmptyString(view.reason);
+      : undefined) ??
+    (isRecord(view.result) ? nonEmptyString(view.result.reason) : undefined) ??
+    nonEmptyString(view.reason);
   const typedUsage = taskUsage(view);
   const common = { taskId, ...linkage };
 
@@ -468,9 +563,27 @@ function projectTaskView(
     case "run_running":
     case "resumed":
     case "steered":
-      return [{ type: "task.updated", payload: { ...common, status: "running", description } }];
+      return [
+        {
+          type: "task.updated",
+          payload: {
+            ...common,
+            status: "running",
+            ...(progressDescription ? { description: progressDescription } : {}),
+          },
+        },
+      ];
     case "needs_input":
-      return [{ type: "task.updated", payload: { ...common, status: "waiting", description } }];
+      return [
+        {
+          type: "task.updated",
+          payload: {
+            ...common,
+            status: "waiting",
+            ...(progressDescription ? { description: progressDescription } : {}),
+          },
+        },
+      ];
     case "terminal":
     case "killed":
     case "interrupted":
@@ -579,9 +692,28 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       string,
       Deferred.Deferred<PiBackgroundTerminalControlResult>
     >();
+    const taskControlWaiters = new Map<
+      string,
+      Deferred.Deferred<PiTaskControlResult, ProviderAdapterRequestError>
+    >();
     const backgroundTerminalManagerIds = new Map<ThreadId, string>();
-    const backgroundTerminalControlKey = (threadId: ThreadId, requestId: string) =>
+    const extensionControlKey = (threadId: ThreadId, requestId: string) =>
       `${threadId}\u0000${requestId}`;
+    const failTaskControlWaiters = (threadId: ThreadId, detail: string) =>
+      Effect.gen(function* () {
+        for (const [key, waiter] of taskControlWaiters) {
+          if (!key.startsWith(`${threadId}\u0000`)) continue;
+          taskControlWaiters.delete(key);
+          yield* Deferred.fail(
+            waiter,
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "subagents-rpc",
+              detail,
+            }),
+          ).pipe(Effect.ignore);
+        }
+      });
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
@@ -687,14 +819,25 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         });
       });
 
-    const piAdvertisesCommand = (ctx: PiSessionContext, commandName: string, refresh = false) =>
-      Effect.gen(function* () {
-        if (refresh || ctx.extensionCommandNames === undefined) {
-          const commands = yield* request(ctx, { type: "get_commands" });
-          ctx.extensionCommandNames = piRpcCommandNames(commands);
-        }
-        return ctx.extensionCommandNames.has(commandName);
-      });
+    const loadPiCommandCatalog = Effect.fn("loadPiCommandCatalog")(function* (
+      ctx: PiSessionContext,
+      refresh = false,
+    ) {
+      if (refresh || ctx.commandCatalog === undefined) {
+        const commands = yield* request(ctx, { type: "get_commands" });
+        ctx.commandCatalog = piRpcCommandCatalog(commands);
+      }
+      return ctx.commandCatalog;
+    });
+
+    const piAdvertisesCommand = Effect.fn("piAdvertisesCommand")(function* (
+      ctx: PiSessionContext,
+      commandName: string,
+      refresh = false,
+    ) {
+      const catalog = yield* loadPiCommandCatalog(ctx, refresh);
+      return catalog.allNames.has(commandName);
+    });
 
     const syncContextWindow = (
       ctx: PiSessionContext,
@@ -796,6 +939,46 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         { discard: true },
       );
 
+    const emitUserExtensionCommandInfo = Effect.fn("emitUserExtensionCommandInfo")(function* (
+      ctx: PiSessionContext,
+      turnId: TurnId,
+      message: string,
+    ) {
+      const itemId = RuntimeItemId.make(yield* randomUUIDv4);
+      yield* emit({
+        type: "item.started",
+        ...(yield* makeStamp()),
+        provider: PROVIDER,
+        threadId: ctx.threadId,
+        turnId,
+        itemId,
+        payload: { itemType: "assistant_message", status: "inProgress" },
+      });
+      yield* emit({
+        type: "content.delta",
+        ...(yield* makeStamp()),
+        provider: PROVIDER,
+        threadId: ctx.threadId,
+        turnId,
+        itemId,
+        payload: { streamKind: "assistant_text", delta: message },
+      });
+      const completedPayload = {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        phase: "final_answer" as const,
+      };
+      yield* emit({
+        type: "item.completed",
+        ...(yield* makeStamp()),
+        provider: PROVIDER,
+        threadId: ctx.threadId,
+        turnId,
+        itemId,
+        payload: completedPayload,
+      });
+    });
+
     const handleExtensionUiRequest = (ctx: PiSessionContext, request: PiExtensionUiRequest) =>
       Effect.gen(function* () {
         const claudeTool = parseClaudeAgentSdkToolNotification(request);
@@ -836,22 +1019,17 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           }
           return;
         }
-        if (
-          request.method === "notify" &&
-          (request.notifyType === "warning" || request.notifyType === "error")
-        ) {
-          const message =
-            typeof request.message === "string" && request.message.trim().length > 0
-              ? request.message
-              : `Pi extension reported a ${request.notifyType}.`;
-          if (request.notifyType === "error") {
-            yield* emitRuntimeError(ctx.threadId, ctx.activeTurnId, message, request);
-          } else {
-            yield* emitWarning(ctx.threadId, ctx.activeTurnId, message, request);
-          }
-        }
         const taskBridgeEvent = parsePiTaskBridgeNotification(request);
         if (taskBridgeEvent) {
+          const control = taskBridgeEvent.control;
+          if (taskBridgeEvent.kind === "control_result" && control?.requestId) {
+            const waiter = taskControlWaiters.get(
+              extensionControlKey(ctx.threadId, control.requestId),
+            );
+            if (waiter) {
+              yield* Deferred.succeed(waiter, control).pipe(Effect.ignore);
+            }
+          }
           const normalized = normalizeTaskBridgeTranscriptEvent(
             taskBridgeEvent,
             ctx.subagentLiveMessages,
@@ -884,13 +1062,37 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             backgroundTerminalEvent.control.requestId
           ) {
             const waiter = backgroundTerminalControlWaiters.get(
-              backgroundTerminalControlKey(ctx.threadId, backgroundTerminalEvent.control.requestId),
+              extensionControlKey(ctx.threadId, backgroundTerminalEvent.control.requestId),
             );
             if (waiter) {
               yield* Deferred.succeed(waiter, backgroundTerminalEvent.control).pipe(Effect.ignore);
             }
           }
           return;
+        }
+        if (
+          request.method === "notify" &&
+          (request.notifyType === "warning" || request.notifyType === "error")
+        ) {
+          const message =
+            typeof request.message === "string" && request.message.trim().length > 0
+              ? request.message
+              : `Pi extension reported a ${request.notifyType}.`;
+          if (request.notifyType === "error") {
+            yield* emitRuntimeError(ctx.threadId, ctx.activeTurnId, message, request);
+          } else {
+            yield* emitWarning(ctx.threadId, ctx.activeTurnId, message, request);
+          }
+        } else if (request.method === "notify" && request.notifyType === "info") {
+          const pending = ctx.pendingUserExtensionCommand;
+          const message = request.message.trim();
+          // Pi notifications do not carry their originating prompt id. The
+          // prompt request/ack window is the only authoritative correlation
+          // boundary available, so only surface info while that user command
+          // owns the current turn. Startup and bridge notifications stay quiet.
+          if (pending && message && ctx.activeTurnId === pending.turnId) {
+            yield* emitUserExtensionCommandInfo(ctx, pending.turnId, message);
+          }
         }
         const response = autoRespondToExtensionUi(request);
         if (response === undefined) {
@@ -914,13 +1116,70 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           );
       });
 
-    const emitAssistantDelta = (
+    const finishAssistantSegment = Effect.fn("finishAssistantSegment")(function* (
       ctx: PiSessionContext,
-      message: unknown,
-    ): Effect.Effect<void, ProviderAdapterRequestError> =>
-      Effect.gen(function* () {
-        if (!isRecord(message) || message.role !== "assistant") return;
-        const { text, thinking } = extractPiAssistantText(message);
+      phase: PiAssistantPhase | undefined,
+    ) {
+      if (ctx.assistantItemId === undefined) return;
+      const itemId = RuntimeItemId.make(ctx.assistantItemId);
+      const turnId = ctx.activeTurnId;
+      if (phase === "final_answer" && ctx.assistantItemHasText) {
+        ctx.hasPrimaryAssistantAnswer = true;
+      }
+      const completedPayload = {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        ...(phase !== undefined ? { phase } : {}),
+      };
+      yield* emit({
+        type: "item.completed",
+        ...(yield* makeStamp()),
+        provider: PROVIDER,
+        threadId: ctx.threadId,
+        ...(turnId ? { turnId } : {}),
+        itemId,
+        payload: completedPayload,
+      });
+      ctx.assistantItemId = undefined;
+      ctx.assistantItemHasText = false;
+      ctx.assistantItemHasReasoning = false;
+      ctx.assistantWorkBoundaryPending = false;
+    });
+
+    const finishAssistantMessage = Effect.fn("finishAssistantMessage")(function* (
+      ctx: PiSessionContext,
+      phase: PiAssistantPhase | undefined,
+    ) {
+      yield* finishAssistantSegment(ctx, phase);
+      ctx.assistantContent = makePiAssistantContentState();
+    });
+
+    const emitAssistantContentDeltas = Effect.fn("emitAssistantContentDeltas")(function* (
+      ctx: PiSessionContext,
+      deltas: ReadonlyArray<PiAssistantContentDelta>,
+    ) {
+      for (const delta of deltas) {
+        // Content-block boundaries alone are not semantic: providers can put
+        // a legitimate final answer in several adjacent text blocks. Split
+        // only when Pi exposed an intervening tool/work boundary.
+        if (
+          ctx.assistantItemHasText &&
+          (ctx.assistantWorkBoundaryPending ||
+            (delta.startsBlock && delta.workBoundaryBefore === true))
+        ) {
+          yield* finishAssistantSegment(ctx, "commentary");
+        }
+
+        const segmentAlreadyHasThisStream =
+          delta.streamKind === "assistant_text"
+            ? ctx.assistantItemHasText
+            : ctx.assistantItemHasReasoning;
+        const canonicalDelta =
+          delta.startsBlock && !segmentAlreadyHasThisStream && delta.blockBoundary
+            ? delta.delta.slice(delta.blockBoundary.length)
+            : delta.delta;
+        if (!canonicalDelta) continue;
+
         const turnId = ctx.activeTurnId;
         if (ctx.assistantItemId === undefined) {
           ctx.assistantItemId = ProviderItemId.make(yield* randomUUIDv4);
@@ -935,107 +1194,93 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           });
         }
         const itemId = RuntimeItemId.make(ctx.assistantItemId);
-        if (thinking.length > ctx.reasoningText.length) {
-          const delta = thinking.slice(ctx.reasoningText.length);
-          ctx.reasoningText = thinking;
-          yield* emit({
-            type: "content.delta",
-            ...(yield* makeStamp()),
-            provider: PROVIDER,
-            threadId: ctx.threadId,
-            ...(turnId ? { turnId } : {}),
-            itemId,
-            payload: { streamKind: "reasoning_text", delta },
-          });
-        }
-        if (text.length > ctx.assistantText.length) {
-          const delta = text.slice(ctx.assistantText.length);
-          ctx.assistantText = text;
-          yield* emit({
-            type: "content.delta",
-            ...(yield* makeStamp()),
-            provider: PROVIDER,
-            threadId: ctx.threadId,
-            ...(turnId ? { turnId } : {}),
-            itemId,
-            payload: { streamKind: "assistant_text", delta },
-          });
-        }
-      });
-
-    const emitAssistantEventDelta = (
-      ctx: PiSessionContext,
-      event: unknown,
-    ): Effect.Effect<void, ProviderAdapterRequestError> => {
-      if (!isRecord(event) || typeof event.type !== "string") return Effect.void;
-      if (
-        (event.type === "thinking_delta" || event.type === "text_delta") &&
-        typeof event.delta === "string" &&
-        event.delta.length > 0
-      ) {
-        const thinking =
-          event.type === "thinking_delta" ? ctx.reasoningText + event.delta : ctx.reasoningText;
-        const text =
-          event.type === "text_delta" ? ctx.assistantText + event.delta : ctx.assistantText;
-        return emitAssistantDelta(ctx, {
-          role: "assistant",
-          content: [
-            ...(thinking.length > 0 ? [{ type: "thinking", thinking }] : []),
-            ...(text.length > 0 ? [{ type: "text", text }] : []),
-          ],
-        });
-      }
-      if (
-        (event.type === "thinking_end" || event.type === "text_end") &&
-        typeof event.content === "string"
-      ) {
-        const thinking = event.type === "thinking_end" ? event.content : ctx.reasoningText;
-        const text = event.type === "text_end" ? event.content : ctx.assistantText;
-        return emitAssistantDelta(ctx, {
-          role: "assistant",
-          content: [
-            ...(thinking.length > 0 ? [{ type: "thinking", thinking }] : []),
-            ...(text.length > 0 ? [{ type: "text", text }] : []),
-          ],
-        });
-      }
-      if (event.type === "done" && isRecord(event.message)) {
-        return emitAssistantDelta(ctx, event.message);
-      }
-      if (event.type === "error" && isRecord(event.error)) {
-        return emitAssistantDelta(ctx, event.error);
-      }
-      return Effect.void;
-    };
-
-    const finishAssistantItem = (ctx: PiSessionContext) =>
-      Effect.gen(function* () {
-        if (ctx.assistantItemId === undefined) return;
-        const itemId = RuntimeItemId.make(ctx.assistantItemId);
-        const turnId = ctx.activeTurnId;
         yield* emit({
-          type: "item.completed",
+          type: "content.delta",
           ...(yield* makeStamp()),
           provider: PROVIDER,
           threadId: ctx.threadId,
           ...(turnId ? { turnId } : {}),
           itemId,
-          payload: { itemType: "assistant_message", status: "completed" },
+          payload: {
+            streamKind: delta.streamKind,
+            delta: canonicalDelta,
+            ...(delta.contentIndex !== undefined ? { contentIndex: delta.contentIndex } : {}),
+          },
         });
-        ctx.assistantItemId = undefined;
-        ctx.assistantText = "";
-        ctx.reasoningText = "";
+        if (delta.streamKind === "assistant_text") {
+          ctx.assistantItemHasText = true;
+        } else {
+          ctx.assistantItemHasReasoning = true;
+        }
+      }
+    });
+
+    const emitAssistantSnapshot = Effect.fn("emitAssistantSnapshot")(function* (
+      ctx: PiSessionContext,
+      message: unknown,
+    ) {
+      if (!isRecord(message) || message.role !== "assistant") return;
+      const { text, thinking, blocks } = extractPiAssistantContent(message);
+      const result = applyPiAssistantSnapshot(ctx.assistantContent, {
+        assistant_text: text,
+        reasoning_text: thinking,
+        blocks,
       });
+      ctx.assistantContent = result.state;
+      yield* emitAssistantContentDeltas(ctx, result.deltas);
+    });
+
+    const emitAssistantEventDelta = Effect.fn("emitAssistantEventDelta")(function* (
+      ctx: PiSessionContext,
+      event: unknown,
+    ) {
+      if (!isRecord(event) || typeof event.type !== "string") return;
+      if (event.type === "toolcall_start") {
+        if (ctx.assistantItemHasText) ctx.assistantWorkBoundaryPending = true;
+        return;
+      }
+      if (
+        event.type === "text_start" ||
+        event.type === "text_delta" ||
+        event.type === "text_end" ||
+        event.type === "thinking_start" ||
+        event.type === "thinking_delta" ||
+        event.type === "thinking_end"
+      ) {
+        const result = applyPiAssistantBlockEvent(ctx.assistantContent, {
+          type: event.type,
+          ...(typeof event.contentIndex === "number" ? { contentIndex: event.contentIndex } : {}),
+          ...(typeof event.delta === "string" ? { delta: event.delta } : {}),
+          ...(typeof event.content === "string" ? { content: event.content } : {}),
+        });
+        ctx.assistantContent = result.state;
+        yield* emitAssistantContentDeltas(ctx, result.deltas);
+        return;
+      }
+      if (event.type === "done" && isRecord(event.message)) {
+        yield* emitAssistantSnapshot(ctx, event.message);
+        return;
+      }
+      if (event.type === "error" && isRecord(event.error)) {
+        yield* emitAssistantSnapshot(ctx, event.error);
+      }
+    });
 
     const completeTurn = (
       ctx: PiSessionContext,
       state: "completed" | "failed" | "cancelled" | "interrupted",
       extra?: { readonly errorMessage?: string; readonly stopReason?: string | null },
+      expectedTurnId?: TurnId,
     ) =>
       Effect.gen(function* () {
         const turnId = ctx.activeTurnId;
-        if (turnId === undefined) return;
-        yield* finishAssistantItem(ctx);
+        if (turnId === undefined || (expectedTurnId !== undefined && turnId !== expectedTurnId)) {
+          return;
+        }
+        // A process exit, abort, or malformed native stream can omit
+        // message_end. Keep any partial content, but never promote it to a
+        // terminal answer without an authoritative stop response.
+        yield* finishAssistantMessage(ctx, classifyPiAssistantPhase(ctx));
         const updatedAt = yield* nowIso;
         const { activeTurnId: _drop, ...rest } = ctx.session;
         ctx.session = { ...rest, status: "ready", updatedAt };
@@ -1154,6 +1399,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       message: Record<string, unknown>,
     ) =>
       Effect.gen(function* () {
+        if (lifecycle === "item.started" && ctx.assistantItemHasText) {
+          // Claude's SDK bridge can expose a real tool call between two text
+          // blocks inside one native assistant message. Defer completion until
+          // more content arrives so trailing/aborted text is retained.
+          ctx.assistantWorkBoundaryPending = true;
+        }
         const suppliedToolCallId =
           typeof message.toolCallId === "string" ? message.toolCallId : undefined;
         // A random fallback would let every malformed progress frame bypass the
@@ -1238,6 +1489,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         if (options?.nativeEventLogger) {
           yield* options.nativeEventLogger.write(message, ctx.threadId);
         }
+        if (message.type === "message_start" || message.type === "message_end") {
+          observePiMessageOrigin(ctx, message.message);
+        }
         switch (message.type) {
           case "extension_ui_request":
             yield* handleExtensionUiRequest(ctx, message as unknown as PiExtensionUiRequest);
@@ -1251,20 +1505,34 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             }
             return;
           }
-          case "agent_start":
-            yield* ensureActiveTurnForAgentStart(ctx);
+          case "agent_start": {
+            const turnId = yield* ensureActiveTurnForAgentStart(ctx);
+            const pending = ctx.pendingUserExtensionCommand;
+            if (pending?.turnId === turnId) pending.agentStarted = true;
             return;
+          }
           case "message_start":
             // The turn is opened by sendTurn or an explicit agent_start. Pi may
             // emit startup/profile and late extension messages outside a turn;
             // those messages must not invent autonomous work on their own.
+            if (
+              ctx.activeTurnId !== undefined &&
+              isRecord(message.message) &&
+              message.message.role === "assistant" &&
+              (ctx.assistantItemId !== undefined || ctx.assistantContent.blocks.size > 0)
+            ) {
+              // Preserve incomplete content without assuming it is a final answer.
+              yield* finishAssistantMessage(ctx, classifyPiAssistantPhase(ctx));
+            }
             return;
           case "message_update":
             if (ctx.activeTurnId === undefined) return;
+            // Legacy Pi frames carried both the block delta and a cumulative
+            // message. Apply the delta first, then reconcile the snapshot, so
+            // either delivery shape can take over without replaying content.
+            yield* emitAssistantEventDelta(ctx, message.assistantMessageEvent);
             if (isRecord(message.message) && message.message.role === "assistant") {
-              yield* emitAssistantDelta(ctx, message.message);
-            } else {
-              yield* emitAssistantEventDelta(ctx, message.assistantMessageEvent);
+              yield* emitAssistantSnapshot(ctx, message.message);
             }
             return;
           case "message_end":
@@ -1275,8 +1543,11 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             ) {
               return;
             }
-            yield* emitAssistantDelta(ctx, message.message);
-            yield* finishAssistantItem(ctx);
+            yield* emitAssistantSnapshot(ctx, message.message);
+            yield* finishAssistantMessage(
+              ctx,
+              classifyPiAssistantPhase(ctx, message.message.stopReason),
+            );
             return;
           case "tool_execution_start":
             if (ctx.activeTurnId !== undefined) {
@@ -1432,6 +1703,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               sessions.delete(ctx.threadId);
               yield* resetBackgroundTerminals(ctx.threadId);
               ctx.stopped = true;
+              yield* failTaskControlWaiters(
+                ctx.threadId,
+                "The Pi session exited before the task control completed.",
+              );
               // The session scope is independent from startSession's request
               // scope. Close it on spontaneous exit as well as explicit stop,
               // otherwise its queues and transport fibers survive after the
@@ -1450,6 +1725,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
+        yield* failTaskControlWaiters(
+          ctx.threadId,
+          "The Pi session stopped before the task control completed.",
+        );
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         if (sessions.get(ctx.threadId) === ctx) {
           sessions.delete(ctx.threadId);
@@ -1533,8 +1812,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           turns: [],
           piSessionId: resumeSessionId,
           assistantItemId: undefined,
-          assistantText: "",
-          reasoningText: "",
+          assistantItemHasText: false,
+          assistantItemHasReasoning: false,
+          assistantWorkBoundaryPending: false,
+          assistantContent: makePiAssistantContentState(),
+          assistantOrigin: "normal",
+          hasPrimaryAssistantAnswer: false,
           subagentLiveMessages: new Map(),
           subagentLivePublishedAtByKey: new Map(),
           toolArgsByCallId: new Map(),
@@ -1542,7 +1825,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           lastAgentEndOutcome: undefined,
           terminalFailure: undefined,
           interruptRequested: false,
-          extensionCommandNames: undefined,
+          commandCatalog: undefined,
+          pendingUserExtensionCommand: undefined,
           contextWindowSelectionKey: undefined,
           fastServiceEnabled: undefined,
           sendSemaphore,
@@ -1563,7 +1847,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             ...(resumeSessionId ? { resumeSessionId } : {}),
           }),
           cwd,
-          env: buildPiRpcEnv(piSettings, baseEnv),
+          env: buildPiRpcEnv(path, piSettings, baseEnv),
           onMessage: (message) =>
             handlePiMessage(ctx)(message).pipe(Effect.catchCause(() => Effect.void)),
           onParseFailure: (line) =>
@@ -1708,8 +1992,23 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               });
             }
 
-            // A sendTurn while a turn is in flight is a steer that folds into the
-            // active turn; otherwise it opens a new turn.
+            // sendTurn is itself an authoritative user-origin signal. Pi
+            // normally echoes role:user, but extension slash commands may
+            // complete without emitting that native message.
+            ctx.assistantOrigin = "normal";
+            ctx.hasPrimaryAssistantAnswer = false;
+
+            const slashCommandName = text ? piSlashCommandName(text) : undefined;
+            const extensionCommandName =
+              slashCommandName !== undefined &&
+              (yield* loadPiCommandCatalog(ctx)).extensionNames.has(slashCommandName)
+                ? slashCommandName
+                : undefined;
+
+            // A sendTurn while a turn is in flight is normally a steer that
+            // folds into the active turn. Registered extension commands are
+            // the exception: Pi executes them only through prompt(), including
+            // while an agent run is streaming.
             const steering = ctx.activeTurnId !== undefined;
             const turnId = ctx.activeTurnId ?? TurnId.make(yield* randomUUIDv4);
             if (!steering) {
@@ -1736,16 +2035,63 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               });
             }
 
-            yield* request(
-              ctx,
-              steering
-                ? { type: "steer", message: text ?? "", ...(images.length > 0 ? { images } : {}) }
-                : { type: "prompt", message: text ?? "", ...(images.length > 0 ? { images } : {}) },
-            ).pipe(
-              Effect.tapError(() =>
-                completeTurn(ctx, "failed", { errorMessage: "Failed to send prompt to Pi." }),
-              ),
-            );
+            const rpcInput = {
+              message: text ?? "",
+              ...(images.length > 0 ? { images } : {}),
+            };
+            if (extensionCommandName !== undefined) {
+              const pending: PendingUserExtensionCommand = {
+                turnId,
+                openedTurn: !steering,
+                agentStarted: false,
+              };
+              ctx.pendingUserExtensionCommand = pending;
+              yield* Effect.gen(function* () {
+                yield* request(ctx, { type: "prompt", ...rpcInput });
+                if (!pending.openedTurn) return;
+
+                const state = yield* request(ctx, { type: "get_state" });
+                if (
+                  ctx.activeTurnId === turnId &&
+                  !pending.agentStarted &&
+                  piRpcStateIsIdle(state)
+                ) {
+                  yield* completeTurn(ctx, "completed", undefined, turnId);
+                }
+              }).pipe(
+                Effect.tapError(() =>
+                  pending.openedTurn
+                    ? completeTurn(
+                        ctx,
+                        "failed",
+                        { errorMessage: "Failed to run the Pi extension command." },
+                        turnId,
+                      )
+                    : Effect.void,
+                ),
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    if (ctx.pendingUserExtensionCommand === pending) {
+                      ctx.pendingUserExtensionCommand = undefined;
+                    }
+                  }),
+                ),
+              );
+            } else {
+              yield* request(
+                ctx,
+                steering ? { type: "steer", ...rpcInput } : { type: "prompt", ...rpcInput },
+              ).pipe(
+                Effect.tapError(() =>
+                  completeTurn(
+                    ctx,
+                    "failed",
+                    { errorMessage: "Failed to send prompt to Pi." },
+                    turnId,
+                  ),
+                ),
+              );
+            }
 
             ctx.turns = [
               ...ctx.turns,
@@ -1838,9 +2184,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             issue: "The Pi subagent control extension is not installed in this session.",
           });
         }
+        const action = input.action === "stop" ? "kill" : input.action;
+        const requestId = `t3-${yield* randomUUIDv4}`;
+        const waiterKey = extensionControlKey(input.threadId, requestId);
         const envelope = {
-          action: input.action === "stop" ? "kill" : input.action,
-          request_id: yield* randomUUIDv4,
+          action,
+          request_id: requestId,
           run_id: input.taskId,
           ...(input.action === "steer" || input.action === "reply"
             ? { message: input.message }
@@ -1857,10 +2206,38 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               }),
           ),
         );
-        yield* request(ctx, {
-          type: "prompt",
-          message: `/subagents-rpc ${encoded}`,
-        });
+        const waiter = yield* Deferred.make<PiTaskControlResult, ProviderAdapterRequestError>();
+        taskControlWaiters.set(waiterKey, waiter);
+        const result = yield* Effect.gen(function* () {
+          yield* request(ctx, {
+            type: "prompt",
+            message: `/subagents-rpc ${encoded}`,
+          });
+          return yield* Deferred.await(waiter).pipe(
+            Effect.timeout(PI_EXTENSION_CONTROL_TIMEOUT),
+            Effect.catchTag("TimeoutError", (cause) =>
+              Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "subagents-rpc",
+                  detail: "Timed out waiting for the Pi task control result.",
+                  cause,
+                }),
+              ),
+            ),
+          );
+        }).pipe(Effect.ensuring(Effect.sync(() => taskControlWaiters.delete(waiterKey))));
+        if (result.action !== action || !result.success) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "subagents-rpc",
+            detail:
+              result.error ||
+              (result.action !== action
+                ? `Pi returned a '${result.action}' result for the '${action}' task control.`
+                : `Pi rejected the ${input.action} task control.`),
+          });
+        }
       }).pipe(Effect.asVoid);
 
     const controlBackgroundTerminal = (input: PiBackgroundTerminalControlInput) =>
@@ -1886,7 +2263,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           });
         }
         const requestId = input.requestId ?? `t3-${yield* randomUUIDv4}`;
-        const waiterKey = backgroundTerminalControlKey(input.threadId, requestId);
+        const waiterKey = extensionControlKey(input.threadId, requestId);
         if (backgroundTerminalControlWaiters.has(waiterKey)) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
@@ -1918,7 +2295,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             message: `/background-terminals-rpc ${encoded}`,
           });
           return yield* Deferred.await(waiter).pipe(
-            Effect.timeout("12 seconds"),
+            Effect.timeout(PI_EXTENSION_CONTROL_TIMEOUT),
             Effect.mapError(
               (cause) =>
                 new ProviderAdapterRequestError({
@@ -1959,7 +2336,11 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        supportsConversationRollback: false,
+      },
+      compaction: { type: "slash-command", command: "/compact" },
       startSession,
       sendTurn,
       interruptTurn,
