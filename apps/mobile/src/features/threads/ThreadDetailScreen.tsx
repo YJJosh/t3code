@@ -78,7 +78,7 @@ import type {
   PendingUserInputDraftAnswer,
   ThreadFeedEntry,
 } from "../../lib/threadActivity";
-import { providerKeepsAssistantMessagesVisible } from "../../lib/threadActivity";
+import { providerPreservesUnclassifiedAssistantMessages } from "../../lib/threadActivity";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 import { ComposerFeedback } from "./ComposerFeedback";
 import { ComposerUsageLimits } from "./ComposerUsageLimits";
@@ -666,7 +666,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   );
   // Before the server config arrives the instance id is the only provider
   // hint; default instances are named after their driver.
-  const keepAssistantMessagesVisible = providerKeepsAssistantMessagesVisible(
+  const preserveUnclassifiedAssistantMessages = providerPreservesUnclassifiedAssistantMessages(
     selectedProvider?.driver ?? selectedInstanceId,
   );
 
@@ -877,7 +877,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             agentLabel={agentLabel}
             latestTurn={props.selectedThread.latestTurn}
             activeWorkStartedAt={props.activeWorkStartedAt}
-            keepAssistantMessagesVisible={keepAssistantMessagesVisible}
+            preserveUnclassifiedAssistantMessages={preserveUnclassifiedAssistantMessages}
             listRef={listRef}
             freeze={freeze}
             anchorMessageId={anchorMessageId}

@@ -41,10 +41,32 @@ describe("Pi assistant content", () => {
     ]);
 
     expect(deltas).toEqual([
-      { streamKind: "reasoning_text", contentIndex: 0, delta: "Plan" },
-      { streamKind: "assistant_text", contentIndex: 1, delta: "First paragraph." },
-      { streamKind: "reasoning_text", contentIndex: 2, delta: "\n\nVerify" },
-      { streamKind: "assistant_text", contentIndex: 3, delta: "\n\n# Invoice Summary" },
+      {
+        streamKind: "reasoning_text",
+        contentIndex: 0,
+        delta: "Plan",
+        startsBlock: true,
+      },
+      {
+        streamKind: "assistant_text",
+        contentIndex: 1,
+        delta: "First paragraph.",
+        startsBlock: true,
+      },
+      {
+        streamKind: "reasoning_text",
+        contentIndex: 2,
+        delta: "\n\nVerify",
+        startsBlock: true,
+        blockBoundary: "\n\n",
+      },
+      {
+        streamKind: "assistant_text",
+        contentIndex: 3,
+        delta: "\n\n# Invoice Summary",
+        startsBlock: true,
+        blockBoundary: "\n\n",
+      },
     ]);
     expect(state.streams.reasoning_text.content).toBe("Plan\n\nVerify");
     expect(state.streams.assistant_text.content).toBe("First paragraph.\n\n# Invoice Summary");
@@ -63,8 +85,14 @@ describe("Pi assistant content", () => {
         streamKind: "reasoning_text",
         contentIndex: 0,
         delta: "**Inspecting**\n\n",
+        startsBlock: true,
       },
-      { streamKind: "reasoning_text", contentIndex: 2, delta: "Verifying" },
+      {
+        streamKind: "reasoning_text",
+        contentIndex: 2,
+        delta: "Verifying",
+        startsBlock: true,
+      },
     ]);
     expect(state.streams.reasoning_text.content).toBe("**Inspecting**\n\nVerifying");
   });
@@ -75,7 +103,14 @@ describe("Pi assistant content", () => {
       reasoning_text: "",
       blocks: [{ streamKind: "assistant_text", contentIndex: 0, content: "Legacy" }],
     });
-    expect(hydrated.deltas).toEqual([{ streamKind: "assistant_text", delta: "Legacy" }]);
+    expect(hydrated.deltas).toEqual([
+      {
+        streamKind: "assistant_text",
+        contentIndex: 0,
+        delta: "Legacy",
+        startsBlock: true,
+      },
+    ]);
 
     const continued = applyPiAssistantBlockEvent(hydrated.state, {
       type: "text_delta",
@@ -88,6 +123,40 @@ describe("Pi assistant content", () => {
     expect(continued.state.streams.assistant_text.content).toBe("Legacy extension");
   });
 
+  it("keeps snapshot-only blocks in native order with distinct boundaries", () => {
+    const result = applyPiAssistantSnapshot(makePiAssistantContentState(), {
+      assistant_text: "Narration\n\n# Final",
+      reasoning_text: "Plan",
+      blocks: [
+        { streamKind: "reasoning_text", contentIndex: 0, content: "Plan" },
+        { streamKind: "assistant_text", contentIndex: 1, content: "Narration" },
+        { streamKind: "assistant_text", contentIndex: 2, content: "# Final" },
+      ],
+    });
+
+    expect(result.deltas).toEqual([
+      {
+        streamKind: "reasoning_text",
+        contentIndex: 0,
+        delta: "Plan",
+        startsBlock: true,
+      },
+      {
+        streamKind: "assistant_text",
+        contentIndex: 1,
+        delta: "Narration",
+        startsBlock: true,
+      },
+      {
+        streamKind: "assistant_text",
+        contentIndex: 2,
+        delta: "\n\n# Final",
+        startsBlock: true,
+        blockBoundary: "\n\n",
+      },
+    ]);
+  });
+
   it("starts a new unindexed block after the previous legacy block ends", () => {
     const { state, deltas } = applyEvents([
       { type: "text_start" },
@@ -97,10 +166,61 @@ describe("Pi assistant content", () => {
       { type: "text_delta", delta: "# Second" },
     ]);
     expect(deltas).toEqual([
-      { streamKind: "assistant_text", delta: "First" },
-      { streamKind: "assistant_text", delta: "\n\n# Second" },
+      { streamKind: "assistant_text", delta: "First", startsBlock: true },
+      {
+        streamKind: "assistant_text",
+        delta: "\n\n# Second",
+        startsBlock: true,
+        blockBoundary: "\n\n",
+      },
     ]);
     expect(state.streams.assistant_text.content).toBe("First\n\n# Second");
+  });
+
+  it("does not replay legacy text when indexed streaming resumes after a snapshot", () => {
+    const streamed = applyEvents([
+      { type: "text_start" },
+      { type: "text_delta", delta: "First" },
+      { type: "text_end", content: "First" },
+      { type: "text_start" },
+      { type: "text_delta", delta: "# Second" },
+    ]);
+    const result = applyPiAssistantSnapshot(streamed.state, {
+      assistant_text: "First\n\n# Second",
+      reasoning_text: "",
+      blocks: [
+        { streamKind: "assistant_text", contentIndex: 0, content: "First" },
+        { streamKind: "assistant_text", contentIndex: 1, content: "# Second" },
+      ],
+    });
+    expect(result.deltas).toEqual([]);
+    expect(result.state.streams.assistant_text.content).toBe("First\n\n# Second");
+    const resumed = applyPiAssistantBlockEvent(result.state, {
+      type: "text_end",
+      contentIndex: 1,
+      content: "# Second expanded",
+    });
+    expect(resumed.deltas).toEqual([
+      { streamKind: "assistant_text", contentIndex: 1, delta: " expanded" },
+    ]);
+    expect(resumed.state.streams.assistant_text.content).toBe("First\n\n# Second expanded");
+  });
+
+  it("rejects indexed snapshots that revise earlier blocks instead of extending the stream", () => {
+    const streamed = applyEvents([
+      { type: "text_delta", contentIndex: 0, delta: "First" },
+      { type: "text_delta", contentIndex: 1, delta: "Second" },
+    ]);
+    const result = applyPiAssistantSnapshot(streamed.state, {
+      assistant_text: "First revised\n\nSecond",
+      reasoning_text: "",
+      blocks: [
+        { streamKind: "assistant_text", contentIndex: 0, content: "First revised" },
+        { streamKind: "assistant_text", contentIndex: 1, content: "Second" },
+      ],
+    });
+    expect(result.deltas).toEqual([]);
+    expect(result.state.streams.assistant_text.content).toBe("First\n\nSecond");
   });
 
   it("does not replay block endings or authoritative snapshots", () => {
@@ -110,7 +230,12 @@ describe("Pi assistant content", () => {
       { type: "text_end", contentIndex: 0, content: "Live heading" },
     ]);
     expect(streamed.deltas).toEqual([
-      { streamKind: "assistant_text", contentIndex: 0, delta: "Live" },
+      {
+        streamKind: "assistant_text",
+        contentIndex: 0,
+        delta: "Live",
+        startsBlock: true,
+      },
       { streamKind: "assistant_text", contentIndex: 0, delta: " heading" },
     ]);
     expect(snapshot(streamed.state, "Live heading").deltas).toEqual([]);
@@ -133,7 +258,12 @@ describe("Pi assistant content", () => {
       { type: "text_end", contentIndex: 0, content: "abcXYZ-tail" },
     ]);
     expect(streamed.deltas).toEqual([
-      { streamKind: "assistant_text", contentIndex: 0, delta: "abcdef" },
+      {
+        streamKind: "assistant_text",
+        contentIndex: 0,
+        delta: "abcdef",
+        startsBlock: true,
+      },
     ]);
     expect(streamed.state.streams.assistant_text.content).toBe("abcdef");
   });

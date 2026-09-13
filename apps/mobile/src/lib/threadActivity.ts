@@ -1621,10 +1621,28 @@ interface ThreadFeedTurnFold {
   readonly label: string;
 }
 
+/** Commentary never owns a visible answer's copy/timestamp footer. */
+export function deriveThreadFeedTerminalAssistantMessageIds(
+  feed: ReadonlyArray<ThreadFeedEntry>,
+): ReadonlySet<string> {
+  const terminalIdsByTurn = new Map<TurnId, string>();
+  for (const entry of feed) {
+    if (
+      entry.type === "message" &&
+      entry.message.role === "assistant" &&
+      entry.message.turnId &&
+      entry.message.phase !== "commentary"
+    ) {
+      terminalIdsByTurn.set(entry.message.turnId, entry.message.id);
+    }
+  }
+  return new Set(terminalIdsByTurn.values());
+}
+
 function deriveThreadFeedTurnFolds(
   feed: ReadonlyArray<ThreadFeedEntry>,
   latestTurn: ThreadFeedLatestTurn | null,
-  keepAssistantMessagesVisible: boolean,
+  preserveUnclassifiedAssistantMessages: boolean,
 ): ReadonlyMap<string, ThreadFeedTurnFold> {
   const firstAssistantMessageIdByTurn = new Map<TurnId, string>();
   const terminalAssistantMessageIdByTurn = new Map<TurnId, string>();
@@ -1633,7 +1651,9 @@ function deriveThreadFeedTurnFolds(
       if (!firstAssistantMessageIdByTurn.has(entry.message.turnId)) {
         firstAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
       }
-      terminalAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
+      if (entry.message.phase !== "commentary") {
+        terminalAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
+      }
     }
   }
 
@@ -1684,11 +1704,13 @@ function deriveThreadFeedTurnFolds(
     const terminalAssistantMessageId = terminalAssistantMessageIdByTurn.get(turnId);
     const hiddenEntryIds = new Set(
       entries
-        .filter((entry) =>
-          keepAssistantMessagesVisible
-            ? entry.type !== "message"
-            : entry.id !== firstAssistantMessageId && entry.id !== terminalAssistantMessageId,
-        )
+        .filter((entry) => {
+          if (entry.type !== "message") return true;
+          if (entry.message.phase === "commentary") return true;
+          if (entry.message.phase === "final_answer") return false;
+          if (preserveUnclassifiedAssistantMessages) return false;
+          return entry.id !== firstAssistantMessageId && entry.id !== terminalAssistantMessageId;
+        })
         .map((entry) => entry.id),
     );
     if (hiddenEntryIds.size === 0) {
@@ -1748,20 +1770,14 @@ function deriveThreadFeedTurnFolds(
 }
 
 export interface ThreadFeedPresentationOptions {
-  /**
-   * Keep every assistant message of a settled turn outside its "Worked for"
-   * fold instead of only the first and last. Tool work still folds.
-   */
-  readonly keepAssistantMessagesVisible?: boolean;
+  /** Preserve Pi replies whose phase is unknown, including older saved history. */
+  readonly preserveUnclassifiedAssistantMessages?: boolean;
 }
 
-/**
- * Pi extension wake-ups can complete several answers in one turn, so folding
- * everything but the last would hide the full answer behind a short trailing
- * notification. Other providers finish a turn with one answer and keep the
- * default fold.
- */
-export function providerKeepsAssistantMessagesVisible(driver: string | null | undefined): boolean {
+/** Unclassified Pi replies may contain an answer, including extension-triggered results. */
+export function providerPreservesUnclassifiedAssistantMessages(
+  driver: string | null | undefined,
+): boolean {
   return driver === "pi";
 }
 
@@ -1786,7 +1802,7 @@ export function deriveThreadFeedPresentation(
   const foldsByAnchorId = deriveThreadFeedTurnFolds(
     sourceFeed,
     latestTurn,
-    options.keepAssistantMessagesVisible === true,
+    options.preserveUnclassifiedAssistantMessages === true,
   );
   const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
   const isWorking = activeWorkStartedAt !== null;

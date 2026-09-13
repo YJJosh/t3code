@@ -20,6 +20,7 @@ import {
   type OrchestrationCommand,
   ProjectId,
   ProviderItemId,
+  RuntimeItemId,
   RuntimeRequestId,
   type ServerSettings,
   ThreadId,
@@ -56,6 +57,7 @@ import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQu
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -388,6 +390,20 @@ describe("ProviderRuntimeIngestion", () => {
       engine,
       dispatch,
       readModel: () => testRuntime.runPromise(snapshotQuery.getSnapshot()),
+      readFreshDetail: () =>
+        testRuntime.runPromise(
+          Effect.flatMap(ProjectionSnapshotQuery, (query) =>
+            query
+              .getThreadDetailSnapshot(asThreadId("thread-1"))
+              .pipe(Effect.map(Option.getOrThrow)),
+          ).pipe(
+            Effect.provide(
+              Layer.fresh(OrchestrationProjectionSnapshotQueryLive).pipe(
+                Layer.provide(RepositoryIdentityResolver.layer),
+              ),
+            ),
+          ),
+        ),
       readThreadShell: () =>
         testRuntime.runPromise(
           snapshotQuery
@@ -401,6 +417,108 @@ describe("ProviderRuntimeIngestion", () => {
       drain,
     };
   }
+
+  it.each([false, true])(
+    "persists assistant phases across sequential items and fresh queries (legacy streaming: %s)",
+    async (enableLegacyTokenStreaming) => {
+      const harness = await createHarness({ serverSettings: { enableLegacyTokenStreaming } });
+      const base = {
+        provider: ProviderDriverKind.make("pi"),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("phase-turn"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+      };
+      const segments = [
+        { phase: "commentary", text: "Inspecting the workspace." },
+        { phase: "final_answer", text: "The primary answer." },
+        { phase: "commentary", text: "A later progress update." },
+      ] as const;
+      const events: ProviderRuntimeEvent[] = [
+        { ...base, type: "turn.started", eventId: asEventId("phase-start"), payload: {} },
+      ];
+      for (const [index, segment] of segments.entries()) {
+        const itemId = RuntimeItemId.make(`phase-item-${index}`);
+        const itemBase = { ...base, itemId, createdAt: `2026-01-01T00:00:0${index + 2}.000Z` };
+        events.push(
+          {
+            ...itemBase,
+            type: "item.started",
+            eventId: asEventId(`phase-item-start-${index}`),
+            payload: { itemType: "assistant_message" },
+          },
+          {
+            ...itemBase,
+            type: "content.delta",
+            eventId: asEventId(`phase-delta-${index}`),
+            payload: { streamKind: "assistant_text", delta: segment.text },
+          },
+          {
+            ...itemBase,
+            type: "item.completed",
+            eventId: asEventId(`phase-complete-${index}`),
+            payload: { itemType: "assistant_message", phase: segment.phase },
+          },
+        );
+      }
+      events.push({
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("phase-end"),
+        createdAt: "2026-01-01T00:00:05.000Z",
+        payload: { state: "completed" },
+      });
+      await harness.emitAndDrain(events);
+
+      const snapshot = await harness.readModel();
+      const messages = snapshot.threads[0]!.messages;
+      expect(
+        messages.map(({ phase, text, streaming, turnId }) => ({ phase, text, streaming, turnId })),
+      ).toEqual(segments.map((segment) => ({ ...segment, streaming: false, turnId: base.turnId })));
+      const fresh = await harness.readFreshDetail();
+      expect(fresh.thread.messages).toEqual(messages);
+
+      const persistedEvents = await Effect.runPromise(
+        Stream.runCollect(harness.engine.readEvents(0)),
+      );
+      const completions = persistedEvents.filter(
+        (event) => event.type === "thread.message-sent" && !event.payload.streaming,
+      );
+      expect(
+        completions.map((event) =>
+          event.type === "thread.message-sent" ? event.payload.phase : undefined,
+        ),
+      ).toEqual(segments.map(({ phase }) => phase));
+      let replay = createEmptyReadModel(base.createdAt);
+      for (const event of persistedEvents) {
+        replay = await Effect.runPromise(projectEvent(replay, event));
+      }
+      expect(replay.threads[0]!.messages).toEqual(messages);
+
+      // Older delivery paths may send additional phase-less updates.
+      await harness.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("phase-late-delta"),
+        threadId: base.threadId,
+        turnId: base.turnId,
+        messageId: messages[1]!.id,
+        delta: " More.",
+        createdAt: base.createdAt,
+      });
+      await harness.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make("phase-late-complete"),
+        threadId: base.threadId,
+        turnId: base.turnId,
+        messageId: messages[1]!.id,
+        createdAt: base.createdAt,
+      });
+      expect((await harness.readFreshDetail()).thread.messages[1]).toMatchObject({
+        phase: "final_answer",
+        text: "The primary answer. More.",
+        streaming: false,
+      });
+    },
+  );
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();

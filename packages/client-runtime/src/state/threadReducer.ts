@@ -316,6 +316,7 @@ export function applyThreadDetailEvent(
       const message: OrchestrationMessage = {
         id: event.payload.messageId,
         role: event.payload.role,
+        ...(event.payload.phase !== undefined ? { phase: event.payload.phase } : {}),
         text: event.payload.text,
         ...(event.payload.attachments !== undefined
           ? { attachments: event.payload.attachments }
@@ -339,6 +340,7 @@ export function applyThreadDetailEvent(
                       ? message.text
                       : entry.text,
                   streaming: message.streaming,
+                  ...(message.phase !== undefined ? { phase: message.phase } : {}),
                   ...(message.turnId !== undefined ? { turnId: message.turnId } : {}),
                   ...(message.streaming ? {} : { updatedAt: message.updatedAt }),
                   ...(message.attachments !== undefined

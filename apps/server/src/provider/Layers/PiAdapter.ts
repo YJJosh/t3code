@@ -102,6 +102,14 @@ const TOOL_UPDATE_MIN_INTERVAL_NANOS = 1_000_000_000n;
 const TOOL_UPDATE_SUMMARY_MAX_CHARS = 4_000;
 const TOOL_UPDATE_TRUNCATION_MARKER = "…[truncated]\n";
 const PI_EXTENSION_CONTROL_TIMEOUT = "12 seconds";
+const PI_ASYNC_RESULT_CUSTOM_TYPES = new Set([
+  "subagents-result",
+  "subagents-workflow-result",
+  "background-terminal-result",
+]);
+
+type PiAssistantPhase = "commentary" | "final_answer";
+type PiAssistantOrigin = "normal" | "async_result";
 
 export interface PiAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
@@ -137,9 +145,15 @@ interface PiSessionContext {
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   /** Pi session id (from get_state / session events) for resume. */
   piSessionId: string | undefined;
-  /** Current assistant item id + indexed Pi content blocks for delta diffing. */
+  /** Current canonical segment + indexed blocks for the whole native assistant message. */
   assistantItemId: ProviderItemId | undefined;
+  assistantItemHasText: boolean;
+  assistantItemHasReasoning: boolean;
+  assistantWorkBoundaryPending: boolean;
   assistantContent: PiAssistantContentState;
+  /** Native source of subsequent assistant replies; reset only by a real user message. */
+  assistantOrigin: PiAssistantOrigin;
+  hasPrimaryAssistantAnswer: boolean;
   /** Cumulative, rate-limited live assistant state for each child transcript. */
   subagentLiveMessages: Map<string, SubagentLiveMessage>;
   /** Last published time for other high-frequency child transcript events. */
@@ -181,6 +195,38 @@ interface PiToolMeta {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function observePiMessageOrigin(ctx: PiSessionContext, message: unknown): void {
+  if (!isRecord(message)) return;
+  if (message.role === "user") {
+    ctx.assistantOrigin = "normal";
+    ctx.hasPrimaryAssistantAnswer = false;
+    return;
+  }
+  if (
+    message.role === "custom" &&
+    typeof message.customType === "string" &&
+    PI_ASYNC_RESULT_CUSTOM_TYPES.has(message.customType)
+  ) {
+    ctx.assistantOrigin = "async_result";
+  }
+}
+
+// A background result may supply the first answer rather than a late
+// acknowledgement. Unknown/partial replies remain unclassified so the client
+// does not fold the only answer without an explicit work boundary.
+function classifyPiAssistantPhase(
+  ctx: PiSessionContext,
+  stopReason?: unknown,
+): PiAssistantPhase | undefined {
+  if (ctx.assistantWorkBoundaryPending || stopReason === "toolUse" || !ctx.assistantItemHasText) {
+    return "commentary";
+  }
+  if (ctx.assistantOrigin === "async_result") {
+    return ctx.hasPrimaryAssistantAnswer ? "commentary" : undefined;
+  }
+  return stopReason === "stop" ? "final_answer" : undefined;
 }
 
 function toolItemType(toolName: unknown): "command_execution" | "dynamic_tool_call" {
@@ -917,6 +963,11 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         itemId,
         payload: { streamKind: "assistant_text", delta: message },
       });
+      const completedPayload = {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        phase: "final_answer" as const,
+      };
       yield* emit({
         type: "item.completed",
         ...(yield* makeStamp()),
@@ -924,7 +975,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         threadId: ctx.threadId,
         turnId,
         itemId,
-        payload: { itemType: "assistant_message", status: "completed" },
+        payload: completedPayload,
       });
     });
 
@@ -1065,45 +1116,103 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           );
       });
 
+    const finishAssistantSegment = Effect.fn("finishAssistantSegment")(function* (
+      ctx: PiSessionContext,
+      phase: PiAssistantPhase | undefined,
+    ) {
+      if (ctx.assistantItemId === undefined) return;
+      const itemId = RuntimeItemId.make(ctx.assistantItemId);
+      const turnId = ctx.activeTurnId;
+      if (phase === "final_answer" && ctx.assistantItemHasText) {
+        ctx.hasPrimaryAssistantAnswer = true;
+      }
+      const completedPayload = {
+        itemType: "assistant_message" as const,
+        status: "completed" as const,
+        ...(phase !== undefined ? { phase } : {}),
+      };
+      yield* emit({
+        type: "item.completed",
+        ...(yield* makeStamp()),
+        provider: PROVIDER,
+        threadId: ctx.threadId,
+        ...(turnId ? { turnId } : {}),
+        itemId,
+        payload: completedPayload,
+      });
+      ctx.assistantItemId = undefined;
+      ctx.assistantItemHasText = false;
+      ctx.assistantItemHasReasoning = false;
+      ctx.assistantWorkBoundaryPending = false;
+    });
+
+    const finishAssistantMessage = Effect.fn("finishAssistantMessage")(function* (
+      ctx: PiSessionContext,
+      phase: PiAssistantPhase | undefined,
+    ) {
+      yield* finishAssistantSegment(ctx, phase);
+      ctx.assistantContent = makePiAssistantContentState();
+    });
+
     const emitAssistantContentDeltas = Effect.fn("emitAssistantContentDeltas")(function* (
       ctx: PiSessionContext,
       deltas: ReadonlyArray<PiAssistantContentDelta>,
     ) {
-      if (deltas.length === 0) return;
-      const turnId = ctx.activeTurnId;
-      if (ctx.assistantItemId === undefined) {
-        ctx.assistantItemId = ProviderItemId.make(yield* randomUUIDv4);
+      for (const delta of deltas) {
+        // Content-block boundaries alone are not semantic: providers can put
+        // a legitimate final answer in several adjacent text blocks. Split
+        // only when Pi exposed an intervening tool/work boundary.
+        if (
+          ctx.assistantItemHasText &&
+          (ctx.assistantWorkBoundaryPending ||
+            (delta.startsBlock && delta.workBoundaryBefore === true))
+        ) {
+          yield* finishAssistantSegment(ctx, "commentary");
+        }
+
+        const segmentAlreadyHasThisStream =
+          delta.streamKind === "assistant_text"
+            ? ctx.assistantItemHasText
+            : ctx.assistantItemHasReasoning;
+        const canonicalDelta =
+          delta.startsBlock && !segmentAlreadyHasThisStream && delta.blockBoundary
+            ? delta.delta.slice(delta.blockBoundary.length)
+            : delta.delta;
+        if (!canonicalDelta) continue;
+
+        const turnId = ctx.activeTurnId;
+        if (ctx.assistantItemId === undefined) {
+          ctx.assistantItemId = ProviderItemId.make(yield* randomUUIDv4);
+          yield* emit({
+            type: "item.started",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            ...(turnId ? { turnId } : {}),
+            itemId: RuntimeItemId.make(ctx.assistantItemId),
+            payload: { itemType: "assistant_message", status: "inProgress" },
+          });
+        }
+        const itemId = RuntimeItemId.make(ctx.assistantItemId);
         yield* emit({
-          type: "item.started",
+          type: "content.delta",
           ...(yield* makeStamp()),
           provider: PROVIDER,
           threadId: ctx.threadId,
           ...(turnId ? { turnId } : {}),
-          itemId: RuntimeItemId.make(ctx.assistantItemId),
-          payload: { itemType: "assistant_message", status: "inProgress" },
+          itemId,
+          payload: {
+            streamKind: delta.streamKind,
+            delta: canonicalDelta,
+            ...(delta.contentIndex !== undefined ? { contentIndex: delta.contentIndex } : {}),
+          },
         });
+        if (delta.streamKind === "assistant_text") {
+          ctx.assistantItemHasText = true;
+        } else {
+          ctx.assistantItemHasReasoning = true;
+        }
       }
-      const itemId = RuntimeItemId.make(ctx.assistantItemId);
-      yield* Effect.forEach(
-        deltas,
-        (delta) =>
-          Effect.gen(function* () {
-            yield* emit({
-              type: "content.delta",
-              ...(yield* makeStamp()),
-              provider: PROVIDER,
-              threadId: ctx.threadId,
-              ...(turnId ? { turnId } : {}),
-              itemId,
-              payload: {
-                streamKind: delta.streamKind,
-                delta: delta.delta,
-                ...(delta.contentIndex !== undefined ? { contentIndex: delta.contentIndex } : {}),
-              },
-            });
-          }),
-        { discard: true },
-      );
     });
 
     const emitAssistantSnapshot = Effect.fn("emitAssistantSnapshot")(function* (
@@ -1126,6 +1235,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       event: unknown,
     ) {
       if (!isRecord(event) || typeof event.type !== "string") return;
+      if (event.type === "toolcall_start") {
+        if (ctx.assistantItemHasText) ctx.assistantWorkBoundaryPending = true;
+        return;
+      }
       if (
         event.type === "text_start" ||
         event.type === "text_delta" ||
@@ -1153,27 +1266,6 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       }
     });
 
-    const finishAssistantItem = (ctx: PiSessionContext) =>
-      Effect.gen(function* () {
-        if (ctx.assistantItemId === undefined) {
-          ctx.assistantContent = makePiAssistantContentState();
-          return;
-        }
-        const itemId = RuntimeItemId.make(ctx.assistantItemId);
-        const turnId = ctx.activeTurnId;
-        yield* emit({
-          type: "item.completed",
-          ...(yield* makeStamp()),
-          provider: PROVIDER,
-          threadId: ctx.threadId,
-          ...(turnId ? { turnId } : {}),
-          itemId,
-          payload: { itemType: "assistant_message", status: "completed" },
-        });
-        ctx.assistantItemId = undefined;
-        ctx.assistantContent = makePiAssistantContentState();
-      });
-
     const completeTurn = (
       ctx: PiSessionContext,
       state: "completed" | "failed" | "cancelled" | "interrupted",
@@ -1185,7 +1277,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         if (turnId === undefined || (expectedTurnId !== undefined && turnId !== expectedTurnId)) {
           return;
         }
-        yield* finishAssistantItem(ctx);
+        // A process exit, abort, or malformed native stream can omit
+        // message_end. Keep any partial content, but never promote it to a
+        // terminal answer without an authoritative stop response.
+        yield* finishAssistantMessage(ctx, classifyPiAssistantPhase(ctx));
         const updatedAt = yield* nowIso;
         const { activeTurnId: _drop, ...rest } = ctx.session;
         ctx.session = { ...rest, status: "ready", updatedAt };
@@ -1304,6 +1399,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       message: Record<string, unknown>,
     ) =>
       Effect.gen(function* () {
+        if (lifecycle === "item.started" && ctx.assistantItemHasText) {
+          // Claude's SDK bridge can expose a real tool call between two text
+          // blocks inside one native assistant message. Defer completion until
+          // more content arrives so trailing/aborted text is retained.
+          ctx.assistantWorkBoundaryPending = true;
+        }
         const suppliedToolCallId =
           typeof message.toolCallId === "string" ? message.toolCallId : undefined;
         // A random fallback would let every malformed progress frame bypass the
@@ -1388,6 +1489,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         if (options?.nativeEventLogger) {
           yield* options.nativeEventLogger.write(message, ctx.threadId);
         }
+        if (message.type === "message_start" || message.type === "message_end") {
+          observePiMessageOrigin(ctx, message.message);
+        }
         switch (message.type) {
           case "extension_ui_request":
             yield* handleExtensionUiRequest(ctx, message as unknown as PiExtensionUiRequest);
@@ -1411,6 +1515,15 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             // The turn is opened by sendTurn or an explicit agent_start. Pi may
             // emit startup/profile and late extension messages outside a turn;
             // those messages must not invent autonomous work on their own.
+            if (
+              ctx.activeTurnId !== undefined &&
+              isRecord(message.message) &&
+              message.message.role === "assistant" &&
+              (ctx.assistantItemId !== undefined || ctx.assistantContent.blocks.size > 0)
+            ) {
+              // Preserve incomplete content without assuming it is a final answer.
+              yield* finishAssistantMessage(ctx, classifyPiAssistantPhase(ctx));
+            }
             return;
           case "message_update":
             if (ctx.activeTurnId === undefined) return;
@@ -1431,7 +1544,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
               return;
             }
             yield* emitAssistantSnapshot(ctx, message.message);
-            yield* finishAssistantItem(ctx);
+            yield* finishAssistantMessage(
+              ctx,
+              classifyPiAssistantPhase(ctx, message.message.stopReason),
+            );
             return;
           case "tool_execution_start":
             if (ctx.activeTurnId !== undefined) {
@@ -1696,7 +1812,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           turns: [],
           piSessionId: resumeSessionId,
           assistantItemId: undefined,
+          assistantItemHasText: false,
+          assistantItemHasReasoning: false,
+          assistantWorkBoundaryPending: false,
           assistantContent: makePiAssistantContentState(),
+          assistantOrigin: "normal",
+          hasPrimaryAssistantAnswer: false,
           subagentLiveMessages: new Map(),
           subagentLivePublishedAtByKey: new Map(),
           toolArgsByCallId: new Map(),
@@ -1870,6 +1991,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                 issue: "Turn requires non-empty text or attachments.",
               });
             }
+
+            // sendTurn is itself an authoritative user-origin signal. Pi
+            // normally echoes role:user, but extension slash commands may
+            // complete without emitting that native message.
+            ctx.assistantOrigin = "normal";
+            ctx.hasPrimaryAssistantAnswer = false;
 
             const slashCommandName = text ? piSlashCommandName(text) : undefined;
             const extensionCommandName =

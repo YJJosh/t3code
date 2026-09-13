@@ -437,6 +437,15 @@ describe("Pi adapter", () => {
       const throughSettlement = yield* takeThroughType(events, "turn.completed");
       const completed = throughSettlement.find((event) => event.type === "turn.completed");
       expect(completed?.payload.state).toBe("completed");
+      expect(throughSettlement).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          payload: expect.objectContaining({
+            itemType: "assistant_message",
+            phase: "commentary",
+          }),
+        }),
+      );
       expect(nativeFrames).toContainEqual(expect.objectContaining({ type: "agent_settled" }));
       expect(fake.written.filter((command) => command.type === "prompt")).toHaveLength(1);
     }).pipe(Effect.provide(TestEnv)),
@@ -493,6 +502,7 @@ describe("Pi adapter", () => {
         type: "message_end",
         message: {
           role: "assistant",
+          stopReason: "stop",
           content: [
             { type: "thinking", thinking: "Plan" },
             { type: "text", text: "Now I’ll verify the command." },
@@ -503,6 +513,16 @@ describe("Pi adapter", () => {
       });
       const firstCompletion = yield* takeThroughType(events, "item.completed");
       expect(firstCompletion.some((event) => event.type === "content.delta")).toBe(false);
+      expect(
+        streamed
+          .filter((event) => event.type === "item.completed")
+          .map((event) => (event.payload as { phase?: string }).phase),
+      ).toEqual([]);
+      expect(
+        firstCompletion
+          .filter((event) => event.type === "item.completed")
+          .map((event) => (event.payload as { phase?: string }).phase),
+      ).toEqual(["final_answer"]);
       const firstItemId = firstCompletion.find((event) => event.type === "item.completed")?.itemId;
 
       yield* fake.pushFrame({
@@ -515,7 +535,11 @@ describe("Pi adapter", () => {
       const legacyStart = yield* takeThroughType(events, "content.delta");
       expect(legacyStart.at(-1)).toEqual(
         expect.objectContaining({
-          payload: { streamKind: "assistant_text", delta: "Legacy cumulative" },
+          payload: {
+            streamKind: "assistant_text",
+            delta: "Legacy cumulative",
+            contentIndex: 0,
+          },
         }),
       );
       yield* fake.pushFrame({
@@ -528,7 +552,11 @@ describe("Pi adapter", () => {
       const legacyExtension = yield* takeThroughType(events, "content.delta");
       expect(legacyExtension.at(-1)).toEqual(
         expect.objectContaining({
-          payload: { streamKind: "assistant_text", delta: " snapshot" },
+          payload: {
+            streamKind: "assistant_text",
+            delta: " snapshot",
+            contentIndex: 0,
+          },
         }),
       );
       yield* fake.pushFrame({
@@ -553,6 +581,7 @@ describe("Pi adapter", () => {
         type: "message_end",
         message: {
           role: "assistant",
+          stopReason: "stop",
           content: [{ type: "text", text: "Legacy cumulative snapshot plus delta" }],
         },
       });
@@ -564,6 +593,222 @@ describe("Pi adapter", () => {
 
       yield* fake.pushFrame({ type: "agent_settled" });
       yield* takeThroughType(events, "turn.completed");
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect.each([true, false])(
+    "splits Claude text across explicit bridged work without replaying snapshots (indexed: %s)",
+    (indexed) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+        const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+        yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+          Effect.forkScoped,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* Queue.takeAll(events);
+        yield* adapter.sendTurn({ threadId: THREAD, input: "Run the checks" });
+        yield* takeThroughType(events, "turn.started");
+
+        yield* fake.pushFrame({
+          type: "message_update",
+          assistantMessageEvent: {
+            type: "text_delta",
+            ...(indexed ? { contentIndex: 0 } : {}),
+            delta: "I’ll check the repository first.",
+          },
+        });
+        yield* takeThroughType(events, "content.delta");
+        for (const [phase, suffix] of [
+          ["start", "start"],
+          ["end", "end"],
+        ] as const) {
+          yield* fake.pushFrame({
+            type: "extension_ui_request",
+            id: `claude-tool-${suffix}`,
+            method: "notify",
+            message: `claude-agent-sdk:tool-lifecycle:v1:${serializeJsonlLine({
+              contractVersion: 1,
+              provider: "claude-agent-sdk",
+              phase,
+              toolCallId: "bash-between-text",
+              toolName: "Bash",
+              ...(phase === "end" ? { result: "clean" } : {}),
+            }).trimEnd()}`,
+          });
+        }
+        yield* fake.pushFrame({
+          type: "message_update",
+          assistantMessageEvent: {
+            type: "text_delta",
+            ...(indexed ? { contentIndex: 1 } : {}),
+            delta: "All checks passed.",
+          },
+        });
+        const throughFinalText = yield* takeThroughType(events, "content.delta");
+        expect(
+          throughFinalText
+            .filter(
+              (event) =>
+                event.type === "item.completed" && event.payload.itemType === "assistant_message",
+            )
+            .map((event) => (event.payload as { phase?: string }).phase),
+        ).toEqual(["commentary"]);
+        expect(throughFinalText.at(-1)).toEqual(
+          expect.objectContaining({
+            type: "content.delta",
+            payload: expect.objectContaining({
+              delta: "All checks passed.",
+              ...(indexed ? { contentIndex: 1 } : {}),
+            }),
+          }),
+        );
+
+        yield* fake.pushFrame({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [
+              { type: "text", text: "I’ll check the repository first." },
+              { type: "text", text: "All checks passed." },
+            ],
+          },
+        });
+        const completion = yield* takeThroughType(events, "item.completed");
+        expect(completion.filter((event) => event.type === "content.delta")).toEqual([]);
+        expect(
+          completion
+            .filter(
+              (event) =>
+                event.type === "item.completed" && event.payload.itemType === "assistant_message",
+            )
+            .map((event) => (event.payload as { phase?: string }).phase),
+        ).toEqual(["final_answer"]);
+
+        yield* fake.pushFrame({ type: "agent_settled" });
+        yield* takeThroughType(events, "turn.completed");
+      }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("classifies terminal replies from native stop reasons and message origins", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* Queue.takeAll(events);
+      yield* adapter.sendTurn({ threadId: THREAD, input: "Complete the task" });
+      yield* takeThroughType(events, "turn.started");
+
+      const pushMessageEnd = (message: Record<string, unknown>) =>
+        fake.pushFrame({ type: "message_end", message });
+      const pushCustom = (customType: string) =>
+        pushMessageEnd({ role: "custom", customType, content: [] });
+      const pushAssistant = (text: string, stopReason = "stop") =>
+        pushMessageEnd({
+          role: "assistant",
+          stopReason,
+          content: [{ type: "text", text }],
+        });
+
+      // Adjacent snapshot-only text blocks are one genuine final answer.
+      yield* pushMessageEnd({
+        role: "custom",
+        customType: "profile-manager-summary",
+        content: [],
+      });
+      yield* pushMessageEnd({
+        role: "assistant",
+        stopReason: "stop",
+        content: [
+          { type: "text", text: "Summary paragraph." },
+          { type: "text", text: "Details paragraph." },
+        ],
+      });
+      // Snapshot-only delivery can still split on an explicit native tool.
+      yield* pushMessageEnd({
+        role: "assistant",
+        stopReason: "stop",
+        content: [
+          { type: "text", text: "I’ll inspect first." },
+          { type: "toolCall", id: "bash-snapshot", name: "bash" },
+          { type: "text", text: "Inspection complete." },
+        ],
+      });
+      yield* pushCustom("subagents-result");
+      yield* pushCustom("profile-manager-summary");
+      yield* pushAssistant("The background result arrived.");
+      yield* pushMessageEnd({ role: "user", content: [{ type: "text", text: "Continue" }] });
+      yield* pushCustom("some-other-extension-message");
+      yield* pushAssistant("Normal answer after the user message.");
+      yield* pushCustom("subagents-workflow-result");
+      yield* pushAssistant("Workflow result follow-up.");
+      yield* pushCustom("background-terminal-result");
+      yield* pushAssistant("Background terminal follow-up.");
+      yield* pushMessageEnd({ role: "user", content: [{ type: "text", text: "One more" }] });
+      yield* pushAssistant("I need to use a tool.", "toolUse");
+      // Do not hide a first result merely because an asynchronous result
+      // triggered it, or mistake a truncated answer for work commentary.
+      yield* pushCustom("subagents-result");
+      yield* pushAssistant("First result supplied after the background work.");
+      yield* pushMessageEnd({ role: "user", content: [{ type: "text", text: "Explain" }] });
+      yield* pushAssistant("Partial answer retained.", "length");
+      yield* fake.pushFrame({ type: "agent_settled" });
+
+      const throughSettlement = yield* takeThroughType(events, "turn.completed");
+      const assistantCompletions = throughSettlement.filter(
+        (event) =>
+          event.type === "item.completed" && event.payload.itemType === "assistant_message",
+      );
+      expect(
+        assistantCompletions.map((event) => (event.payload as { phase?: string }).phase),
+      ).toEqual([
+        "final_answer",
+        "commentary",
+        "final_answer",
+        "commentary",
+        "final_answer",
+        "commentary",
+        "commentary",
+        "commentary",
+        undefined,
+        undefined,
+      ]);
+      expect(throughSettlement.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+      expect(
+        throughSettlement
+          .filter((event) => event.type === "content.delta")
+          .map((event) => event.payload.delta),
+      ).toEqual([
+        "Summary paragraph.",
+        "\n\nDetails paragraph.",
+        "I’ll inspect first.",
+        "Inspection complete.",
+        "The background result arrived.",
+        "Normal answer after the user message.",
+        "Workflow result follow-up.",
+        "Background terminal follow-up.",
+        "I need to use a tool.",
+        "First result supplied after the background work.",
+        "Partial answer retained.",
+      ]);
     }).pipe(Effect.provide(TestEnv)),
   );
 
@@ -612,6 +857,15 @@ describe("Pi adapter", () => {
         expect.objectContaining({
           type: "content.delta",
           payload: { streamKind: "assistant_text", delta: "No subagents are running." },
+        }),
+      );
+      expect(commandEvents).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          payload: expect.objectContaining({
+            itemType: "assistant_message",
+            phase: "final_answer",
+          }),
         }),
       );
       expect(commandEvents.at(-1)).toEqual(

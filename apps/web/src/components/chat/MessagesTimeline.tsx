@@ -307,7 +307,7 @@ interface MessagesTimelineProps {
   ) => boolean;
   agentPanelModel?: AgentPanelModel;
   workflowMembersAuthoritative?: boolean;
-  preserveAssistantMessages?: boolean;
+  preserveUnclassifiedAssistantMessages?: boolean;
   onOpenAgents?: () => void;
   isWorking: boolean;
   isPreparingWorktree?: boolean;
@@ -371,7 +371,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   activeTurnStartedAt,
   agentPanelModel = EMPTY_AGENT_PANEL_MODEL,
   workflowMembersAuthoritative = false,
-  preserveAssistantMessages = false,
+  preserveUnclassifiedAssistantMessages = false,
   onOpenAgents = NOOP_OPEN_AGENTS,
   listRef,
   timelineEntries,
@@ -548,7 +548,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         latestTurn,
         runningTurnId,
         expandedTurnIds,
-        preserveAssistantMessages,
+        preserveUnclassifiedAssistantMessages,
         expandedWorkGroupIds,
         isWorking,
         activeTurnStartedAt,
@@ -569,7 +569,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     latestTurn,
     runningTurnId,
     expandedTurnIds,
-    preserveAssistantMessages,
+    preserveUnclassifiedAssistantMessages,
     expandedWorkGroupIds,
     isWorking,
     activeTurnStartedAt,

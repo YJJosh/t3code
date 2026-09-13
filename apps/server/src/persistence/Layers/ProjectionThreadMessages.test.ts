@@ -2,6 +2,7 @@ import { MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import { ProjectionThreadMessageRepository } from "../Services/ProjectionThreadMessages.ts";
 import { ProjectionThreadMessageRepositoryLive } from "./ProjectionThreadMessages.ts";
@@ -12,6 +13,43 @@ const layer = it.layer(
 );
 
 layer("ProjectionThreadMessageRepository", (it) => {
+  it.effect("preserves explicit phases through streaming append and phase-less upserts", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("phase-thread");
+      for (const phase of [undefined, "commentary", "final_answer"] as const) {
+        const row = {
+          messageId: MessageId.make(`phase-${phase ?? "legacy"}`),
+          threadId,
+          turnId: TurnId.make("phase-turn"),
+          role: "assistant" as const,
+          text: "First",
+          isStreaming: false,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        };
+        yield* repository.upsert({ ...row, ...(phase !== undefined ? { phase } : {}) });
+        yield* repository.appendStreaming({ ...row, text: " second" });
+        const streamed = Option.getOrThrow(
+          yield* repository.getByMessageId({ messageId: row.messageId }),
+        );
+        assert.strictEqual(streamed.phase, phase);
+        assert.strictEqual(streamed.text, "First second");
+        yield* repository.upsert({ ...row, text: streamed.text });
+        const completed = Option.getOrThrow(
+          yield* repository.getByMessageId({ messageId: row.messageId }),
+        );
+        assert.strictEqual(completed.phase, phase);
+        assert.isFalse(completed.isStreaming);
+      }
+      const rows = yield* repository.listByThreadId({ threadId });
+      assert.deepEqual(
+        rows.map(({ phase }) => phase),
+        ["commentary", "final_answer", undefined],
+      );
+    }),
+  );
+
   it.effect("finds the latest live user-message time within one thread", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadMessageRepository;

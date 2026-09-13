@@ -4,6 +4,12 @@ export interface PiAssistantContentDelta {
   readonly streamKind: PiAssistantStreamKind;
   readonly delta: string;
   readonly contentIndex?: number;
+  /** True for the first emitted content from one native Pi content block. */
+  readonly startsBlock?: boolean;
+  /** Separator added only to the flattened per-stream accumulator. */
+  readonly blockBoundary?: string;
+  /** An explicit native tool/work block occurred before this content block. */
+  readonly workBoundaryBefore?: boolean;
 }
 
 interface PiAssistantBlock {
@@ -29,6 +35,7 @@ export interface PiAssistantSnapshotBlock {
   readonly streamKind: PiAssistantStreamKind;
   readonly contentIndex: number;
   readonly content: string;
+  readonly workBoundaryBefore?: boolean;
 }
 
 export interface PiAssistantBlockEvent {
@@ -88,8 +95,9 @@ function appendBlockContent(
     return { state: { ...state, blocks }, deltas: [] };
   }
 
+  const startsBlock = !block.emitted;
   const boundary =
-    block.emitted || stream.content.length === 0
+    !startsBlock || stream.content.length === 0
       ? ""
       : stream.content.endsWith("\n\n")
         ? ""
@@ -115,6 +123,8 @@ function appendBlockContent(
         streamKind: block.streamKind,
         delta,
         ...(block.contentIndex !== undefined ? { contentIndex: block.contentIndex } : {}),
+        ...(startsBlock ? { startsBlock: true } : {}),
+        ...(boundary ? { blockBoundary: boundary } : {}),
       },
     ],
   };
@@ -189,8 +199,10 @@ export function applyPiAssistantBlockEvent(
 }
 
 /**
- * Reconcile a legacy cumulative or final authoritative snapshot. The runtime
- * contract is append-only, so only an exact prefix extension is representable.
+ * Reconcile a legacy cumulative or final authoritative snapshot. Indexed
+ * blocks are reconciled in native order so snapshot-only delivery retains the
+ * same boundaries as live streaming. Non-prefix corrections are not
+ * representable by the append-only runtime contract and are ignored.
  */
 export function applyPiAssistantSnapshot(
   state: PiAssistantContentState,
@@ -201,6 +213,49 @@ export function applyPiAssistantSnapshot(
   readonly state: PiAssistantContentState;
   readonly deltas: ReadonlyArray<PiAssistantContentDelta>;
 } {
+  // Legacy deltas have no indices. Their final snapshot must extend the
+  // accumulated streams, not replay the same text as new indexed blocks.
+  const hasUnindexedBlocks = Array.from(state.blocks.values()).some(
+    (block) => block.contentIndex === undefined,
+  );
+  if (snapshot.blocks && !hasUnindexedBlocks) {
+    let currentState = state;
+    const deltas: PiAssistantContentDelta[] = [];
+    for (const snapshotBlock of snapshot.blocks) {
+      const key = blockKey(snapshotBlock.streamKind, snapshotBlock.contentIndex, 0);
+      const existing = currentState.blocks.get(key);
+      if (existing?.streamKind !== undefined && existing.streamKind !== snapshotBlock.streamKind) {
+        continue;
+      }
+      const block =
+        existing ??
+        ({
+          streamKind: snapshotBlock.streamKind,
+          contentIndex: snapshotBlock.contentIndex,
+          content: "",
+          emitted: false,
+          ended: false,
+        } satisfies PiAssistantBlock);
+      if (!snapshotBlock.content.startsWith(block.content)) continue;
+      const result = appendBlockContent(
+        currentState,
+        key,
+        block,
+        snapshotBlock.content.slice(block.content.length),
+        block.ended,
+      );
+      currentState = result.state;
+      deltas.push(
+        ...result.deltas.map((delta) =>
+          snapshotBlock.workBoundaryBefore && delta.startsBlock
+            ? { ...delta, workBoundaryBefore: true }
+            : delta,
+        ),
+      );
+    }
+    return { state: currentState, deltas };
+  }
+
   const reconcileStream = (
     currentState: PiAssistantContentState,
     streamKind: PiAssistantStreamKind,
@@ -227,15 +282,15 @@ export function applyPiAssistantSnapshot(
 
   const reasoning = reconcileStream(state, "reasoning_text");
   const text = reconcileStream(reasoning.state, "assistant_text");
-  const acceptedKinds = new Set<PiAssistantStreamKind>();
-  for (const streamKind of ["reasoning_text", "assistant_text"] as const) {
-    const authoritative = snapshot[streamKind];
-    const current = state.streams[streamKind].content;
-    if (authoritative.startsWith(current)) acceptedKinds.add(streamKind);
-  }
-
   let hydratedState = text.state;
-  if (snapshot.blocks && acceptedKinds.size > 0) {
+  if (snapshot.blocks) {
+    // Once a legacy stream agrees with the snapshot, adopt its block indices
+    // so later indexed deltas/endings extend existing text instead of replaying it.
+    const acceptedKinds = new Set<PiAssistantStreamKind>();
+    for (const streamKind of ["assistant_text", "reasoning_text"] as const) {
+      if (snapshot[streamKind].startsWith(state.streams[streamKind].content))
+        acceptedKinds.add(streamKind);
+    }
     const blocks = new Map(hydratedState.blocks);
     const lastBlockKeys: Partial<Record<PiAssistantStreamKind, string>> = {};
     for (const block of snapshot.blocks) {
@@ -247,6 +302,11 @@ export function applyPiAssistantSnapshot(
         ended: false,
       });
       if (block.content.length > 0) lastBlockKeys[block.streamKind] = key;
+    }
+    for (const [key, block] of blocks) {
+      if (block.contentIndex === undefined && lastBlockKeys[block.streamKind] !== undefined) {
+        blocks.delete(key);
+      }
     }
     hydratedState = {
       ...hydratedState,
@@ -265,7 +325,6 @@ export function applyPiAssistantSnapshot(
       },
     };
   }
-
   return {
     state: hydratedState,
     deltas: [reasoning.delta, text.delta].filter(

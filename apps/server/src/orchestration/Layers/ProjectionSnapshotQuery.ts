@@ -5,6 +5,7 @@ import {
   CheckpointRef,
   IsoDateTime,
   MessageId,
+  OrchestrationMessagePhase,
   NonNegativeInt,
   OrchestrationCheckpointFile,
   OrchestrationProposedPlanId,
@@ -105,6 +106,7 @@ const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
+    phase: Schema.NullOr(OrchestrationMessagePhase),
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
   }),
 );
@@ -622,6 +624,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          phase,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1147,6 +1150,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         role,
         text,
         attachments_json AS "attachments",
+        phase,
         is_streaming AS "isStreaming",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
@@ -1179,6 +1183,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          phase,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1536,6 +1541,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          phase,
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1933,6 +1939,7 @@ pending_approval_requests AS (
                 threadMessages.push({
                   id: row.messageId,
                   role: row.role,
+                  ...(row.phase !== null ? { phase: row.phase } : {}),
                   text: row.text,
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
                   turnId: row.turnId,
@@ -2962,6 +2969,7 @@ pending_approval_requests AS (
       message: {
         id: row.messageId,
         role: row.role,
+        ...(row.phase !== null ? { phase: row.phase } : {}),
         text: row.text,
         turnId: row.turnId,
         streaming: row.isStreaming === 1,
@@ -3206,6 +3214,7 @@ pending_approval_requests AS (
           const message = {
             id: row.messageId,
             role: row.role,
+            ...(row.phase !== null ? { phase: row.phase } : {}),
             text: row.text,
             turnId: row.turnId,
             streaming: row.isStreaming === 1,

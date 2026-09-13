@@ -44,6 +44,7 @@ const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartC
 const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 const decodeOrchestrationMessage = Schema.decodeUnknownEffect(OrchestrationMessage);
 const decodeThreadMessageSentPayload = Schema.decodeUnknownEffect(ThreadMessageSentPayload);
+const encodeThreadMessageSentPayload = Schema.encodeEffect(ThreadMessageSentPayload);
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
 );
@@ -1252,3 +1253,55 @@ it("isProviderSendTurnSupportedImageMimeType accepts raster formats and rejects 
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("IMAGE/JPEG"), true);
   assert.strictEqual(isProviderSendTurnSupportedImageMimeType("image/svg+xml"), false);
 });
+
+it.effect("round-trips optional assistant phases and accepts legacy message contracts", () =>
+  Effect.gen(function* () {
+    const now = "2026-01-01T00:00:00.000Z";
+    for (const phase of [undefined, "commentary", "final_answer"] as const) {
+      const optionalPhase = phase === undefined ? {} : { phase };
+      const message = yield* decodeOrchestrationMessage({
+        id: "message-phase",
+        role: "assistant",
+        text: "Answer",
+        turnId: null,
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+        ...optionalPhase,
+      });
+      assert.strictEqual(message.phase, phase);
+      const command = yield* decodeOrchestrationCommand({
+        type: "thread.message.assistant.complete",
+        commandId: "command-phase",
+        threadId: "thread-phase",
+        messageId: message.id,
+        createdAt: now,
+        ...optionalPhase,
+      });
+      assert.strictEqual(command.type, "thread.message.assistant.complete");
+      if (command.type === "thread.message.assistant.complete")
+        assert.strictEqual(command.phase, phase);
+      const payload = yield* decodeThreadMessageSentPayload({
+        ...message,
+        threadId: "thread-phase",
+        messageId: message.id,
+      });
+      assert.strictEqual(payload.phase, phase);
+      const encoded = yield* encodeThreadMessageSentPayload(payload);
+      assert.strictEqual(encoded.phase, phase);
+    }
+    const invalid = yield* Effect.exit(
+      decodeOrchestrationMessage({
+        id: "message-phase",
+        role: "assistant",
+        text: "Answer",
+        turnId: null,
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+        phase: "unknown",
+      }),
+    );
+    assert.isTrue(Exit.isFailure(invalid));
+  }),
+);

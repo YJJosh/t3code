@@ -7962,7 +7962,9 @@ export default function ChatView(props: ChatViewProps) {
                 onCiteAssistantText={citeAssistantText}
                 agentPanelModel={agentPanelModel}
                 workflowMembersAuthoritative={selectedProvider === ProviderDriverKind.make("pi")}
-                preserveAssistantMessages={selectedProvider === ProviderDriverKind.make("pi")}
+                preserveUnclassifiedAssistantMessages={
+                  selectedProvider === ProviderDriverKind.make("pi")
+                }
                 onOpenAgents={addAgentsSurface}
                 key={activeThread.id}
                 isWorking={isWorking}

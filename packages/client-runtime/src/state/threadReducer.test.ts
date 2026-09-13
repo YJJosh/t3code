@@ -10,7 +10,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import type { OrchestrationThread } from "@t3tools/contracts";
+import type { OrchestrationThread, OrchestrationEvent } from "@t3tools/contracts";
 
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 
@@ -46,6 +46,64 @@ const baseThread: OrchestrationThread = {
 };
 
 describe("applyThreadDetailEvent", () => {
+  it("reduces sequential phased messages and preserves phases on legacy updates", () => {
+    let thread = baseThread;
+    let sequence = 0;
+    const turnId = TurnId.make("phase-turn");
+    const send = (
+      payload: Extract<OrchestrationEvent, { type: "thread.message-sent" }>["payload"],
+    ) => {
+      const result = applyThreadDetailEvent(thread, {
+        ...baseEventFields,
+        sequence: ++sequence,
+        aggregateKind: "thread",
+        aggregateId: thread.id,
+        occurredAt: baseThread.createdAt,
+        type: "thread.message-sent",
+        payload,
+      });
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") thread = result.thread;
+    };
+    const segments = [
+      { phase: "commentary", text: "Inspecting." },
+      { phase: "final_answer", text: "Primary answer." },
+      { phase: "commentary", text: "Later progress." },
+    ] as const;
+    for (const [index, segment] of segments.entries()) {
+      const payload = {
+        threadId: thread.id,
+        messageId: MessageId.make(`phase-message-${index}`),
+        role: "assistant" as const,
+        turnId,
+        text: segment.text,
+        streaming: true,
+        createdAt: thread.createdAt,
+        updatedAt: thread.createdAt,
+      };
+      send(payload);
+      send({ ...payload, text: "", streaming: false, phase: segment.phase });
+      send({ ...payload, text: " More." });
+      send({ ...payload, text: "", streaming: false });
+    }
+    expect(
+      thread.messages.map(({ phase, text, streaming }) => ({ phase, text, streaming })),
+    ).toEqual(
+      segments.map(({ phase, text }) => ({ phase, text: `${text} More.`, streaming: false })),
+    );
+    send({
+      threadId: thread.id,
+      messageId: MessageId.make("legacy-message"),
+      role: "assistant",
+      turnId,
+      text: "Old provider",
+      streaming: false,
+      createdAt: thread.createdAt,
+      updatedAt: thread.createdAt,
+    });
+    expect(thread.messages[3]).not.toHaveProperty("phase");
+  });
+
   describe("project events", () => {
     it("returns unchanged for project.created", () => {
       const result = applyThreadDetailEvent(baseThread, {

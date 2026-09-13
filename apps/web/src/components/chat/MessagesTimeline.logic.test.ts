@@ -405,7 +405,9 @@ describe("streaming row projection", () => {
       deletedAt: null,
       messages: [
         ...history.flatMap(({ user, assistant }) => [user, assistant]),
-        ...initial.messages,
+        ...initial.messages.map((message) =>
+          message.id === liveMessage.id ? { ...message, phase: "commentary" as const } : message,
+        ),
       ],
       proposedPlans: [],
       activities: [],
@@ -448,7 +450,12 @@ describe("streaming row projection", () => {
       );
       return projection;
     };
-    const send = (text: string, sequence: number, streaming = true) => {
+    const send = (
+      text: string,
+      sequence: number,
+      streaming = true,
+      classification?: { phase: ChatMessage["phase"]; updatedAt: string },
+    ) => {
       const result = applyThreadDetailEvent(thread, {
         eventId: EventId.make(`delta-${sequence}`),
         sequence,
@@ -469,6 +476,7 @@ describe("streaming row projection", () => {
           streaming,
           createdAt: liveMessage.createdAt,
           updatedAt: initial.time(8 + sequence),
+          ...classification,
         },
       });
       if (result.kind !== "updated") throw new Error("Message event did not update the thread");
@@ -483,6 +491,9 @@ describe("streaming row projection", () => {
     try {
       const first = project();
       const saved = structuredClone(first.rows);
+      expect(
+        first.rows.find((row) => row.kind === "message" && row.message.id === liveMessage.id),
+      ).toMatchObject({ message: { phase: "commentary" }, showAssistantMeta: false });
       expect(checkpointLookupReads).toBeGreaterThan(0);
       checkpointLookupReads = 0;
       for (let index = 0; index < 10; index += 1) {
@@ -510,7 +521,20 @@ describe("streaming row projection", () => {
       expect(completed.rows).toEqual(deriveMessagesTimelineRows(completed.input));
       expect(
         completed.rows.find((row) => row.kind === "message" && row.message.id === liveMessage.id),
-      ).toMatchObject({ message: { text: "Complete" }, assistantCopyStreaming: false });
+      ).toBeUndefined();
+      // Same text, timestamp and streaming flag: only the persisted phase changes.
+      const classified = send("Complete", 12, false, {
+        phase: "final_answer",
+        updatedAt: initial.time(19),
+      });
+      expect(
+        classified.rows.find((row) => row.kind === "message" && row.message.id === liveMessage.id),
+      ).toMatchObject({
+        message: { phase: "final_answer", text: "Complete" },
+        showAssistantMeta: true,
+        assistantCopyStreaming: false,
+      });
+      expect(classified.rows).toEqual(deriveMessagesTimelineRows(classified.input));
       expect(first.rows).toEqual(saved);
     } finally {
       unmount();
@@ -1363,8 +1387,8 @@ describe("deriveMessagesTimelineRows", () => {
   });
 
   it.each([false, true])(
-    "preserves Pi answers and late notifications only when opted in: %s",
-    (preserveAssistantMessages) => {
+    "preserves unclassified Pi history only when opted in: %s",
+    (preserveUnclassifiedAssistantMessages) => {
       const turnId = TurnId.make("pi-turn");
       const createdAt = "2026-01-01T00:00:00Z";
       const assistant = (id: string, text: string) => ({
@@ -1394,7 +1418,7 @@ describe("deriveMessagesTimelineRows", () => {
       ];
       const input = {
         timelineEntries,
-        preserveAssistantMessages,
+        preserveUnclassifiedAssistantMessages,
         isWorking: false,
         activeTurnStartedAt: null,
         turnDiffSummaries: [],
@@ -1402,7 +1426,9 @@ describe("deriveMessagesTimelineRows", () => {
       };
       const collapsed = deriveMessagesTimelineRows(input);
       expect(collapsed.filter((row) => row.kind === "message").map((row) => row.id)).toEqual(
-        preserveAssistantMessages ? ["narration", "primary", "notification"] : ["notification"],
+        preserveUnclassifiedAssistantMessages
+          ? ["narration", "primary", "notification"]
+          : ["notification"],
       );
       expect(collapsed.find((row) => row.kind === "turn-fold")).toMatchObject({ expanded: false });
       expect(collapsed.some((row) => row.kind === "work")).toBe(false);
@@ -3188,5 +3214,174 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(reordered).not.toBe(initial);
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
+  });
+});
+
+describe("explicit assistant phases", () => {
+  const turnId = TurnId.make("classified-turn");
+  const time = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
+  const message = (id: string, phase: ChatMessage["phase"], second: number): ChatMessage => ({
+    id: MessageId.make(id),
+    role: "assistant",
+    text: id,
+    phase,
+    turnId,
+    createdAt: time(second),
+    updatedAt: time(second),
+    streaming: false,
+  });
+  const commentary = message("commentary", "commentary", 1);
+  const answer = message("answer", "final_answer", 2);
+  const late = message("late-commentary", "commentary", 3);
+  const inputFor = (messages: ChatMessage[]) => ({
+    timelineEntries: deriveTimelineEntries(messages, [], []),
+    latestTurn: {
+      turnId,
+      state: "completed" as const,
+      startedAt: time(0),
+      completedAt: time(4),
+    },
+    isWorking: false,
+    activeTurnStartedAt: null,
+    turnDiffSummaries: [],
+    supportsConversationRollback: false,
+  });
+  const messageIds = (rows: MessagesTimelineRow[]) =>
+    rows.flatMap((row) => (row.kind === "message" ? [row.message.id] : []));
+
+  it.each([false, true])(
+    "folds commentary at every position, not finals (Pi compat: %s)",
+    (compat) => {
+      const input = {
+        ...inputFor([commentary, answer, late]),
+        preserveUnclassifiedAssistantMessages: compat,
+      };
+      const collapsed = deriveMessagesTimelineRows(input);
+      expect(messageIds(collapsed)).toEqual([answer.id]);
+      expect(collapsed.find((row) => row.kind === "message")).toMatchObject({
+        showAssistantMeta: true,
+        showAssistantCopyButton: true,
+      });
+      const expanded = deriveMessagesTimelineRows({ ...input, expandedTurnIds: new Set([turnId]) });
+      expect(messageIds(expanded)).toEqual([commentary.id, answer.id, late.id]);
+      expect(
+        expanded
+          .filter((row) => row.kind === "message" && row.showAssistantMeta)
+          .map((row) => row.id),
+      ).toEqual(collapsed.filter((row) => row.kind === "message").map((row) => row.id));
+      expect(expanded.find((row) => row.kind === "turn-fold")?.id).toBe(
+        collapsed.find((row) => row.kind === "turn-fold")?.id,
+      );
+    },
+  );
+
+  it("keeps multiple final answers, and folds even a commentary-only turn", () => {
+    const secondAnswer = message("second-answer", "final_answer", 4);
+    expect(
+      messageIds(deriveMessagesTimelineRows(inputFor([commentary, answer, late, secondAnswer]))),
+    ).toEqual([answer.id, secondAnswer.id]);
+    const rows = deriveMessagesTimelineRows(inputFor([commentary, late]));
+    expect(rows.map((row) => row.kind)).toEqual(["turn-fold"]);
+  });
+
+  it.each(["completed", "failed"] as const)(
+    "late commentary does not change trailing tool visibility: %s",
+    (status) => {
+      const work: WorkLogEntry = {
+        id: "trailing-tool",
+        turnId,
+        createdAt: "2026-01-01T00:00:02.500Z",
+        label: "Ran command",
+        tone: "tool",
+        toolLifecycleStatus: status,
+        sourceActivityKind: "tool.completed",
+      };
+      const input = {
+        ...inputFor([answer, late]),
+        timelineEntries: deriveTimelineEntries([answer, late], [], [work]),
+      };
+      const rows = deriveMessagesTimelineRows(input);
+      expect(messageIds(rows)).toEqual([answer.id]);
+      expect(rows.some((row) => row.kind === "work" || row.kind === "work-toggle")).toBe(
+        status === "failed",
+      );
+      expect(rows.some((row) => row.kind === "turn-fold")).toBe(true);
+    },
+  );
+
+  it("keeps checkpoint/diff and rollback controls anchored to the visible final", () => {
+    const summary: TurnDiffSummary = {
+      turnId,
+      assistantMessageId: late.id,
+      checkpointRef: CheckpointRef.make("refs/t3/checkpoints/phase"),
+      checkpointTurnCount: 2,
+      status: "ready",
+      completedAt: time(4),
+      files: [{ path: "file.ts", kind: "modified", additions: 1, deletions: 0 }],
+    };
+    const user: ChatMessage = { ...message("user", undefined, 0), role: "user", turnId: null };
+    const input = {
+      ...inputFor([user, commentary, answer, late]),
+      turnDiffSummaries: [summary],
+      supportsConversationRollback: true,
+    };
+    for (const expandedTurnIds of [new Set<TurnId>(), new Set([turnId])]) {
+      const rows = deriveMessagesTimelineRows({ ...input, expandedTurnIds });
+      expect(
+        rows.find((row) => row.kind === "message" && row.message.id === answer.id),
+      ).toMatchObject({ showAssistantMeta: true, assistantTurnDiffSummary: summary });
+      expect(
+        rows.find((row) => row.kind === "message" && row.message.id === user.id),
+      ).toMatchObject({ revertTurnCount: 1 });
+      expect(
+        rows.find((row) => row.kind === "message" && row.message.id === late.id),
+      ).not.toMatchObject({ showAssistantMeta: true });
+    }
+  });
+
+  it("keeps active/streaming messages unfolded and their row IDs stable on settlement", () => {
+    const settled = inputFor([commentary, answer, late]);
+    const active = deriveMessagesTimelineRows({
+      ...settled,
+      latestTurn: { ...settled.latestTurn, state: "running", completedAt: null },
+      isWorking: true,
+      activeTurnStartedAt: time(0),
+    });
+    const streaming = deriveMessagesTimelineRows(
+      inputFor([commentary, answer, { ...late, streaming: true }]),
+    );
+    for (const rows of [active, streaming]) {
+      expect(messageIds(rows)).toEqual([commentary.id, answer.id, late.id]);
+      expect(rows.some((row) => row.kind === "turn-fold")).toBe(false);
+    }
+    const collapsed = deriveMessagesTimelineRows(settled);
+    expect(collapsed.find((row) => row.kind === "message")?.id).toBe(
+      active.find((row) => row.kind === "message" && row.message.id === answer.id)?.id,
+    );
+  });
+
+  it("reprojects phase-only updates rather than treating them as streaming text changes", () => {
+    const input = inputFor([
+      commentary,
+      { ...answer, phase: undefined },
+      { ...late, phase: undefined },
+    ]);
+    const previous = deriveMessagesTimelineRowsWithState(input);
+    expect(messageIds(previous.rows)).toEqual([late.id]);
+    const next = deriveMessagesTimelineRowsWithState(
+      inputFor([commentary, answer, late]),
+      previous,
+    );
+    expect(messageIds(next.rows)).toEqual([answer.id]);
+    const activeInput = inputFor([{ ...answer, streaming: true }]);
+    const active = deriveMessagesTimelineRowsWithState(activeInput);
+    const reclassified = deriveMessagesTimelineRowsWithState(
+      inputFor([{ ...answer, phase: "commentary", streaming: true }]),
+      active,
+    );
+    expect(reclassified.rows.find((row) => row.kind === "message")).toMatchObject({
+      message: { phase: "commentary" },
+      showAssistantMeta: false,
+    });
   });
 });

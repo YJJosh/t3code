@@ -295,6 +295,7 @@ export interface PiAssistantMessageContent {
     readonly streamKind: "assistant_text" | "reasoning_text";
     readonly contentIndex: number;
     readonly content: string;
+    readonly workBoundaryBefore?: boolean;
   }>;
 }
 
@@ -308,14 +309,25 @@ export function extractPiAssistantContent(message: unknown): PiAssistantMessageC
     "content" in message &&
     Array.isArray((message as { content: unknown }).content)
   ) {
+    let workBoundaryBefore = false;
     for (const [contentIndex, part] of (
       message as { content: ReadonlyArray<unknown> }
     ).content.entries()) {
       if (!part || typeof part !== "object") continue;
       const record = part as Record<string, unknown>;
+      if (record.type === "toolCall") {
+        workBoundaryBefore = true;
+        continue;
+      }
       if (record.type === "text" && typeof record.text === "string" && record.text.length > 0) {
         textParts.push(record.text);
-        blocks.push({ streamKind: "assistant_text", contentIndex, content: record.text });
+        blocks.push({
+          streamKind: "assistant_text",
+          contentIndex,
+          content: record.text,
+          ...(workBoundaryBefore ? { workBoundaryBefore: true } : {}),
+        });
+        workBoundaryBefore = false;
       }
       if (
         record.type === "thinking" &&
@@ -327,7 +339,9 @@ export function extractPiAssistantContent(message: unknown): PiAssistantMessageC
           streamKind: "reasoning_text",
           contentIndex,
           content: record.thinking,
+          ...(workBoundaryBefore ? { workBoundaryBefore: true } : {}),
         });
+        workBoundaryBefore = false;
       }
     }
   }

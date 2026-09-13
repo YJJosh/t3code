@@ -139,6 +139,7 @@ import {
 } from "@t3tools/mobile-markdown-text/links";
 import {
   deriveThreadFeedPresentation,
+  deriveThreadFeedTerminalAssistantMessageIds,
   isContextCompactionActivityGroup,
   type ThreadFeedEntry,
   type ThreadFeedLatestTurn,
@@ -241,8 +242,8 @@ export interface ThreadFeedProps {
   readonly agentLabel: string;
   readonly latestTurn: ThreadFeedLatestTurn | null;
   readonly activeWorkStartedAt: string | null;
-  /** Provider policy from the caller; see providerKeepsAssistantMessagesVisible. */
-  readonly keepAssistantMessagesVisible?: boolean;
+  /** Provider policy from the caller; see providerPreservesUnclassifiedAssistantMessages. */
+  readonly preserveUnclassifiedAssistantMessages?: boolean;
   readonly listRef: RefObject<LegendListRef | null>;
   readonly freeze: SharedValue<boolean>;
   readonly anchorMessageId: MessageId | null;
@@ -2439,7 +2440,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           expandedTurnIds,
           expandedWorkGroupIds,
           props.activeWorkStartedAt,
-          { keepAssistantMessagesVisible: props.keepAssistantMessagesVisible === true },
+          {
+            preserveUnclassifiedAssistantMessages:
+              props.preserveUnclassifiedAssistantMessages === true,
+          },
         ),
         props.feed,
         props.queuedMessages,
@@ -2450,7 +2454,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       expandedWorkGroupIds,
       props.activeWorkStartedAt,
       props.feed,
-      props.keepAssistantMessagesVisible,
+      props.preserveUnclassifiedAssistantMessages,
       props.latestTurn,
     ],
   );
@@ -2476,15 +2480,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       ),
     [presentedFeed, props.anchorMessageId, anchorTopInset],
   );
-  const terminalAssistantMessageIds = useMemo(() => {
-    const terminalIdsByTurn = new Map<TurnId, string>();
-    for (const entry of props.feed) {
-      if (entry.type === "message" && entry.message.role === "assistant" && entry.message.turnId) {
-        terminalIdsByTurn.set(entry.message.turnId, entry.message.id);
-      }
-    }
-    return new Set(terminalIdsByTurn.values());
-  }, [props.feed]);
+  const terminalAssistantMessageIds = useMemo(
+    () => deriveThreadFeedTerminalAssistantMessageIds(props.feed),
+    [props.feed],
+  );
   useEffect(() => {
     const previous = previousLatestTurnRef.current;
     previousLatestTurnRef.current = props.latestTurn;

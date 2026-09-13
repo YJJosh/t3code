@@ -9,6 +9,7 @@ import {
   autoRespondToExtensionUi,
   buildPiRpcArgs,
   buildPiRpcEnv,
+  extractPiAssistantContent,
   extractPiAssistantText,
   parsePiBackgroundTerminalNotification,
   parsePiContextWindow,
@@ -207,6 +208,36 @@ describe("Pi RPC protocol", () => {
         title: "Secret",
       }),
     ).toEqual({ type: "extension_ui_response", id: "input-1", cancelled: true });
+  });
+
+  it("marks only explicit tool calls as work boundaries between snapshot blocks", () => {
+    expect(
+      extractPiAssistantContent({
+        content: [
+          { type: "text", text: "First final paragraph." },
+          { type: "text", text: "Second final paragraph." },
+          { type: "toolCall", id: "bash-1", name: "bash" },
+          { type: "text", text: "Answer after work." },
+        ],
+      }).blocks,
+    ).toEqual([
+      {
+        streamKind: "assistant_text",
+        contentIndex: 0,
+        content: "First final paragraph.",
+      },
+      {
+        streamKind: "assistant_text",
+        contentIndex: 1,
+        content: "Second final paragraph.",
+      },
+      {
+        streamKind: "assistant_text",
+        contentIndex: 3,
+        content: "Answer after work.",
+        workBoundaryBefore: true,
+      },
+    ]);
   });
 
   it("extracts assistant text and thinking with explicit content-block boundaries", () => {

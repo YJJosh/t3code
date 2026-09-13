@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import {
   classifyTaskAgentKind,
+  ItemLifecyclePayload,
   ProviderRuntimeEvent,
   type ProviderRuntimeEventType,
 } from "./providerRuntime.ts";
@@ -254,4 +255,13 @@ describe("classifyTaskAgentKind", () => {
     // Nested agent: outlives its parent, stays in the roster.
     expect(classifyTaskAgentKind({ taskType: "local_agent", agentId: "owner" })).toBe("agent");
   });
+});
+
+it("preserves optional item lifecycle phases without classifying legacy items", () => {
+  const decode = Schema.decodeUnknownSync(ItemLifecyclePayload);
+  for (const phase of ["commentary", "final_answer"] as const) {
+    expect(decode({ itemType: "assistant_message", phase }).phase).toBe(phase);
+  }
+  expect(decode({ itemType: "assistant_message" })).not.toHaveProperty("phase");
+  expect(() => decode({ itemType: "assistant_message", phase: "unknown" })).toThrow();
 });

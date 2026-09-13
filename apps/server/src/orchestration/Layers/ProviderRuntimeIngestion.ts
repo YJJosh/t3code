@@ -4,6 +4,7 @@ import {
   CommandId,
   MessageId,
   type OrchestrationEvent,
+  type OrchestrationMessagePhase,
   OrchestrationProposedPlanId,
   CheckpointRef,
   classifyTaskAgentKind,
@@ -1347,6 +1348,7 @@ const make = Effect.gen(function* () {
     commandTag: string;
     finalDeltaCommandTag: string;
     fallbackText?: string;
+    phase?: OrchestrationMessagePhase;
     hasProjectedMessage?: boolean;
   }) =>
     Effect.gen(function* () {
@@ -1387,6 +1389,7 @@ const make = Effect.gen(function* () {
       if (input.hasProjectedMessage || hasRenderableText) {
         yield* orchestrationEngine.dispatch({
           type: "thread.message.assistant.complete",
+          ...(input.phase !== undefined ? { phase: input.phase } : {}),
           commandId: yield* providerCommandId(input.event, input.commandTag),
           threadId: input.threadId,
           messageId: input.messageId,
@@ -1933,6 +1936,7 @@ const make = Effect.gen(function* () {
                 `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
               ),
               fallbackText: event.payload.detail,
+              phase: event.payload.phase,
             }
           : undefined;
       const proposedPlanCompletion =
@@ -1984,6 +1988,9 @@ const make = Effect.gen(function* () {
             ...(turnId ? { turnId } : {}),
             createdAt: now,
             commandTag: "assistant-complete",
+            ...(assistantCompletion.phase !== undefined
+              ? { phase: assistantCompletion.phase }
+              : {}),
             finalDeltaCommandTag: "assistant-delta-finalize",
             hasProjectedMessage: existingAssistantMessage !== undefined,
             ...(assistantCompletion.fallbackText !== undefined && shouldApplyFallbackCompletionText

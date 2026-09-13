@@ -16,7 +16,9 @@ Pi sessions always run with full local access because T3 owns the surrounding ru
 
 ## Conversation display
 
-Pi assistant responses stay visible in the conversation, including when a later subagent or workflow notification produces another reply. Completed tool activity still folds into the work log rather than hiding the earlier answer. Separate Pi text blocks retain paragraph breaks so headings, lists, and code blocks do not run into preceding text.
+Completed work folds intermediate commentary, tool activity, and routine background-notification replies under **Worked for…**. The actual answer stays visible, even if a later subagent or workflow notification produces another reply. Expand the work log to review the progress messages. Pi text blocks render separately so headings, lists, and code blocks do not run into preceding text.
+
+Older saved Pi conversations may still show progress messages outside the fold because they did not record the distinction between commentary and answers. Ambiguous or partial replies also stay visible rather than risk hiding the only answer.
 
 Thinking rows show the reasoning summary or text supplied by the model and expand to reveal its available content. Models that do not expose reasoning have no reasoning text to display. Tool calls remain compact, expandable cards with action-specific icons and output previews.
 

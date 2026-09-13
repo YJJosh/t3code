@@ -17,8 +17,9 @@ import {
   buildPendingUserInputAnswers,
   buildThreadFeed,
   deriveThreadFeedPresentation,
+  deriveThreadFeedTerminalAssistantMessageIds,
   isPendingUserInputOptionSelected,
-  providerKeepsAssistantMessagesVisible,
+  providerPreservesUnclassifiedAssistantMessages,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   workEntryRowLabel,
@@ -3376,10 +3377,10 @@ describe("Pi answers and persisted reasoning", () => {
     ],
   });
 
-  it("keeps every Pi assistant message visible while tool work still folds", () => {
+  it("keeps unclassified Pi messages visible while tool work still folds", () => {
     const feed = buildThreadFeed(multiAnswerThread);
     const collapsed = deriveThreadFeedPresentation(feed, latestTurn, new Set(), new Set(), null, {
-      keepAssistantMessagesVisible: true,
+      preserveUnclassifiedAssistantMessages: true,
     });
     expect(collapsed.map((entry) => entry.id)).toEqual([
       "assistant-first",
@@ -3395,7 +3396,7 @@ describe("Pi answers and persisted reasoning", () => {
       new Set([turnId]),
       new Set(),
       null,
-      { keepAssistantMessagesVisible: true },
+      { preserveUnclassifiedAssistantMessages: true },
     );
     expect(expanded.map((entry) => entry.id)).toEqual([
       "assistant-first",
@@ -3407,11 +3408,11 @@ describe("Pi answers and persisted reasoning", () => {
     ]);
   });
 
-  it("does not fold a Pi turn made only of answers", () => {
+  it("does not fold a legacy Pi turn made only of unclassified messages", () => {
     const feed = buildThreadFeed({ ...multiAnswerThread, activities: [] });
     expect(
       deriveThreadFeedPresentation(feed, latestTurn, new Set(), new Set(), null, {
-        keepAssistantMessagesVisible: true,
+        preserveUnclassifiedAssistantMessages: true,
       }).map((entry) => entry.id),
     ).toEqual(["assistant-first", "assistant-answer", "assistant-final"]);
   });
@@ -3421,9 +3422,9 @@ describe("Pi answers and persisted reasoning", () => {
     expect(
       deriveThreadFeedPresentation(feed, latestTurn, new Set()).map((entry) => entry.id),
     ).toEqual(["assistant-first", "turn-fold:turn-pi", "assistant-final"]);
-    expect(providerKeepsAssistantMessagesVisible("pi")).toBe(true);
-    expect(providerKeepsAssistantMessagesVisible("codex")).toBe(false);
-    expect(providerKeepsAssistantMessagesVisible(null)).toBe(false);
+    expect(providerPreservesUnclassifiedAssistantMessages("pi")).toBe(true);
+    expect(providerPreservesUnclassifiedAssistantMessages("codex")).toBe(false);
+    expect(providerPreservesUnclassifiedAssistantMessages(null)).toBe(false);
   });
 
   const reasoningText =
@@ -3605,5 +3606,121 @@ describe("Pi answers and persisted reasoning", () => {
     const settledRow = streamingRows[1];
     if (settledRow?.type !== "activity-group") throw new Error("expected a reasoning row");
     expect(settledRow.activities[0]!.live).toBeUndefined();
+  });
+});
+
+describe("explicit assistant phases", () => {
+  const turnId = TurnId.make("classified-turn");
+  const time = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
+  type Message = OrchestrationThread["messages"][number];
+  const message = (id: string, phase: Message["phase"], second: number): Message => ({
+    id: MessageId.make(id),
+    role: "assistant",
+    text: id,
+    phase,
+    turnId,
+    createdAt: time(second),
+    updatedAt: time(second),
+    streaming: false,
+  });
+  const commentary = message("commentary", "commentary", 1);
+  const answer = message("answer", "final_answer", 2);
+  const late = message("late-commentary", "commentary", 3);
+  const latestTurn = {
+    turnId,
+    state: "completed" as const,
+    requestedAt: time(0),
+    startedAt: time(0),
+    completedAt: time(4),
+    assistantMessageId: late.id,
+  };
+  const feedFor = (messages: Message[]) => buildThreadFeed({ messages, activities: [] });
+  const messageIds = (feed: ThreadFeedEntry[]) =>
+    feed.flatMap((row) => (row.type === "message" ? [row.message.id] : []));
+
+  it.each([false, true])(
+    "folds commentary at every position, not finals (Pi compat: %s)",
+    (compat) => {
+      const feed = feedFor([commentary, answer, late]);
+      const options = { preserveUnclassifiedAssistantMessages: compat };
+      const collapsed = deriveThreadFeedPresentation(
+        feed,
+        latestTurn,
+        new Set(),
+        new Set(),
+        null,
+        options,
+      );
+      expect(messageIds(collapsed)).toEqual([answer.id]);
+      expect(collapsed.map((row) => row.type)).toEqual(["turn-fold", "message"]);
+      const expanded = deriveThreadFeedPresentation(
+        feed,
+        latestTurn,
+        new Set([turnId]),
+        new Set(),
+        null,
+        options,
+      );
+      expect(messageIds(expanded)).toEqual([commentary.id, answer.id, late.id]);
+      expect(expanded.find((row) => row.type === "turn-fold")?.id).toBe(
+        collapsed.find((row) => row.type === "turn-fold")?.id,
+      );
+      expect([...deriveThreadFeedTerminalAssistantMessageIds(feed)]).toEqual([answer.id]);
+    },
+  );
+
+  it("keeps every explicit final and folds a commentary-only turn including its last message", () => {
+    const secondAnswer = message("second-answer", "final_answer", 4);
+    const feed = feedFor([commentary, answer, late, secondAnswer]);
+    expect(messageIds(deriveThreadFeedPresentation(feed, latestTurn, new Set()))).toEqual([
+      answer.id,
+      secondAnswer.id,
+    ]);
+    expect([...deriveThreadFeedTerminalAssistantMessageIds(feed)]).toEqual([secondAnswer.id]);
+    const commentaryFeed = feedFor([commentary, late]);
+    expect(
+      deriveThreadFeedPresentation(commentaryFeed, latestTurn, new Set()).map((row) => row.type),
+    ).toEqual(["turn-fold"]);
+    expect([...deriveThreadFeedTerminalAssistantMessageIds(commentaryFeed)]).toEqual([]);
+  });
+
+  it("keeps active/streaming messages unfolded and stable through settlement", () => {
+    const feed = feedFor([commentary, answer, late]);
+    const active = deriveThreadFeedPresentation(
+      feed,
+      { ...latestTurn, state: "running", completedAt: null },
+      new Set(),
+    );
+    const streaming = deriveThreadFeedPresentation(
+      feedFor([commentary, answer, { ...late, streaming: true }]),
+      latestTurn,
+      new Set(),
+    );
+    for (const rows of [active, streaming]) {
+      expect(messageIds(rows)).toEqual([commentary.id, answer.id, late.id]);
+      expect(rows.some((row) => row.type === "turn-fold")).toBe(false);
+    }
+    const collapsed = deriveThreadFeedPresentation(feed, latestTurn, new Set());
+    expect(collapsed.find((row) => row.type === "message")).toBe(
+      active.find((row) => row.type === "message" && row.message.id === answer.id),
+    );
+  });
+
+  it("carries phase-only message replacements through the cached feed mapping", () => {
+    const legacyFeed = feedFor([
+      { ...commentary, phase: undefined },
+      answer,
+      { ...late, phase: undefined },
+    ]);
+    expect(messageIds(deriveThreadFeedPresentation(legacyFeed, latestTurn, new Set()))).toEqual([
+      commentary.id,
+      answer.id,
+      late.id,
+    ]);
+    const classifiedFeed = feedFor([commentary, answer, late]);
+    expect(messageIds(deriveThreadFeedPresentation(classifiedFeed, latestTurn, new Set()))).toEqual(
+      [answer.id],
+    );
+    expect([...deriveThreadFeedTerminalAssistantMessageIds(classifiedFeed)]).toEqual([answer.id]);
   });
 });

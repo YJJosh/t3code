@@ -351,9 +351,13 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
+export const OrchestrationMessagePhase = Schema.Literals(["commentary", "final_answer"]);
+export type OrchestrationMessagePhase = typeof OrchestrationMessagePhase.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
+  phase: Schema.optional(OrchestrationMessagePhase),
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
@@ -1144,6 +1148,7 @@ const ThreadMessageAssistantDeltaCommand = Schema.Struct({
 
 const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.message.assistant.complete"),
+  phase: Schema.optional(OrchestrationMessagePhase),
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
@@ -1159,6 +1164,7 @@ const ThreadHistoryImportCommand = Schema.Struct({
     Schema.Struct({
       messageId: MessageId,
       role: Schema.Literals(["user", "assistant"]),
+      phase: Schema.optional(OrchestrationMessagePhase),
       text: Schema.String,
       createdAt: IsoDateTime,
     }),
@@ -1438,6 +1444,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   role: OrchestrationMessageRole,
+  phase: Schema.optional(OrchestrationMessagePhase),
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),

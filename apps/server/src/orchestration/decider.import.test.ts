@@ -120,6 +120,7 @@ it.layer(NodeServices.layer)("thread history import", (it) => {
               messageId: MessageId.make(`${threadId}:000001`),
               role: "assistant",
               text: "Fixed",
+              phase: "final_answer",
               createdAt: "2026-08-24T09:00:00.000Z",
             },
           ],
@@ -136,7 +137,13 @@ it.layer(NodeServices.layer)("thread history import", (it) => {
         {
           type: "thread.message-sent",
           metadata: { historyImport: true },
-          payload: { role: "assistant", text: "Fixed", turnId: null, streaming: false },
+          payload: {
+            role: "assistant",
+            text: "Fixed",
+            phase: "final_answer",
+            turnId: null,
+            streaming: false,
+          },
         },
         {
           type: "thread.settled",
@@ -154,6 +161,8 @@ it.layer(NodeServices.layer)("thread history import", (it) => {
       for (const [index, event] of plannedEvents.entries()) {
         projected = yield* projectEvent(projected, { ...event, sequence: index + 2 });
       }
+      expect(projected.threads[0]?.messages[0]).not.toHaveProperty("phase");
+      expect(projected.threads[0]?.messages[1]?.phase).toBe("final_answer");
       projected = yield* projectEvent(projected, {
         sequence: 5,
         eventId: EventId.make("event-import-reverted"),

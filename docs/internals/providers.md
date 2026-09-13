@@ -93,6 +93,20 @@ checkpoints but cannot roll back its conversation. The [checkpoint boundary](./o
 therefore rejects revert before touching files. Native permission and question option IDs must
 also survive normalization; a display label is not necessarily a valid reply.
 
+### Assistant message phases
+
+An adapter can attach `commentary` or `final_answer` to assistant item completion. Ingestion
+persists that optional phase with the message through events, SQL projections, snapshots, and
+client reduction. Omitted phases preserve an existing classification; old history stays unclassified.
+Clients fold settled commentary, retain explicit answers, and anchor answer footers by turn rather
+than allowing a later commentary item to take over the checkpoint display.
+
+The [Pi adapter](../../apps/server/src/provider/Layers/PiAdapter.ts) uses native stop reasons,
+explicit tool boundaries, and known background-result message sources—not wording or text length.
+Adjacent text blocks alone are not a work boundary. Automatic acknowledgements after a primary
+answer are commentary; ambiguous first results and partial answers stay unclassified and visible.
+`agent_settled`, not an individual assistant stop response, remains the turn lifecycle boundary.
+
 ## Attachments and stored history
 
 Attachments live outside the project workspace. [ProviderService](../../apps/server/src/provider/Layers/ProviderService.ts)

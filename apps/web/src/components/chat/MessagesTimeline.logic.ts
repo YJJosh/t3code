@@ -456,7 +456,7 @@ function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<Timeli
       nullTurnResponseIndex += 1;
       continue;
     }
-    if (message.role !== "assistant") {
+    if (message.role !== "assistant" || message.phase === "commentary") {
       continue;
     }
 
@@ -555,16 +555,16 @@ function workEntryIsActiveTurnActivity(entry: WorkLogEntry): boolean {
 }
 
 /**
- * Settled turns fold activity before their terminal assistant message behind
- * a "Worked for ..." row. A single ordinary activity after that message joins
- * the fold, while larger groups and failures stay visible as a trailing summary.
+ * Settled turns fold explicit commentary anywhere and work before the terminal
+ * answer behind "Worked for ...". A single ordinary trailing activity joins the
+ * fold, while larger groups and failures stay visible as a trailing summary.
  */
 function deriveTurnFolds(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   terminalAssistantMessageIds: ReadonlySet<string>;
   latestTurn: TimelineLatestTurn | null;
   unfoldedTurnIds: ReadonlySet<TurnId>;
-  preserveAssistantMessages: boolean;
+  preserveUnclassifiedAssistantMessages: boolean;
 }): ReadonlyMap<string, TurnFold> {
   interface TurnGroup {
     entries: Array<TimelineEntry>;
@@ -632,17 +632,30 @@ function deriveTurnFolds(input: {
     const terminalEntryIndex = group.terminalEntry
       ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)
       : group.entries.length;
+    const trailingWorkEntries = group.entries
+      .slice(terminalEntryIndex + 1)
+      .filter((entry) => entry.kind === "work");
     for (const [index, entry] of group.entries.entries()) {
-      if (
-        entry.id === group.terminalEntry?.id ||
-        (input.preserveAssistantMessages && entry.kind === "message")
-      ) {
+      if (entry.kind === "message") {
+        // Explicit phases win over position, including commentary after the answer.
+        if (entry.message.phase === "commentary") {
+          hiddenEntryIds.add(entry.id);
+          continue;
+        }
+        if (
+          entry.message.phase === "final_answer" ||
+          (input.preserveUnclassifiedAssistantMessages && entry.message.phase === undefined)
+        ) {
+          continue;
+        }
+      }
+      if (entry.id === group.terminalEntry?.id) {
         continue;
       }
       const isCompaction =
         entry.kind === "work" && entry.entry.sourceActivityKind === "context-compaction";
       const isSingleTrailingActivity =
-        group.entries.length === terminalEntryIndex + 2 &&
+        trailingWorkEntries.length === 1 &&
         entry.kind === "work" &&
         !workEntryDisplayIndicatesToolFailure(entry.entry);
       if (!isCompaction && index > terminalEntryIndex && !isSingleTrailingActivity) {
@@ -840,8 +853,8 @@ export function deriveMessagesTimelineRows(input: {
   latestTurn?: TimelineLatestTurn | null;
   runningTurnId?: TurnId | null;
   expandedTurnIds?: ReadonlySet<TurnId>;
-  /** Pi extensions can append notifications after the primary answer in the same turn. */
-  preserveAssistantMessages?: boolean;
+  /** Preserve Pi replies whose phase is unknown, including older saved history. */
+  preserveUnclassifiedAssistantMessages?: boolean;
   expandedWorkGroupIds?: ReadonlySet<string>;
   isWorking: boolean;
   activeTurnStartedAt: string | null;
@@ -849,7 +862,10 @@ export function deriveMessagesTimelineRows(input: {
   supportsConversationRollback: boolean;
 }): MessagesTimelineRow[] {
   const turnDiffSummaryByAssistantMessageId = new Map<MessageId, TurnDiffSummary>();
+  // Checkpoints can name a later commentary item; the visible answer owns the diff.
+  const turnDiffSummaryByTurnId = new Map<TurnId, TurnDiffSummary>();
   for (const summary of input.turnDiffSummaries) {
+    turnDiffSummaryByTurnId.set(summary.turnId, summary);
     if (summary.assistantMessageId) {
       turnDiffSummaryByAssistantMessageId.set(summary.assistantMessageId, summary);
     }
@@ -881,7 +897,7 @@ export function deriveMessagesTimelineRows(input: {
     terminalAssistantMessageIds,
     latestTurn: input.latestTurn ?? null,
     unfoldedTurnIds: activeVisualResponseTurnIds,
-    preserveAssistantMessages: input.preserveAssistantMessages ?? false,
+    preserveUnclassifiedAssistantMessages: input.preserveUnclassifiedAssistantMessages ?? false,
   });
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorEntryId.values()) {
@@ -1224,8 +1240,11 @@ export function deriveMessagesTimelineRows(input: {
       showAssistantCopyButton: showAssistantMeta,
       assistantCopyStreaming: timelineEntry.message.streaming || assistantResponseStillInProgress,
       assistantTurnDiffSummary:
-        timelineEntry.message.role === "assistant"
-          ? turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
+        timelineEntry.message.role === "assistant" &&
+        terminalAssistantMessageIds.has(timelineEntry.message.id)
+          ? timelineEntry.message.turnId
+            ? turnDiffSummaryByTurnId.get(timelineEntry.message.turnId)
+            : turnDiffSummaryByAssistantMessageId.get(timelineEntry.message.id)
           : undefined,
       revertTurnCount:
         timelineEntry.message.role === "user"
