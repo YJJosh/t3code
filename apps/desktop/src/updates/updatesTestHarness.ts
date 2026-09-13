@@ -21,6 +21,7 @@ export const flushCallbacks = Effect.yieldNow;
 
 export interface UpdatesHarnessOptions {
   readonly appName?: string;
+  readonly resourcesPath?: string;
   readonly checkForUpdates?: Effect.Effect<
     void,
     ElectronUpdater.ElectronUpdaterCheckForUpdatesError
@@ -37,6 +38,7 @@ export interface UpdatesHarnessOptions {
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
   let checkCount = 0;
+  let lastCheckOptions: ElectronUpdater.ElectronUpdaterCheckOptions | undefined;
   let quitAndInstallCount = 0;
   let downloadCount = 0;
   let allowDowngrade = false;
@@ -90,9 +92,11 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
         fullChangelog = value;
       }),
     setDisableDifferentialDownload: () => options.setDisableDifferentialDownload ?? Effect.void,
-    checkForUpdates: Effect.sync(() => {
-      checkCount += 1;
-    }).pipe(Effect.andThen(options.checkForUpdates ?? Effect.void)),
+    checkForUpdates: (checkOptions) =>
+      Effect.sync(() => {
+        checkCount += 1;
+        lastCheckOptions = checkOptions;
+      }).pipe(Effect.andThen(options.checkForUpdates ?? Effect.void)),
     downloadUpdate: Effect.sync(() => {
       downloadCount += 1;
     }).pipe(Effect.andThen(options.downloadUpdate ?? Effect.void)),
@@ -159,7 +163,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     appVersion: "1.2.3",
     appPath: "/repo",
     isPackaged: true,
-    resourcesPath: "/missing/resources",
+    resourcesPath: options.resourcesPath ?? "/missing/resources",
     runningUnderArm64Translation: false,
   }).pipe(
     Layer.provide(
@@ -234,6 +238,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     allowPrerelease: () => allowPrerelease,
     allowDowngrade: () => allowDowngrade,
     checkCount: () => checkCount,
+    lastCheckOptions: () => lastCheckOptions,
     quitAndInstalls: () => quitAndInstallCount,
     installSteps,
     downloadCount: () => downloadCount,

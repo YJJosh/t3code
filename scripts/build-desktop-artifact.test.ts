@@ -724,7 +724,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const linux = yield* createBuildConfig(
         "linux",
         "AppImage",
-        "0.0.36-pi.1",
+        "0.0.40-dulli.2",
         false,
         false,
         undefined,
@@ -735,7 +735,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const mac = yield* createBuildConfig(
         "mac",
         "dmg",
-        "0.0.36-pi.1",
+        "0.0.40-dulli.2",
         false,
         false,
         undefined,
@@ -763,7 +763,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         desktop: { entry: { StartupWMClass: "t3-dulli" } },
       });
       assert.deepStrictEqual(mac.dmg, {
-        title: "T3 Dulli 0.0.36-pi.1 Installer",
+        title: "T3 Dulli 0.0.40-dulli.2 Installer",
         background: "dmg/dmg-background-dulli.png",
         window: { width: 540, height: 412 },
         contents: [

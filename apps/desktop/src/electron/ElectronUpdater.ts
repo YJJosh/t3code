@@ -4,11 +4,77 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
-import { autoUpdater } from "electron-updater";
+import { type AppUpdater, autoUpdater } from "electron-updater";
+
+import { DulliGitHubProvider } from "./DulliGitHubProvider.ts";
 
 type AutoUpdater = typeof autoUpdater;
 
 export type ElectronUpdaterFeedUrl = Parameters<AutoUpdater["setFeedURL"]>[0];
+
+export interface ElectronUpdaterCheckOptions {
+  readonly allowDulliTransition: boolean;
+}
+
+const DULLI_VERSION_PATTERN = /^0\.0\.(0|[1-9]\d*)-(pi|dulli)\.(0|[1-9]\d*)$/;
+
+function isForwardPiToDulliTransition(currentVersion: string, nextVersion: string): boolean {
+  const current = DULLI_VERSION_PATTERN.exec(currentVersion);
+  const next = DULLI_VERSION_PATTERN.exec(nextVersion);
+  return (
+    current !== null &&
+    next !== null &&
+    current[2] === "pi" &&
+    next[2] === "dulli" &&
+    current[1] === next[1] &&
+    BigInt(next[3]!) > BigInt(current[3]!)
+  );
+}
+
+export function makeDulliGitHubFeedUrl(
+  options: Readonly<Record<string, string>>,
+): ElectronUpdaterFeedUrl {
+  return {
+    ...options,
+    provider: "custom",
+    updateProvider: DulliGitHubProvider,
+  };
+}
+
+const activeDulliChecks = new WeakMap<AppUpdater, ReturnType<AppUpdater["checkForUpdates"]>>();
+
+/**
+ * electron-updater asks isUpdateSupported before its semver comparison. This
+ * keeps the upstream support callback authoritative while narrowly allowing
+ * the same-base Pi-to-Dulli distribution build handoff.
+ */
+export function checkForUpdatesWithDulliTransition(updater: AppUpdater) {
+  const activeCheck = activeDulliChecks.get(updater);
+  if (activeCheck !== undefined) return activeCheck;
+
+  const originalIsUpdateSupported = updater.isUpdateSupported;
+  const originalAllowDowngrade = updater.allowDowngrade;
+  updater.isUpdateSupported = async (updateInfo) => {
+    const isSupported = await originalIsUpdateSupported.call(updater, updateInfo);
+    if (
+      isSupported &&
+      isForwardPiToDulliTransition(updater.currentVersion.version, updateInfo.version)
+    ) {
+      updater.allowDowngrade = true;
+    }
+    return isSupported;
+  };
+
+  const check = Promise.resolve()
+    .then(() => updater.checkForUpdates())
+    .finally(() => {
+      updater.isUpdateSupported = originalIsUpdateSupported;
+      updater.allowDowngrade = originalAllowDowngrade;
+      activeDulliChecks.delete(updater);
+    });
+  activeDulliChecks.set(updater, check);
+  return check;
+}
 
 export class ElectronUpdaterCheckForUpdatesError extends Schema.TaggedErrorClass<ElectronUpdaterCheckForUpdatesError>()(
   "ElectronUpdaterCheckForUpdatesError",
@@ -67,7 +133,9 @@ export class ElectronUpdater extends Context.Service<
     readonly setAllowDowngrade: (value: boolean) => Effect.Effect<void>;
     readonly setFullChangelog: (value: boolean) => Effect.Effect<void>;
     readonly setDisableDifferentialDownload: (value: boolean) => Effect.Effect<void>;
-    readonly checkForUpdates: Effect.Effect<void, ElectronUpdaterCheckForUpdatesError>;
+    readonly checkForUpdates: (
+      options: ElectronUpdaterCheckOptions,
+    ) => Effect.Effect<void, ElectronUpdaterCheckForUpdatesError>;
     readonly downloadUpdate: Effect.Effect<void, ElectronUpdaterDownloadUpdateError>;
     readonly quitAndInstall: (options: {
       readonly isSilent: boolean;
@@ -123,13 +191,17 @@ export const make = ElectronUpdater.of({
       autoUpdater.disableDifferentialDownload = value;
       return Effect.void;
     }),
-  checkForUpdates: Effect.suspend(() => {
-    const channel = autoUpdater.channel;
-    return Effect.tryPromise({
-      try: () => autoUpdater.checkForUpdates(),
-      catch: (cause) => new ElectronUpdaterCheckForUpdatesError({ channel, cause }),
-    }).pipe(Effect.asVoid);
-  }),
+  checkForUpdates: ({ allowDulliTransition }) =>
+    Effect.suspend(() => {
+      const channel = autoUpdater.channel;
+      return Effect.tryPromise({
+        try: () =>
+          allowDulliTransition
+            ? checkForUpdatesWithDulliTransition(autoUpdater)
+            : autoUpdater.checkForUpdates(),
+        catch: (cause) => new ElectronUpdaterCheckForUpdatesError({ channel, cause }),
+      }).pipe(Effect.asVoid);
+    }),
   downloadUpdate: Effect.suspend(() => {
     const channel = autoUpdater.channel;
     return Effect.tryPromise({
