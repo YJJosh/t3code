@@ -1,0 +1,27 @@
+# Run `portler up -d`, then open the pairing URL in `portler logs server`.
+# `portler ps` shows allocated ports; `portler down` stops this checkout's stack.
+# Application data stays in .t3/portler, outside Portler's disposable control state.
+services:
+  server:
+    command: ./node_modules/.bin/vp run dev:server --home-dir .t3/portler --dev-url "$VITE_DEV_SERVER_URL"
+    port: 13773
+    port_env: T3CODE_PORT
+    env:
+      T3CODE_HOST: 127.0.0.1
+      T3CODE_MODE: web
+      VITE_DEV_SERVER_URL: web.url
+
+  web:
+    command: ../../node_modules/.bin/vp dev --host 127.0.0.1
+    cwd: apps/web
+    port: 5733
+    port_env: PORT
+    depends_on:
+      - server
+    env:
+      # Bind via the CLI; HOST would also pin HMR to loopback for remote browsers.
+      HOST: ""
+      T3CODE_PORT: server.port
+      T3CODE_SINGLE_ORIGIN_DEV: "1"
+      VITE_DEV_SERVER_URL: web.url
+      VITE_DESKTOP_BUILD_BRAND: dulli

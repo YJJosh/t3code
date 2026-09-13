@@ -46,6 +46,20 @@ The desktop build stages Dulli icons for macOS, Windows, Linux, and the bundled 
 
 **Settings → General → Fork features** keeps Dulli-owned workspace and branch-naming controls separate from upstream General settings. It contains Workler workspace creation, the `t3code/` generated-branch prefix, and conventional generated-branch prefixes. Dulli defaults new threads to Workler-backed workspaces created from origin, omits the `t3code/` namespace, and uses conventional category prefixes. Provider-specific Pi configuration remains under **Settings → Providers**.
 
+## Local development with Portler
+
+With Node 24, repository dependencies, and [Portler](https://yjjosh.github.io/Portler/) installed, run these commands from the checkout root:
+
+```sh
+portler up -d
+portler ps
+portler logs server
+```
+
+Open the pairing URL printed in the server log. Browser auto-open is disabled so it cannot consume the one-time token. Portler allocates both ports, and Vite proxies backend requests through the web origin; do not configure `VITE_HTTP_URL` or `VITE_WS_URL`.
+
+Portler uses `.t3/portler` for application state, separate from the normal `vp run dev` preview and the installed app. Its disposable process/port metadata lives in `.portler/`. Stop the stack with `portler down`; application state survives stopping and Portler cleanup. For a fresh pairing URL, run `node apps/server/src/bin.ts pair --base-dir .t3/portler`.
+
 ## Building
 
 Example unsigned Linux artifact:
