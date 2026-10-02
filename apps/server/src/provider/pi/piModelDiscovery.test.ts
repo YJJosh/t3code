@@ -239,6 +239,11 @@ describe("discoverPiModelsWithSdk", () => {
               {
                 commands: new Map([
                   ["review", { description: "Review the change", sourceInfo: userSource }],
+                  ["pm", { description: "pm", sourceInfo: userSource }],
+                  ["pm-subagents", { description: "pm-subagents", sourceInfo: userSource }],
+                  ["config-set", { description: "config-set", sourceInfo: userSource }],
+                  ["judge", { description: "judge", sourceInfo: userSource }],
+                  ["mcp", { description: "mcp", sourceInfo: userSource }],
                   ["subagents-rpc", { description: "Private subagent control" }],
                   ["background-terminals-rpc", { description: "Private terminal control" }],
                   ["project-only", { sourceInfo: projectSource }],
@@ -279,6 +284,10 @@ describe("discoverPiModelsWithSdk", () => {
 
     expect(result.slashCommands).toEqual([
       { name: "review", description: "Review the change" },
+      ...["pm", "pm-subagents", "config-set", "judge", "mcp"].map((name) => ({
+        name,
+        description: name,
+      })),
       {
         name: "fix-tests",
         description: "Fix focused tests",

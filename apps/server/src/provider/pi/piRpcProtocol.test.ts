@@ -7,6 +7,9 @@ import * as Schema from "effect/Schema";
 
 import {
   autoRespondToExtensionUi,
+  piDialogQuestion,
+  piDialogResponse,
+  decodePiBackgroundThreadRequest,
   buildPiRpcArgs,
   buildPiRpcEnv,
   extractPiAssistantContent,
@@ -64,6 +67,7 @@ describe("Pi RPC protocol", () => {
         HOME: "/home/test",
         PI_SUBAGENTS_RPC_BRIDGE: "1",
         PI_BACKGROUND_TERMINALS_RPC_BRIDGE: "1",
+        PI_BACKGROUND_THREADS_RPC_BRIDGE: "1",
         PI_CODING_AGENT_DIR: paths.join("/home/test", ".pi", "agent"),
       });
       expect(
@@ -75,6 +79,7 @@ describe("Pi RPC protocol", () => {
         HOME: "/home/test",
         PI_SUBAGENTS_RPC_BRIDGE: "1",
         PI_BACKGROUND_TERMINALS_RPC_BRIDGE: "1",
+        PI_BACKGROUND_THREADS_RPC_BRIDGE: "1",
         PI_CODING_AGENT_DIR: paths.join("/home/test", "agents"),
       });
     }).pipe(Effect.provide(NodeServices.layer)),
@@ -190,7 +195,7 @@ describe("Pi RPC protocol", () => {
     ).toBeUndefined();
   });
 
-  it("auto-confirms yolo-safe UI requests and cancels text input", () => {
+  it("cancels dialogs when no host can present them", () => {
     expect(
       autoRespondToExtensionUi({
         type: "extension_ui_request",
@@ -199,7 +204,7 @@ describe("Pi RPC protocol", () => {
         title: "Proceed?",
         message: "Continue",
       }),
-    ).toEqual({ type: "extension_ui_response", id: "confirm-1", confirmed: true });
+    ).toEqual({ type: "extension_ui_response", id: "confirm-1", cancelled: true });
     expect(
       autoRespondToExtensionUi({
         type: "extension_ui_request",
@@ -208,6 +213,57 @@ describe("Pi RPC protocol", () => {
         title: "Secret",
       }),
     ).toEqual({ type: "extension_ui_response", id: "input-1", cancelled: true });
+  });
+
+  it("maps choice, confirmation and free-text dialogs without guessing", () => {
+    const select = {
+      type: "extension_ui_request",
+      id: "s",
+      method: "select",
+      title: "Profiles",
+      options: ["Delete", "Inspect"],
+    } as const;
+    const menu = { ...select, options: [...select.options] };
+    expect(piDialogQuestion(menu)).toMatchObject({
+      allowCustomAnswer: false,
+      multiSelect: false,
+      options: [{ value: "Delete" }, { value: "Inspect" }],
+    });
+    expect(piDialogResponse(menu, { answer: "Inspect" })).toMatchObject({ value: "Inspect" });
+    expect(piDialogResponse(menu, { answer: "Invented" })).toMatchObject({ cancelled: true });
+    const confirm = {
+      type: "extension_ui_request",
+      id: "c",
+      method: "confirm",
+      title: "Sure?",
+      message: "Delete profile?",
+    } as const;
+    expect(piDialogQuestion(confirm)?.question).toContain("Delete profile?");
+    expect(piDialogResponse(confirm, { answer: "No" })).toMatchObject({ confirmed: false });
+    expect(piDialogResponse(confirm, { answer: "Yes" })).toMatchObject({ confirmed: true });
+    for (const method of ["input", "editor"] as const) {
+      const request = { type: "extension_ui_request", id: method, method, title: "Text" } as const;
+      expect(piDialogQuestion(request)).toMatchObject({ options: [], allowCustomAnswer: true });
+      expect(piDialogResponse(request, { answer: "hello\nworld" })).toMatchObject({
+        value: "hello\nworld",
+      });
+      expect(piDialogResponse(request, {})).toMatchObject({ cancelled: true });
+    }
+  });
+
+  it("bounds and validates private thread-spawn envelopes", () => {
+    const good = { contractVersion: 1, requestId: "r", prompt: "Work", title: "Child" };
+    expect(decodePiBackgroundThreadRequest(JSON.stringify(good))._tag).toBe("Some");
+    for (const bad of [
+      { contractVersion: 2 },
+      { requestId: "" },
+      { prompt: "x".repeat(32001) },
+      { title: "x".repeat(201) },
+    ]) {
+      expect(decodePiBackgroundThreadRequest(JSON.stringify({ ...good, ...bad }))._tag).toBe(
+        "None",
+      );
+    }
   });
 
   it("marks only explicit tool calls as work boundaries between snapshot blocks", () => {

@@ -3,6 +3,8 @@ import {
   PiBackgroundTerminalEvent,
   type PiBackgroundTerminalEvent as PiBackgroundTerminalEventType,
   type PiSettings,
+  type UserInputQuestion,
+  type ProviderUserInputAnswers,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
@@ -47,6 +49,7 @@ export type PiExtensionUiRequest =
       readonly type: "extension_ui_request";
       readonly id: string;
       readonly method: "select";
+      readonly timeout?: number;
       readonly title: string;
       readonly options: string[];
     }
@@ -54,6 +57,7 @@ export type PiExtensionUiRequest =
       readonly type: "extension_ui_request";
       readonly id: string;
       readonly method: "confirm";
+      readonly timeout?: number;
       readonly title: string;
       readonly message: string;
     }
@@ -61,12 +65,14 @@ export type PiExtensionUiRequest =
       readonly type: "extension_ui_request";
       readonly id: string;
       readonly method: "input";
+      readonly timeout?: number;
       readonly title: string;
     }
   | {
       readonly type: "extension_ui_request";
       readonly id: string;
       readonly method: "editor";
+      readonly timeout?: number;
       readonly title: string;
     }
   | {
@@ -190,6 +196,7 @@ export function buildPiRpcEnv(
     // the client inspectors.
     [PI_SUBAGENTS_RPC_BRIDGE_ENV]: "1",
     [PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV]: "1",
+    PI_BACKGROUND_THREADS_RPC_BRIDGE: "1",
     PI_CODING_AGENT_DIR: agentDir,
   };
 }
@@ -252,25 +259,71 @@ export function parsePiBackgroundTerminalNotification(
   );
 }
 
+export type PiDialog = Extract<
+  PiExtensionUiRequest,
+  { method: "select" | "confirm" | "input" | "editor" }
+>;
+
+export function piDialogQuestion(request: PiExtensionUiRequest): UserInputQuestion | undefined {
+  if (!["select", "confirm", "input", "editor"].includes(request.method)) return undefined;
+  const dialog = request as PiDialog;
+  return {
+    id: "answer",
+    header: "Pi extension",
+    question:
+      (dialog.method === "confirm"
+        ? `${dialog.title}\n\n${dialog.message}`
+        : dialog.title
+      ).trim() || "Pi extension input",
+    options: (dialog.method === "select"
+      ? dialog.options
+      : dialog.method === "confirm"
+        ? ["Yes", "No"]
+        : []
+    ).map((value) => ({ label: value.trim() || "(empty)", value, description: "" })),
+    allowCustomAnswer: dialog.method === "input" || dialog.method === "editor",
+    multiSelect: false,
+  };
+}
+
+/** Empty answers mean explicit dismissal, never an implicit selection. */
+export function piDialogResponse(
+  request: PiDialog,
+  answers: ProviderUserInputAnswers,
+): PiExtensionUiResponse {
+  const value = answers.answer;
+  const base = { type: "extension_ui_response" as const, id: request.id };
+  if (typeof value !== "string") return { ...base, cancelled: true };
+  if (request.method === "confirm") {
+    return value === "Yes" || value === "No"
+      ? { ...base, confirmed: value === "Yes" }
+      : { ...base, cancelled: true };
+  }
+  if (request.method === "select" && !request.options.includes(value))
+    return { ...base, cancelled: true };
+  return { ...base, value };
+}
+
+/** Only used by hosts without a thread capable of presenting the dialog. */
 export function autoRespondToExtensionUi(
   request: PiExtensionUiRequest,
 ): PiExtensionUiResponse | undefined {
-  switch (request.method) {
-    case "confirm":
-      return { type: "extension_ui_response", id: request.id, confirmed: true };
-    case "select": {
-      const first = request.options[0];
-      return first === undefined
-        ? { type: "extension_ui_response", id: request.id, cancelled: true }
-        : { type: "extension_ui_response", id: request.id, value: first };
-    }
-    case "input":
-    case "editor":
-      return { type: "extension_ui_response", id: request.id, cancelled: true };
-    default:
-      return undefined;
-  }
+  return piDialogQuestion(request)
+    ? { type: "extension_ui_response", id: request.id, cancelled: true }
+    : undefined;
 }
+
+export const PI_BACKGROUND_THREADS_REQUEST_PREFIX = "pi-background-threads:request:v1:";
+export const PiBackgroundThreadRequest = Schema.Struct({
+  contractVersion: Schema.Literal(1),
+  requestId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  prompt: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(32_000)),
+  title: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))),
+});
+export type PiBackgroundThreadRequest = typeof PiBackgroundThreadRequest.Type;
+export const decodePiBackgroundThreadRequest = Schema.decodeUnknownOption(
+  Schema.fromJsonString(PiBackgroundThreadRequest),
+);
 
 function joinPiContentBlocks(parts: ReadonlyArray<string>): string {
   let result = "";

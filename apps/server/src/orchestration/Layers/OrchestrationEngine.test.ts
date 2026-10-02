@@ -42,6 +42,7 @@ import {
   type OrchestrationEventStoreShape,
 } from "../../persistence/Services/OrchestrationEventStore.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import { makePiThreadSpawner } from "./PiThreadSpawner.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -106,6 +107,7 @@ async function createOrchestrationSystem(
   const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
   return {
     engine,
+    snapshotQuery,
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     readThread: (threadId: ThreadId) =>
       runtime.runPromise(snapshotQuery.getThreadDetailById(threadId)),
@@ -130,6 +132,177 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("Pi background spawn inherits the workspace and selection and queues its first turn", async () => {
+    const system = await createOrchestrationSystem();
+    const projectId = ProjectId.make("pi-project");
+    const parentId = ThreadId.make("pi-parent");
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("custom-pi"),
+      model: "anthropic/claude-sonnet-5",
+      options: [
+        { id: "profile", value: "reviewer" },
+        { id: "reasoning", value: "high" },
+      ],
+    };
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("pi-project"),
+          projectId,
+          title: "Pi",
+          workspaceRoot: process.cwd(),
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("pi-parent"),
+          threadId: parentId,
+          projectId,
+          title: "Parent",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          branch: "feature/pi",
+          worktreePath: "/tmp/pi-shared-worktree",
+          createdAt: now(),
+        }),
+      );
+      const spawn = makePiThreadSpawner.pipe(
+        Effect.provideService(OrchestrationEngineService, system.engine),
+        Effect.provideService(ProjectionSnapshotQuery, system.snapshotQuery),
+        Effect.provide(NodeServices.layer),
+      );
+      const spawner = await system.run(spawn);
+      const childId = await system.run(
+        spawner.spawn(parentId, {
+          contractVersion: 1,
+          requestId: "spawn",
+          prompt: "Review the tests",
+          title: "Test review",
+        }),
+      );
+      const child = (await system.readModel()).threads.find((thread) => thread.id === childId)!;
+      expect(child).toMatchObject({
+        projectId,
+        title: "Test review",
+        modelSelection,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        branch: "feature/pi",
+        worktreePath: "/tmp/pi-shared-worktree",
+      });
+      const detail = await system.readThread(childId);
+      expect(Option.isSome(detail) && detail.value.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ role: "user", text: "Review the tests" }),
+        ]),
+      );
+      const events = await system.run(Stream.runCollect(system.engine.readEvents(0)));
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "thread.turn-start-requested", aggregateId: childId }),
+        ]),
+      );
+      await expect(
+        system.run(
+          spawner.spawn(ThreadId.make("missing"), {
+            contractVersion: 1,
+            requestId: "missing",
+            prompt: "Do nothing",
+          }),
+        ),
+      ).rejects.toThrow("Parent thread no longer exists");
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("dismisses a cancellable native dialog by routing an empty answer map to the provider", async () => {
+    const system = await createOrchestrationSystem();
+    const projectId = ProjectId.make("dialog-project");
+    const threadId = ThreadId.make("dialog-thread");
+    const requestId = ApprovalRequestId.make("pi-dialog");
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("dialog-project"),
+          projectId,
+          title: "Pi",
+          workspaceRoot: process.cwd(),
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("dialog-thread"),
+          threadId,
+          projectId,
+          title: "Dialog",
+          modelSelection: { instanceId: ProviderInstanceId.make("pi"), model: "test/model" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make("dialog-question"),
+          threadId,
+          createdAt: now(),
+          activity: {
+            id: EventId.make("dialog-question"),
+            kind: "user-input.requested",
+            summary: "Question",
+            tone: "info",
+            turnId: null,
+            createdAt: now(),
+            payload: {
+              requestId,
+              dismissible: true,
+              questions: [
+                {
+                  id: "answer",
+                  header: "Pi",
+                  question: "Name?",
+                  options: [],
+                  allowCustomAnswer: true,
+                },
+              ],
+            },
+          },
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.user-input.dismiss",
+          commandId: CommandId.make("dialog-dismiss"),
+          threadId,
+          requestId,
+          createdAt: now(),
+        }),
+      );
+      const events = await system.run(Stream.runCollect(system.engine.readEvents(0)));
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "thread.user-input-response-requested",
+            payload: expect.objectContaining({ requestId, answers: {} }),
+          }),
+        ]),
+      );
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it.each(["running", "stopped"] as const)(
     "sends async answers with a %s session and rejects old duplicate replies",
     async (status) => {

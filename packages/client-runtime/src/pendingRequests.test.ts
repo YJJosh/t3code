@@ -288,7 +288,7 @@ describe("pending questions", () => {
     });
   });
 
-  it("only marks async questions as dismissible", () => {
+  it("only marks async or explicitly cancellable questions as dismissible", () => {
     const question = {
       id: "0",
       header: "Question",
@@ -301,6 +301,27 @@ describe("pending questions", () => {
       payload: { requestId: "native-1", questions: [question] },
     });
     expect(derivePendingRequests([native]).userInputs[0]?.dismissible).toBe(false);
+    const cancellable = makeActivity({
+      kind: "user-input.requested",
+      payload: {
+        requestId: "pi-dialog",
+        dismissible: true,
+        questions: [{ ...question, options: [], allowCustomAnswer: true }],
+      },
+    });
+    expect(derivePendingRequests([cancellable]).userInputs[0]).toMatchObject({
+      dismissible: true,
+      questions: [{ options: [], allowCustomAnswer: true }],
+    });
+    expect(
+      derivePendingRequests([
+        cancellable,
+        makeActivity({
+          kind: "user-input.resolved",
+          payload: { requestId: "pi-dialog", answers: {} },
+        }),
+      ]).userInputs,
+    ).toEqual([]);
   });
 
   it("preserves native choice values and the custom-answer restriction", () => {
