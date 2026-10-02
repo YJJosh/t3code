@@ -2411,8 +2411,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         label: `/${command.name}`,
         description: command.description ?? command.input?.hint ?? "Run provider command",
       }));
+      // Compare against the commands the menu shows: a provider command that
+      // shares a skill's name is hidden, so it must not hide the client entry.
       const providerCommandNames = new Set(
-        selectedProviderSlashCommands.map((command) => command.name),
+        providerSlashCommandItems.map((item) => item.command.name),
       );
       const clientSlashCommandItems = (clientSlashCommands ?? [])
         .filter((command) => !providerCommandNames.has(command.name))
