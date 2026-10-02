@@ -4636,6 +4636,16 @@ export default function ChatView(props: ChatViewProps) {
     },
     [handleClientSlashCommand],
   );
+  const composerClientSlashCommands = useMemo(
+    () =>
+      backgroundTerminalsEnabled
+        ? [
+            { name: "subagents", description: "Open the Agents surface" },
+            { name: "workflows", description: "Open the Agents surface" },
+          ]
+        : [],
+    [backgroundTerminalsEnabled],
+  );
   const supportsThreadPullRequests =
     serverConfig?.environment.capabilities.threadPullRequests === true;
   const visiblePullRequests = visibleThreadPullRequests(
@@ -10137,6 +10147,7 @@ export default function ChatView(props: ChatViewProps) {
                                 : undefined
                             }
                             onClientSlashCommand={handleComposerClientSlashCommand}
+                            clientSlashCommands={composerClientSlashCommands}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}
                             pendingApprovals={pendingApprovals}

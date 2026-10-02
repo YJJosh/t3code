@@ -230,7 +230,11 @@ import {
 } from "~/lib/composerContextRecords";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
-import type { ComposerContextClipboardFragment, ComposerContextRecord } from "@t3tools/contracts";
+import type {
+  ComposerContextClipboardFragment,
+  ComposerContextRecord,
+  ServerProviderSlashCommand,
+} from "@t3tools/contracts";
 import { resolveAssetUrl } from "~/assets/assetUrls";
 import { assetEnvironment } from "~/state/assets";
 import { readPreparedConnection } from "~/state/session";
@@ -1362,6 +1366,8 @@ export interface ChatComposerProps {
   onUsageLimitsCommand?: (() => void) | undefined;
   /** Provider commands with a T3 surface (/ps, /subagents): returns true when it opened one instead of inserting. */
   onClientSlashCommand?: ((commandName: string) => boolean) | undefined;
+  /** Commands T3 handles itself (/subagents, /workflows), listed in the slash menu next to the provider's own. */
+  clientSlashCommands?: ReadonlyArray<ServerProviderSlashCommand> | undefined;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -1960,6 +1966,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedProviderSlashCommands = selectedProviderStatus
     ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, gitCwd)
     : [];
+  const clientSlashCommands = props.clientSlashCommands;
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -2404,6 +2411,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         label: `/${command.name}`,
         description: command.description ?? command.input?.hint ?? "Run provider command",
       }));
+      const providerCommandNames = new Set(
+        selectedProviderSlashCommands.map((command) => command.name),
+      );
+      const clientSlashCommandItems = (clientSlashCommands ?? [])
+        .filter((command) => !providerCommandNames.has(command.name))
+        .map((command) => ({
+          id: `client-slash-command:${selectedProvider}:${command.name}`,
+          type: "provider-slash-command" as const,
+          provider: selectedProvider,
+          command,
+          label: `/${command.name}`,
+          description: command.description ?? "Open in T3",
+        }));
       const query = composerTrigger.query.trim().toLowerCase();
       const skillItems = slashMenuSkills.map((skill) => ({
         id: `skill:${selectedProvider}:${skill.name}`,
@@ -2420,7 +2440,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         (item) => item.command.name !== "compact" || compactSlashCommandAvailable,
       );
       const slashCommandItems = slashCommandItemsForPromptPosition(
-        [...builtInSlashCommandItems, ...visibleProviderSlashCommandItems, ...skillItems],
+        [
+          ...builtInSlashCommandItems,
+          ...visibleProviderSlashCommandItems,
+          ...clientSlashCommandItems,
+          ...skillItems,
+        ],
         composerTrigger.rangeStart === 0,
       );
       return searchSlashCommandItems(slashCommandItems, query);
@@ -2491,6 +2516,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     return [];
   }, [
+    clientSlashCommands,
     compactSlashCommandAvailable,
     composerTrigger,
     exactPullRequestLookup.data,
