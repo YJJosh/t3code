@@ -3,6 +3,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const columns = yield* sql<{
+    readonly name: string;
+  }>`PRAGMA table_info(projection_thread_messages)`;
+  // Fork databases may already have applied this column under migration 50.
+  if (columns.some((column) => column.name === "phase")) return;
   yield* sql`
     ALTER TABLE projection_thread_messages
     ADD COLUMN phase TEXT

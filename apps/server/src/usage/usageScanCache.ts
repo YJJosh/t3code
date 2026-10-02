@@ -14,18 +14,14 @@
  *
  * @module usageScanCache
  */
-// @effect-diagnostics nodeBuiltinImport:off
-import * as NodePath from "node:path";
-
 import type { UsageProviderKind } from "@t3tools/contracts";
 
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
 import type { CodexScanState, PiScanState, UsageRecord } from "./usageTranscripts.ts";
 
-// v4 combines resumable parsing with Pi project discovery and reducer state.
-// Both the fork and upstream used v3 for incompatible layouts; neither can
-// safely resume while preserving Pi child discovery and fork de-duplication.
-export const USAGE_SCAN_CACHE_VERSION = 4 as const;
+// v5 combines Pi reducer/project metadata and Claude fast pricing. Both branches
+// used v4 for different layouts; neither can safely serve these warm entries.
+export const USAGE_SCAN_CACHE_VERSION = 5 as const;
 
 export interface CachedFile {
   readonly size: number;
@@ -62,6 +58,7 @@ type SerializedRecord = readonly [
   reasoningTokens: number,
   dedupeKey: string | null,
   reportedCostUsd: number | null,
+  fast: 0 | 1,
 ];
 
 interface SerializedFile {
@@ -115,6 +112,7 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
     record.totals.reasoningTokens,
     record.dedupeKey,
     record.reportedCostUsd,
+    record.fast ? 1 : 0,
   ];
 
   const files: Record<string, SerializedFile> = {};
@@ -173,7 +171,7 @@ export function decodeScanCache(document: unknown): ScanCache {
   ): UsageRecord[] | null => {
     const records: UsageRecord[] = [];
     for (const row of rows) {
-      if (!isRecordArray(row) || row.length < 10) return null;
+      if (!isRecordArray(row) || row.length < 11) return null;
       const [
         timestampMs,
         modelIndex,
@@ -185,6 +183,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         reasoning,
         dedupeKey,
         reportedCostUsd,
+        fast,
       ] = row as SerializedRecord;
 
       const model = typeof modelIndex === "number" ? models[modelIndex] : undefined;
@@ -196,7 +195,8 @@ export function decodeScanCache(document: unknown): ScanCache {
         !Number.isFinite(cached) ||
         !Number.isFinite(cacheCreation) ||
         !Number.isFinite(output) ||
-        !Number.isFinite(reasoning)
+        !Number.isFinite(reasoning) ||
+        (fast !== 0 && fast !== 1)
       ) {
         return null;
       }
@@ -214,6 +214,7 @@ export function decodeScanCache(document: unknown): ScanCache {
           reasoningTokens: reasoning,
         },
         reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
+        fast: fast === 1,
         dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
       });
     }
@@ -326,47 +327,11 @@ function decodePiState(value: unknown): PiScanState | null | undefined {
   };
 }
 
-export interface PruneOptions {
-  /** Files the walk just saw. Only meaningful inside the walked window. */
-  readonly livePaths: ReadonlySet<string>;
-  /**
-   * Roots the walk actually completed. Absence from `livePaths` only proves a
-   * file is gone when its root was walked: a provider whose directory failed to
-   * resolve this pass must not have its warm entries purged.
-   */
-  readonly walkedRoots: readonly string[];
-  /** Start of the walked window; entries older than this were not looked for. */
-  readonly windowStartMs: number;
-  /** Entries older than this are dropped regardless. */
-  readonly retentionCutoffMs: number;
-}
-
-/**
- * Drops aged-out entries, and entries for files that have disappeared.
- *
- * The walk only covers the requested window, so absence from `livePaths` only
- * proves deletion for entries *inside* that window. Pruning everything the walk
- * missed would evict the 30-day entries every time someone looked at 7 days.
- *
- * Replaces an earlier record cap that cleared the whole cache once exceeded,
- * which meant a large enough window never warmed up at all.
- */
-export function pruneScanCache(cache: ScanCache, options: PruneOptions): number {
+/** Keeps saved usage after transcript cleanup, until the reporting retention expires. */
+export function pruneScanCache(cache: ScanCache, retentionCutoffMs: number): number {
   let removed = 0;
   for (const [path, entry] of cache) {
-    const agedOut = entry.mtimeMs < options.retentionCutoffMs;
-    const underWalkedRoot = options.walkedRoots.some((root) => {
-      const relative = NodePath.relative(root, path);
-      return (
-        relative === "" ||
-        (relative !== ".." &&
-          !relative.startsWith(`..${NodePath.sep}`) &&
-          !NodePath.isAbsolute(relative))
-      );
-    });
-    const deleted =
-      underWalkedRoot && entry.mtimeMs >= options.windowStartMs && !options.livePaths.has(path);
-    if (agedOut || deleted) {
+    if (entry.mtimeMs < retentionCutoffMs) {
       cache.delete(path);
       removed += 1;
     }

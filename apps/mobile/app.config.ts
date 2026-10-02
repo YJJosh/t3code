@@ -40,6 +40,7 @@ const DEVELOPMENT_ASSETS = {
   androidAdaptiveForeground,
   androidAdaptiveBackgroundColor: "#347FF8",
   androidAdaptiveBackgroundImage: "./assets/android-icon-background-dev.png",
+  androidSplashIcon: "./assets/android-splash-icon-dev.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
   androidNotificationColor: "#00639B",
@@ -52,6 +53,7 @@ const PREVIEW_ASSETS = {
   androidAdaptiveForeground,
   androidAdaptiveBackgroundColor: "#111533",
   androidAdaptiveBackgroundImage: "./assets/android-icon-background-nightly.png",
+  androidSplashIcon: "./assets/android-splash-icon-nightly.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
   androidNotificationColor: "#7565C7",
@@ -64,6 +66,7 @@ const RELEASE_ASSETS = {
   androidAdaptiveForeground,
   androidAdaptiveBackgroundColor: "#000000",
   androidAdaptiveBackgroundImage: undefined,
+  androidSplashIcon: "./assets/android-splash-icon-prod.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
   androidNotificationColor: "#FFFFFF",
@@ -126,6 +129,7 @@ const dulliFork =
     : undefined;
 
 const DULLI_ASSETS = {
+  androidSplashIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
   appIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
   iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
   splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
@@ -159,6 +163,45 @@ const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
     // frequent-updates entitlement iOS throttles the update budget sooner.
     frequentUpdates: true,
     widgets: [
+      {
+        name: "SubscriptionUsage",
+        displayName: "Subscription usage",
+        description: "Subscription quotas from your connected T3 Code environments.",
+        configuration: {
+          title: "Subscription usage",
+          description:
+            "Both shows Session and Weekly when available. The Lock Screen shows the tightest selected limit.",
+          parameters: {
+            codexPeriod: {
+              title: "Codex limits",
+              type: "enum",
+              default: "auto",
+              values: [
+                { name: "Both", value: "auto" },
+                { name: "Session", value: "session" },
+                { name: "Weekly", value: "weekly" },
+              ],
+            },
+            claudePeriod: {
+              title: "Claude limits",
+              type: "enum",
+              default: "auto",
+              values: [
+                { name: "Both", value: "auto" },
+                { name: "Session", value: "session" },
+                { name: "Weekly", value: "weekly" },
+              ],
+            },
+          },
+        },
+        supportedFamilies: [
+          "systemSmall",
+          "systemMedium",
+          "systemLarge",
+          "systemExtraLarge",
+          "accessoryRectangular",
+        ],
+      },
       {
         name: "AgentActivity",
         displayName: "Agent Activity",
@@ -204,7 +247,7 @@ const config: ExpoConfig = {
   slug: "t3-code",
   platforms: ["ios", "android"],
   scheme: dulliFork?.scheme ?? variant.scheme,
-  version: dulliFork?.versionName ?? "1.1.0",
+  version: dulliFork?.versionName ?? "1.3.1",
   runtimeVersion: {
     // Development manifests resolve on every launch, so avoid fingerprint's
     // expensive native-project calculation there. Preview and production stay
@@ -216,7 +259,7 @@ const config: ExpoConfig = {
   userInterfaceStyle: "automatic",
   updates: {
     // Fork builds must not pull OTA updates from upstream's EAS project.
-    enabled: dulliFork === undefined,
+    enabled: dulliFork === undefined && repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
     url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
@@ -268,6 +311,9 @@ const config: ExpoConfig = {
     icon: assets.appIcon,
     package: dulliFork?.androidPackage ?? variant.androidPackage,
     ...(dulliFork === undefined ? {} : { versionCode: dulliFork.versionCode }),
+    ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
+      ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
+      : {}),
     adaptiveIcon: {
       backgroundColor: assets.androidAdaptiveBackgroundColor,
       ...(assets.androidAdaptiveBackgroundImage
@@ -373,11 +419,24 @@ const config: ExpoConfig = {
           image: assets.splashIcon,
           backgroundColor: "#0a0a0a",
         },
+        android: {
+          // Android 12+ masks the splash icon to a circle over the central two thirds of
+          // its 288dp canvas, so the iOS export's corners get cut. A full-canvas image of
+          // the composed adaptive layers puts the wordmark in the same frame the launcher
+          // icon uses.
+          image: assets.androidSplashIcon,
+          imageWidth: 288,
+          dark: { image: assets.androidSplashIcon },
+        },
       },
     ],
     [
       "expo-build-properties",
       {
+        android: {
+          // Keep the supported floor explicit and covered by native notification tests.
+          minSdkVersion: 24,
+        },
         ios: {
           deploymentTarget: "18.0",
           // AppCheckCore 11.3+ includes Swift and needs module maps for these Objective-C dependencies.
@@ -399,6 +458,7 @@ const config: ExpoConfig = {
     "./plugins/withAndroidCleartextTraffic.cjs",
     "./plugins/withAndroidReleaseSigning.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
+    "./plugins/withAndroidInputBackground.cjs",
     "./plugins/withAndroidModernPopupMenu.cjs",
     "./plugins/withAndroidModernAlertDialog.cjs",
     "./plugins/withAndroidPredictiveBackCompat.cjs",

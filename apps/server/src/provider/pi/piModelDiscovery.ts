@@ -571,7 +571,7 @@ function loadPiDiscoverySnapshotInWorker(
   });
 }
 
-class PiModelDiscoveryError extends Schema.TaggedErrorClass<PiModelDiscoveryError>()(
+class PiModelDiscoveryError extends Schema.TaggedError<PiModelDiscoveryError>()(
   "PiModelDiscoveryError",
   { cause: Schema.Defect() },
 ) {}

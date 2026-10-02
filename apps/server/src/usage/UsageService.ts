@@ -1,28 +1,28 @@
 /**
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
- * The scan reads the provider CLIs' own session files (Claude Code, Codex,
- * Grok Build, and Pi) rather than T3 Code's orchestration projections, so usage covers
- * turns driven outside T3 Code too. This is the approach `ccusage` takes.
+ * The scan reads native session files and databases, including work driven
+ * outside T3 Code, plus Pi sessions and Cursor account-wide history.
  *
- * Transcripts are append-only, so parsed records are memoised per file by
+ * JSONL transcripts are append-only, so parsed records are memoised per file by
  * `(size, mtime)`. A cold 30-day scan of ~1.4 GB lands around 2-3 seconds; warm
  * scans only reparse files that changed, and a file that merely grew resumes
  * from its cached parse position so only the appended bytes are read.
+ * SQLite readers query live databases each scan so WAL writes remain visible.
  *
  * @module UsageService
  */
 import * as NodeOS from "node:os";
 
 import {
-  ClaudeSettings,
-  CodexSettings,
-  GrokSettings,
   PiSettings,
   ProviderDriverKind,
+  ClaudeSettings,
+  CodexSettings,
   type ProviderInstanceConfig,
-  type ServerSettings as ServerSettingsContract,
+  ProviderInstanceId,
   USAGE_CONTRACT_VERSION,
+  type ServerSettings as ServerSettingsValue,
   type UsageProviderKind,
   type UsageSource,
   type UsagePricing,
@@ -30,10 +30,11 @@ import {
   type UsageSummaryInput,
   UsageReadError,
 } from "@t3tools/contracts";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -46,11 +47,14 @@ import * as Semaphore from "effect/Semaphore";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import { ServerConfig } from "../config.ts";
+import { expandHomePath } from "../pathExpansion.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
-import { deriveProviderInstanceConfigMap } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
+import { resolveAntigravityInstanceDirectories } from "../provider/antigravityAuthSupport.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
+import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
+import { readAntigravityUsage } from "./antigravityUsageReader.ts";
+import { readCursorAccountUsage } from "./cursorUsageReader.ts";
 import { resolvePiAgentDir as resolveConfiguredPiAgentDir } from "../provider/pi/piPaths.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
@@ -88,6 +92,9 @@ const MAX_HOURLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** Longest window the UI offers, plus slack. Older entries are pruned. */
 const CACHE_RETENTION_DAYS = 90;
 
+const decodeCodexSettings = Schema.decodeOption(CodexSettings);
+const decodeClaudeSettings = Schema.decodeOption(ClaudeSettings);
+
 /** Pi's predecessor Tau derives the same overrides from its application name. */
 const PI_SESSION_DIR_ENV_NAMES = [
   "PI_CODING_AGENT_SESSION_DIR",
@@ -105,22 +112,30 @@ const PI_SUBAGENT_SESSION_SCAN_OPTIONS: TranscriptFileOptions = {
 };
 const MAX_PI_PROJECT_ANCESTOR_DEPTH = 32;
 const MAX_USAGE_SOURCE_ANCESTORS = 8;
-const decodeClaudeSettingsOption = Schema.decodeUnknownOption(ClaudeSettings);
-const decodeCodexSettingsOption = Schema.decodeUnknownOption(CodexSettings);
-const decodeGrokSettingsOption = Schema.decodeUnknownOption(GrokSettings);
 const decodePiSettingsOption = Schema.decodeUnknownOption(PiSettings);
 
 interface TranscriptDirectory {
   readonly provider: UsageProviderKind;
   readonly dir: string;
   readonly scanOptions?: TranscriptFileOptions;
-  /** False when the scan only covers direct files and cannot prove descendant deletion. */
-  readonly completeForCachePruning?: boolean;
 }
 
 interface PiTranscriptSettings {
-  readonly providers: Pick<ServerSettingsContract["providers"], "pi">;
-  readonly providerInstances: ServerSettingsContract["providerInstances"];
+  readonly providers: Pick<ServerSettingsValue["providers"], "pi">;
+  readonly providerInstances: ServerSettingsValue["providerInstances"];
+}
+
+function matchesScan(
+  filePath: string,
+  dir: string,
+  options: TranscriptFileOptions | undefined,
+  path: Path.Path,
+): boolean {
+  const parts = path.relative(dir, filePath).split(path.sep);
+  if (options?.maxDepth !== undefined && parts.length - 1 > options.maxDepth) return false;
+  if (options?.piSubagentSessionsOnly && (parts.length !== 3 || parts[1] !== "session"))
+    return false;
+  return options?.fileName === undefined || parts.at(-1) === options.fileName;
 }
 
 function piSourceScan(scanOptions: TranscriptFileOptions | undefined) {
@@ -230,9 +245,6 @@ export function resolveConfiguredPiTranscriptDirs(
           directory.scanOptions?.maxDepth ?? 0,
         ),
       },
-      ...(existing.completeForCachePruning === false || directory.completeForCachePruning === false
-        ? { completeForCachePruning: false }
-        : {}),
     });
   };
 
@@ -252,9 +264,6 @@ export function resolveConfiguredPiTranscriptDirs(
         provider: "pi",
         dir: agentDir,
         scanOptions: PI_LEGACY_SESSION_SCAN_OPTIONS,
-        // This root only lists direct files, so it cannot establish that
-        // cached descendants such as `<agent>/sessions/**` disappeared.
-        completeForCachePruning: false,
       },
       "legacy",
     );
@@ -270,99 +279,6 @@ export function resolveConfiguredPiTranscriptDirs(
 
   return [...directories.values()];
 }
-
-/**
- * Claude's config dir is the home itself when overridden, but a default
- * install nests transcripts under `~/.claude/projects`. Probe both.
- */
-const resolveClaudeTranscriptDirectory = Effect.fn("UsageService.resolveClaudeTranscriptDirectory")(
-  function* (homePath: string) {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const nested = path.join(homePath, ".claude", "projects");
-    const nestedExists = yield* fileSystem
-      .exists(nested)
-      .pipe(Effect.catchCause(() => Effect.succeed(false)));
-    return nestedExists ? nested : path.join(homePath, "projects");
-  },
-);
-
-/** Resolves and de-duplicates transcript roots from every configured instance. */
-export const resolveUsageTranscriptDirs = Effect.fn("UsageService.resolveUsageTranscriptDirs")(
-  function* (settings: ServerSettingsContract, hostEnvironment: NodeJS.ProcessEnv = process.env) {
-    const path = yield* Path.Path;
-    const directories = new Map<string, TranscriptDirectory>();
-    const append = (directory: TranscriptDirectory) => {
-      const options = directory.scanOptions;
-      const key = [
-        directory.provider,
-        directory.dir,
-        options?.fileName ?? "",
-        options?.maxDepth ?? "",
-        options?.piSubagentSessionsOnly === true ? "subagents" : "",
-      ].join("\0");
-      if (!directories.has(key)) directories.set(key, directory);
-    };
-
-    for (const instance of Object.values(deriveProviderInstanceConfigMap(settings))) {
-      const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
-      const homePath =
-        environment.HOME?.trim() || environment.USERPROFILE?.trim() || NodeOS.homedir();
-
-      if (instance.driver === "claudeAgent") {
-        const decoded = decodeClaudeSettingsOption(instance.config ?? {});
-        if (Option.isNone(decoded)) continue;
-        const configuredHome = decoded.value.homePath.trim();
-        const inheritedHome = environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
-        const claudeHome =
-          configuredHome.length > 0
-            ? yield* resolveClaudeHomePath(decoded.value)
-            : inheritedHome.length > 0
-              ? resolvePiPath(inheritedHome, homePath, path)
-              : path.resolve(homePath);
-        append({ provider: "claude", dir: yield* resolveClaudeTranscriptDirectory(claudeHome) });
-        continue;
-      }
-
-      if (instance.driver === "codex") {
-        const decoded = decodeCodexSettingsOption(instance.config ?? {});
-        if (Option.isNone(decoded)) continue;
-        const configuredHome = decoded.value.homePath.trim();
-        const inheritedHome = environment.CODEX_HOME?.trim() ?? "";
-        const codexHome =
-          configuredHome.length > 0
-            ? decoded.value.homePath
-            : inheritedHome.length > 0
-              ? resolvePiPath(inheritedHome, homePath, path)
-              : path.join(homePath, ".codex");
-        const layout = yield* resolveCodexHomeLayout({ ...decoded.value, homePath: codexHome });
-        append({ provider: "codex", dir: path.join(layout.sharedHomePath, "sessions") });
-        continue;
-      }
-
-      if (instance.driver === "grok") {
-        const decoded = decodeGrokSettingsOption(instance.config ?? {});
-        if (Option.isNone(decoded)) continue;
-        const inheritedHome = environment.GROK_HOME?.trim() ?? "";
-        const grokHome =
-          inheritedHome.length > 0
-            ? resolvePiPath(inheritedHome, homePath, path)
-            : path.join(homePath, ".grok");
-        append({
-          provider: "grok",
-          dir: path.join(grokHome, "sessions"),
-          scanOptions: { fileName: "updates.jsonl" },
-        });
-      }
-    }
-
-    for (const directory of resolveConfiguredPiTranscriptDirs(settings, hostEnvironment, path)) {
-      append(directory);
-    }
-
-    return [...directories.values()];
-  },
-);
 
 export function resolveUsageSourceReadCoverage(input: {
   readonly unreadableFiles: number;
@@ -388,7 +304,7 @@ export function resolveUsageSourceReadCoverage(input: {
 /** Finds bounded, de-duplicated Pi subagent roots reachable from project paths. */
 export const resolvePiSubagentTranscriptDirs = Effect.fn(
   "UsageService.resolvePiSubagentTranscriptDirs",
-)(function* (projectPaths: Iterable<string>) {
+)(function* (projectPaths: Iterable<string>, retainedRoots: ReadonlySet<string> = new Set()) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const roots = new Set<string>();
@@ -406,7 +322,7 @@ export const resolvePiSubagentTranscriptDirs = Effect.fn(
       const exists = yield* fileSystem
         .exists(runs)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
-      if (exists) roots.add(runs);
+      if (exists || retainedRoots.has(runs)) roots.add(runs);
 
       const parent = path.dirname(current);
       if (parent === current) break;
@@ -416,6 +332,77 @@ export const resolvePiSubagentTranscriptDirs = Effect.fn(
 
   return [...roots];
 });
+
+/** Includes disabled accounts and canonical default-slot overrides, just like the registry. */
+export const resolveUsageTranscriptDirs = Effect.fn("UsageService.resolveUsageTranscriptDirs")(
+  function* (settings: ServerSettingsValue, hostEnvironment: NodeJS.ProcessEnv = process.env) {
+    const path = yield* Path.Path;
+    const dirs: TranscriptDirectory[] = [];
+    for (const driver of ["claudeAgent", "codex", "grok"] as const) {
+      // Disabled accounts still have history. Explicit default slots replace
+      // the legacy settings, just as they do in the provider registry.
+      const instances: Array<
+        Pick<ProviderInstanceConfig, "config" | "environment"> & { instanceId: ProviderInstanceId }
+      > = Object.entries(settings.providerInstances)
+        .filter(([, instance]) => instance.driver === driver)
+        .map(([id, instance]) => ({ ...instance, instanceId: ProviderInstanceId.make(id) }));
+      if (!Object.hasOwn(settings.providerInstances, driver)) {
+        instances.push({
+          config: settings.providers[driver],
+          instanceId: ProviderInstanceId.make(driver),
+        });
+      }
+      for (const instance of instances) {
+        const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
+        const homePath =
+          environment.HOME?.trim() || environment.USERPROFILE?.trim() || NodeOS.homedir();
+        const provider = driver === "claudeAgent" ? "claude" : driver;
+        let home: string;
+        if (driver === "codex") {
+          const decoded = decodeCodexSettings(instance.config ?? {});
+          if (Option.isNone(decoded)) continue;
+          const codexConfig = decoded.value;
+          const environmentHome = environment.CODEX_HOME?.trim() || path.join(homePath, ".codex");
+          const layout = yield* resolveCodexHomeLayout(
+            codexConfig.setupMode !== "managed" &&
+              !codexConfig.homePath.trim() &&
+              !codexConfig.shadowHomePath.trim()
+              ? { ...codexConfig, homePath: resolvePiPath(environmentHome, homePath, path) }
+              : codexConfig,
+          );
+          home = layout.sharedHomePath;
+        } else if (driver === "claudeAgent") {
+          const decoded = decodeClaudeSettings(instance.config ?? {});
+          if (Option.isNone(decoded)) continue;
+          const configured = decoded.value.homePath.trim();
+          home = configured
+            ? resolvePiPath(configured, homePath, path)
+            : resolvePiPath(
+                environment.CLAUDE_CONFIG_DIR?.trim() || path.join(homePath, ".claude"),
+                homePath,
+                path,
+              );
+        } else {
+          home = resolvePiPath(
+            environment.GROK_HOME?.trim() || path.join(homePath, ".grok"),
+            homePath,
+            path,
+          );
+        }
+        const directory = path.resolve(home, provider === "claude" ? "projects" : "sessions");
+        dirs.push({
+          provider,
+          dir: directory,
+          ...(provider === "grok" ? { scanOptions: { fileName: "updates.jsonl" } } : {}),
+        });
+      }
+    }
+    dirs.push(...resolveConfiguredPiTranscriptDirs(settings, hostEnvironment, path));
+    return [
+      ...new Map(dirs.map((directory) => [encodeUsageRecordKey(directory), directory])).values(),
+    ];
+  },
+);
 
 /** On-disk shape of the rate snapshot. */
 const RatesCacheFile = Schema.Struct({
@@ -433,6 +420,11 @@ const encodeRatesCache = Schema.encodeEffect(
 const ScanCacheJson = Schema.fromJsonString(Schema.Unknown as unknown as Schema.Codec<unknown>);
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
 const encodeScanCacheFile = Schema.encodeEffect(ScanCacheJson);
+const encodeUsageRecordKey = Schema.encodeSync(ScanCacheJson);
+const CachedSource = Schema.Struct({ dir: Schema.String, volumeId: Schema.String });
+const decodeCachedSources = Schema.decodeUnknownOption(
+  Schema.Struct({ sources: Schema.Record(Schema.String, CachedSource) }),
+);
 
 export class UsageService extends Context.Service<
   UsageService,
@@ -471,15 +463,22 @@ export const layerTest = Layer.succeed(
 );
 
 export const make = Effect.gen(function* () {
+  const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig;
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const httpClient = yield* HttpClient.HttpClient;
   const hostEnvironment = yield* HostProcessEnvironment;
+  const platform = yield* HostProcessPlatform;
 
   const fileCache: ScanCache = new Map();
+  const sourceCache = new Map<string, typeof CachedSource.Type>();
   let cacheDirty = false;
+  const isWithinDirectory = (filePath: string, dir: string) => {
+    const relative = path.relative(dir, filePath);
+    return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+  };
 
   const ratesCachePath = path.join(config.stateDir, "usage-model-rates.json");
   const scanCachePath = path.join(config.stateDir, "usage-scan-cache.json");
@@ -547,7 +546,7 @@ export const make = Effect.gen(function* () {
 
     yield* encodeRatesCache({ fetchedAtMs: now, document: fetched }).pipe(
       Effect.flatMap((serialized) => fileSystem.writeFileString(ratesCachePath, serialized)),
-      Effect.catchCause(() => Effect.void),
+      Effect.ignoreCause,
     );
   });
 
@@ -570,6 +569,57 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  /** Keep source identity stable across aliases, cleanup and directory recreation. */
+  const resolveTranscriptSource = Effect.fn("UsageService.resolveTranscriptSource")(function* (
+    transcriptDir: TranscriptDirectory,
+    retentionCutoffMs: number,
+  ) {
+    const { provider, dir: directory } = transcriptDir;
+    const sourceKey = provider + "\0" + directory;
+    const previous = sourceCache.get(sourceKey);
+    // Keep canonical paths and source fingerprints stable after root cleanup,
+    // including aliases and clients merging pre-cleanup environment summaries.
+    const dir = yield* fileSystem
+      .realPath(directory)
+      .pipe(Effect.orElseSucceed(() => previous?.dir ?? directory));
+    const currentVolumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
+    const hasRetainedHistory = fileCache
+      .entries()
+      .some(
+        ([filePath, entry]) =>
+          entry.provider === provider &&
+          entry.mtimeMs >= retentionCutoffMs &&
+          entry.records.length + entry.tailRecords.length > 0 &&
+          isWithinDirectory(filePath, dir),
+      );
+    // A recreated directory still reports the retained history under its old identity.
+    const volumeId =
+      previous?.dir === dir && (hasRetainedHistory || !currentVolumeId)
+        ? previous.volumeId || currentVolumeId
+        : currentVolumeId;
+    if (previous?.dir !== dir || previous.volumeId !== volumeId) {
+      sourceCache.set(sourceKey, { dir, volumeId });
+      cacheDirty = true;
+    }
+    return { ...transcriptDir, dir, volumeId };
+  });
+
+  const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* (
+    settings: ServerSettingsValue,
+    retentionCutoffMs: number,
+  ) {
+    const dirs: (TranscriptDirectory & { readonly volumeId: string })[] = [];
+    const seen = new Set<string>();
+    for (const transcriptDir of yield* resolveUsageTranscriptDirs(settings, hostEnvironment)) {
+      const resolved = yield* resolveTranscriptSource(transcriptDir, retentionCutoffMs);
+      const key = `${resolved.provider}\0${resolved.dir}\0${encodeUsageRecordKey(resolved.scanOptions ?? null)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      dirs.push(resolved);
+    }
+    return dirs;
+  });
+
   /**
    * Loads the persisted scan cache exactly once per process.
    *
@@ -585,6 +635,11 @@ export const make = Effect.gen(function* () {
       );
       if (document === null) return;
       for (const [path, entry] of decodeScanCache(document)) fileCache.set(path, entry);
+      const sources = decodeCachedSources(document);
+      if (Option.isSome(sources)) {
+        for (const [key, source] of Object.entries(sources.value.sources))
+          sourceCache.set(key, source);
+      }
     }),
   );
 
@@ -592,13 +647,16 @@ export const make = Effect.gen(function* () {
     if (!cacheDirty) return;
     // Cleared only after the write lands, so a failed persist is retried on
     // the next scan instead of leaving disk permanently stale.
-    yield* encodeScanCacheFile(encodeScanCache(fileCache)).pipe(
+    yield* encodeScanCacheFile({
+      ...encodeScanCache(fileCache),
+      sources: Object.fromEntries(sourceCache),
+    }).pipe(
       Effect.flatMap((serialized) => fileSystem.writeFileString(scanCachePath, serialized)),
       Effect.map(() => {
         cacheDirty = false;
       }),
       // A cache we cannot write is a slower next start, not a failed read.
-      Effect.catchCause(() => Effect.void),
+      Effect.ignoreCause,
     );
   });
 
@@ -653,7 +711,12 @@ export const make = Effect.gen(function* () {
       );
       // A read failure is not an empty transcript: caching it under this
       // (size, mtime) would silently drop the file's usage until it changes.
-      if (parsed === null) return { records: [], projectPaths: [], readFailed: true };
+      if (parsed === null)
+        return {
+          records: cached?.provider === provider ? [...cached.records, ...cached.tailRecords] : [],
+          projectPaths: cached?.provider === provider ? cached.projectPaths : [],
+          readFailed: true,
+        };
       // One seen set spans the cached base, appended lines and tail so resumed
       // parsing deduplicates exactly like a full parse, including Pi fork copies.
       const base = parsed.resumed && cached !== undefined ? cached.records : [];
@@ -680,88 +743,264 @@ export const make = Effect.gen(function* () {
 
   /** One provider directory's walk and parse, before rates are involved. */
   interface ScannedDir extends TranscriptDirectory {
-    readonly volumeId: string;
     readonly ancestorVolumeIds?: readonly string[];
-    readonly unreadableDirectories: number;
+    readonly unreadableDirectories?: number;
+    readonly volumeId: string;
+    readonly hostId?: string;
+    readonly status?: UsageSource["status"];
+    readonly message?: string;
+    readonly action?: UsageSource["action"];
     /** Parsed records per file, or `null` when the directory does not exist. */
     readonly files:
       | readonly {
           readonly path: string;
           readonly records: readonly UsageRecord[];
-          readonly readFailed: boolean;
+          readonly readFailed?: boolean;
         }[]
       | null;
   }
 
   const collectDirs = Effect.fn("UsageService.collectDirs")(function* (
     windowStartMs: number,
-    settings: ServerSettingsContract,
+    settings: ServerSettingsValue,
+    retentionCutoffMs: number,
   ) {
-    const initialDirs = yield* resolveUsageTranscriptDirs(settings, hostEnvironment).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
+    // The home resolvers ask for `Path` themselves; satisfy them from the
+    // instance we already hold so the scan stays context-free.
+    const dirs = yield* resolveTranscriptDirs(settings, retentionCutoffMs).pipe(
       Effect.provideService(Path.Path, path),
     );
-    // Pi project paths can discover additional child-session roots mid-scan.
-    const dirs: TranscriptDirectory[] = [...initialDirs];
-    const knownDirs = new Set(dirs.map(({ provider, dir }) => `${provider}\0${dir}`));
+    const retainedPiRoots = new Set(
+      [...sourceCache.keys()].filter((key) => key.startsWith("pi\0")).map((key) => key.slice(3)),
+    );
     const scanned: ScannedDir[] = [];
-    for (let dirIndex = 0; dirIndex < dirs.length; dirIndex += 1) {
-      const transcriptDir = dirs[dirIndex];
-      if (transcriptDir === undefined) continue;
+    const knownDirs = new Set(dirs.map(({ provider, dir }) => `${provider}\0${dir}`));
+    for (let dirIndex = 0; dirIndex < dirs.length; dirIndex++) {
+      const transcriptDir = dirs[dirIndex]!;
       const { provider, dir, scanOptions } = transcriptDir;
-      const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
-      const exists = yield* fileSystem
-        .exists(dir)
-        .pipe(Effect.catchCause(() => Effect.succeed(false)));
-      if (!exists) {
-        scanned.push({ ...transcriptDir, volumeId, files: null, unreadableDirectories: 0 });
-        continue;
-      }
+      const exists = yield* fileSystem.exists(dir).pipe(Effect.orElseSucceed(() => false));
       const ancestorVolumeIds =
         provider === "pi"
           ? yield* Effect.promise(() => readAncestorVolumeIds(dir, path))
           : undefined;
-      const listing = yield* Effect.promise(() =>
-        listTranscriptFiles(dir, windowStartMs, scanOptions),
-      );
+      const listing = exists
+        ? yield* Effect.promise(() => listTranscriptFiles(dir, windowStartMs, scanOptions))
+        : null;
       const parsedFiles: { path: string; records: readonly UsageRecord[]; readFailed: boolean }[] =
         [];
       const projectPaths = new Set<string>();
-      for (const file of listing.files) {
+      for (const file of listing?.files ?? []) {
         const read = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
-        for (const projectPath of read.projectPaths) projectPaths.add(projectPath);
+        for (const project of read.projectPaths) projectPaths.add(project);
         parsedFiles.push({ path: file.path, records: read.records, readFailed: read.readFailed });
       }
+      // Saved parent metadata must keep child discovery alive after parent cleanup.
+      if (provider === "pi")
+        for (const [filePath, entry] of fileCache) {
+          if (
+            entry.provider === provider &&
+            entry.mtimeMs >= retentionCutoffMs &&
+            isWithinDirectory(filePath, dir)
+          ) {
+            for (const project of entry.projectPaths) projectPaths.add(project);
+          }
+        }
       scanned.push({
         ...transcriptDir,
-        volumeId,
-        ...(ancestorVolumeIds === undefined ? {} : { ancestorVolumeIds }),
-        files: parsedFiles,
-        unreadableDirectories: listing.unreadableDirectories,
+        ...(ancestorVolumeIds ? { ancestorVolumeIds } : {}),
+        files: listing === null ? null : parsedFiles,
+        unreadableDirectories: listing?.unreadableDirectories ?? 0,
       });
       if (provider === "pi" && projectPaths.size > 0) {
-        const subagentDirs = yield* resolvePiSubagentTranscriptDirs(projectPaths).pipe(
+        const roots = yield* resolvePiSubagentTranscriptDirs(projectPaths, retainedPiRoots).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
         );
-        for (const subagentDir of subagentDirs) {
-          const key = `pi\0${subagentDir}`;
+        for (const root of roots) {
+          const resolved = yield* resolveTranscriptSource(
+            { provider: "pi", dir: root, scanOptions: PI_SUBAGENT_SESSION_SCAN_OPTIONS },
+            retentionCutoffMs,
+          );
+          const key = `pi\0${resolved.dir}`;
           if (knownDirs.has(key)) continue;
           knownDirs.add(key);
-          dirs.push({
-            provider: "pi",
-            dir: subagentDir,
-            scanOptions: PI_SUBAGENT_SESSION_SCAN_OPTIONS,
-          });
+          dirs.push(resolved);
         }
       }
     }
+
+    const home = NodeOS.homedir();
+    const envRoots = Effect.fnUntraced(function* (key: string, defaults: readonly string[]) {
+      const roots = hostEnvironment[key]
+        ?.split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const canonical = new Set<string>();
+      for (const root of roots?.length ? roots : defaults) {
+        const resolved = path.resolve(expandHomePath(root));
+        canonical.add(
+          yield* fileSystem.realPath(resolved).pipe(Effect.orElseSucceed(() => resolved)),
+        );
+      }
+      return [...canonical];
+    });
+    const dataHome = hostEnvironment["XDG_DATA_HOME"]?.trim();
+    for (const dir of yield* envRoots("OPENCODE_DATA_DIR", [
+      path.join(
+        dataHome && path.isAbsolute(dataHome) ? dataHome : path.join(home, ".local", "share"),
+        "opencode",
+      ),
+    ])) {
+      const result = yield* Effect.promise(() => readOpenCodeUsage(dir, windowStartMs));
+      scanned.push({
+        provider: "opencode",
+        dir,
+        volumeId: yield* Effect.promise(() => readDirectoryVolumeId(dir)),
+        files: result.missing && !result.error ? null : result.files,
+        status: result.error ? "partial" : "ok",
+        ...(result.error ? { message: "Some OpenCode history could not be read." } : {}),
+      });
+    }
+    const antigravityRoots = yield* envRoots("ANTIGRAVITY_DATA_DIR", [
+      ...["antigravity", "antigravity-cli", "antigravity-ide", "antigravity-backup"].map((name) =>
+        path.join(home, ".gemini", name),
+      ),
+      path.join(home, ".config", "antigravity"),
+    ]);
+    for (const [instanceId, instance] of Object.entries(settings.providerInstances)) {
+      if (instance.driver === "antigravity") {
+        const directories = yield* resolveAntigravityInstanceDirectories(
+          config.stateDir,
+          ProviderInstanceId.make(instanceId),
+        ).pipe(
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(Path.Path, path),
+          Effect.mapError(
+            (cause) =>
+              new UsageReadError({
+                reason: "scanFailed",
+                detail: "Antigravity profile directory could not be resolved.",
+                cause,
+              }),
+          ),
+        );
+        antigravityRoots.push(path.join(directories.profile, "antigravity-acp"));
+      }
+    }
+    const antigravityDirs = new Set<string>();
+    for (const root of antigravityRoots) {
+      const resolvedRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
+      const nested = path.join(resolvedRoot, "conversations");
+      const dir = (yield* fileSystem
+        .exists(nested)
+        .pipe(Effect.catchCause(() => Effect.succeed(false))))
+        ? nested
+        : resolvedRoot;
+      antigravityDirs.add(yield* fileSystem.realPath(dir).pipe(Effect.orElseSucceed(() => dir)));
+    }
+    const antigravity = yield* Effect.promise(() =>
+      readAntigravityUsage([...antigravityDirs], windowStartMs),
+    );
+    for (const dir of antigravityDirs) {
+      const exists = yield* fileSystem
+        .exists(dir)
+        .pipe(Effect.catchCause(() => Effect.succeed(false)));
+      const failed = antigravity.errors.some(
+        (error) => error === dir || error.startsWith(`${dir}${path.sep}`),
+      );
+      scanned.push({
+        provider: "antigravity",
+        dir,
+        volumeId: yield* Effect.promise(() => readDirectoryVolumeId(dir)),
+        files: !exists && !failed ? null : antigravity.files.filter((file) => file.root === dir),
+        status: failed ? "partial" : "ok",
+        ...(failed ? { message: "Some Antigravity history could not be read." } : {}),
+      });
+    }
+    const cursorUserHome =
+      (platform === "win32" ? hostEnvironment["USERPROFILE"] : hostEnvironment["HOME"]) || home;
+    const configHome = hostEnvironment["XDG_CONFIG_HOME"]?.trim();
+    const cursorHome =
+      platform === "darwin"
+        ? path.join(cursorUserHome, "Library", "Application Support")
+        : platform === "win32"
+          ? hostEnvironment["APPDATA"] || path.join(cursorUserHome, "AppData", "Roaming")
+          : configHome && path.isAbsolute(configHome)
+            ? configHome
+            : path.join(cursorUserHome, ".config");
+    const cursorAuthPath =
+      platform === "darwin"
+        ? path.join(cursorUserHome, ".cursor", "auth.json")
+        : path.join(cursorHome, platform === "win32" ? "Cursor" : "cursor", "auth.json");
+    const credentialStore = hostEnvironment["AGENT_CLI_CREDENTIAL_STORE"];
+    const loginUnavailable =
+      Boolean(hostEnvironment["CURSOR_AUTH_TOKEN"]?.trim()) ||
+      Boolean(hostEnvironment["CURSOR_API_KEY"]?.trim()) ||
+      credentialStore === "memory";
+    if (
+      platform === "darwin" &&
+      credentialStore !== "file" &&
+      !loginUnavailable &&
+      !settings.cursorKeychainUsageEnabled
+    ) {
+      scanned.push({
+        provider: "cursor",
+        dir: cursorAuthPath,
+        volumeId: "",
+        files: null,
+        message: "Cursor account usage is off on this environment.",
+        action: "enableCursorKeychain",
+      });
+      return scanned;
+    }
+    const cursorUntilMs = yield* Clock.currentTimeMillis;
+    const account = loginUnavailable
+      ? {
+          accountKey: null,
+          records: [],
+          missing: true,
+          error: "Cursor account history needs a Cursor CLI login on this server.",
+        }
+      : yield* Effect.promise(() =>
+          readCursorAccountUsage(
+            platform === "darwin" && credentialStore !== "file"
+              ? { kind: "keychain" }
+              : cursorAuthPath,
+            windowStartMs,
+            cursorUntilMs,
+          ),
+        );
+    // No saved login means there is no account source to report, not a setup error.
+    if (account.missing && account.error === null) return scanned;
+    if (account.accountKey !== null && account.error === null && !account.missing) {
+      // The same account includes CLI and desktop history from every machine.
+      // A stable remote fingerprint prevents connected environments counting it twice.
+      const source = `cursor-account:${account.accountKey}`;
+      scanned.push({
+        provider: "cursor",
+        dir: source,
+        hostId: "cursor.com",
+        volumeId: account.accountKey,
+        files: [{ path: source, records: account.records }],
+        status: "ok",
+      });
+      return scanned;
+    }
+    scanned.push({
+      provider: "cursor",
+      dir: cursorAuthPath,
+      volumeId: yield* Effect.promise(() => readDirectoryVolumeId(cursorAuthPath)),
+      // Never combine a local fallback with another server's account-wide history.
+      files: null,
+      message:
+        account.error ?? "Cursor account history needs a Cursor CLI login saved on this server.",
+    });
     return scanned;
   });
 
   const scanSummary = Effect.fn("UsageService.scanSummary")(function* (
     input: UsageSummaryInput,
-    settings: ServerSettingsContract,
+    settings: ServerSettingsValue,
   ) {
     if (input.sinceDay > input.untilDay) {
       return yield* new UsageReadError({
@@ -808,11 +1047,13 @@ export const make = Effect.gen(function* () {
     const windowStartMs =
       (hourlyWindow?.sinceTimeMs ?? DateTime.toEpochMillis(windowStart.value)) - MTIME_SLACK_MS;
 
+    const retentionCutoffMs = startedAtMs - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
     // Pricing only matters once records are aggregated, so the rate table
     // loads while transcripts stream instead of gating them: a cold rates
     // fetch on a slow network no longer delays the scan by its own timeout.
     const [, scannedDirs] = yield* Effect.all(
-      [ensureRates(false), collectDirs(windowStartMs, settings)],
+      [ensureRates(false), collectDirs(windowStartMs, settings, retentionCutoffMs)],
       { concurrency: 2 },
     );
 
@@ -827,90 +1068,105 @@ export const make = Effect.gen(function* () {
     });
 
     const sources: UsageSource[] = [];
-    const livePaths = new Set<string>();
-    const processedFiles = new Set<string>();
-    const walkedRoots: string[] = [];
 
-    for (const transcriptDir of scannedDirs) {
-      const { provider, dir, files, volumeId, ancestorVolumeIds, scanOptions } = transcriptDir;
+    const processedFiles = new Set<string>();
+    for (const {
+      ancestorVolumeIds,
+      scanOptions,
+      unreadableDirectories = 0,
+      provider,
+      dir,
+      volumeId,
+      files,
+      status,
+      message,
+      action,
+      hostId: sourceHostId,
+    } of scannedDirs) {
       const sourceIndex = sources.length;
       const scan = provider === "pi" ? piSourceScan(scanOptions) : undefined;
-      const fingerprint = {
-        hostId,
-        provider,
-        resolvedHomePath: dir,
-        volumeId,
-        ...(ancestorVolumeIds === undefined ? {} : { ancestorVolumeIds }),
-      };
-      if (files === null) {
-        sources.push({
-          fingerprint,
-          ...(scan === undefined ? {} : { scan }),
-          status: "missing",
-          scannedFiles: 0,
-          skippedFiles: 0,
-          malformedRecords: 0,
-          distinctSessions: 0,
-          message: "No transcript directory on this environment.",
-        });
-        continue;
+      const retainedFiles = [...(files ?? [])];
+      const livePaths = new Set(retainedFiles.map((file) => file.path));
+      // Cleanup may remove transcripts, but the usage we already saved still
+      // contributes to this source. Keep the normal aggregation and dedupe path.
+      for (const [filePath, entry] of fileCache) {
+        if (
+          entry.provider !== provider ||
+          entry.mtimeMs < retentionCutoffMs ||
+          livePaths.has(filePath) ||
+          !isWithinDirectory(filePath, dir) ||
+          !matchesScan(filePath, dir, scanOptions, path)
+        )
+          continue;
+        retainedFiles.push({ path: filePath, records: [...entry.records, ...entry.tailRecords] });
       }
-
-      // Only a complete recursive walk proves absent cached descendants were
-      // deleted. The direct-only Pi legacy root cannot prove that either.
-      if (
-        transcriptDir.unreadableDirectories === 0 &&
-        transcriptDir.completeForCachePruning !== false
-      ) {
-        walkedRoots.push(dir);
-      }
+      let unreadableFiles = 0;
       let scannedFiles = 0;
       let skippedFiles = 0;
-      let unreadableFiles = 0;
       // Distinct per directory. Buckets carry per-cell session counts, but a
       // session spans days and models, so clients total this figure instead.
       const sessionIds = new Set<string>();
 
-      for (const file of files) {
-        livePaths.add(file.path);
-        const processedFileKey = `${provider}\0${file.path}`;
-        if (processedFiles.has(processedFileKey)) continue;
-        processedFiles.add(processedFileKey);
-        if (file.readFailed) unreadableFiles += 1;
+      for (const file of retainedFiles) {
+        if (file.readFailed) unreadableFiles++;
+        const fileKey = `${provider}\0${file.path}`;
+        if (processedFiles.has(fileKey)) continue;
+        processedFiles.add(fileKey);
         if (file.records.length === 0) {
           skippedFiles += 1;
           continue;
         }
         scannedFiles += 1;
+        const codexEventOccurrences = new Map<string, number>();
         for (const record of file.records) {
-          // Only sessions that contributed in-window count: the mtime slack
-          // admits boundary files whose records fall outside the range.
-          if (aggregator.add(record, sourceIndex) && record.sessionId.length > 0) {
+          let usageRecord = record;
+          if (record.provider === "codex" && record.sessionId.length > 0) {
+            // Match moved rollout copies without collapsing repeated equal events
+            // within one rollout (timestamps can have only second precision).
+            const key = encodeUsageRecordKey([
+              record.provider,
+              record.sessionId,
+              record.timestampMs,
+              record.model,
+              record.totals,
+            ]);
+            const occurrence = (codexEventOccurrences.get(key) ?? 0) + 1;
+            codexEventOccurrences.set(key, occurrence);
+            usageRecord = { ...record, dedupeKey: key + ":" + occurrence };
+          }
+          // Only sessions contributing in-window count; the mtime slack can
+          // admit boundary files whose records fall outside the range.
+          if (aggregator.add(usageRecord, sourceIndex, dir) && record.sessionId.length > 0) {
             sessionIds.add(record.sessionId);
           }
         }
       }
 
+      const coverage = resolveUsageSourceReadCoverage({ unreadableFiles, unreadableDirectories });
       sources.push({
-        fingerprint,
-        ...(scan === undefined ? {} : { scan }),
-        ...resolveUsageSourceReadCoverage({
-          unreadableFiles,
-          unreadableDirectories: transcriptDir.unreadableDirectories,
-        }),
+        fingerprint: {
+          hostId: sourceHostId ?? hostId,
+          provider,
+          resolvedHomePath: dir,
+          volumeId,
+          ...(ancestorVolumeIds ? { ancestorVolumeIds } : {}),
+        },
+        ...(scan ? { scan } : {}),
+        // Clients exclude missing sources, so saved records remain an available source.
+        status: files === null && scannedFiles === 0 ? "missing" : (status ?? coverage.status),
         scannedFiles,
         skippedFiles,
         malformedRecords: 0,
         distinctSessions: sessionIds.size,
+        message:
+          message ??
+          coverage.message ??
+          (files === null ? "No transcript directory on this environment." : null),
+        ...(action ? { action } : {}),
       });
     }
 
-    const pruned = pruneScanCache(fileCache, {
-      livePaths,
-      walkedRoots,
-      windowStartMs,
-      retentionCutoffMs: startedAtMs - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000,
-    });
+    const pruned = pruneScanCache(fileCache, retentionCutoffMs);
     if (pruned > 0) cacheDirty = true;
     yield* persistScanCache();
 
@@ -932,21 +1188,16 @@ export const make = Effect.gen(function* () {
   });
 
   /**
-   * In-flight scans by window, custom prices and provider configuration, so
-   * concurrent identical requests share one scan without reusing a scan of
-   * outdated transcript roots after an instance's settings change.
+   * Identical requests share one scan; settings changes must not reuse scans
+   * of outdated roots, prices or Cursor credential permissions.
    */
   const inflightScans = new Map<string, Deferred.Deferred<UsageSummary, UsageReadError>>();
 
-  const scanKey = (input: UsageSummaryInput, settings: ServerSettingsContract): string =>
-    JSON.stringify([
-      input.timeZone,
-      input.sinceDay,
-      input.untilDay,
-      input.resolution ?? "day",
-      input.sinceTime ?? null,
-      input.untilTime ?? null,
+  const scanKey = (input: UsageSummaryInput, settings: ServerSettingsValue): string =>
+    encodeUsageRecordKey([
+      input,
       settings.usagePriceOverrides,
+      settings.cursorKeychainUsageEnabled,
       settings.providers,
       settings.providerInstances,
     ]);

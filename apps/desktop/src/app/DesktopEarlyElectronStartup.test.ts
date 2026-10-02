@@ -81,7 +81,10 @@ describe("DesktopEarlyElectronStartup", () => {
     });
 
     assert.deepEqual(options, {
+      isDevelopment: true,
+      isDulli: false,
       linuxWmClass: "t3code-dev",
+      linuxDesktopEntryName: "com.t3tools.T3Code.Development.desktop",
       passwordStore: "gnome-libsecret",
     });
   });
@@ -99,6 +102,9 @@ describe("DesktopEarlyElectronStartup", () => {
     });
 
     assert.deepEqual(options, {
+      isDevelopment: false,
+      isDulli: true,
+      linuxDesktopEntryName: "t3-dulli-clean.desktop",
       linuxWmClass: "t3-dulli",
       passwordStore: "kwallet6",
     });

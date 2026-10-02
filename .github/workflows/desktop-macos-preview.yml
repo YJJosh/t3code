@@ -41,7 +41,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
           cache: true
@@ -52,15 +52,16 @@ jobs:
 
       - name: Cache resource monitor
         id: resource_monitor_cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: native/resource-monitor/target/aarch64-apple-darwin/release/t3-resource-monitor
           key: resource-monitor-aarch64-apple-darwin-${{ hashFiles('native/resource-monitor/Cargo.lock', 'native/resource-monitor/Cargo.toml', 'native/resource-monitor/src/**') }}
 
       - name: Setup Rust
         if: steps.resource_monitor_cache.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin
 
       - id: version
@@ -105,7 +106,7 @@ jobs:
       # archive: false uploads the file as its own artifact named after the
       # file, so the publish job downloads by *.dmg pattern, not by name.
       - name: Upload macOS DMG
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           path: release/*.dmg
           if-no-files-found: error
@@ -129,7 +130,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Download macOS DMG
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: "*.dmg"
           merge-multiple: true
@@ -214,7 +215,7 @@ jobs:
 
       - name: Comment download link
         if: steps.upload.outputs.download_url != ''
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           DOWNLOAD_URL: ${{ steps.upload.outputs.download_url }}
           DMG_NAME: ${{ needs.build.outputs.dmg_name }}
@@ -327,7 +328,7 @@ jobs:
 
       - name: Mark the preview comment as removed
         if: steps.delete.outputs.removed == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const marker = "<!-- desktop-macos-preview -->";
