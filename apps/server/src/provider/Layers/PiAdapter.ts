@@ -2647,10 +2647,20 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const envelope = {
           action: input.action,
           request_id: requestId,
-          ...(input.action !== "replay" ? { terminal_id: input.terminalId } : {}),
+          ...("terminalId" in input ? { terminal_id: input.terminalId } : {}),
           ...("clientId" in input ? { client_id: input.clientId } : {}),
           ...(input.action === "send" ? { data: input.data } : {}),
           ...(input.action === "resize" ? { cols: input.cols, rows: input.rows } : {}),
+          ...(input.action === "start"
+            ? {
+                command: input.command,
+                ...(input.title !== undefined ? { title: input.title } : {}),
+                ...(input.interactive !== undefined ? { interactive: input.interactive } : {}),
+                ...(input.keepOpen !== undefined ? { keep_open: input.keepOpen } : {}),
+                ...(input.cols !== undefined ? { cols: input.cols } : {}),
+                ...(input.rows !== undefined ? { rows: input.rows } : {}),
+              }
+            : {}),
         };
         const encoded = yield* encodeUnknownJsonString(envelope).pipe(
           Effect.mapError(

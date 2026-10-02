@@ -29,6 +29,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "agents",
+  "terminals",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -85,7 +86,9 @@ export type RightPanelSurface =
     }
   /** The thread's linked pull requests, one singleton tab beside any number of `pull-request` tabs. */
   | { id: "pull-requests"; kind: "pull-requests" }
-  | { id: "agents"; kind: "agents" };
+  | { id: "agents"; kind: "agents" }
+  /** Shared (Pi background) terminals; `terminalId` preselects one when opened from a row. */
+  | { id: "terminals"; kind: "terminals"; terminalId?: string };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v9 removed the "plan" surface kind (plans render inline in the transcript).
@@ -131,6 +134,8 @@ interface RightPanelStoreState {
     ref: ScopedThreadRef,
     kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
   ) => void;
+  /** Open the shared-terminals surface, optionally selecting one terminal. */
+  openTerminals: (ref: ScopedThreadRef, terminalId?: string) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
@@ -191,6 +196,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "agents":
       return { id: "agents", kind };
+    case "terminals":
+      return { id: "terminals", kind };
     case "device":
       return { id: "device", kind };
   }
@@ -514,6 +521,25 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               return upsertSurface(current, existing ?? browserSurface(null));
             }
             return upsertSurface(current, singletonSurface(kind));
+          }),
+        ),
+      openTerminals: (ref, terminalId) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            const surface: RightPanelSurface = {
+              id: "terminals",
+              kind: "terminals",
+              ...(terminalId !== undefined ? { terminalId } : {}),
+            };
+            return upsertSurface(
+              {
+                ...current,
+                surfaces: current.surfaces.map((entry) =>
+                  entry.id === surface.id ? surface : entry,
+                ),
+              },
+              surface,
+            );
           }),
         ),
       openDevice: (ref, target, automatic = false) =>

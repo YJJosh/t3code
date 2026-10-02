@@ -59,6 +59,8 @@ export interface BackgroundTerminalControlEntry {
   readonly action: PiBackgroundTerminalControlInput["action"];
   readonly success: boolean;
   readonly error?: string | undefined;
+  /** Present on successful `start` results: the terminal that was created. */
+  readonly terminalId?: string | undefined;
   readonly sequence: number;
   readonly timestamp: string;
 }

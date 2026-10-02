@@ -16,6 +16,7 @@ import {
   expandCollapsedComposerCursor,
   formatAssistantCitationForComposer,
   isCollapsedCursorAdjacentToInlineToken,
+  parseClientSlashCommand,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
 } from "./composer-logic";
@@ -734,5 +735,56 @@ describe("parseStandaloneComposerSlashCommand", () => {
 
   it("ignores slash commands with extra message text", () => {
     expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+  });
+});
+
+describe("parseClientSlashCommand", () => {
+  it("maps Pi's picker commands to T3 surfaces", () => {
+    expect(parseClientSlashCommand(" /ps ")).toEqual({
+      kind: "open-surface",
+      surface: "terminals",
+    });
+    expect(parseClientSlashCommand("/subagents")).toEqual({
+      kind: "open-surface",
+      surface: "agents",
+    });
+    expect(parseClientSlashCommand("/Workflows")).toEqual({
+      kind: "open-surface",
+      surface: "agents",
+    });
+  });
+
+  it("parses /terminal with an optional keep-open flag", () => {
+    expect(parseClientSlashCommand("/terminal bash --norc -i")).toEqual({
+      kind: "start-terminal",
+      command: "bash --norc -i",
+      keepOpen: false,
+    });
+    expect(parseClientSlashCommand("/terminal -k pnpm dev")).toEqual({
+      kind: "start-terminal",
+      command: "pnpm dev",
+      keepOpen: true,
+    });
+    expect(parseClientSlashCommand("/terminal --keep-open")).toEqual({
+      kind: "start-terminal",
+      command: "",
+      keepOpen: true,
+    });
+    expect(parseClientSlashCommand("/terminal")).toEqual({
+      kind: "start-terminal",
+      command: "",
+      keepOpen: false,
+    });
+    expect(parseClientSlashCommand("/terminal -kx")).toEqual({
+      kind: "start-terminal",
+      command: "-kx",
+      keepOpen: false,
+    });
+  });
+
+  it("leaves other commands and messages alone", () => {
+    expect(parseClientSlashCommand("/ps now")).toBeNull();
+    expect(parseClientSlashCommand("/pm")).toBeNull();
+    expect(parseClientSlashCommand("run /ps")).toBeNull();
   });
 });

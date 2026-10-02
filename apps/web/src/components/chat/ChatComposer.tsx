@@ -1360,6 +1360,8 @@ export interface ChatComposerProps {
   bannerItems: readonly ComposerBannerStackItem[];
   /** Picking /usage-limits from the menu is the action itself; the draft keeps nothing of it. */
   onUsageLimitsCommand?: (() => void) | undefined;
+  /** Provider commands with a T3 surface (/ps, /subagents): returns true when it opened one instead of inserting. */
+  onClientSlashCommand?: ((commandName: string) => boolean) | undefined;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -3594,7 +3596,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     };
   }, [readComposerSnapshot, resolveComposerTrigger]);
 
-  const { onUsageLimitsCommand } = props;
+  const { onUsageLimitsCommand, onClientSlashCommand } = props;
   const onSelectComposerItem = useCallback(
     (item: ComposerCommandItem) => {
       if (composerSelectLockRef.current) return;
@@ -3653,6 +3655,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           if (applied) {
             setComposerHighlightedItemId(null);
             onUsageLimitsCommand();
+          }
+          return;
+        }
+        if (onClientSlashCommand?.(item.command.name)) {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+            focusEditorAfterReplace: false,
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
           }
           return;
         }
@@ -3729,6 +3741,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       handleInteractionModeChange,
       planModeUiEnabled,
       onUsageLimitsCommand,
+      onClientSlashCommand,
       resolveActiveComposerTrigger,
     ],
   );

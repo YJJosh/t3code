@@ -437,6 +437,24 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("opens the shared-terminals surface and updates its selected terminal in place", () => {
+    useRightPanelStore.getState().openTerminals(refA);
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe(
+      "terminals",
+    );
+    useRightPanelStore.getState().open(refA, "diff");
+    useRightPanelStore.getState().openTerminals(refA, "bt-2");
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "terminals",
+      surfaces: [
+        { id: "terminals", kind: "terminals", terminalId: "bt-2" },
+        { id: "diff", kind: "diff" },
+      ],
+    });
+  });
+
   it("keeps files as a singleton surface", () => {
     useRightPanelStore.getState().open(refA, "files");
     useRightPanelStore.getState().open(refA, "files");

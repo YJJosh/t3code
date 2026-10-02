@@ -54,6 +54,7 @@ import {
 import { readPastedComposerContext } from "./composerInlineTokenPaste";
 import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { type CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
+import { selectActiveBackgroundTerminals } from "@t3tools/client-runtime/state/background-terminals";
 import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import {
   parseCodexFeedbackCommand,
@@ -124,6 +125,8 @@ import { useDiffPanelStore } from "../diffPanelStore";
 import {
   collapseExpandedComposerCursor,
   type ComposerSubmissionIntent,
+  type ClientSlashCommand,
+  parseClientSlashCommand,
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
 import {
@@ -219,6 +222,8 @@ import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavaila
 import { RightPanelTabs } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
 import { BackgroundTerminalRuns } from "./background-terminals/BackgroundTerminalRuns";
+import { BackgroundTerminalsPanel } from "./background-terminals/BackgroundTerminalsPanel";
+import { useStartBackgroundTerminal } from "./background-terminals/useStartBackgroundTerminal";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import { useDeviceState } from "~/state/device";
@@ -499,6 +504,7 @@ import { fileAttachmentCapabilityBlockReason } from "./chat/composerAttachmentFi
 import { assetEnvironment } from "../state/assets";
 import { readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
+import { useBackgroundTerminalRuntime } from "../state/useBackgroundTerminalRuntime";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { Button } from "./ui/button";
 import {
@@ -4567,6 +4573,69 @@ export default function ChatView(props: ChatViewProps) {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().open(activeThreadRef, "agents");
   }, [activeThreadRef]);
+  const addTerminalsSurface = useCallback(
+    (terminalId?: string) => {
+      if (!activeThreadRef) return;
+      useRightPanelStore.getState().openTerminals(activeThreadRef, terminalId);
+    },
+    [activeThreadRef],
+  );
+  const backgroundTerminalsEnabled =
+    isServerThread && selectedProvider === ProviderDriverKind.make("pi");
+  const { state: backgroundTerminalState } = useBackgroundTerminalRuntime({
+    environmentId: activeThreadRef?.environmentId ?? null,
+    threadId: activeThreadRef?.threadId ?? null,
+    enabled: backgroundTerminalsEnabled,
+  });
+  const liveBackgroundTerminalCount = useMemo(
+    () => selectActiveBackgroundTerminals(backgroundTerminalState).length,
+    [backgroundTerminalState],
+  );
+  const { start: startBackgroundTerminal } = useStartBackgroundTerminal({
+    environmentId: activeThreadRef?.environmentId ?? null,
+    threadId: activeThreadRef?.threadId ?? null,
+    managerId: backgroundTerminalState.managerId,
+  });
+  // Pi's /ps, /subagents, /workflows and /terminal have T3 surfaces, so they act
+  // here instead of reaching Pi, whose RPC session could not show its pickers.
+  const handleClientSlashCommand = useCallback(
+    (command: ClientSlashCommand): boolean => {
+      if (command.kind === "open-surface") {
+        if (command.surface === "agents") {
+          addAgentsSurface();
+          return true;
+        }
+        if (!backgroundTerminalsEnabled) return false;
+        addTerminalsSurface();
+        return true;
+      }
+      if (!backgroundTerminalsEnabled) return false;
+      addTerminalsSurface();
+      if (command.command.length === 0) return true;
+      void startBackgroundTerminal({
+        command: command.command,
+        interactive: true,
+        keepOpen: command.keepOpen,
+      }).then((result) => {
+        if ("error" in result) {
+          toastManager.add({
+            type: "error",
+            title: "Could not start terminal",
+            description: result.error,
+          });
+        }
+      });
+      return true;
+    },
+    [addAgentsSurface, addTerminalsSurface, backgroundTerminalsEnabled, startBackgroundTerminal],
+  );
+  const handleComposerClientSlashCommand = useCallback(
+    (commandName: string): boolean => {
+      const parsed = parseClientSlashCommand(`/${commandName}`);
+      return parsed?.kind === "open-surface" ? handleClientSlashCommand(parsed) : false;
+    },
+    [handleClientSlashCommand],
+  );
   const supportsThreadPullRequests =
     serverConfig?.environment.capabilities.threadPullRequests === true;
   const visiblePullRequests = visibleThreadPullRequests(
@@ -7614,6 +7683,20 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
+    const clientSlashCommand =
+      composerImages.length === 0 &&
+      composerFiles.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      composerPreviewAnnotations.length === 0 &&
+      composerReviewComments.length === 0
+        ? parseClientSlashCommand(trimmed)
+        : null;
+    if (clientSlashCommand !== null && handleClientSlashCommand(clientSlashCommand)) {
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      return;
+    }
     // Providers without the legacy toggle receive their native commands unchanged.
     const standaloneSlashCommand =
       sendInteractionModeEnabled &&
@@ -9626,6 +9709,13 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
+    ) : renderedRightPanelSurface?.kind === "terminals" ? (
+      <BackgroundTerminalsPanel
+        environmentId={activeThreadRef.environmentId}
+        threadId={activeThreadRef.threadId}
+        enabled={backgroundTerminalsEnabled}
+        selectedTerminalId={renderedRightPanelSurface.terminalId ?? null}
+      />
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
         model={agentPanelModel}
@@ -9980,7 +10070,8 @@ export default function ChatView(props: ChatViewProps) {
                   <BackgroundTerminalRuns
                     environmentId={activeThreadRef?.environmentId ?? null}
                     threadId={activeThreadRef?.threadId ?? null}
-                    enabled={isServerThread && selectedProvider === ProviderDriverKind.make("pi")}
+                    enabled={backgroundTerminalsEnabled}
+                    onOpenTerminal={addTerminalsSurface}
                   />
                   <div
                     className="relative"
@@ -10045,6 +10136,7 @@ export default function ChatView(props: ChatViewProps) {
                                 ? openUsageLimits
                                 : undefined
                             }
+                            onClientSlashCommand={handleComposerClientSlashCommand}
                             environmentUnavailable={activeEnvironmentUnavailableState}
                             activePendingApproval={activePendingApproval}
                             pendingApprovals={pendingApprovals}
@@ -10306,6 +10398,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurface}
           onAddPullRequests={addPullRequestsSurface}
           onAddAgents={addAgentsSurface}
+          onAddTerminals={() => addTerminalsSurface()}
           onAddDevice={addDeviceSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
@@ -10314,8 +10407,10 @@ export default function ChatView(props: ChatViewProps) {
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           agentsAvailable
+          terminalsAvailable={backgroundTerminalsEnabled}
           deviceAvailable={activeThreadRef !== null}
           liveAgentCount={agentPanelModel.liveCount}
+          liveTerminalCount={liveBackgroundTerminalCount}
         >
           {rightPanelContent}
         </RightPanelTabs>
@@ -10363,6 +10458,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequest={addPullRequestSurface}
             onAddPullRequests={addPullRequestsSurface}
             onAddAgents={addAgentsSurface}
+            onAddTerminals={() => addTerminalsSurface()}
             onAddDevice={addDeviceSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
@@ -10371,8 +10467,10 @@ export default function ChatView(props: ChatViewProps) {
             pullRequestAvailable={pullRequestSurfaceAvailable}
             pullRequestsAvailable={pullRequestsSurfaceAvailable}
             agentsAvailable
+            terminalsAvailable={backgroundTerminalsEnabled}
             deviceAvailable={activeThreadRef !== null}
             liveAgentCount={agentPanelModel.liveCount}
+            liveTerminalCount={liveBackgroundTerminalCount}
           >
             {rightPanelContent}
           </RightPanelTabs>

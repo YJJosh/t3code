@@ -23,6 +23,7 @@ import {
   Files,
   Globe2,
   Plus,
+  Terminal,
   TerminalSquare,
   Volume2,
   VolumeOff,
@@ -122,6 +123,7 @@ interface RightPanelTabsProps {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddAgents: () => void;
+  onAddTerminals: () => void;
   onAddDevice: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
@@ -130,10 +132,13 @@ interface RightPanelTabsProps {
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
   agentsAvailable: boolean;
+  terminalsAvailable: boolean;
   deviceAvailable: boolean;
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
   /** Running + waiting subagents; badges the Agents card in the empty state. */
   liveAgentCount: number;
+  /** Running shared terminals; badges the Shared terminals card in the empty state. */
+  liveTerminalCount: number;
   children: ReactNode;
 }
 
@@ -161,6 +166,7 @@ const SURFACE_DISABLED_REASONS = {
   pullRequest: "This thread's branch has no pull request yet.",
   pullRequests: "No linked pull requests are available for this thread.",
   agents: "Agents are only available from a thread.",
+  terminals: "Shared terminals are only available from a Pi thread.",
   device: "Devices are only available from a thread.",
 } as const;
 
@@ -185,6 +191,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   pullRequest: "No pull request on this branch yet.",
   pullRequests: "No linked pull requests available.",
   agents: "Available from a thread.",
+  terminals: "Available from a Pi thread.",
   device: "Available from a thread.",
 } as const;
 
@@ -325,6 +332,7 @@ function RightPanelEmptyState(props: {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddAgents: () => void;
+  onAddTerminals: () => void;
   onAddDevice: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
@@ -333,8 +341,11 @@ function RightPanelEmptyState(props: {
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
   agentsAvailable: boolean;
+  terminalsAvailable: boolean;
   deviceAvailable: boolean;
   liveAgentCount: number;
+  /** Running shared terminals; badges the Shared terminals card in the empty state. */
+  liveTerminalCount: number;
 }) {
   // -1 means no highlight: it only appears on hover or arrow use.
   const [highlight, setHighlight] = useState(-1);
@@ -402,6 +413,16 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.agents,
       onClick: props.onAddAgents,
       badgeCount: props.liveAgentCount,
+    },
+    {
+      label: "Shared terminals",
+      description: "Terminals you and Pi can both use.",
+      icon: Terminal,
+      shortcut: "S",
+      available: props.terminalsAvailable,
+      disabledReason: SURFACE_UNAVAILABLE_HINTS.terminals,
+      onClick: props.onAddTerminals,
+      badgeCount: props.liveTerminalCount,
     },
     {
       label: "Device",
@@ -630,6 +651,8 @@ function surfaceTitle(
       return "Pull requests";
     case "agents":
       return "Agents";
+    case "terminals":
+      return "Shared terminals";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -715,6 +738,8 @@ function SurfaceIcon({
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
     case "agents":
       return <Bot className="size-3 shrink-0" />;
+    case "terminals":
+      return <Terminal className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -924,6 +949,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.agentsAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.agents,
       onClick: props.onAddAgents,
+    },
+    {
+      label: "Shared terminals",
+      icon: Terminal,
+      shortcut: "S",
+      available: props.terminalsAvailable,
+      disabledReason: SURFACE_DISABLED_REASONS.terminals,
+      onClick: props.onAddTerminals,
     },
     {
       label: "Device",
@@ -1415,6 +1448,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
             onAddAgents={props.onAddAgents}
+            onAddTerminals={props.onAddTerminals}
             onAddDevice={props.onAddDevice}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
@@ -1423,8 +1457,10 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             pullRequestAvailable={props.pullRequestAvailable}
             pullRequestsAvailable={props.pullRequestsAvailable}
             agentsAvailable={props.agentsAvailable}
+            terminalsAvailable={props.terminalsAvailable}
             deviceAvailable={props.deviceAvailable}
             liveAgentCount={props.liveAgentCount}
+            liveTerminalCount={props.liveTerminalCount}
           />
         ) : (
           props.children

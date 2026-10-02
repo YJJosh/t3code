@@ -23,7 +23,8 @@ function panelAgents(model: AgentPanelModel): ReadonlyArray<RuntimeSubagent> {
   return [...model.workflows.flatMap(workflowMembers), ...model.directAgents];
 }
 
-function useSplitInspectorLayout(rootRef: React.RefObject<HTMLDivElement | null>): boolean {
+/** Side-by-side roster/detail once the panel is wide enough; shared with the terminals panel. */
+export function useSplitInspectorLayout(rootRef: React.RefObject<HTMLDivElement | null>): boolean {
   const [split, setSplit] = useState(false);
 
   useEffect(() => {

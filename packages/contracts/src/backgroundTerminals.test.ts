@@ -174,3 +174,17 @@ it("requires process epoch and client ownership for new controls and bounds send
   expect(() => decodeControl({ ...base, action: "resize", cols: 501, rows: 2 })).toThrow();
   expect(() => decodeControl({ ...base, action: "watch", managerId: undefined })).toThrow();
 });
+
+it("decodes client-started terminals with a bounded command and optional PTY sizing", () => {
+  const base = { threadId: "thread", managerId: "manager", action: "start" };
+  expect(decodeControl({ ...base, command: "bash -i", interactive: true })).toMatchObject({
+    action: "start",
+    command: "bash -i",
+  });
+  expect(
+    decodeControl({ ...base, command: "ls", title: "List", keepOpen: true, cols: 120, rows: 32 }),
+  ).toMatchObject({ title: "List", keepOpen: true, cols: 120, rows: 32 });
+  expect(() => decodeControl({ ...base, command: "" })).toThrow();
+  expect(() => decodeControl({ ...base, command: "ls", cols: 501, rows: 2 })).toThrow();
+  expect(() => decodeControl({ threadId: "thread", action: "start", command: "ls" })).toThrow();
+});

@@ -1702,6 +1702,26 @@ describe("Pi adapter", () => {
         if (action === "send") expect(message).toContain('"data":"\\u0003\\u001b[A"');
         if (action === "resize") expect(message).toContain('"cols":90,"rows":30');
       }
+      yield* adapter.backgroundTerminals!.control({
+        threadId: THREAD,
+        action: "start",
+        managerId: "manager-1",
+        requestId: "start-1",
+        command: "bash --norc -i",
+        title: "Shell",
+        interactive: true,
+        keepOpen: true,
+        cols: 120,
+        rows: 32,
+      });
+      const startMessage = fake.written.find(
+        (command) => typeof command.message === "string" && command.message.includes("start-1"),
+      )?.message;
+      expect(startMessage).toContain('"action":"start"');
+      expect(startMessage).toContain('"command":"bash --norc -i"');
+      expect(startMessage).toContain('"keep_open":true');
+      expect(startMessage).toContain('"cols":120,"rows":32');
+      expect(startMessage).not.toContain("terminal_id");
       const stale = yield* adapter
         .backgroundTerminals!.control({
           threadId: THREAD,

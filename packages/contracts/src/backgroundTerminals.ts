@@ -118,6 +118,7 @@ export const PiBackgroundTerminalControlAction = Schema.Literals([
   "release",
   "send",
   "resize",
+  "start",
 ]);
 export type PiBackgroundTerminalControlAction = typeof PiBackgroundTerminalControlAction.Type;
 
@@ -126,6 +127,8 @@ export const PiBackgroundTerminalControlResult = Schema.Struct({
   action: PiBackgroundTerminalControlAction,
   success: Schema.Boolean,
   error: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
+  /** Successful `start` results name the terminal that was created. */
+  terminalId: Schema.optional(PiBackgroundTerminalId),
 });
 export type PiBackgroundTerminalControlResult = typeof PiBackgroundTerminalControlResult.Type;
 
@@ -230,6 +233,18 @@ export const PiBackgroundTerminalControlInput = Schema.Union([
     action: Schema.Literal("resize"),
     cols: TerminalCols,
     rows: TerminalRows,
+  }),
+  Schema.Struct({
+    ...PiBackgroundTerminalControlBase,
+    action: Schema.Literal("start"),
+    /** Process epoch of the live Pi session the terminal starts in (its cwd). */
+    managerId: PiBackgroundTerminalManagerId,
+    command: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16_384)),
+    title: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+    interactive: Schema.optional(Schema.Boolean),
+    keepOpen: Schema.optional(Schema.Boolean),
+    cols: Schema.optional(TerminalCols),
+    rows: Schema.optional(TerminalRows),
   }),
   Schema.Struct({
     ...PiBackgroundTerminalControlBase,
