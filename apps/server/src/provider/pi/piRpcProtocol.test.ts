@@ -97,6 +97,34 @@ describe("Pi RPC protocol", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("pins all PM session selection keys without changing the parent environment", () =>
+    Effect.gen(function* () {
+      const paths = yield* Path.Path;
+      const baseEnv = {
+        HOME: "/home/test",
+        PI_CONFIG_SET_NAME: "old",
+        PI_CONFIG_SET_DIR: "/old",
+        PI_CONFIG_SET_REGISTRY: "/old/registry.json",
+      };
+      const configSet = {
+        name: "dev",
+        directory: "/pi/sets/dev",
+        root: "/pi",
+        registryPath: "/pi/config-sets.json",
+      };
+      expect(
+        buildPiRpcEnv(paths, decodeSettings({ agentDir: "/ignored" }), baseEnv, configSet),
+      ).toMatchObject({
+        PI_CODING_AGENT_DIR: "/pi/sets/dev",
+        PI_CONFIG_SET_NAME: "dev",
+        PI_CONFIG_SET_DIR: "/pi/sets/dev",
+        PI_CONFIG_SET_ROOT: "/pi",
+        PI_CONFIG_SET_REGISTRY: "/pi/config-sets.json",
+      });
+      expect(baseEnv.PI_CONFIG_SET_NAME).toBe("old");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it("parses only safe thinking, context, and service-tier selections", () => {
     expect(parsePiThinkingLevel("max")).toBe("max");
     expect(parsePiThinkingLevel("turbo")).toBeUndefined();

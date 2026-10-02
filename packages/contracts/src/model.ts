@@ -4,8 +4,11 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProviderDriverKind } from "./providerInstance.ts";
 
-/** Model-selection option used to choose the Pi profile for a new thread. */
+/** Model-selection option used to choose the Pi profile for a thread. */
 export const PI_PROFILE_OPTION_ID = "profile";
+
+/** Session-scoped Pi home selection; never changes the environment’s global default. */
+export const PI_CONFIG_SET_OPTION_ID = "configSet";
 
 export const ProviderOptionDescriptorType = Schema.Literals(["select", "boolean"]);
 export type ProviderOptionDescriptorType = typeof ProviderOptionDescriptorType.Type;

@@ -2671,14 +2671,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     iconOnlyBlockCount: restingControlsIconOnlyBlockCount,
     controlsVisible: restingControlsVisible,
   } = useRestingComposerControlsLayout(restingControlsHost);
-  const providerProfilePickerInput = {
+  const providerConfigurationPickerInput = {
     ...providerTraitsPickerInput,
-    descriptorScope: "pi-profile",
+    descriptorScope: "pi-configuration",
   } satisfies Parameters<typeof renderProviderTraitsPicker>[0];
-  const providerProfileMenuContent =
-    selectedProvider === "pi" ? renderProviderTraitsMenuContent(providerProfilePickerInput) : null;
-  const providerProfilePicker =
-    selectedProvider === "pi" ? renderProviderTraitsPicker(providerProfilePickerInput) : null;
+  const providerConfigurationMenuContent =
+    selectedProvider === "pi"
+      ? renderProviderTraitsMenuContent(providerConfigurationPickerInput)
+      : null;
+  const providerConfigurationPicker =
+    selectedProvider === "pi" ? renderProviderTraitsPicker(providerConfigurationPickerInput) : null;
   const expandedControlsLayout = useRestingComposerControlsLayout(null, true);
   const pendingPrimaryAction = useMemo(
     () =>
@@ -4972,7 +4974,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     : expandedControlsLayout.iconOnlyBlockCount;
   const restingBlockIds = [
     ...(providerTraitsPicker ? ["traits"] : []),
-    ...(providerProfilePicker ? ["profile"] : []),
+    ...(providerConfigurationPicker ? ["profile"] : []),
     ...(showRuntimeMode || planModeUiEnabled ? ["mode"] : []),
   ];
   const hiddenRestingBlockIds = restingBlockIds.slice(
@@ -4983,10 +4985,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     size: composerControlsInStrip ? "xs" : "sm",
     hidden: composerControlsHidden || hiddenRestingBlockIds.includes("traits"),
   });
-  const restingProviderProfilePicker =
+  const restingProviderConfigurationPicker =
     selectedProvider === "pi"
       ? renderProviderTraitsPicker({
-          ...providerProfilePickerInput,
+          ...providerConfigurationPickerInput,
           size: composerControlsInStrip ? "xs" : "sm",
           hidden: composerControlsHidden || hiddenRestingBlockIds.includes("profile"),
         })
@@ -5008,7 +5010,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ) : (
         <>
           <ComposerControlSeparator size={composerControlsInStrip ? "xs" : "sm"} />
-          {id === "profile" ? restingProviderProfilePicker : restingProviderTraitsPicker}
+          {id === "profile" ? restingProviderConfigurationPicker : restingProviderTraitsPicker}
         </>
       ),
   }));
@@ -5162,7 +5164,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               hiddenRestingBlockIds.includes("traits") ? providerTraitsMenuContent : undefined
             }
             profileMenuContent={
-              hiddenRestingBlockIds.includes("profile") ? providerProfileMenuContent : undefined
+              hiddenRestingBlockIds.includes("profile")
+                ? providerConfigurationMenuContent
+                : undefined
             }
             showRuntimeMode={showRuntimeMode && hiddenRestingBlockIds.includes("mode")}
             onToggleInteractionMode={toggleInteractionMode}

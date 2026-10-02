@@ -161,7 +161,7 @@ describe("buildTraitsTriggerDisplay", () => {
   });
 });
 
-describe("Pi profile descriptor placement", () => {
+describe("Pi configuration descriptor placement", () => {
   const profile = selectDescriptor(
     "profile",
     [
@@ -171,14 +171,43 @@ describe("Pi profile descriptor placement", () => {
     "coder",
   );
 
-  it("separates Profile from Pi's remaining composer options", () => {
+  const configSet = selectDescriptor(
+    "configSet",
+    [
+      { id: "dev", label: "dev" },
+      { id: "main", label: "main" },
+    ],
+    "main",
+  );
+
+  it("groups Config set and Profile separately from model traits", () => {
+    expect(filterTraitsDescriptors([EFFORT, profile, configSet], "pi-configuration")).toEqual([
+      configSet,
+      profile,
+    ]);
+    expect(filterTraitsDescriptors([EFFORT, profile, configSet], "pi-other")).toEqual([EFFORT]);
     expect(filterTraitsDescriptors([EFFORT, CONTEXT_WINDOW, profile], "pi-other")).toEqual([
       EFFORT,
       CONTEXT_WINDOW,
     ]);
-    expect(filterTraitsDescriptors([EFFORT, CONTEXT_WINDOW, profile], "pi-profile")).toEqual([
+    expect(filterTraitsDescriptors([EFFORT, CONTEXT_WINDOW, profile], "pi-configuration")).toEqual([
       profile,
     ]);
+  });
+
+  it("labels the combined picker and omits a sole registered set", () => {
+    const display = (descriptors: ReadonlyArray<ProviderOptionDescriptor>) =>
+      buildTraitsTriggerDisplay({
+        provider: ProviderDriverKind.make("pi"),
+        descriptors,
+        primarySelectDescriptorId: "configSet",
+        ultrathinkPromptControlled: false,
+      });
+    expect(display([configSet, profile]).label).toBe("main · coder");
+    expect(
+      display([{ ...configSet, options: [{ id: "main", label: "main" }] }, profile]).label,
+    ).toBe("coder");
+    expect(display([profile]).label).toBe("coder");
   });
 
   it("updates a scoped control without dropping the other Pi selections", () => {
