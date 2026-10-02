@@ -64,6 +64,8 @@ interface FakePi {
 const makeFakePi = Effect.fn("makeFakePi")(function* (
   options: {
     readonly sessionFile?: string;
+    /** Session ids this fake home lacks; launching with one exits like real Pi. */
+    readonly missingSessions?: ReadonlyArray<string>;
     readonly subagentsCommand?: boolean;
     readonly backgroundTerminalsCommand?: boolean;
     readonly commands?: ReadonlyArray<{
@@ -96,10 +98,15 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.gen(function* () {
       const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      let missingSession: string | undefined;
       if (command._tag === "StandardCommand") {
         launches.push({ args: [...command.args], env: { ...command.options.env } });
         args.push(...command.args);
         Object.assign(env, command.options.env);
+        const resume = command.args[command.args.indexOf("--session") + 1];
+        if (command.args.includes("--session") && options.missingSessions?.includes(resume ?? "")) {
+          missingSession = resume;
+        }
       }
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(4242),
@@ -108,6 +115,9 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
         kill: () => Deferred.succeed(exit, 0 as ChildProcessSpawner.ExitCode).pipe(Effect.asVoid),
         unref: Effect.succeed(Effect.void),
         stdin: Sink.forEach((chunk: Uint8Array) => {
+          if (missingSession !== undefined) {
+            return Deferred.succeed(exit, 1 as ChildProcessSpawner.ExitCode).pipe(Effect.asVoid);
+          }
           const parsed = parseJsonlLine(decoder.decode(chunk).trim());
           if (!parsed || typeof parsed !== "object") return Effect.void;
           const request = parsed as Record<string, unknown>;
@@ -308,7 +318,10 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
           );
         }),
         stdout: Stream.fromQueue(stdout),
-        stderr: Stream.empty,
+        stderr:
+          missingSession === undefined
+            ? Stream.empty
+            : Stream.make(encoder.encode(`Error: No session found matching '${missingSession}'\n`)),
         all: Stream.empty,
         getInputFd: () => Sink.drain,
         getOutputFd: () => Stream.empty,
@@ -679,6 +692,37 @@ describe("Pi adapter", () => {
         expect(fake.launches[3]?.env.PI_CODING_AGENT_DIR).toBe(dev);
         expect(yield* fs.readFileString(registryPath)).toBe(registry);
       }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("starts a new Pi conversation when the resumed session is missing", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ missingSessions: ["legacy-session"] });
+      const adapter = yield* makePiAdapter(decodePiSettings({}), {
+        instanceId: INSTANCE,
+        environment: { HOME: "/tmp/pi-home" },
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: { piSessionId: "legacy-session" },
+      });
+
+      expect(fake.launches).toHaveLength(2);
+      expect(fake.launches[0]?.args).toContain("legacy-session");
+      expect(fake.launches[1]?.args).not.toContain("--session");
+      expect(session.resumeCursor).toEqual({ piSessionId: "pi-session-test" });
+      const startup = yield* takeThroughType(events, "runtime.warning");
+      expect(startup.at(-1)).toMatchObject({
+        type: "runtime.warning",
+        payload: { detail: { missingSession: "legacy-session" } },
+      });
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
   it.effect("keeps a long-lived turn open until agent_settled", () =>

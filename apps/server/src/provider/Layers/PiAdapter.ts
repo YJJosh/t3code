@@ -224,6 +224,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Pi exits at startup when `--session` names a conversation its home doesn't have. */
+function isMissingPiSessionError(error: unknown): boolean {
+  return (
+    isRecord(error) &&
+    error._tag === "ProviderAdapterProcessError" &&
+    typeof error.cause === "string" &&
+    error.cause.includes("No session found")
+  );
+}
+
 function observePiMessageOrigin(ctx: PiSessionContext, message: unknown): void {
   if (!isRecord(message)) return;
   if (message.role === "user") {
@@ -2019,7 +2029,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const existing = sessions.get(input.threadId);
         if (existing && !existing.stopped) yield* stopSessionInternal(existing);
 
-        const sessionScope = yield* Scope.make();
+        let sessionScope = yield* Scope.make();
         let scopeTransferred = false;
         yield* Effect.addFinalizer(() =>
           scopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
@@ -2065,33 +2075,56 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // any prior process epoch before the new process can emit events.
         yield* resetBackgroundTerminals(input.threadId);
 
-        const connection = yield* makePiRpcConnection({
-          threadId: input.threadId,
-          binaryPath: resolvePiBinary(piSettings),
-          args: buildPiRpcArgs(piSettings, {
-            ...(profile ? { profile } : {}),
-            ...(model ? { model } : {}),
-            ...(thinkingLevel ? { thinkingLevel } : {}),
-            ...(resumeSessionId ? { resumeSessionId } : {}),
-          }),
-          cwd,
-          env: buildPiRpcEnv(path, piSettings, baseEnv, selectedSet),
-          onMessage: (message) =>
-            handlePiMessage(ctx)(message).pipe(Effect.catchCause(() => Effect.void)),
-          onParseFailure: (line) =>
-            emitWarning(input.threadId, ctx.activeTurnId, "Pi emitted an unparseable RPC frame.", {
-              line: line.slice(0, 2_000),
-            }).pipe(Effect.catchCause(() => Effect.void)),
-        }).pipe(
-          Effect.provideService(Scope.Scope, sessionScope),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        );
-        (ctx as { connection: PiRpcConnection }).connection = connection;
-
         // Pi creates/opens the durable session during process startup. Resolve
         // its authoritative id before returning so T3 persists a usable resume
         // cursor even if the process dies before the first turn.
-        const stateResponse = yield* request(ctx, { type: "get_state" });
+        const connect = (resume: string | undefined) =>
+          Effect.gen(function* () {
+            const connection = yield* makePiRpcConnection({
+              threadId: input.threadId,
+              binaryPath: resolvePiBinary(piSettings),
+              args: buildPiRpcArgs(piSettings, {
+                ...(profile ? { profile } : {}),
+                ...(model ? { model } : {}),
+                ...(thinkingLevel ? { thinkingLevel } : {}),
+                ...(resume ? { resumeSessionId: resume } : {}),
+              }),
+              cwd,
+              env: buildPiRpcEnv(path, piSettings, baseEnv, selectedSet),
+              onMessage: (message) =>
+                handlePiMessage(ctx)(message).pipe(Effect.catchCause(() => Effect.void)),
+              onParseFailure: (line) =>
+                emitWarning(
+                  input.threadId,
+                  ctx.activeTurnId,
+                  "Pi emitted an unparseable RPC frame.",
+                  { line: line.slice(0, 2_000) },
+                ).pipe(Effect.catchCause(() => Effect.void)),
+            }).pipe(
+              Effect.provideService(Scope.Scope, sessionScope),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            );
+            (ctx as { connection: PiRpcConnection }).connection = connection;
+            return yield* request(ctx, { type: "get_state" });
+          });
+        // A cursor holding only a session id resolves inside one Pi home, so it
+        // goes missing when the thread moves to another config set. Start a new
+        // Pi conversation instead of failing every turn on this thread.
+        let resumeDropped = false;
+        const stateResponse = yield* connect(resumeSessionId).pipe(
+          Effect.catchIf(
+            (error) => resumeSessionId !== undefined && isMissingPiSessionError(error),
+            () =>
+              Effect.gen(function* () {
+                yield* Scope.close(sessionScope, Exit.void);
+                sessionScope = yield* Scope.make();
+                (ctx as { scope: Scope.Closeable }).scope = sessionScope;
+                ctx.piSessionId = undefined;
+                resumeDropped = true;
+                return yield* connect(undefined);
+              }),
+          ),
+        );
         const activePiSessionId = readPiSessionId(stateResponse);
         if (!activePiSessionId) {
           return yield* new ProviderAdapterRequestError({
@@ -2160,6 +2193,14 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           threadId: input.threadId,
           payload: { providerThreadId: activePiSessionId },
         });
+        if (resumeDropped) {
+          yield* emitWarning(
+            input.threadId,
+            undefined,
+            `Pi couldn't find this thread's earlier conversation in ${selectedSet ? `config set "${selectedSet.name}"` : "its home"}, so it started a new one. Earlier messages stay here, but Pi won't remember them.`,
+            { missingSession: resumeSessionId },
+          );
+        }
         return session;
       }).pipe(Effect.scoped);
 
