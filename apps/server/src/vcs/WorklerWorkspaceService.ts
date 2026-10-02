@@ -157,7 +157,8 @@ export const makeFromLibrary = (
   });
 };
 
-const make = Effect.gen(function* () {
+/** @public Service construction is part of the canonical Effect module API. */
+export const make = Effect.gen(function* () {
   const library = yield* Effect.cached(
     Effect.tryPromise({
       try: () => import("workler") as Promise<WorklerLibrary>,
