@@ -29,6 +29,7 @@ import {
   ServerCliDevelopmentIconSourceMissingError,
   ServerCliDevelopmentIconTargetMissingError,
 } from "./cliErrors.ts";
+import { publishPlatformsThenLauncher } from "./publishOrder.ts";
 
 export class ServerCliPublishIconSourceMissingError extends Schema.TaggedError<ServerCliPublishIconSourceMissingError>()(
   "ServerCliPublishIconSourceMissingError",
@@ -488,7 +489,7 @@ const publishExeCmd = Command.make(
       if (config.provenance) args.push("--provenance");
       if (config.dryRun) args.push("--dry-run");
 
-      for (const tarball of [...platformTarballs, launcherTarball]) {
+      const publish = Effect.fn("publish")(function* (tarball: string) {
         const spawnCommand = yield* resolveSpawnCommand("npm", [...args, tarball]);
         yield* Effect.log(`[cli] npm ${args.join(" ")} ${path.basename(tarball)}`);
         yield* runCommand(
@@ -499,7 +500,10 @@ const publishExeCmd = Command.make(
             shell: spawnCommand.shell,
           }),
         );
-      }
+      });
+
+      // Each publish takes about 17s, so the platform packages go at once.
+      yield* publishPlatformsThenLauncher({ platformTarballs, launcherTarball, publish });
     }),
 ).pipe(
   Command.withDescription(
