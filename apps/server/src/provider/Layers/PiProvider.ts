@@ -280,6 +280,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   }
 
   const discoveryOutcome = yield* discoverPiModels({
+    binaryPath: resolvePiBinary(settings),
     agentDir: settings.agentDir || undefined,
     profile: settings.profile || undefined,
     environment,
