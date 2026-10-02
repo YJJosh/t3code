@@ -5,6 +5,7 @@ import {
   ThreadId,
   type ModelSelection,
   PiBackgroundTerminalEvent as PiBackgroundTerminalEventSchema,
+  PiBackgroundTerminalControlAction,
   type PiBackgroundTerminalEvent,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
@@ -29,6 +30,7 @@ import {
 } from "../pi/piRpcProtocol.ts";
 import { makePiAdapter, projectPiTaskBridgeEvent, splitPiModelSlug } from "./PiAdapter.ts";
 
+const decodeBackgroundControlAction = Schema.decodeUnknownSync(PiBackgroundTerminalControlAction);
 const decodePiSettings = Schema.decodeSync(PiSettings);
 const encodeBackgroundTerminalEvent = Schema.encodeSync(
   Schema.fromJsonString(PiBackgroundTerminalEventSchema),
@@ -198,9 +200,9 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
           const backgroundControl =
             backgroundControlMessage !== null && backgroundRequestId !== undefined
               ? {
-                  action: backgroundControlMessage.includes('"action":"kill"')
-                    ? ("kill" as const)
-                    : ("replay" as const),
+                  action: decodeBackgroundControlAction(
+                    backgroundControlMessage.match(/"action":"([^"]+)"/)?.[1],
+                  ),
                   request_id: backgroundRequestId,
                 }
               : null;
@@ -1278,6 +1280,41 @@ describe("Pi adapter", () => {
       );
       expect(control?.message).toContain('"action":"kill"');
       expect(control?.message).toContain('"terminal_id":"bt-1"');
+      for (const action of ["watch", "unwatch", "attach", "release", "send", "resize"] as const) {
+        const common = {
+          threadId: THREAD,
+          terminalId: "bt-1",
+          managerId: "manager-1",
+          clientId: "browser",
+          requestId: `interactive-${action}`,
+        };
+        yield* adapter.backgroundTerminals!.control(
+          action === "send"
+            ? { ...common, action, data: "\x03\x1b[A" }
+            : action === "resize"
+              ? { ...common, action, cols: 90, rows: 30 }
+              : { ...common, action },
+        );
+        const message = fake.written.find(
+          (command) =>
+            typeof command.message === "string" &&
+            command.message.includes(`interactive-${action}`),
+        )?.message;
+        expect(message).toContain(`"action":"${action}"`);
+        expect(message).toContain('"client_id":"browser"');
+        if (action === "send") expect(message).toContain('"data":"\\u0003\\u001b[A"');
+        if (action === "resize") expect(message).toContain('"cols":90,"rows":30');
+      }
+      const stale = yield* adapter
+        .backgroundTerminals!.control({
+          threadId: THREAD,
+          action: "attach",
+          terminalId: "bt-1",
+          managerId: "old",
+          clientId: "browser",
+        })
+        .pipe(Effect.flip);
+      expect(stale._tag).toBe("ProviderAdapterValidationError");
     }).pipe(Effect.provide(TestEnv)),
   );
 

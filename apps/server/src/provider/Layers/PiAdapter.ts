@@ -2244,7 +2244,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
         if (
-          input.action === "kill" &&
+          input.action !== "replay" &&
           backgroundTerminalManagerIds.get(input.threadId) !== input.managerId
         ) {
           return yield* new ProviderAdapterValidationError({
@@ -2274,7 +2274,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const envelope = {
           action: input.action,
           request_id: requestId,
-          ...(input.action === "kill" ? { terminal_id: input.terminalId } : {}),
+          ...(input.action !== "replay" ? { terminal_id: input.terminalId } : {}),
+          ...("clientId" in input ? { client_id: input.clientId } : {}),
+          ...(input.action === "send" ? { data: input.data } : {}),
+          ...(input.action === "resize" ? { cols: input.cols, rows: input.rows } : {}),
         };
         const encoded = yield* encodeUnknownJsonString(envelope).pipe(
           Effect.mapError(

@@ -33,6 +33,39 @@ export const PiBackgroundTerminalOutputView = Schema.Struct({
 });
 export type PiBackgroundTerminalOutputView = typeof PiBackgroundTerminalOutputView.Type;
 
+const TerminalCols = Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 500 }));
+const TerminalRows = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }));
+const TerminalClientId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+
+/** Printable cells and locally generated SGR only; never terminal queries or OSC/DCS. */
+export const PiBackgroundTerminalScreen = Schema.Struct({
+  cols: TerminalCols,
+  rows: TerminalRows,
+  lines: Schema.Array(
+    Schema.String.check(
+      Schema.isMaxLength(128 * 1024),
+      // eslint-disable-next-line no-control-regex -- Reject every control except generated SGR.
+      Schema.isPattern(/^(?:[^\x00-\x1f\x7f-\x9f]|\x1b\[[0-9;]*m)*$/u),
+    ),
+  ).check(Schema.isMaxLength(200)),
+  cursorX: NonNegativeInt,
+  cursorY: NonNegativeInt,
+  cursorVisible: Schema.Boolean,
+  applicationCursorKeysMode: Schema.Boolean,
+  bracketedPasteMode: Schema.Boolean,
+  warning: Schema.optional(Schema.String.check(Schema.isMaxLength(4096))),
+}).check(
+  Schema.makeFilter(
+    (screen) =>
+      (screen.lines.length === screen.rows &&
+        screen.cursorX < screen.cols &&
+        screen.cursorY < screen.rows &&
+        screen.lines.reduce((sum, line) => sum + line.length, 0) <= 128 * 1024) ||
+      "Invalid or oversized terminal screen",
+  ),
+);
+export type PiBackgroundTerminalScreen = typeof PiBackgroundTerminalScreen.Type;
+
 export const PiBackgroundTerminalView = Schema.Struct({
   id: PiBackgroundTerminalId,
   command: Schema.String.check(Schema.isMaxLength(16_384)),
@@ -45,6 +78,12 @@ export const PiBackgroundTerminalView = Schema.Struct({
   exitCode: Schema.optional(Schema.Int),
   signal: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
   errorText: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
+  interactive: Schema.optional(Schema.Boolean),
+  keepOpen: Schema.optional(Schema.Boolean),
+  cols: Schema.optional(TerminalCols),
+  rows: Schema.optional(TerminalRows),
+  attached: Schema.optional(Schema.Boolean),
+  controller: Schema.optional(TerminalClientId),
   stdout: PiBackgroundTerminalOutputView,
   stderr: PiBackgroundTerminalOutputView,
 });
@@ -53,6 +92,7 @@ export type PiBackgroundTerminalView = typeof PiBackgroundTerminalView.Type;
 export const PiBackgroundTerminalEventKind = Schema.Literals([
   "terminal_upsert",
   "terminal_output",
+  "terminal_screen",
   "terminal_removed",
   "control_result",
   "snapshot",
@@ -69,7 +109,16 @@ export const PiBackgroundTerminalOutputDelta = Schema.Struct({
 });
 export type PiBackgroundTerminalOutputDelta = typeof PiBackgroundTerminalOutputDelta.Type;
 
-export const PiBackgroundTerminalControlAction = Schema.Literals(["replay", "kill"]);
+export const PiBackgroundTerminalControlAction = Schema.Literals([
+  "replay",
+  "kill",
+  "watch",
+  "unwatch",
+  "attach",
+  "release",
+  "send",
+  "resize",
+]);
 export type PiBackgroundTerminalControlAction = typeof PiBackgroundTerminalControlAction.Type;
 
 export const PiBackgroundTerminalControlResult = Schema.Struct({
@@ -125,6 +174,12 @@ export const PiBackgroundTerminalEvent = Schema.Union([
   PiBackgroundTerminalOutputEvent,
   Schema.Struct({
     ...PiBackgroundTerminalEventBase,
+    kind: Schema.Literal("terminal_screen"),
+    terminalId: PiBackgroundTerminalId,
+    screen: PiBackgroundTerminalScreen,
+  }),
+  Schema.Struct({
+    ...PiBackgroundTerminalEventBase,
     kind: Schema.Literal("terminal_removed"),
     terminalId: PiBackgroundTerminalId,
   }),
@@ -146,8 +201,36 @@ const PiBackgroundTerminalControlBase = {
   requestId: Schema.optional(PiBackgroundTerminalRequestId),
 } as const;
 
-/** The only supported controls are extension-owned replay and kill actions. */
+const InteractiveControlBase = {
+  ...PiBackgroundTerminalControlBase,
+  terminalId: PiBackgroundTerminalId,
+  managerId: PiBackgroundTerminalManagerId,
+  clientId: TerminalClientId,
+} as const;
+
+/** All controls use the extension's private command; process epochs guard reused ids. */
 export const PiBackgroundTerminalControlInput = Schema.Union([
+  Schema.Struct({
+    ...InteractiveControlBase,
+    action: Schema.Literals(["watch", "unwatch", "attach", "release"]),
+  }),
+  Schema.Struct({
+    ...InteractiveControlBase,
+    action: Schema.Literal("send"),
+    data: Schema.String.check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(16 * 1024),
+      Schema.makeFilter(
+        (data) => new TextEncoder().encode(data).length <= 16 * 1024 || "Input exceeds 16 KiB",
+      ),
+    ),
+  }),
+  Schema.Struct({
+    ...InteractiveControlBase,
+    action: Schema.Literal("resize"),
+    cols: TerminalCols,
+    rows: TerminalRows,
+  }),
   Schema.Struct({
     ...PiBackgroundTerminalControlBase,
     action: Schema.Literal("replay"),

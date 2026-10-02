@@ -122,3 +122,55 @@ describe("PiBackgroundTerminalControlInput", () => {
     ).toThrow();
   });
 });
+
+it("decodes additive interactive metadata and safe bounded screen snapshots", () => {
+  const base = {
+    contractVersion: 1,
+    managerId: "manager",
+    sequence: 1,
+    timestamp: "2026-07-09T12:00:00.000Z",
+  };
+  const view = {
+    ...terminal,
+    interactive: true,
+    keepOpen: true,
+    cols: 80,
+    rows: 24,
+    attached: true,
+    controller: "tab",
+  };
+  expect(decodeEvent({ ...base, kind: "terminal_upsert", terminalId: "bt-1", view })).toMatchObject(
+    { view },
+  );
+  const screen = {
+    cols: 3,
+    rows: 1,
+    lines: ["\x1b[31mred\x1b[0m"],
+    cursorX: 2,
+    cursorY: 0,
+    cursorVisible: true,
+    applicationCursorKeysMode: true,
+    bracketedPasteMode: true,
+  };
+  const event = { ...base, kind: "terminal_screen", terminalId: "bt-1", screen };
+  expect(decodeEvent(event)).toMatchObject({ screen });
+  for (const line of ["\x1b[6n", "\x1b]52;c;x\x07", "\x1bPbad\x1b\\", "\n", "\x9b6n"]) {
+    expect(() => decodeEvent({ ...event, screen: { ...screen, lines: [line] } })).toThrow();
+  }
+  expect(() => decodeEvent({ ...event, screen: { ...screen, cursorX: 3 } })).toThrow();
+  expect(() =>
+    decodeEvent({ ...event, screen: { ...screen, lines: ["x".repeat(128 * 1024 + 1)] } }),
+  ).toThrow();
+});
+
+it("requires process epoch and client ownership for new controls and bounds send/resize", () => {
+  const base = { threadId: "thread", managerId: "manager", terminalId: "bt-1", clientId: "client" };
+  for (const action of ["watch", "unwatch", "attach", "release"])
+    expect(decodeControl({ ...base, action })).toMatchObject({ action });
+  expect(decodeControl({ ...base, action: "send", data: "\x03\x1b[A\r" })).toMatchObject({
+    data: "\x03\x1b[A\r",
+  });
+  expect(() => decodeControl({ ...base, action: "send", data: "😀".repeat(4097) })).toThrow();
+  expect(() => decodeControl({ ...base, action: "resize", cols: 501, rows: 2 })).toThrow();
+  expect(() => decodeControl({ ...base, action: "watch", managerId: undefined })).toThrow();
+});
