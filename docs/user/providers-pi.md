@@ -28,7 +28,7 @@ Registered extension commands such as `/ps` and `/subagents` run directly in Pi,
 
 ## Background terminals
 
-Background terminals started by Pi appear above the composer for the active thread. Running terminals show their title and status without mixing terminal output into the chat timeline; selecting one opens its command, directory, process details, stdout, and stderr. A running terminal can be stopped from this view. Settled terminals remain available in a collapsed summary for the rest of the provider session.
+Background terminals started by Pi appear above the composer for the active thread. Running terminals show their title and status without mixing terminal output into the chat timeline; selecting one opens its command, directory, process details, stdout, and stderr. A running terminal can be stopped from this view. With an updated `pi-background-terminals` extension, interactive terminals open a live color screen in web and desktop. Choose **Take control** to type, paste, use arrow keys or Ctrl+C, and resize the terminal to the panel; **Release control** returns input to the agent. Only one person (including Pi’s terminal UI) can control a terminal at a time. Closing the panel releases it; a disconnected browser’s control expires within a minute. Ordinary background commands and mobile retain the read-only text view. Settled terminals remain available in a collapsed summary for the rest of the provider session.
 
 Terminal state belongs to the active Pi process. T3 requests a replay when a client subscribes, ignores updates from an older manager after Pi restarts, and never sends a terminal control to a stale provider session.
 

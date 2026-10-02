@@ -20,6 +20,7 @@ import { useResizableWidth, useViewportClampedMaxWidth } from "../../hooks/useRe
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../../rightPanelLayout";
 import { useBackgroundTerminalRuntime } from "../../state/useBackgroundTerminalRuntime";
 import { RightPanelResizeHandle } from "../preview/RightPanelResizeHandle";
+import { InteractiveBackgroundTerminal } from "./InteractiveBackgroundTerminal";
 import { BackgroundTerminalControls } from "./BackgroundTerminalControls";
 import {
   backgroundTerminalAccessibleStatus,
@@ -275,37 +276,50 @@ function BackgroundTerminalDetail({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-1.5">
-        <div role="tablist" aria-label="Terminal output stream" className="flex items-center gap-1">
-          {(["stdout", "stderr"] as const).map((stream) => (
-            <button
-              key={stream}
-              type="button"
-              role="tab"
-              id={`background-terminal-tab-${stream}`}
-              aria-selected={selectedStream === stream}
-              aria-controls={`background-terminal-tabpanel-${stream}`}
-              onClick={() => setSelectedStream(stream)}
-              className={cn(
-                "rounded-md px-2 py-1 text-xs font-medium capitalize transition-colors",
-                selectedStream === stream
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:bg-accent/60",
-              )}
-            >
-              {stream}
-            </button>
-          ))}
+      {view.interactive === true && view.status === "running" ? (
+        <InteractiveBackgroundTerminal
+          environmentId={environmentId}
+          threadId={threadId}
+          managerId={managerId}
+          terminal={terminal}
+        />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+          <div
+            role="tablist"
+            aria-label="Terminal output stream"
+            className="flex items-center gap-1"
+          >
+            {(["stdout", "stderr"] as const).map((stream) => (
+              <button
+                key={stream}
+                type="button"
+                role="tab"
+                id={`background-terminal-tab-${stream}`}
+                aria-selected={selectedStream === stream}
+                aria-controls={`background-terminal-tabpanel-${stream}`}
+                onClick={() => setSelectedStream(stream)}
+                className={cn(
+                  "rounded-md px-2 py-1 text-xs font-medium capitalize transition-colors",
+                  selectedStream === stream
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-accent/60",
+                )}
+              >
+                {stream}
+              </button>
+            ))}
+          </div>
+          <div
+            role="tabpanel"
+            id={`background-terminal-tabpanel-${selectedStream}`}
+            aria-labelledby={`background-terminal-tab-${selectedStream}`}
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <BackgroundTerminalOutputPane buffer={activeBuffer} />
+          </div>
         </div>
-        <div
-          role="tabpanel"
-          id={`background-terminal-tabpanel-${selectedStream}`}
-          aria-labelledby={`background-terminal-tab-${selectedStream}`}
-          className="flex min-h-0 flex-1 flex-col"
-        >
-          <BackgroundTerminalOutputPane buffer={activeBuffer} />
-        </div>
-      </div>
+      )}
 
       <BackgroundTerminalControls
         environmentId={environmentId}
@@ -330,10 +344,10 @@ export interface BackgroundTerminalRunsProps {
  * and settled (done/killed) terminals collapse behind a summary toggle so
  * they don't permanently eat composer space. Selecting a row opens an
  * overlay drawer (desktop) / near-full-screen sheet (compact) with metadata,
- * stdout/stderr tail, and a kill-only control.
+ * stdout/stderr tail (or a watched PTY screen), and terminal controls.
  *
  * Renders nothing when there are no terminals so an idle/empty stream is
- * invisible. Deliberately exposes no start/restart/stdin controls —
+ * invisible. Deliberately exposes no start/restart controls —
  * background terminals are spawned by Pi, not by the client.
  */
 export function BackgroundTerminalRuns({

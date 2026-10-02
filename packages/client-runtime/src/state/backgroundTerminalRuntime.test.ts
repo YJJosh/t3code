@@ -629,3 +629,47 @@ describe("background terminal status predicates", () => {
 it("exposes the default client byte budget for output retention", () => {
   expect(DEFAULT_MAX_BACKGROUND_TERMINAL_OUTPUT_BYTES).toBe(256 * 1024);
 });
+
+it("replaces screen state, retains it through metadata/replay, and clears it on a new manager", () => {
+  const terminal = view({ id: "term-a", interactive: true });
+  let state = applyBackgroundTerminalEvent(
+    EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE,
+    event({ sequence: 1, view: terminal }),
+  );
+  const screen = {
+    cols: 4,
+    rows: 1,
+    lines: ["red"],
+    cursorX: 3,
+    cursorY: 0,
+    cursorVisible: true,
+    applicationCursorKeysMode: true,
+    bracketedPasteMode: true,
+  };
+  state = applyBackgroundTerminalEvent(
+    state,
+    event({ sequence: 2, kind: "terminal_screen", terminalId: terminal.id, screen }),
+  );
+  expect(selectBackgroundTerminal(state, terminal.id)?.screen).toEqual(screen);
+  state = applyBackgroundTerminalEvent(
+    state,
+    event({ sequence: 3, view: { ...terminal, controller: "browser" } }),
+  );
+  expect(selectBackgroundTerminal(state, terminal.id)?.screen).toEqual(screen);
+  const next = { ...screen, lines: ["next"] };
+  state = applyBackgroundTerminalEvent(
+    state,
+    event({ sequence: 4, kind: "terminal_screen", terminalId: terminal.id, screen: next }),
+  );
+  expect(selectBackgroundTerminal(state, terminal.id)?.screen?.lines).toEqual(["next"]);
+  state = applyBackgroundTerminalEvent(
+    state,
+    event({ sequence: 5, kind: "snapshot", snapshot: { terminals: [terminal] } }),
+  );
+  expect(selectBackgroundTerminal(state, terminal.id)?.screen).toEqual(next);
+  state = applyBackgroundTerminalEvent(
+    state,
+    event({ sequence: 1, managerId: "new", kind: "snapshot", snapshot: { terminals: [terminal] } }),
+  );
+  expect(selectBackgroundTerminal(state, terminal.id)?.screen).toBeUndefined();
+});
