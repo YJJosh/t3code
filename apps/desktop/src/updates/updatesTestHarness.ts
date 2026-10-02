@@ -1,6 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as PlatformError from "effect/PlatformError";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
@@ -34,6 +36,9 @@ export interface UpdatesHarnessOptions {
   readonly stopBackend?: Effect.Effect<void>;
   readonly startBackend?: Effect.Effect<void>;
   readonly env?: Record<string, string | undefined>;
+  readonly platform?: NodeJS.Platform;
+  /** Contents of the resources/package-type marker a Linux package ships. */
+  readonly packageType?: string | undefined;
 }
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
@@ -119,11 +124,12 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
 
   const windowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
     create: () => Effect.die("unexpected BrowserWindow creation"),
-    main: Effect.succeed(Option.none()),
-    currentMainOrFirst: Effect.succeed(Option.none()),
-    focusedMainOrFirst: Effect.succeed(Option.none()),
+    main: Effect.succeedNone,
+    currentMainOrFirst: Effect.succeedNone,
+    focusedMainOrFirst: Effect.succeedNone,
     setMain: () => Effect.void,
     clearMain: () => Effect.void,
+    prepareReveal: () => Effect.succeed(false),
     reveal: () => Effect.void,
     sendAll: (_channel, state) =>
       Effect.sync(() => {
@@ -142,7 +148,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       installSteps.push("startBackend");
     }).pipe(Effect.andThen(options.startBackend ?? Effect.void)),
     stop: () => options.stopBackend ?? Effect.void,
-    currentConfig: Effect.succeed(Option.none()),
+    currentConfig: Effect.succeedNone,
     snapshot: Effect.succeed({
       desiredRunning: false,
       ready: false,
@@ -158,7 +164,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     ...(options.appName === undefined ? {} : { appName: options.appName }),
     dirname: "/repo/apps/desktop/src",
     homeDirectory: `/tmp/t3-desktop-updates-home-${process.pid}`,
-    platform: "darwin",
+    platform: options.platform ?? "darwin",
     processArch: "x64",
     appVersion: "1.2.3",
     appPath: "/repo",
@@ -209,13 +215,51 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
                 ),
           setWslBackendEnabled: () => Effect.die("unexpected WSL backend toggle"),
           setWslDistro: () => Effect.die("unexpected WSL distro change"),
+          setLocalEnvironmentEnabled: () => Effect.die("unexpected local environment toggle"),
           setWslOnly: () => Effect.die("unexpected WSL-only toggle"),
           applyWslWindowsFallback: Effect.die("unexpected WSL Windows fallback"),
           applyWslWindowsFallbackInMemory: Effect.die("unexpected WSL Windows fallback"),
         } satisfies DesktopAppSettings.DesktopAppSettings["Service"])
       : DesktopAppSettings.layer;
 
+  // Tracks the restart markers installs leave, so installs stay free of real
+  // disk I/O that would outrun the tests' settle loops.
+  const updateRestartMarkers = new Set<string>();
+  const notFound = (path: string) =>
+    PlatformError.systemError({
+      module: "FileSystem",
+      method: "readFileString",
+      _tag: "NotFound",
+      pathOrDescriptor: path,
+    });
+  const fileSystemLayer = FileSystem.layerNoop({
+    readFileString: (path) => {
+      if (path === "/missing/resources/package-type" && options.packageType !== undefined) {
+        return Effect.succeed(options.packageType);
+      }
+      // A caller-provided resources directory holds real fixtures such as
+      // app-update.yml.
+      if (options.resourcesPath !== undefined && path.startsWith(options.resourcesPath)) {
+        return FileSystem.FileSystem.pipe(
+          Effect.flatMap((fileSystem) => fileSystem.readFileString(path)),
+          Effect.provide(NodeServices.layer),
+        );
+      }
+      return Effect.fail(notFound(path));
+    },
+    makeDirectory: () => Effect.void,
+    writeFileString: (path) =>
+      Effect.sync(() => {
+        updateRestartMarkers.add(path);
+      }),
+    remove: (path) =>
+      Effect.sync(() => {
+        updateRestartMarkers.delete(path);
+      }),
+  });
+
   const layer = DesktopUpdates.layer.pipe(
+    Layer.provide(fileSystemLayer),
     Layer.provideMerge(updaterLayer),
     Layer.provideMerge(windowLayer),
     Layer.provideMerge(backendLayer),
@@ -241,8 +285,9 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     lastCheckOptions: () => lastCheckOptions,
     quitAndInstalls: () => quitAndInstallCount,
     installSteps,
+    updateRestartMarkers,
     downloadCount: () => downloadCount,
-    feedUrls: () => feedUrls,
+    feedUrls: (): ElectronUpdater.ElectronUpdaterFeedUrl[] => feedUrls,
     fullChangelog: () => fullChangelog,
     updaterChannel: () => updaterChannel,
     listenerCount: () =>

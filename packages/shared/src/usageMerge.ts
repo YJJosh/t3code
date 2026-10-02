@@ -38,7 +38,20 @@ export interface ModelTotals {
   readonly costUsd: number;
   readonly totalTokens: number;
   readonly records: number;
+  /**
+   * Records whose tokens are counted here but which contributed nothing to
+   * `costUsd`. When it equals `records` the cost is unknown, not zero.
+   */
+  readonly unpricedRecords: number;
   readonly costShare: number;
+}
+
+/**
+ * A model whose every record lacked rates has an unknown cost, not a zero one.
+ * Clients must not present its `costUsd` as a real dollar figure.
+ */
+export function isModelCostUnknown(model: ModelTotals): boolean {
+  return model.records > 0 && model.unpricedRecords >= model.records;
 }
 
 export interface DailyTotals {
@@ -63,6 +76,12 @@ export interface CostQuality {
   readonly cacheSavingsUsd: number;
 }
 
+export interface UsageContractMismatch {
+  readonly environmentId: EnvironmentId;
+  readonly direction: "serverBehind" | "clientBehind";
+  readonly contractVersion: number;
+}
+
 export interface MergedUsage {
   readonly costUsd: number;
   readonly uncachedInputTokens: number;
@@ -81,7 +100,7 @@ export interface MergedUsage {
   /** Environments whose data was dropped as a duplicate of another's. */
   readonly duplicateSources: readonly string[];
   readonly contributingEnvironments: readonly EnvironmentId[];
-  readonly staleEnvironments: readonly EnvironmentId[];
+  readonly contractMismatches: readonly UsageContractMismatch[];
 }
 
 /**
@@ -116,10 +135,6 @@ function descendantDepth(ancestor: string, descendant: string): number | undefin
   const prefix = normalizedAncestor === "/" ? "/" : `${normalizedAncestor}/`;
   if (!normalizedDescendant.startsWith(prefix)) return undefined;
   return normalizedDescendant.slice(prefix.length).split("/").filter(Boolean).length;
-}
-
-function pathDepth(value: string): number {
-  return normalizePortablePath(value).split("/").filter(Boolean).length;
 }
 
 /** True when the first source's bounded scan includes every file in the second. */
@@ -175,70 +190,157 @@ function sourceClaimKey(environmentId: EnvironmentId, sourceIndex: number): stri
   return `${environmentId}\0${String(sourceIndex)}`;
 }
 
-/**
- * Decides which environment owns each physical transcript scan.
- *
- * Broader proven scans claim contained roots first, so environments that choose
- * differently nested Pi roots cannot count the contained files twice. Parent
- * inode chains prove containment across environment boundaries; path strings
- * and hostnames alone are intentionally insufficient. Legacy summaries without
- * source attribution retain the provider-level fallback.
- */
-function claimSources(environments: readonly EnvironmentUsage[]): {
-  readonly ownedSourceKeys: ReadonlySet<string>;
-  readonly duplicates: readonly string[];
-} {
-  const candidates: SourceClaim[] = [];
-  for (const environment of environments) {
-    for (const [sourceIndex, source] of environment.summary.sources.entries()) {
-      if (source.status !== "missing") candidates.push({ environment, source, sourceIndex });
-    }
+/** Forward-compatible decoding can remove unknown providers and shift source indexes. */
+function bucketSourceIndex(summary: UsageSummary, bucket: UsageBucket): number | undefined {
+  if (bucket.sourceIndex !== undefined) {
+    const fingerprint = summary.sources[bucket.sourceIndex]?.fingerprint;
+    if (
+      fingerprint?.provider === bucket.provider &&
+      (bucket.sourcePath === undefined || fingerprint.resolvedHomePath === bucket.sourcePath)
+    )
+      return bucket.sourceIndex;
   }
+  if (bucket.sourcePath !== undefined)
+    return summary.sources.findIndex(
+      (source) =>
+        source.fingerprint.provider === bucket.provider &&
+        source.fingerprint.resolvedHomePath === bucket.sourcePath,
+    );
+  return bucket.sourceIndex;
+}
+
+function bucketsForSource(summary: UsageSummary, source: UsageSource): readonly UsageBucket[] {
+  const sourceIndex = summary.sources.indexOf(source);
+  const providerSources = summary.sources.filter(
+    (entry) => entry.fingerprint.provider === source.fingerprint.provider,
+  );
+  return summary.buckets.filter(
+    (bucket) =>
+      bucket.provider === source.fingerprint.provider &&
+      (bucketSourceIndex(summary, bucket) ?? (providerSources.length === 1 ? sourceIndex : -1)) ===
+        sourceIndex,
+  );
+}
+
+function sameScan(a: UsageSource, b: UsageSource): boolean {
+  return a.scan?.maxDepth === b.scan?.maxDepth && a.scan?.filePattern === b.scan?.filePattern;
+}
+
+function bucketKey(bucket: UsageBucket): string {
+  return JSON.stringify([bucket.day, bucket.hourStart ?? null, bucket.provider, bucket.model]);
+}
+
+/**
+ * Decides which environment owns each physical transcript directory.
+ *
+ * Several environments on one machine (worktree servers, for instance) resolve
+ * the same provider home and would otherwise double count every token.
+ * Complete scans claim a fingerprint ahead of partial scans, then the most
+ * recently read scan wins within each status. A newer partial scan can still
+ * contribute cells absent from an older complete scan. Environment ids break
+ * ties so the result is stable when summaries have the same read time.
+ */
+function claimSources(environments: readonly EnvironmentUsage[]) {
+  const candidates: SourceClaim[] = environments.flatMap((environment) =>
+    environment.summary.sources.flatMap((source, sourceIndex) =>
+      source.status === "missing" ? [] : [{ environment, source, sourceIndex }],
+    ),
+  );
+  const statusRank = { ok: 0, partial: 1, failed: 2, missing: 3 };
   candidates.sort((a, b) => {
-    const coverageOrder = Number(a.source.status !== "ok") - Number(b.source.status !== "ok");
-    if (coverageOrder !== 0) return coverageOrder;
+    const statusOrder = statusRank[a.source.status] - statusRank[b.source.status];
+    if (statusOrder) return statusOrder;
+    // A total ordering puts broader roots first. Physical containment is still
+    // checked before dropping anything; equally bounded roots use freshness.
     const pathOrder =
-      pathDepth(a.source.fingerprint.resolvedHomePath) -
-      pathDepth(b.source.fingerprint.resolvedHomePath);
-    if (pathOrder !== 0) return pathOrder;
+      normalizePortablePath(a.source.fingerprint.resolvedHomePath).split("/").filter(Boolean)
+        .length -
+      normalizePortablePath(b.source.fingerprint.resolvedHomePath).split("/").filter(Boolean)
+        .length;
+    if (pathOrder) return pathOrder;
     const patternOrder =
       Number(a.source.scan?.filePattern === "pi-subagent-session") -
       Number(b.source.scan?.filePattern === "pi-subagent-session");
-    if (patternOrder !== 0) return patternOrder;
+    if (patternOrder) return patternOrder;
     const depthOrder = (b.source.scan?.maxDepth ?? -1) - (a.source.scan?.maxDepth ?? -1);
-    if (depthOrder !== 0) return depthOrder;
+    if (depthOrder) return depthOrder;
     return (
+      (Date.parse(b.environment.summary.readAt) || 0) -
+        (Date.parse(a.environment.summary.readAt) || 0) ||
       a.environment.environmentId.localeCompare(b.environment.environmentId) ||
       a.sourceIndex - b.sourceIndex
     );
   });
-
   const claimed: SourceClaim[] = [];
   const ownedSourceKeys = new Set<string>();
+  const supplementalBucketsByEnvironment = new Map<EnvironmentId, Set<UsageBucket>>();
+  const sessionsBySource = new Map<string, number>();
+  const seenByOwner = new Map<string, Set<string>>();
   const duplicates: string[] = [];
   for (const candidate of candidates) {
-    const duplicate = claimed.some(
+    const owner = claimed.find(
       (existing) =>
         existing.environment.environmentId !== candidate.environment.environmentId &&
-        sourceCovers(existing.source, candidate.source),
+        (sourceCovers(existing.source, candidate.source) ||
+          (existing.source.fingerprint.volumeId.length > 0 &&
+            sameScan(existing.source, candidate.source) &&
+            fingerprintKey(existing.source.fingerprint) ===
+              fingerprintKey(candidate.source.fingerprint))),
     );
-    if (duplicate) {
-      duplicates.push(
-        `${candidate.environment.label}: ${candidate.source.fingerprint.resolvedHomePath}`,
-      );
+    const key = sourceClaimKey(candidate.environment.environmentId, candidate.sourceIndex);
+    if (!owner) {
+      claimed.push(candidate);
+      ownedSourceKeys.add(key);
+      sessionsBySource.set(key, candidate.source.distinctSessions);
       continue;
     }
-    claimed.push(candidate);
-    ownedSourceKeys.add(sourceClaimKey(candidate.environment.environmentId, candidate.sourceIndex));
+    duplicates.push(
+      `${candidate.environment.label}: ${candidate.source.fingerprint.resolvedHomePath}`,
+    );
+    // Only identical scan coverage can supplement cells. A contained root may
+    // have records assigned to other roots by its server's cross-file dedupe.
+    if (
+      candidate.source.status !== "partial" ||
+      owner.source.status !== "ok" ||
+      fingerprintKey(owner.source.fingerprint) !== fingerprintKey(candidate.source.fingerprint) ||
+      !sameScan(owner.source, candidate.source) ||
+      Date.parse(candidate.environment.summary.readAt) <=
+        Date.parse(owner.environment.summary.readAt)
+    )
+      continue;
+    const ownerKey = sourceClaimKey(owner.environment.environmentId, owner.sourceIndex);
+    const seen =
+      seenByOwner.get(ownerKey) ??
+      new Set(bucketsForSource(owner.environment.summary, owner.source).map(bucketKey));
+    seenByOwner.set(ownerKey, seen);
+    const supplemental =
+      supplementalBucketsByEnvironment.get(candidate.environment.environmentId) ??
+      new Set<UsageBucket>();
+    let added = false;
+    for (const bucket of bucketsForSource(candidate.environment.summary, candidate.source)) {
+      const cell = bucketKey(bucket);
+      if (seen.has(cell)) continue;
+      seen.add(cell);
+      supplemental.add(bucket);
+      added = true;
+    }
+    if (added) {
+      supplementalBucketsByEnvironment.set(candidate.environment.environmentId, supplemental);
+      sessionsBySource.set(
+        ownerKey,
+        Math.max(sessionsBySource.get(ownerKey) ?? 0, candidate.source.distinctSessions),
+      );
+    }
   }
-
-  return { ownedSourceKeys, duplicates };
+  return { ownedSourceKeys, supplementalBucketsByEnvironment, sessionsBySource, duplicates };
 }
 
 /** Sources this environment owns after fingerprint claims, plus their buckets. */
 function ownedContribution(
   environment: EnvironmentUsage,
   ownedSourceKeys: ReadonlySet<string>,
+  supplementalBuckets: ReadonlySet<UsageBucket>,
+  sessionsBySource: ReadonlyMap<string, number>,
 ): {
   readonly buckets: readonly UsageBucket[];
   readonly sessionsByProvider: ReadonlyMap<UsageProviderKind, number>;
@@ -247,10 +349,9 @@ function ownedContribution(
   const ownedSourceIndexes = new Set<number>();
   const sessionsByProvider = new Map<UsageProviderKind, number>();
   for (const [sourceIndex, source] of environment.summary.sources.entries()) {
-    if (
-      source.status !== "missing" &&
-      ownedSourceKeys.has(sourceClaimKey(environment.environmentId, sourceIndex))
-    ) {
+    if (source.status === "missing") continue;
+    const key = sourceClaimKey(environment.environmentId, sourceIndex);
+    if (ownedSourceKeys.has(key)) {
       const provider = source.fingerprint.provider;
       ownedProviders.add(provider);
       ownedSourceIndexes.add(sourceIndex);
@@ -258,18 +359,19 @@ function ownedContribution(
       // would count a session once per day and model it spans.
       sessionsByProvider.set(
         provider,
-        (sessionsByProvider.get(provider) ?? 0) + source.distinctSessions,
+        (sessionsByProvider.get(provider) ?? 0) +
+          (sessionsBySource.get(key) ?? source.distinctSessions),
       );
     }
   }
   return {
     buckets: environment.summary.buckets.filter((bucket) => {
-      if (bucket.sourceIndex === undefined) return ownedProviders.has(bucket.provider);
-      const source = environment.summary.sources[bucket.sourceIndex];
-      return (
-        ownedSourceIndexes.has(bucket.sourceIndex) &&
-        source?.fingerprint.provider === bucket.provider
-      );
+      if (supplementalBuckets.has(bucket)) return true;
+      const index = bucketSourceIndex(environment.summary, bucket);
+      return index === undefined
+        ? ownedProviders.has(bucket.provider)
+        : ownedSourceIndexes.has(index) &&
+            environment.summary.sources[index]?.fingerprint.provider === bucket.provider;
     }),
     sessionsByProvider,
   };
@@ -311,15 +413,15 @@ const EMPTY_MERGED: MergedUsage = {
   },
   duplicateSources: [],
   contributingEnvironments: [],
-  staleEnvironments: [],
+  contractMismatches: [],
 };
 
 /**
  * Merges every connected environment's summary.
  *
- * `expectedContractVersion` guards against an environment running older server
- * code: rather than blocking the page, incompatible data is excluded and its
- * id is reported so the UI can say coverage is partial. Versions in
+ * `expectedContractVersion` guards against incompatible server code: rather
+ * than blocking the page, its data is excluded and the mismatch direction is
+ * reported so the UI can identify which side needs updating. Versions in
  * [{@link USAGE_MERGE_COMPATIBLE_SINCE}, expected] still merge, so an additive
  * provider expansion does not drop Claude/Codex totals from older servers.
  */
@@ -330,18 +432,26 @@ export function mergeUsage(
   if (environments.length === 0) return EMPTY_MERGED;
 
   const current: EnvironmentUsage[] = [];
-  const staleEnvironments: EnvironmentId[] = [];
+  const contractMismatches: UsageContractMismatch[] = [];
   for (const environment of environments) {
     if (
       isCompatibleUsageContractVersion(environment.summary.contractVersion, expectedContractVersion)
     ) {
       current.push(environment);
     } else {
-      staleEnvironments.push(environment.environmentId);
+      contractMismatches.push({
+        environmentId: environment.environmentId,
+        direction:
+          environment.summary.contractVersion < expectedContractVersion
+            ? "serverBehind"
+            : "clientBehind",
+        contractVersion: environment.summary.contractVersion,
+      });
     }
   }
 
-  const { ownedSourceKeys, duplicates } = claimSources(current);
+  const { ownedSourceKeys, supplementalBucketsByEnvironment, sessionsBySource, duplicates } =
+    claimSources(current);
 
   let costUsd = 0;
   let uncachedInputTokens = 0;
@@ -361,7 +471,13 @@ export function mergeUsage(
   >();
   const modelAccumulator = new Map<
     string,
-    { provider: UsageProviderKind; costUsd: number; totalTokens: number; records: number }
+    {
+      provider: UsageProviderKind;
+      costUsd: number;
+      totalTokens: number;
+      records: number;
+      unpricedRecords: number;
+    }
   >();
   const dailyAccumulator = new Map<
     string,
@@ -384,7 +500,12 @@ export function mergeUsage(
   const contributingEnvironments: EnvironmentId[] = [];
 
   for (const environment of current) {
-    const { buckets, sessionsByProvider } = ownedContribution(environment, ownedSourceKeys);
+    const { buckets, sessionsByProvider } = ownedContribution(
+      environment,
+      ownedSourceKeys,
+      supplementalBucketsByEnvironment.get(environment.environmentId) ?? new Set(),
+      sessionsBySource,
+    );
     if (buckets.length > 0) contributingEnvironments.push(environment.environmentId);
 
     for (const [providerKind, providerSessions] of sessionsByProvider) {
@@ -431,10 +552,12 @@ export function mergeUsage(
         costUsd: 0,
         totalTokens: 0,
         records: 0,
+        unpricedRecords: 0,
       };
       model.costUsd += bucket.costUsd;
       model.totalTokens += tokens;
       model.records += bucket.records;
+      model.unpricedRecords += bucket.unpricedRecords;
       modelAccumulator.set(modelKey, model);
 
       const day = dailyAccumulator.get(bucket.day) ?? {
@@ -493,6 +616,7 @@ export function mergeUsage(
       costUsd: totals.costUsd,
       totalTokens: totals.totalTokens,
       records: totals.records,
+      unpricedRecords: totals.unpricedRecords,
       costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
     }))
     .sort((a, b) => b.costUsd - a.costUsd || b.totalTokens - a.totalTokens);
@@ -533,6 +657,6 @@ export function mergeUsage(
     },
     duplicateSources: duplicates,
     contributingEnvironments,
-    staleEnvironments,
+    contractMismatches,
   };
 }

@@ -157,6 +157,7 @@ export const makeFromLibrary = (
   });
 };
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const library = yield* Effect.cached(
     Effect.tryPromise({
@@ -175,5 +176,3 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(WorklerWorkspaceService, make);
-export const layerFromLibrary = (library: WorklerLibrary) =>
-  Layer.succeed(WorklerWorkspaceService, makeFromLibrary(Effect.succeed(library)));

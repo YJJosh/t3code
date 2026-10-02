@@ -88,11 +88,11 @@ export type PiExtensionUiResponse =
   | { readonly type: "extension_ui_response"; readonly id: string; readonly confirmed: boolean }
   | { readonly type: "extension_ui_response"; readonly id: string; readonly cancelled: true };
 
-export const DEFAULT_PI_BINARY = "pi";
+const DEFAULT_PI_BINARY = "pi";
 export const DEFAULT_PI_PROFILE = "coder";
-export const PI_SUBAGENTS_RPC_BRIDGE_ENV = "PI_SUBAGENTS_RPC_BRIDGE";
+const PI_SUBAGENTS_RPC_BRIDGE_ENV = "PI_SUBAGENTS_RPC_BRIDGE";
 export const PI_SUBAGENTS_RPC_EVENT_PREFIX = "pi-subagents:event:v1:";
-export const PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV = "PI_BACKGROUND_TERMINALS_RPC_BRIDGE";
+const PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV = "PI_BACKGROUND_TERMINALS_RPC_BRIDGE";
 export const PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX = "pi-background-terminals:event:v1:";
 
 const decodePiBackgroundTerminalEventJson = Schema.decodeUnknownOption(

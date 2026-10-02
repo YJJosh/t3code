@@ -133,10 +133,10 @@ function BackgroundTerminalRow({
       >
         {title}
       </span>
-      <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+      <span className="shrink-0 font-mono text-3xs text-muted-foreground">
         {backgroundTerminalElapsedLabel(terminal.view)}
       </span>
-      <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
+      <span className="shrink-0 text-3xs uppercase tracking-wide text-muted-foreground">
         {backgroundTerminalStatusLabel(terminal.view.status)}
       </span>
     </button>
@@ -188,19 +188,21 @@ function BackgroundTerminalOutputPane({ buffer }: BackgroundTerminalOutputPanePr
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1">
       {truncated && (
-        <p className="rounded-md bg-muted/50 px-2 py-1 text-[11px] text-muted-foreground">
+        <p className="rounded-md bg-muted/50 px-2 py-1 text-2xs text-muted-foreground">
           Earlier output truncated ({truncatedBytesLabel} dropped)
         </p>
       )}
-      <ScrollArea ref={rootRef} className="min-h-0 flex-1 rounded-md border border-border/60">
-        {text.length === 0 ? (
-          <p className="p-1.5 text-xs text-muted-foreground">No output yet.</p>
-        ) : (
-          <pre className="min-w-0 whitespace-pre-wrap break-words p-1.5 font-mono text-[11px] text-foreground/90">
-            {text}
-          </pre>
-        )}
-      </ScrollArea>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border/60">
+        <ScrollArea ref={rootRef} className="min-h-0 flex-1">
+          {text.length === 0 ? (
+            <p className="p-1.5 text-xs text-muted-foreground">No output yet.</p>
+          ) : (
+            <pre className="min-w-0 whitespace-pre-wrap break-words p-1.5 font-mono text-2xs text-foreground/90">
+              {text}
+            </pre>
+          )}
+        </ScrollArea>
+      </div>
     </div>
   );
 }
@@ -400,7 +402,7 @@ export function BackgroundTerminalRuns({
         {quiet.length > 0 && (
           <Collapsible open={quietExpanded} onOpenChange={setQuietExpanded}>
             <CollapsibleTrigger
-              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-accent/60 data-panel-open:[&_svg]:rotate-90"
+              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-2xs text-muted-foreground hover:bg-accent/60 data-panel-open:[&_svg]:rotate-90"
               aria-label={`${backgroundTerminalRosterSummaryLabel(quiet.length)}, ${quietExpanded ? "expanded" : "collapsed"}`}
             >
               <ChevronRightIcon
@@ -438,20 +440,22 @@ export function BackgroundTerminalRuns({
         <SheetPopup
           side="right"
           showCloseButton
-          className={cn("gap-0 p-4", useSheet ? "w-full max-w-none" : "min-w-80 max-w-none")}
+          className={useSheet ? "w-full max-w-none" : "min-w-80 max-w-none"}
           style={useSheet ? undefined : { width: `${detailWidth}px` }}
         >
           {!useSheet && <RightPanelResizeHandle handlers={detailResizeHandlers} />}
           <SheetTitle className="sr-only">Background terminal details</SheetTitle>
-          {selectedTerminal !== null && (
-            <BackgroundTerminalDetail
-              key={`${state.managerId}:${selectedTerminal.view.id}`}
-              environmentId={environmentId}
-              threadId={threadId}
-              managerId={state.managerId}
-              terminal={selectedTerminal}
-            />
-          )}
+          <div className="flex min-h-0 flex-1 flex-col p-4">
+            {selectedTerminal !== null && (
+              <BackgroundTerminalDetail
+                key={`${state.managerId}:${selectedTerminal.view.id}`}
+                environmentId={environmentId}
+                threadId={threadId}
+                managerId={state.managerId}
+                terminal={selectedTerminal}
+              />
+            )}
+          </div>
         </SheetPopup>
       </Sheet>
     </>

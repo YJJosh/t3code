@@ -214,14 +214,14 @@ export function AgentsPanel({
       <header className="shrink-0 border-b border-border/65 px-3 py-2.5">
         <div className="flex items-baseline gap-2">
           <h1 className="text-sm font-semibold text-foreground">Agent inspector</h1>
-          <span className="text-[.7rem] text-muted-foreground">
+          <span className="text-2xs text-muted-foreground">
             {visibleAgentCount} agent{visibleAgentCount === 1 ? "" : "s"}
             {workflows.length > 0
               ? ` · ${workflows.length} workflow${workflows.length === 1 ? "" : "s"}`
               : ""}
           </span>
         </div>
-        <p className="mt-0.5 text-[.7rem] text-muted-foreground">
+        <p className="mt-0.5 text-2xs text-muted-foreground">
           {model.runningCount + model.waitingCount > 0
             ? `${model.runningCount + model.waitingCount} working`
             : "No active agents"}
@@ -248,7 +248,7 @@ export function AgentsPanel({
         roster
       )}
 
-      <footer className="flex shrink-0 items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
+      <footer className="flex shrink-0 items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-2xs text-muted-foreground">
         <span>
           {model.runningCount + model.waitingCount > 0
             ? `● ${model.runningCount + model.waitingCount} working`

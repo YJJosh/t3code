@@ -23,7 +23,7 @@ import { cacheSavingsUsd, priceUsage, type RateTable } from "./usagePricing.ts";
  * `en-CA` yields ISO-ordered parts, which is why it is used here rather than
  * assembling the day from `Date` getters (those are host-local only).
  */
-export function makeDayFormatter(timeZone: string): (timestampMs: number) => string {
+function makeDayFormatter(timeZone: string): (timestampMs: number) => string {
   let format: Intl.DateTimeFormat;
   try {
     format = new Intl.DateTimeFormat("en-CA", {
@@ -112,7 +112,7 @@ export class UsageAggregator {
    * can derive per-window facts (distinct sessions, for one) from the records
    * that landed rather than everything the mtime prefilter happened to admit.
    */
-  add(record: UsageRecord, sourceIndex?: number): boolean {
+  add(record: UsageRecord, sourceIndex?: number | string, sourcePath?: string): boolean {
     if (record.dedupeKey !== null) {
       if (this.#seen.has(record.dedupeKey)) {
         this.#duplicatesDropped += 1;
@@ -146,8 +146,12 @@ export class UsageAggregator {
             this.#hourlyWindow.sinceTimeMs +
               Math.floor((record.timestampMs - this.#hourlyWindow.sinceTimeMs) / HOUR_MS) * HOUR_MS,
           ).toISOString();
+    if (typeof sourceIndex === "string") {
+      sourcePath = sourceIndex;
+      sourceIndex = undefined;
+    }
     const source = sourceIndex === undefined ? "" : String(sourceIndex);
-    const key = `${day}\u0000${hourStart}\u0000${record.provider}\u0000${record.model}\u0000${source}`;
+    const key = `${day}\u0000${hourStart}\u0000${record.provider}\u0000${record.model}\u0000${source}\u0000${sourcePath ?? ""}`;
     let bucket = this.#buckets.get(key);
     if (bucket === undefined) {
       bucket = {
@@ -162,20 +166,13 @@ export class UsageAggregator {
       this.#buckets.set(key, bucket);
     }
 
-    const priced = priceUsage(
-      this.#options.rates,
-      record.model,
-      record.totals,
-      record.reportedCostUsd,
-      this.#options.priceOverrides,
-    );
+    const priced = priceUsage(this.#options.rates, record, this.#options.priceOverrides);
 
     bucket.totals = addTotals(bucket.totals, record.totals);
     bucket.costUsd += priced.costUsd;
     bucket.cacheSavingsUsd += cacheSavingsUsd(
       this.#options.rates,
-      record.model,
-      record.totals,
+      record,
       this.#options.priceOverrides,
     );
     bucket.records += 1;
@@ -188,7 +185,7 @@ export class UsageAggregator {
   finish(): AggregateResult {
     const buckets: UsageBucket[] = [];
     for (const [key, bucket] of this.#buckets) {
-      const [day = "", hourStart = "", provider = "", model = "", source = ""] =
+      const [day = "", hourStart = "", provider = "", model = "", source = "", sourcePath = ""] =
         key.split("\u0000");
       buckets.push({
         day: day as UsageDay,
@@ -196,6 +193,8 @@ export class UsageAggregator {
         provider: provider as UsageBucket["provider"],
         ...(source === "" ? {} : { sourceIndex: Number(source) }),
         model,
+        ...(sourcePath === "" ? {} : { sourcePath }),
+        ...(sourcePath === "" ? {} : { sourcePath }),
         totals: bucket.totals,
         costUsd: bucket.costUsd,
         cacheSavingsUsd: bucket.cacheSavingsUsd,

@@ -103,11 +103,13 @@ jobs:
             apps/mobile/src/lib/modelOptions.test.ts \
             apps/mobile/src/features/threads/subagents/subagentPresentation.test.ts
 
-  build_wsl_node_pty:
-    name: Build WSL node-pty (linux-x64)
+  build_wsl_runtime:
+    name: Build WSL CLI runtime (linux-x64)
     needs: preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      VITE_DESKTOP_BUILD_BRAND: dulli
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -121,27 +123,80 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Build node-pty Linux prebuild
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      # The executable embeds apps/server/package.json's version. The archive
+      # stem must also match the desktop's exact version, including -dulli.N.
+      - name: Align package versions
+        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
+
+      - name: Build web package
+        run: vp run --filter @t3tools/web build
+
+      - name: Build CLI package
+        run: vp run --filter t3 build
+
+      # CLI build applies development icons; npm publish normally replaces
+      # them with --brand dulli, but this embedded archive is never published.
+      - name: Apply Dulli CLI web icons
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { copyFileSync } from "node:fs";
+          import { resolveWebIconOverrides } from "./scripts/lib/brand-assets.ts";
+
+          for (const icon of resolveWebIconOverrides("dulli", "apps/server/dist/client")) {
+            copyFileSync(icon.sourceRelativePath, icon.targetRelativePath);
+          }
+          NODE
+
+      - name: Build CLI single-executable
+        env:
+          # Exact host Node with --build-sea support; keep in step with
+          # SEA_NODE_VERSION in apps/server/vite.config.ts.
+          VP_NODE_VERSION: "26.8.2"
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+
+      - name: Build resource monitor
+        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu
+
+      - name: Stage resource monitor for the CLI archive
         shell: bash
         run: |
           set -euo pipefail
-          pty_pkg="$(node -e "console.log(require.resolve('node-pty/package.json', { paths: ['$GITHUB_WORKSPACE/apps/server'] }))")"
-          pty_dir="$(dirname "$pty_pkg")"
-          (cd "$pty_dir" && npx --yes node-gyp rebuild)
-          mkdir -p wsl-prebuild
-          cp "$pty_dir/build/Release/pty.node" wsl-prebuild/pty.node
-          file wsl-prebuild/pty.node
+          target_dir="$RUNNER_TEMP/cli-resource-monitor/linux-x64"
+          mkdir -p "$target_dir"
+          cp native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor "$target_dir/t3-resource-monitor"
 
-      - name: Upload WSL prebuild
+      # Retain the upstream t3 archive/executable names: desktop validation
+      # and WSL installation rely on this layout, not the npm package name.
+      - name: Build CLI archive
+        shell: bash
+        run: |
+          node scripts/build-cli-archive.ts \
+            --platform linux \
+            --arch x64 \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" \
+            --output-dir release-cli
+
+      - name: Smoke-test CLI archive
+        run: node scripts/smoke-cli-archive.ts --archive "release-cli/t3-${{ needs.preflight.outputs.version }}-linux-x64.tar.gz" --expect-version "${{ needs.preflight.outputs.version }}"
+
+      - name: Upload CLI archive
         uses: actions/upload-artifact@v7
         with:
-          name: wsl-node-pty-x64
-          path: wsl-prebuild/pty.node
+          name: cli-linux-x64
+          path: release-cli/t3-${{ needs.preflight.outputs.version }}-linux-x64.tar.gz
           if-no-files-found: error
 
   build:
     name: Build ${{ matrix.label }}
-    needs: [preflight, build_wsl_node_pty]
+    # Matrix jobs share needs; only Windows downloads/embeds the Linux archive.
+    needs: [preflight, build_wsl_runtime]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -294,12 +349,12 @@ jobs:
 
           echo "T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
 
-      - name: Download WSL prebuild
+      - name: Download Linux CLI archive for WSL
         if: matrix.platform == 'win'
         uses: actions/download-artifact@v8
         with:
-          name: wsl-node-pty-x64
-          path: wsl-prebuild
+          name: cli-linux-x64
+          path: wsl-runtime
 
       - name: Install Spectre-mitigated MSVC libraries
         if: matrix.platform == 'win'
@@ -343,7 +398,7 @@ jobs:
             --verbose
           )
           if [[ "${{ matrix.platform }}" == "win" ]]; then
-            args+=(--wsl-prebuild "$GITHUB_WORKSPACE/wsl-prebuild/pty.node")
+            args+=(--wsl-runtime "$GITHUB_WORKSPACE/wsl-runtime/t3-${{ needs.preflight.outputs.version }}-linux-${{ matrix.arch }}.tar.gz")
           fi
           vp run dist:desktop:artifact "${args[@]}"
 

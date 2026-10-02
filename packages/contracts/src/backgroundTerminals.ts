@@ -165,7 +165,7 @@ export type PiBackgroundTerminalControlInput = typeof PiBackgroundTerminalContro
 export const PiBackgroundTerminalSubscribeInput = Schema.Struct({ threadId: ThreadId });
 export type PiBackgroundTerminalSubscribeInput = typeof PiBackgroundTerminalSubscribeInput.Type;
 
-export class PiBackgroundTerminalControlError extends Schema.TaggedErrorClass<PiBackgroundTerminalControlError>()(
+export class PiBackgroundTerminalControlError extends Schema.TaggedError<PiBackgroundTerminalControlError>()(
   "PiBackgroundTerminalControlError",
   { message: Schema.String },
 ) {}
