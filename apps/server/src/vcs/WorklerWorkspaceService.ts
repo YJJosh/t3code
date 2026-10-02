@@ -1,3 +1,5 @@
+import * as NodeModule from "node:module";
+
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -157,11 +159,17 @@ export const makeFromLibrary = (
   });
 };
 
+// Workler stays external to the CLI bundle because it reads its own
+// package.json at load. Inside the Node single-executable (the Windows WSL
+// runtime), `import()` cannot load files from disk, while `require` always
+// reads the real filesystem.
+const requireForWorkler = NodeModule.createRequire(import.meta.url);
+
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const library = yield* Effect.cached(
-    Effect.tryPromise({
-      try: () => import("workler") as Promise<WorklerLibrary>,
+    Effect.try({
+      try: () => requireForWorkler("workler") as WorklerLibrary,
       catch: (cause) =>
         new WorklerWorkspaceError({
           operation: "WorklerWorkspaceService.loadLibrary",

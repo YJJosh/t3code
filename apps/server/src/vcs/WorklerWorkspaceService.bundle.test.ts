@@ -8,6 +8,7 @@ import * as NodeUtil from "node:util";
 
 import { expect, it } from "vite-plus/test";
 
+import { findEsmImportsOfExternalPackages } from "../../../../scripts/lib/cli-executable-imports.ts";
 import { selectCliRuntimeExternalDependencies } from "../../../../scripts/lib/cli-external-packages.ts";
 import serverPackageJson from "../../package.json" with { type: "json" };
 
@@ -33,6 +34,14 @@ export { runPromise } from "effect/Effect";`,
       [vp, "pack", NodePath.join(entryRoot, "index.ts"), "--out-dir", dist],
       { cwd: serverRoot, timeout: 60_000 },
     );
+    // The Windows WSL runtime runs this bundle as a Node single-executable,
+    // where `import()` of a file-backed package throws; Workler must load
+    // through `require`.
+    for (const file of await NodeFSP.readdir(dist)) {
+      if (!file.endsWith(".mjs")) continue;
+      const source = await NodeFSP.readFile(NodePath.join(dist, file), "utf8");
+      expect(findEsmImportsOfExternalPackages(source)).toEqual([]);
+    }
 
     const runtimeDependencies = selectCliRuntimeExternalDependencies(
       serverPackageJson.dependencies,
