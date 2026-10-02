@@ -552,8 +552,8 @@ importers:
         specifier: 3.6.0
         version: 3.6.0
       workler:
-        specifier: 0.2.1
-        version: 0.2.1
+        specifier: 0.2.2
+        version: 0.2.2
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -11259,8 +11259,8 @@ packages:
     engines: {node: '>=16'}
     hasBin: true
 
-  workler@0.2.1:
-    resolution: {integrity: sha512-IXIoKLkk1vN4jbT/8gK6icwRy53x5ruoriTjmUZ7x/UY+GWG7/G2dD6Wo/WOTfOyuwnP6ebR346tcwZ9eiRCBg==}
+  workler@0.2.2:
+    resolution: {integrity: sha512-rrCkDcZQwpJ7XxwWRtk6fI2xGWv89K8sWS2w2aINgKXyXlhlks8X8W017YKc2sABEayHbyrfvgmnu53r8f1WNA==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -22320,7 +22320,7 @@ snapshots:
       '@cloudflare/workerd-linux-arm64': 1.20260901.1
       '@cloudflare/workerd-windows-64': 1.20260901.1
 
-  workler@0.2.1: {}
+  workler@0.2.2: {}
 
   wrap-ansi@6.2.0:
     dependencies:
