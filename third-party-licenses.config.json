@@ -473,6 +473,48 @@
         "licenseId": "MIT",
         "copyrights": ["Copyright (c) 2025 opencode"]
       }
+    },
+    {
+      "repositoryUrl": "https://github.com/earendil-works/pi",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2025 Mario Zechner"]
+      }
+    },
+    {
+      "repositoryUrl": "https://github.com/badlogic/clipboard",
+      "generatedNotice": {
+        "licenseId": "MIT"
+      }
+    },
+    {
+      "name": "standardwebhooks",
+      "sourceUrl": "https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries/javascript",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2023 Svix (https://www.svix.com)"]
+      }
+    },
+    {
+      "name": "@nodable/entities",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2026 Nodable"]
+      }
+    },
+    {
+      "name": "xml-naming",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2026 Natural Intelligence"]
+      }
+    },
+    {
+      "name": "data-uri-to-buffer",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2014 Nathan Rajlich <nathan@tootallnate.net>"]
+      }
     }
   ]
 }
