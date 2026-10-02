@@ -1818,7 +1818,7 @@ describe("Pi adapter", () => {
         contractVersion: 1,
         managerId: "manager-live",
         sequence: 4,
-        timestamp: "2026-01-01T00:00:01.200Z",
+        timestamp: "2026-01-01T00:00:02.200Z",
         kind: "child_message",
         runId: "run-live",
         view,
@@ -1855,6 +1855,81 @@ describe("Pi adapter", () => {
       );
     }).pipe(Effect.provide(TestEnv)),
   );
+
+  it("repeats child usage only when a token count changed", () => {
+    const memo = new Map<string, string>();
+    const view = {
+      runId: "run-usage",
+      task: "Count tokens",
+      state: "running",
+      usageSoFar: { input: 10, output: 5, cacheRead: 2, total: 17, turns: 1 },
+      activeMs: 100,
+    };
+    const base = {
+      contractVersion: 1,
+      managerId: "manager-usage",
+      runId: "run-usage",
+      kind: "child_turn" as const,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    };
+    const first = projectPiTaskBridgeEvent(
+      {
+        ...base,
+        sequence: 1,
+        view,
+        activity: { type: "turn_start", data: {} },
+      } as PiTaskBridgeEvent,
+      memo,
+    );
+    expect(first[0]?.payload).toEqual(
+      expect.objectContaining({ typedUsage: expect.objectContaining({ totalTokens: 17 }) }),
+    );
+
+    // Same counts, more elapsed time: the duration tick alone is not worth an event.
+    const repeated = projectPiTaskBridgeEvent(
+      {
+        ...base,
+        sequence: 2,
+        view: { ...view, activeMs: 900 },
+        activity: { type: "turn_end", data: {} },
+      } as PiTaskBridgeEvent,
+      memo,
+    );
+    expect(repeated[0]?.payload).not.toHaveProperty("typedUsage");
+
+    const grown = projectPiTaskBridgeEvent(
+      {
+        ...base,
+        sequence: 3,
+        view: { ...view, usageSoFar: { ...view.usageSoFar, output: 9, total: 21 } },
+        activity: { type: "turn_start", data: {} },
+      } as PiTaskBridgeEvent,
+      memo,
+    );
+    expect(grown[0]?.payload).toEqual(
+      expect.objectContaining({ typedUsage: expect.objectContaining({ totalTokens: 21 }) }),
+    );
+
+    // Completion always carries the final numbers, even when unchanged.
+    const done = projectPiTaskBridgeEvent(
+      {
+        ...base,
+        sequence: 4,
+        kind: "terminal",
+        view: { ...view, state: "done", usageSoFar: { ...view.usageSoFar, output: 9, total: 21 } },
+      } as PiTaskBridgeEvent,
+      memo,
+    );
+    expect(done[0]).toEqual(
+      expect.objectContaining({
+        type: "task.completed",
+        payload: expect.objectContaining({
+          typedUsage: expect.objectContaining({ totalTokens: 21 }),
+        }),
+      }),
+    );
+    expect(memo.has("run-usage")).toBe(false);
+  });
 
   it("replays durable child transcript events from Pi snapshots", () => {
     const view = {

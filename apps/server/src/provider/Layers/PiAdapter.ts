@@ -180,6 +180,8 @@ interface PiSessionContext {
   subagentLiveMessages: Map<string, SubagentLiveMessage>;
   /** Last published time for other high-frequency child transcript events. */
   subagentLivePublishedAtByKey: Map<string, number>;
+  /** Token counts last published per child run; progress events repeat usage only when it changed. */
+  subagentUsageByRun: Map<string, string>;
   /** Pi only repeats tool args on start/update; retain them for the final result. */
   toolArgsByCallId: Map<string, unknown>;
   /** Last persisted progress time per tool; Pi progress payloads are cumulative. */
@@ -468,7 +470,13 @@ function taskTranscriptEvent(event: PiTaskBridgeEvent) {
   };
 }
 
-const SUBAGENT_LIVE_PUBLISH_INTERVAL_MS = 100;
+/**
+ * Live child deltas become persisted thread events (one stable row per run in
+ * the projection, but every publish still appends to the event log and is
+ * broadcast to each client), so they are coalesced to one per second per run.
+ * The complete message follows with message_end.
+ */
+const SUBAGENT_LIVE_PUBLISH_INTERVAL_MS = 1000;
 
 function normalizeTaskBridgeTranscriptEvent(
   event: PiTaskBridgeEvent,
@@ -495,7 +503,7 @@ function normalizeTaskBridgeTranscriptEvent(
     const current = liveMessages.get(runId);
     let text = current?.text ?? "";
     let thinking = current?.thinking ?? "";
-    let forcePublish = activity.liveOnly !== true;
+    const forcePublish = activity.liveOnly !== true;
     if (message?.role === "assistant") {
       const extracted = extractPiAssistantText(message);
       text = extracted.text;
@@ -504,10 +512,8 @@ function normalizeTaskBridgeTranscriptEvent(
       const update = data.assistantMessageEvent;
       if (update.type === "text_delta" && typeof update.delta === "string") {
         text += update.delta;
-        forcePublish ||= update.delta.includes("\n");
       } else if (update.type === "thinking_delta" && typeof update.delta === "string") {
         thinking += update.delta;
-        forcePublish ||= update.delta.includes("\n");
       } else if (update.type === "text_end" && typeof update.content === "string") {
         text = update.content;
       } else if (update.type === "thinking_end" && typeof update.content === "string") {
@@ -573,11 +579,36 @@ function normalizeTaskBridgeTranscriptEvent(
   return event;
 }
 
+/**
+ * Every child event carries the run's cumulative usage. Persisting it each time
+ * doubled the event volume of a running fleet, so progress events only repeat
+ * usage when a token count moved; duration alone (which ticks on every event)
+ * does not count. Completion always carries the final numbers.
+ */
+function usageChangedSincePublish(
+  memo: Map<string, string> | undefined,
+  runId: string,
+  usage: NonNullable<ReturnType<typeof taskUsage>>,
+): boolean {
+  if (!memo) return true;
+  const key = [
+    usage.totalTokens,
+    usage.inputTokens ?? "",
+    usage.cachedInputTokens ?? "",
+    usage.outputTokens ?? "",
+    usage.toolUses ?? "",
+  ].join(":");
+  if (memo.get(runId) === key) return false;
+  memo.set(runId, key);
+  return true;
+}
+
 function projectTaskView(
   kind: PiTaskBridgeEvent["kind"],
   view: Record<string, unknown>,
   fallbackRunId?: string,
   transcriptEvent?: ReturnType<typeof taskTranscriptEvent>,
+  usageMemo?: Map<string, string>,
 ): ReadonlyArray<PiTaskProjection> {
   const runId = nonEmptyString(view.runId) ?? fallbackRunId;
   if (!runId) return [];
@@ -624,6 +655,7 @@ function projectTaskView(
     case "terminal":
     case "killed":
     case "interrupted":
+      usageMemo?.delete(runId);
       return [
         {
           type: "task.completed",
@@ -637,7 +669,9 @@ function projectTaskView(
       ];
     case "control_result":
       return [];
-    default:
+    default: {
+      const publishUsage =
+        typedUsage !== undefined && usageChangedSincePublish(usageMemo, runId, typedUsage);
       return [
         {
           type: "task.progress",
@@ -645,11 +679,12 @@ function projectTaskView(
             ...common,
             description,
             ...(summary && !transcriptEvent ? { summary } : {}),
-            ...(typedUsage ? { typedUsage } : {}),
+            ...(publishUsage ? { typedUsage } : {}),
             ...(transcriptEvent ? { transcriptEvent } : {}),
           },
         },
       ];
+    }
   }
 }
 
@@ -660,6 +695,7 @@ function projectTaskView(
  */
 export function projectPiTaskBridgeEvent(
   event: PiTaskBridgeEvent,
+  usageMemo?: Map<string, string>,
 ): ReadonlyArray<PiTaskProjection> {
   if (event.kind === "snapshot" && isRecord(event.snapshot) && Array.isArray(event.snapshot.runs)) {
     const runs = event.snapshot.runs.filter(isRecord);
@@ -684,6 +720,7 @@ export function projectPiTaskBridgeEvent(
             replayEvent.view!,
             replayEvent.runId,
             taskTranscriptEvent(replayEvent),
+            usageMemo,
           );
         })
       : [];
@@ -697,12 +734,12 @@ export function projectPiTaskBridgeEvent(
           : state === "needs_input"
             ? "needs_input"
             : "run_running";
-      return projectTaskView(lifecycleKind, candidate);
+      return projectTaskView(lifecycleKind, candidate, undefined, undefined, usageMemo);
     });
     return [...starts, ...transcript, ...states];
   }
   return event.view
-    ? projectTaskView(event.kind, event.view, event.runId, taskTranscriptEvent(event))
+    ? projectTaskView(event.kind, event.view, event.runId, taskTranscriptEvent(event), usageMemo)
     : [];
 }
 
@@ -953,7 +990,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
 
     const emitTaskBridgeEvent = (ctx: PiSessionContext, event: PiTaskBridgeEvent) =>
       Effect.forEach(
-        projectPiTaskBridgeEvent(event),
+        projectPiTaskBridgeEvent(event, ctx.subagentUsageByRun),
         (projection) =>
           Effect.gen(function* () {
             const eventBase = {
@@ -2056,6 +2093,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           hasPrimaryAssistantAnswer: false,
           subagentLiveMessages: new Map(),
           subagentLivePublishedAtByKey: new Map(),
+          subagentUsageByRun: new Map(),
           toolArgsByCallId: new Map(),
           toolUpdateEmittedAtByCallId: new Map(),
           lastAgentEndOutcome: undefined,
