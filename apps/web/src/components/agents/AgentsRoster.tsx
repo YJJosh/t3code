@@ -64,7 +64,7 @@ function AgentRosterRow({
       <span className="col-start-2 row-start-1 min-w-0 truncate text-sm font-medium">
         {agent.title}
       </span>
-      <span className="col-start-3 row-start-1 min-w-10 text-right font-mono text-[.7rem] text-muted-foreground/80">
+      <span className="col-start-3 row-start-1 min-w-10 text-right font-mono text-2xs text-muted-foreground/80">
         <AgentElapsed agent={agent} />
       </span>
       <span
@@ -75,7 +75,7 @@ function AgentRosterRow({
       >
         {activity ?? statusLabel}
       </span>
-      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
+      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-2xs tabular-nums text-muted-foreground/70">
         {metadata.join(" · ") || "Subagent"}
       </span>
     </button>
@@ -130,7 +130,7 @@ function WorkflowRosterRow({
       <span className="col-start-2 row-start-1 min-w-0 truncate text-sm font-medium">
         {group.workflow.workflowName ?? group.workflow.title}
       </span>
-      <span className="col-start-3 row-start-1 flex items-center gap-1 font-mono text-[.7rem] text-muted-foreground/80">
+      <span className="col-start-3 row-start-1 flex items-center gap-1 font-mono text-2xs text-muted-foreground/80">
         <AgentStatusDot status={status} />
         {live ? <AgentElapsed agent={group.workflow} /> : elapsed}
       </span>
@@ -143,7 +143,7 @@ function WorkflowRosterRow({
               ? "Workflow working"
               : `${members.length} agent${members.length === 1 ? "" : "s"} settled`}
       </span>
-      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] text-muted-foreground/70">
+      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-2xs text-muted-foreground/70">
         Workflow · {formatSubagentTokenCount(totalTokens)} tok
       </span>
     </button>
@@ -178,7 +178,7 @@ export function AgentsRoster({
             className={cn("space-y-1", batchIndex > 0 && "border-t border-border/60 pt-3")}
           >
             {batches.length > 1 ? (
-              <h2 className="px-1 pb-1 text-[.65rem] font-semibold uppercase tracking-wider text-muted-foreground">
+              <h2 className="px-1 pb-1 text-3xs font-semibold uppercase tracking-wider text-muted-foreground">
                 Prompt {batchIndex + 1}
                 <span className="ms-1 font-normal normal-case tracking-normal text-muted-foreground/65">
                   · {batch.directAgents.length + batch.workflows.length} run

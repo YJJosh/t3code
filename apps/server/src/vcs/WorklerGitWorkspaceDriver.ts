@@ -126,10 +126,13 @@ export const withWorklerWorkspaceSupport = (input: {
 
   const createWorktree = Effect.fn("WorklerGitWorkspaceDriver.createWorktree")(function* (
     createInput: VcsCreateWorktreeInput,
+    options?: GitVcsDriver.CreateWorktreeOptions,
   ): Effect.fn.Return<VcsCreateWorktreeResult, GitCommandError> {
     if (!(yield* worklerEnabled(createInput.cwd)) || createInput.path !== null) {
-      return yield* input.git.createWorktree(createInput);
+      return yield* input.git.createWorktree(createInput, options);
     }
+    // Workler clones a complete workspace, so git's checkout progress, claim
+    // and submodule options only apply to the plain-worktree path above.
 
     const root = yield* resolveRoot(createInput.cwd);
     const existing = yield* input.workler

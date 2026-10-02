@@ -157,7 +157,7 @@ export const makeFromLibrary = (
   });
 };
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const library = yield* Effect.cached(
     Effect.tryPromise({
       try: () => import("workler") as Promise<WorklerLibrary>,
@@ -175,5 +175,3 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(WorklerWorkspaceService, make);
-export const layerFromLibrary = (library: WorklerLibrary) =>
-  Layer.succeed(WorklerWorkspaceService, makeFromLibrary(Effect.succeed(library)));

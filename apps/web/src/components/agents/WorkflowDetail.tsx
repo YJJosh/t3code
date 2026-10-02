@@ -60,12 +60,12 @@ function WorkflowAgentNode({
     >
       <AgentStatusDot status={agent.status} />
       <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
-      <span className="font-mono text-[.7rem] text-muted-foreground">
+      <span className="font-mono text-2xs text-muted-foreground">
         <AgentElapsed agent={agent} />
       </span>
       <span className="col-start-2 col-end-4 row-start-2 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
         {model ? (
-          <span className="max-w-[55%] shrink-0 truncate font-mono text-[.68rem]">{model}</span>
+          <span className="max-w-[55%] shrink-0 truncate font-mono text-2xs">{model}</span>
         ) : null}
         {model && activity ? <span aria-hidden>·</span> : null}
         <span className="min-w-0 truncate">{activity ?? (model ? null : statusLabel)}</span>
@@ -180,7 +180,7 @@ export function WorkflowDetail({
             </Button>
           ) : null}
           <div className="min-w-0 flex-1">
-            <p className="text-[.7rem] font-medium uppercase tracking-wider text-muted-foreground">
+            <p className="text-2xs font-medium uppercase tracking-wider text-muted-foreground">
               Workflow
             </p>
             <div className="mt-1 flex min-w-0 items-center gap-2">
@@ -188,12 +188,12 @@ export function WorkflowDetail({
               <h2 className="min-w-0 truncate text-lg font-semibold text-foreground">
                 {group.workflow.workflowName ?? group.workflow.title}
               </h2>
-              <span className="flex shrink-0 items-center gap-1 rounded-full border border-border/65 px-2 py-0.5 text-[.65rem] text-muted-foreground">
+              <span className="flex shrink-0 items-center gap-1 rounded-full border border-border/65 px-2 py-0.5 text-3xs text-muted-foreground">
                 <AgentStatusDot status={status} />
                 {visuals.label}
               </span>
             </div>
-            <p className="mt-1 font-mono text-[.7rem] text-muted-foreground">
+            <p className="mt-1 font-mono text-2xs text-muted-foreground">
               {settled}/{members.length} settled · Σ {formatSubagentTokenCount(tokens)} tok
             </p>
           </div>

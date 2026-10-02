@@ -21,7 +21,7 @@ import type { CodexScanState, PiScanState, UsageRecord } from "./usageTranscript
 
 // v5 combines Pi reducer/project metadata and Claude fast pricing. Both branches
 // used v4 for different layouts; neither can safely serve these warm entries.
-export const USAGE_SCAN_CACHE_VERSION = 5 as const;
+const USAGE_SCAN_CACHE_VERSION = 5 as const;
 
 export interface CachedFile {
   readonly size: number;

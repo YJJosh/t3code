@@ -1248,7 +1248,7 @@ export const make = Effect.gen(function* () {
 });
 
 export const vcsLayer = Layer.effect(VcsDriver.VcsDriver, makeVcsDriver);
-export const layerWithWorkler = (
+const layerWithWorkler = (
   worklerLayer: Layer.Layer<WorklerWorkspaceService.WorklerWorkspaceService>,
 ) => Layer.effect(GitVcsDriver, make).pipe(Layer.provide(worklerLayer));
 export const layer = layerWithWorkler(WorklerWorkspaceService.layer);

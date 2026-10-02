@@ -52,7 +52,7 @@ function ReasoningBlock({ text, live = false }: { text: string; live?: boolean }
     <section className="flex gap-2.5 rounded-lg bg-muted/20 px-3 py-2.5 text-sm text-muted-foreground">
       <Brain aria-hidden className={cn("mt-0.5 size-4 shrink-0", live && "text-info-foreground")} />
       <div className="min-w-0 flex-1">
-        <p className="mb-1 text-[.65rem] font-semibold uppercase tracking-wider text-muted-foreground/75">
+        <p className="mb-1 text-3xs font-semibold uppercase tracking-wider text-muted-foreground/75">
           {live ? "Thinking" : "Reasoning"}
         </p>
         <ChatMarkdown
@@ -80,13 +80,13 @@ function ToolCallCard({
         <ToolGlyph name={part.name} />
         <span className="truncate">{part.name}</span>
         {live ? (
-          <span className="ml-auto text-[.65rem] font-normal text-info-foreground">Running</span>
+          <span className="ml-auto text-3xs font-normal text-info-foreground">Running</span>
         ) : (
           <Check aria-hidden className="ml-auto size-3.5 text-success-foreground" />
         )}
       </div>
       {part.argsPreview ? (
-        <pre className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[.7rem] leading-relaxed text-muted-foreground">
+        <pre className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-2xs leading-relaxed text-muted-foreground">
           {part.argsPreview}
         </pre>
       ) : null}
@@ -127,7 +127,7 @@ function ToolResultCard({
         <span>{item.name}</span>
         <span
           className={cn(
-            "ml-auto text-[.65rem] font-normal",
+            "ml-auto text-3xs font-normal",
             item.isError ? "text-destructive-foreground" : "text-success-foreground",
           )}
         >
@@ -135,7 +135,7 @@ function ToolResultCard({
         </span>
       </div>
       {item.outputPreview ? (
-        <pre className="mt-1.5 max-h-44 overflow-auto whitespace-pre-wrap break-words font-mono text-[.7rem] leading-relaxed text-muted-foreground">
+        <pre className="mt-1.5 max-h-44 overflow-auto whitespace-pre-wrap break-words font-mono text-2xs leading-relaxed text-muted-foreground">
           {item.outputPreview}
         </pre>
       ) : null}
@@ -278,19 +278,22 @@ function AgentComposer({
         <label htmlFor={messageId} className="sr-only">
           {messageAction === "reply" ? "Reply to this agent" : "Steer this agent"}
         </label>
-        <Textarea
-          id={messageId}
-          value={message}
-          onChange={(event) => setMessage(event.target.value)}
-          placeholder={
-            messageAction === "reply"
-              ? "Answer what this agent is waiting for…"
-              : "Send guidance to this agent…"
-          }
-          rows={2}
-          disabled={pendingAction !== null}
-          className="min-h-14 resize-none border-0 bg-transparent pr-20 shadow-none focus-visible:ring-0"
-        />
+        <div className="pr-20">
+          <Textarea
+            unstyled
+            id={messageId}
+            value={message}
+            onChange={(event) => setMessage(event.target.value)}
+            placeholder={
+              messageAction === "reply"
+                ? "Answer what this agent is waiting for…"
+                : "Send guidance to this agent…"
+            }
+            rows={2}
+            disabled={pendingAction !== null}
+            className="min-h-14 resize-none"
+          />
+        </div>
         <div className="absolute bottom-2 right-2 flex items-center gap-1.5">
           <Button
             type="button"
@@ -412,7 +415,7 @@ export function AgentDetail({
           ) : null}
           <div className="min-w-0 flex-1">
             {agent.workflowName || agent.phaseTitle ? (
-              <p className="mb-0.5 flex min-w-0 items-center gap-1 text-[.65rem] text-muted-foreground">
+              <p className="mb-0.5 flex min-w-0 items-center gap-1 text-3xs text-muted-foreground">
                 <Workflow aria-hidden className="size-3 shrink-0" />
                 {agent.workflowName ? <span className="truncate">{agent.workflowName}</span> : null}
                 {agent.workflowName && agent.phaseTitle ? <span aria-hidden>/</span> : null}
@@ -424,11 +427,11 @@ export function AgentDetail({
               <h2 className="min-w-0 truncate text-sm font-semibold text-foreground">
                 {agent.title}
               </h2>
-              <span className="shrink-0 rounded-full border border-border/65 px-2 py-0.5 text-[.65rem] text-muted-foreground">
+              <span className="shrink-0 rounded-full border border-border/65 px-2 py-0.5 text-3xs text-muted-foreground">
                 {statusLabel}
               </span>
             </div>
-            <p className="mt-1 truncate font-mono text-[.65rem] text-muted-foreground">
+            <p className="mt-1 truncate font-mono text-3xs text-muted-foreground">
               {model} · <AgentElapsed agent={agent} /> ·{" "}
               {agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok"}
               {agent.usage?.toolUses !== undefined ? ` · ${agent.usage.toolUses} tools` : ""}
