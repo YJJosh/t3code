@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  ApprovalRequestId,
   ProviderInstanceId,
   ThreadId,
   type ModelSelection,
@@ -27,9 +28,12 @@ import {
   PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX,
   PI_SUBAGENTS_RPC_EVENT_PREFIX,
 } from "../pi/piRpcProtocol.ts";
+import { PiThreadSpawner, PiThreadSpawnError } from "../Services/PiThreadSpawner.ts";
 import { makePiAdapter, projectPiTaskBridgeEvent, splitPiModelSlug } from "./PiAdapter.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeBackgroundTerminalEvent = Schema.encodeSync(
   Schema.fromJsonString(PiBackgroundTerminalEventSchema),
 );
@@ -47,6 +51,7 @@ interface FakePi {
   readonly args: ReadonlyArray<string>;
   readonly env: Record<string, string>;
   readonly written: ReadonlyArray<Record<string, unknown>>;
+  readonly uiResponses: Queue.Dequeue<Record<string, unknown>>;
   readonly taskControlRequests: Queue.Dequeue<FakeTaskControlRequest>;
   readonly pushFrame: (frame: unknown) => Effect.Effect<void>;
 }
@@ -63,6 +68,7 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
       readonly name: string;
       readonly infoMessage?: string;
       readonly startsAgent?: boolean;
+      readonly dialog?: boolean;
     };
     readonly taskControl?: {
       readonly acknowledgment?: "success" | "failure";
@@ -72,12 +78,14 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
   } = {},
 ) {
   const stdout = yield* Queue.unbounded<Uint8Array>();
+  const uiResponses = yield* Queue.unbounded<Record<string, unknown>>();
   const taskControlRequests = yield* Queue.unbounded<FakeTaskControlRequest>();
   const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
   const args: string[] = [];
   const env: Record<string, string> = {};
   const written: Array<Record<string, unknown>> = [];
   let isStreaming = false;
+  let dialogPromptResponse: Record<string, unknown> | undefined;
 
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
@@ -96,6 +104,17 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
           if (!parsed || typeof parsed !== "object") return Effect.void;
           const request = parsed as Record<string, unknown>;
           written.push(request);
+          if (request.type === "extension_ui_response")
+            return Effect.gen(function* () {
+              yield* Queue.offer(uiResponses, request);
+              if (dialogPromptResponse) {
+                yield* Queue.offer(
+                  stdout,
+                  encoder.encode(serializeJsonlLine(dialogPromptResponse)),
+                );
+                dialogPromptResponse = undefined;
+              }
+            });
           if (typeof request.id !== "string" || typeof request.type !== "string") {
             return Effect.void;
           }
@@ -243,12 +262,23 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
                   ...(extensionCommand.startsAgent ? [{ type: "agent_start" }] : []),
                 ]
               : [];
+          if (runsExtensionCommand && extensionCommand?.dialog) dialogPromptResponse = response;
           const frames = [
             ...(taskControlResult !== null && options.taskControl?.order === "before-acknowledgment"
               ? [taskControlResult]
               : []),
             ...extensionFrames,
-            response,
+            ...(runsExtensionCommand && extensionCommand?.dialog
+              ? [
+                  {
+                    type: "extension_ui_request",
+                    id: "pm-menu",
+                    method: "select",
+                    title: "Profile Manager",
+                    options: ["Delete", "Inspect"],
+                  },
+                ]
+              : [response]),
             ...(taskControlResult !== null && options.taskControl?.order !== "before-acknowledgment"
               ? [taskControlResult]
               : []),
@@ -283,6 +313,7 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
     env,
     written,
     taskControlRequests,
+    uiResponses,
     pushFrame: (frame) =>
       Effect.sync(() => {
         if (typeof frame === "object" && frame !== null && "type" in frame) {
@@ -325,6 +356,228 @@ describe("Pi adapter", () => {
     expect(splitPiModelSlug("/leading")).toBeUndefined();
     expect(splitPiModelSlug("trailing/")).toBeUndefined();
   });
+
+  for (const method of ["select", "confirm", "input", "editor"] as const) {
+    it.effect(`round trips ${method} with no active model turn`, () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+        const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+        yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+          Effect.forkScoped,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* fake.pushFrame({
+          type: "extension_ui_request",
+          id: "dialog",
+          method,
+          title: "Choose",
+          message: "Proceed?",
+          options: ["First", "Second"],
+        });
+        const seen = yield* takeThroughType(events, "user-input.requested");
+        const requested = seen.at(-1)!;
+        expect(requested.turnId).toBeUndefined();
+        expect(fake.written.some((frame) => frame.type === "extension_ui_response")).toBe(false);
+        const answer =
+          method === "select" ? "Second" : method === "confirm" ? "No" : "Free text\nsecond line";
+        yield* adapter.respondToUserInput(THREAD, ApprovalRequestId.make(requested.requestId!), {
+          answer,
+        });
+        expect(yield* Queue.take(fake.uiResponses)).toEqual({
+          type: "extension_ui_response",
+          id: "dialog",
+          ...(method === "confirm" ? { confirmed: false } : { value: answer }),
+        });
+        const resolved = (yield* takeThroughType(events, "user-input.resolved")).at(-1)!;
+        expect(resolved.requestId).toBe(requested.requestId);
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+    );
+  }
+
+  for (const action of ["timeout", "stop", "interrupt", "dismiss"] as const) {
+    it.effect(`cancels and clears a dialog on ${action}`, () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const adapter = yield* makePiAdapter(settings).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+        const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+        yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+          Effect.forkScoped,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* fake.pushFrame({
+          type: "extension_ui_request",
+          id: "dialog",
+          method: "input",
+          title: "Name",
+          timeout: 1000,
+        });
+        const requested = (yield* takeThroughType(events, "user-input.requested")).at(-1)!;
+        if (action === "timeout") yield* TestClock.adjust("1 second");
+        if (action === "stop") yield* adapter.stopSession(THREAD);
+        if (action === "interrupt") yield* adapter.interruptTurn(THREAD);
+        if (action === "dismiss")
+          yield* adapter.respondToUserInput(
+            THREAD,
+            ApprovalRequestId.make(requested.requestId!),
+            {},
+          );
+        expect((yield* takeThroughType(events, "user-input.resolved")).at(-1)?.requestId).toBe(
+          requested.requestId,
+        );
+        expect(yield* Queue.take(fake.uiResponses)).toEqual({
+          type: "extension_ui_response",
+          id: "dialog",
+          cancelled: true,
+        });
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+    );
+  }
+
+  it.effect(
+    "keeps /pm open beyond the ordinary RPC deadline and delivers its selected answer",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi({
+          commands: [{ name: "pm", source: "extension" }],
+          extensionCommand: { name: "pm", dialog: true },
+        });
+        const adapter = yield* makePiAdapter(settings).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+        const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+        yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+          Effect.forkScoped,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        let finished = false;
+        const send = yield* adapter.sendTurn({ threadId: THREAD, input: "/pm" }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              finished = true;
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        const requested = (yield* takeThroughType(events, "user-input.requested")).at(-1)!;
+        yield* TestClock.adjust("45 seconds");
+        expect(finished).toBe(false);
+        yield* adapter.respondToUserInput(THREAD, ApprovalRequestId.make(requested.requestId!), {
+          answer: "Inspect",
+        });
+        expect(yield* Queue.take(fake.uiResponses)).toMatchObject({ value: "Inspect" });
+        yield* Fiber.join(send);
+        expect((yield* takeThroughType(events, "turn.completed")).at(-1)?.payload).toMatchObject({
+          state: "completed",
+        });
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  for (const action of ["interrupt", "timeout", "stop"] as const) {
+    it.effect(`cancels an in-flight bridge on ${action} without surfacing it`, () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const started = yield* Deferred.make<void>();
+        const adapter = yield* makePiAdapter(settings).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+          Effect.provideService(PiThreadSpawner, {
+            spawn: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+          }),
+        );
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* fake.pushFrame({
+          type: "extension_ui_request",
+          id: "bridge",
+          method: "input",
+          timeout: 1000,
+          title:
+            'pi-background-threads:request:v1:{"contractVersion":1,"requestId":"cancel-me","prompt":"Work"}',
+        });
+        yield* Deferred.await(started);
+        if (action === "interrupt") yield* adapter.interruptTurn(THREAD);
+        if (action === "timeout") yield* TestClock.adjust("1 second");
+        if (action === "stop") yield* adapter.stopSession(THREAD);
+        expect(yield* Queue.take(fake.uiResponses)).toEqual({
+          type: "extension_ui_response",
+          id: "bridge",
+          cancelled: true,
+        });
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+    );
+  }
+
+  for (const outcome of ["success", "error", "invalid"] as const) {
+    it.effect(`intercepts private thread bridge: ${outcome}`, () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const calls: unknown[] = [];
+        const adapter = yield* makePiAdapter(settings).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+          Effect.provideService(PiThreadSpawner, {
+            spawn: (parent, request) => {
+              calls.push({ parent, request });
+              return outcome === "error"
+                ? Effect.fail(new PiThreadSpawnError({ message: "Cannot spawn" }))
+                : Effect.succeed(ThreadId.make("child"));
+            },
+          }),
+        );
+        const events: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ).pipe(Effect.forkScoped);
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const request = {
+          contractVersion: outcome === "invalid" ? 2 : 1,
+          requestId: "spawn-1",
+          prompt: "Inspect tests",
+          title: "Tests",
+        };
+        yield* fake.pushFrame({
+          type: "extension_ui_request",
+          id: "bridge",
+          method: "input",
+          title: `pi-background-threads:request:v1:${yield* encodeJson(request)}`,
+        });
+        const response = yield* Queue.take(fake.uiResponses);
+        expect(response.type).toBe("extension_ui_response");
+        expect(yield* decodeJson(String(response.value))).toMatchObject({
+          contractVersion: 1,
+          requestId: "spawn-1",
+          status: outcome === "success" ? "queued" : "error",
+          ...(outcome === "success" ? { threadId: "child" } : {}),
+        });
+        expect(calls).toHaveLength(outcome === "invalid" ? 0 : 1);
+        expect(events.some((event) => event.type === "user-input.requested")).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+    );
+  }
 
   it.effect("keeps a long-lived turn open until agent_settled", () =>
     Effect.gen(function* () {

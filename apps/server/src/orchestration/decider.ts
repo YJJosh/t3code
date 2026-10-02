@@ -1785,6 +1785,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "This question has already been answered.",
         });
       }
+      if (
+        Predicate.isObject(request.payload) &&
+        request.payload.dismissible === true &&
+        request.payload.responseMode !== "message"
+      ) {
+        return yield* decideOrchestrationCommand({
+          readModel,
+          command: {
+            type: "thread.user-input.respond",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            requestId: command.requestId,
+            createdAt: command.createdAt,
+            answers: {},
+          },
+          userInputActivity: request,
+        });
+      }
       // Only async questions can be dropped silently. A native callback
       // question leaves the provider blocked until it gets a reply, so it
       // still needs an answer or an interrupted turn.

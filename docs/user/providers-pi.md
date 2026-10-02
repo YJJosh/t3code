@@ -12,7 +12,7 @@ Open **Settings → Providers**, add or select **Pi**, and configure any overrid
 
 Pi model names use `provider/model`, for example `openai-codex/gpt-6-astra`. Model discovery uses the bundled Pi SDK and your configured extensions and credentials. The picker also exposes profile, reasoning, context-window, and supported service-tier options. Fast is shown only for models supported by the loaded `/fast` extension; GPT-6 Astra does not currently expose it.
 
-Pi sessions always run with full local access because T3 owns the surrounding runtime approval boundary, so the composer does not show an access-mode selector for Pi. The Pi profile selector occupies that footer position, while reasoning, context-window, and service-tier controls remain separate. Extension input and editor prompts that cannot be represented safely in the provider protocol are cancelled rather than answered with fabricated values.
+Pi sessions always run with full local access because T3 owns the surrounding runtime approval boundary, so the composer does not show an access-mode selector for Pi. The Pi profile selector occupies that footer position, while reasoning, context-window, and service-tier controls remain separate. Extension menus, confirmations, and text/editor prompts appear as questions in chat on web, desktop, and mobile. Choose an answer or dismiss the question to cancel; T3 never chooses a menu action for you. Timed dialogs disappear when their timeout expires.
 
 ## Conversation display
 
@@ -25,6 +25,10 @@ Thinking rows show the reasoning summary or text supplied by the model and expan
 ## Extension commands
 
 Registered extension commands such as `/ps` and `/subagents` run directly in Pi, including while an agent is working. Commands that do not start model work finish without leaving the thread's working indicator active. Private inspector-control commands are hidden from the slash menu.
+
+## Background threads
+
+With `pi-background-threads` installed, ask Pi to use `thread_spawn` with a task and optional title. The new thread appears in the same project, shares the parent’s branch and working directory, and inherits its provider instance, model options (including profile), and modes. Its first turn starts with the requested task. Open the new thread to follow, reply to, or stop it; the extension’s `thread_status` does not mirror T3 thread status. Both threads can edit the same files, so give parallel tasks non-overlapping scope.
 
 ## Background terminals
 

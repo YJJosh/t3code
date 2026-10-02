@@ -22,7 +22,7 @@ export interface PendingUserInput {
   readonly requestId: ApprovalRequestId;
   readonly createdAt: string;
   readonly questions: ReadonlyArray<UserInputQuestion>;
-  /** Async questions can be dismissed without a reply; native callbacks cannot. */
+  /** Async questions and explicitly cancellable native dialogs can be dismissed. */
   readonly dismissible: boolean;
 }
 
@@ -168,7 +168,7 @@ export function derivePendingRequests(activities: ReadonlyArray<OrchestrationThr
         requestId,
         createdAt: activity.createdAt,
         questions,
-        dismissible: payload.responseMode === "message",
+        dismissible: payload.responseMode === "message" || payload.dismissible === true,
       });
     } else if (
       activity.kind === "approval.resolved" ||
