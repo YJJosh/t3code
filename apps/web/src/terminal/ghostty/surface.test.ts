@@ -210,6 +210,32 @@ describe("GhosttyTerminalSurface visibility", () => {
     vi.restoreAllMocks();
   });
 
+  it("keeps a snapshot's remote grid while reporting the physical panel dimensions", async () => {
+    const harness = createHarness();
+    const onResize = vi.fn();
+    const surface = await harness.create({ onResize });
+    const initial = { ...surface.fittedDimensions };
+    surface.setGridSizeOverride(80, 24);
+    surface.write("\x1b[24;80HX");
+    harness.flushFrame();
+    vi.advanceTimersByTime(150);
+    expect(surface.cols).toBe(80);
+    expect(surface.rows).toBe(24);
+    expect(surface.canvas.width).toBeGreaterThanOrEqual(80 * 8);
+    expect(surface.canvas.height).toBeGreaterThanOrEqual(24 * 16);
+    expect(onResize).toHaveBeenLastCalledWith(initial.cols, initial.rows);
+    expect(harness.renderedSnapshot.rowData[23]?.text).toContain("X");
+    harness.mount.clientWidth = 320;
+    harness.resize();
+    vi.advanceTimersByTime(150);
+    expect(surface.cols).toBe(80);
+    expect(surface.fittedDimensions.cols).not.toBe(initial.cols);
+    expect(onResize).toHaveBeenLastCalledWith(
+      surface.fittedDimensions.cols,
+      surface.fittedDimensions.rows,
+    );
+  });
+
   it("stops hidden snapshots and paint while preserving live VT replies and the next cursor", async () => {
     const harness = createHarness();
     const surface = await harness.create();

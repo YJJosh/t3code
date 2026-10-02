@@ -4,19 +4,21 @@ import type {
   PiBackgroundTerminalOutputDelta,
   PiBackgroundTerminalOutputView,
   PiBackgroundTerminalStatus,
+  PiBackgroundTerminalScreen,
   PiBackgroundTerminalView,
 } from "@t3tools/contracts";
 
 /**
- * Pure client-side state model for Pi background-terminal ("native, non-PTY
- * background command") events. Mirrors the shape of `subagentRuntime.ts` for
- * the analogous subagent stream, but background terminals have no discrete
- * per-event activity log to replay: each `PiBackgroundTerminalView` already
- * carries the *full* current stdout/stderr text for that terminal, so a
- * `terminal_upsert` (or a `snapshot`) can always rebuild a terminal's output
- * from scratch. `terminal_output` events instead carry small incremental
- * deltas so the common case (a running process printing output) doesn't
- * require re-sending the whole buffer on every line.
+ * Pure client-side state model for Pi background-terminal events. Mirrors the
+ * shape of `subagentRuntime.ts` for the analogous subagent stream, but
+ * background terminals have no discrete per-event activity log to replay: each
+ * `PiBackgroundTerminalView` already carries the *full* current stdout/stderr
+ * text for that terminal, so a `terminal_upsert` (or a `snapshot`) can always
+ * rebuild a terminal's output from scratch. `terminal_output` events instead
+ * carry small incremental deltas so the common case (a running process
+ * printing output) doesn't require re-sending the whole buffer on every line.
+ * `terminal_screen` events replace a watched interactive terminal's bounded
+ * screen grid wholesale.
  *
  * Design constraints handled here:
  * - Ordered manager sequences: every event carries `managerId` + monotonic
@@ -45,6 +47,7 @@ export interface BackgroundTerminalOutputBuffer {
 
 export interface BackgroundTerminalEntry {
   readonly view: PiBackgroundTerminalView;
+  readonly screen?: PiBackgroundTerminalScreen | undefined;
   readonly stdout: BackgroundTerminalOutputBuffer;
   readonly stderr: BackgroundTerminalOutputBuffer;
   readonly lastSequence: number;
@@ -56,6 +59,8 @@ export interface BackgroundTerminalControlEntry {
   readonly action: PiBackgroundTerminalControlInput["action"];
   readonly success: boolean;
   readonly error?: string | undefined;
+  /** Present on successful `start` results: the terminal that was created. */
+  readonly terminalId?: string | undefined;
   readonly sequence: number;
   readonly timestamp: string;
 }
@@ -273,6 +278,7 @@ function upsertTerminal(
   const next = new Map(terminals);
   next.set(view.id, {
     view,
+    screen: existing?.screen,
     stdout: reconcileOutputBuffer(existing?.stdout, view.stdout, maxOutputBytes),
     stderr: reconcileOutputBuffer(existing?.stderr, view.stderr, maxOutputBytes),
     lastSequence: sequence,
@@ -354,6 +360,7 @@ function applySnapshot(
     const existing = sameManager ? state.terminals.get(view.id) : undefined;
     rebuilt.set(view.id, {
       view,
+      screen: existing?.screen,
       stdout: reconcileOutputBuffer(existing?.stdout, view.stdout, maxOutputBytes),
       stderr: reconcileOutputBuffer(existing?.stderr, view.stderr, maxOutputBytes),
       lastSequence: event.sequence,
@@ -421,6 +428,18 @@ export function applyBackgroundTerminalEvent(
         event.timestamp,
         maxOutputBytes,
       );
+      break;
+    }
+    case "terminal_screen": {
+      const existing = terminals.get(event.terminalId);
+      if (existing?.view.interactive) {
+        terminals = new Map(terminals).set(event.terminalId, {
+          ...existing,
+          screen: event.screen,
+          lastSequence: event.sequence,
+          updatedAt: event.timestamp,
+        });
+      }
       break;
     }
     case "terminal_output": {

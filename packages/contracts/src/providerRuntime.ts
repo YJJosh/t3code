@@ -494,6 +494,8 @@ export const UserInputQuestion = Schema.Struct({
 export type UserInputQuestion = typeof UserInputQuestion.Type;
 
 export const UserInputRequestedPayload = Schema.Struct({
+  /** Native dialogs that accept an empty answer map as cancellation. */
+  dismissible: Schema.optional(Schema.Boolean),
   questions: Schema.Array(UserInputQuestion),
   responseMode: Schema.optional(Schema.Literal("message")),
 });

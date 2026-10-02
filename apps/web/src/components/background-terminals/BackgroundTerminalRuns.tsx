@@ -7,19 +7,15 @@ import {
 } from "@t3tools/client-runtime/state/background-terminals";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { ChevronRightIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "~/components/ui/badge";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "~/components/ui/collapsible";
 import { ScrollArea } from "~/components/ui/scroll-area";
-import { Sheet, SheetPopup, SheetTitle } from "~/components/ui/sheet";
 import { cn } from "~/lib/utils";
 
-import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { useResizableWidth, useViewportClampedMaxWidth } from "../../hooks/useResizableWidth";
-import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../../rightPanelLayout";
 import { useBackgroundTerminalRuntime } from "../../state/useBackgroundTerminalRuntime";
-import { RightPanelResizeHandle } from "../preview/RightPanelResizeHandle";
+import { InteractiveBackgroundTerminal } from "./InteractiveBackgroundTerminal";
 import { BackgroundTerminalControls } from "./BackgroundTerminalControls";
 import {
   backgroundTerminalAccessibleStatus,
@@ -35,11 +31,6 @@ import {
   sanitizeTerminalOutputText,
 } from "./backgroundTerminalPresentation";
 
-const DETAIL_WIDTH_STORAGE_KEY = "t3code:background-terminal-detail-width";
-const DETAIL_DEFAULT_WIDTH = 448;
-const DETAIL_MIN_WIDTH = 320;
-const DETAIL_MAX_WIDTH = 1_120;
-const DETAIL_MAX_VIEWPORT_FRACTION = 0.7;
 /** Refresh interval for the live elapsed-time readout while a terminal is running. */
 const ELAPSED_TICK_MS = 1_000;
 
@@ -100,7 +91,7 @@ interface BackgroundTerminalRowProps {
   onSelect: (terminalId: string) => void;
 }
 
-function BackgroundTerminalRow({
+export function BackgroundTerminalRow({
   terminal,
   selected,
   quiet,
@@ -112,8 +103,7 @@ function BackgroundTerminalRow({
     <button
       type="button"
       onClick={() => onSelect(terminal.view.id)}
-      aria-expanded={selected}
-      aria-haspopup="dialog"
+      aria-pressed={selected}
       aria-label={`Background terminal: ${title}. Status: ${backgroundTerminalAccessibleStatus(terminal.view.status)}`}
       className={cn(
         "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent",
@@ -214,7 +204,7 @@ interface BackgroundTerminalDetailProps {
   terminal: BackgroundTerminalEntry;
 }
 
-function BackgroundTerminalDetail({
+export function BackgroundTerminalDetail({
   environmentId,
   threadId,
   managerId,
@@ -275,37 +265,50 @@ function BackgroundTerminalDetail({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-1.5">
-        <div role="tablist" aria-label="Terminal output stream" className="flex items-center gap-1">
-          {(["stdout", "stderr"] as const).map((stream) => (
-            <button
-              key={stream}
-              type="button"
-              role="tab"
-              id={`background-terminal-tab-${stream}`}
-              aria-selected={selectedStream === stream}
-              aria-controls={`background-terminal-tabpanel-${stream}`}
-              onClick={() => setSelectedStream(stream)}
-              className={cn(
-                "rounded-md px-2 py-1 text-xs font-medium capitalize transition-colors",
-                selectedStream === stream
-                  ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:bg-accent/60",
-              )}
-            >
-              {stream}
-            </button>
-          ))}
+      {view.interactive === true && view.status === "running" ? (
+        <InteractiveBackgroundTerminal
+          environmentId={environmentId}
+          threadId={threadId}
+          managerId={managerId}
+          terminal={terminal}
+        />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+          <div
+            role="tablist"
+            aria-label="Terminal output stream"
+            className="flex items-center gap-1"
+          >
+            {(["stdout", "stderr"] as const).map((stream) => (
+              <button
+                key={stream}
+                type="button"
+                role="tab"
+                id={`background-terminal-tab-${stream}`}
+                aria-selected={selectedStream === stream}
+                aria-controls={`background-terminal-tabpanel-${stream}`}
+                onClick={() => setSelectedStream(stream)}
+                className={cn(
+                  "rounded-md px-2 py-1 text-xs font-medium capitalize transition-colors",
+                  selectedStream === stream
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-accent/60",
+                )}
+              >
+                {stream}
+              </button>
+            ))}
+          </div>
+          <div
+            role="tabpanel"
+            id={`background-terminal-tabpanel-${selectedStream}`}
+            aria-labelledby={`background-terminal-tab-${selectedStream}`}
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <BackgroundTerminalOutputPane buffer={activeBuffer} />
+          </div>
         </div>
-        <div
-          role="tabpanel"
-          id={`background-terminal-tabpanel-${selectedStream}`}
-          aria-labelledby={`background-terminal-tab-${selectedStream}`}
-          className="flex min-h-0 flex-1 flex-col"
-        >
-          <BackgroundTerminalOutputPane buffer={activeBuffer} />
-        </div>
-      </div>
+      )}
 
       <BackgroundTerminalControls
         environmentId={environmentId}
@@ -322,24 +325,26 @@ export interface BackgroundTerminalRunsProps {
   threadId: ThreadId | null;
   /** Whether the active provider/session can support Pi background terminals. */
   enabled: boolean;
+  /** Opens the Shared terminals surface with this terminal selected. */
+  onOpenTerminal: (terminalId: string) => void;
 }
 
 /**
- * Compact roster panel for a thread's Pi background terminals, rendered
+ * Compact roster strip for a thread's Pi background terminals, rendered
  * directly above the composer: running/failed terminals stay always visible,
  * and settled (done/killed) terminals collapse behind a summary toggle so
- * they don't permanently eat composer space. Selecting a row opens an
- * overlay drawer (desktop) / near-full-screen sheet (compact) with metadata,
- * stdout/stderr tail, and a kill-only control.
+ * they don't permanently eat composer space. Selecting a row opens the
+ * Shared terminals surface in the right panel with that terminal selected;
+ * the surface owns details, controls and starting new terminals.
  *
  * Renders nothing when there are no terminals so an idle/empty stream is
- * invisible. Deliberately exposes no start/restart/stdin controls —
- * background terminals are spawned by Pi, not by the client.
+ * invisible.
  */
 export function BackgroundTerminalRuns({
   environmentId,
   threadId,
   enabled,
+  onOpenTerminal,
 }: BackgroundTerminalRunsProps) {
   const { state } = useBackgroundTerminalRuntime({ environmentId, threadId, enabled });
   const terminals = useMemo(() => selectBackgroundTerminals(state), [state]);
@@ -347,29 +352,11 @@ export function BackgroundTerminalRuns({
     () => groupBackgroundTerminalsForRoster(terminals),
     [terminals],
   );
-  const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(null);
   const [quietExpanded, setQuietExpanded] = useState(false);
-  const useSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
-  const maxDetailWidth = useViewportClampedMaxWidth({
-    maxWidth: DETAIL_MAX_WIDTH,
-    maxViewportFraction: DETAIL_MAX_VIEWPORT_FRACTION,
-  });
-  const { width: detailWidth, handlers: detailResizeHandlers } = useResizableWidth({
-    storageKey: DETAIL_WIDTH_STORAGE_KEY,
-    defaultWidth: DETAIL_DEFAULT_WIDTH,
-    minWidth: DETAIL_MIN_WIDTH,
-    maxWidth: maxDetailWidth,
-    edge: "left",
-  });
 
   useEffect(() => {
-    setSelectedTerminalId(null);
     setQuietExpanded(false);
   }, [environmentId, threadId]);
-
-  const selectedTerminal =
-    selectedTerminalId === null ? null : (state.terminals.get(selectedTerminalId) ?? null);
-  const close = useCallback(() => setSelectedTerminalId(null), []);
 
   if (
     !enabled ||
@@ -382,82 +369,47 @@ export function BackgroundTerminalRuns({
   }
 
   return (
-    <>
-      <div className="pointer-events-auto mx-auto mb-1.5 max-h-48 w-full max-w-3xl overflow-y-auto rounded-lg border border-border/70 bg-card/85 p-1 shadow-sm backdrop-blur-sm sm:max-h-56">
-        {attention.length > 0 && (
-          <div role="list" aria-label="Background terminals needing attention">
-            {attention.map((terminal) => (
-              <div role="listitem" key={terminal.view.id}>
-                <BackgroundTerminalRow
-                  terminal={terminal}
-                  selected={terminal.view.id === selectedTerminalId}
-                  quiet={false}
-                  onSelect={setSelectedTerminalId}
-                />
-              </div>
-            ))}
-          </div>
-        )}
-
-        {quiet.length > 0 && (
-          <Collapsible open={quietExpanded} onOpenChange={setQuietExpanded}>
-            <CollapsibleTrigger
-              className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-2xs text-muted-foreground hover:bg-accent/60 data-panel-open:[&_svg]:rotate-90"
-              aria-label={`${backgroundTerminalRosterSummaryLabel(quiet.length)}, ${quietExpanded ? "expanded" : "collapsed"}`}
-            >
-              <ChevronRightIcon
-                className="size-3 shrink-0 transition-transform"
-                aria-hidden="true"
+    <div className="pointer-events-auto mx-auto mb-1.5 max-h-48 w-full max-w-3xl overflow-y-auto rounded-lg border border-border/70 bg-card/85 p-1 shadow-sm backdrop-blur-sm sm:max-h-56">
+      {attention.length > 0 && (
+        <div role="list" aria-label="Background terminals needing attention">
+          {attention.map((terminal) => (
+            <div role="listitem" key={terminal.view.id}>
+              <BackgroundTerminalRow
+                terminal={terminal}
+                selected={false}
+                quiet={false}
+                onSelect={onOpenTerminal}
               />
-              {backgroundTerminalRosterSummaryLabel(quiet.length)}
-            </CollapsibleTrigger>
-            <CollapsiblePanel>
-              <div role="list" aria-label="Settled background terminals">
-                {quiet.map((terminal) => (
-                  <div role="listitem" key={terminal.view.id}>
-                    <BackgroundTerminalRow
-                      terminal={terminal}
-                      selected={terminal.view.id === selectedTerminalId}
-                      quiet
-                      onSelect={setSelectedTerminalId}
-                    />
-                  </div>
-                ))}
-              </div>
-            </CollapsiblePanel>
-          </Collapsible>
-        )}
-      </div>
+            </div>
+          ))}
+        </div>
+      )}
 
-      <Sheet
-        open={selectedTerminal !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            close();
-          }
-        }}
-      >
-        <SheetPopup
-          side="right"
-          showCloseButton
-          className={useSheet ? "w-full max-w-none" : "min-w-80 max-w-none"}
-          style={useSheet ? undefined : { width: `${detailWidth}px` }}
-        >
-          {!useSheet && <RightPanelResizeHandle handlers={detailResizeHandlers} />}
-          <SheetTitle className="sr-only">Background terminal details</SheetTitle>
-          <div className="flex min-h-0 flex-1 flex-col p-4">
-            {selectedTerminal !== null && (
-              <BackgroundTerminalDetail
-                key={`${state.managerId}:${selectedTerminal.view.id}`}
-                environmentId={environmentId}
-                threadId={threadId}
-                managerId={state.managerId}
-                terminal={selectedTerminal}
-              />
-            )}
-          </div>
-        </SheetPopup>
-      </Sheet>
-    </>
+      {quiet.length > 0 && (
+        <Collapsible open={quietExpanded} onOpenChange={setQuietExpanded}>
+          <CollapsibleTrigger
+            className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-2xs text-muted-foreground hover:bg-accent/60 data-panel-open:[&_svg]:rotate-90"
+            aria-label={`${backgroundTerminalRosterSummaryLabel(quiet.length)}, ${quietExpanded ? "expanded" : "collapsed"}`}
+          >
+            <ChevronRightIcon className="size-3 shrink-0 transition-transform" aria-hidden="true" />
+            {backgroundTerminalRosterSummaryLabel(quiet.length)}
+          </CollapsibleTrigger>
+          <CollapsiblePanel>
+            <div role="list" aria-label="Settled background terminals">
+              {quiet.map((terminal) => (
+                <div role="listitem" key={terminal.view.id}>
+                  <BackgroundTerminalRow
+                    terminal={terminal}
+                    selected={false}
+                    quiet
+                    onSelect={onOpenTerminal}
+                  />
+                </div>
+              ))}
+            </div>
+          </CollapsiblePanel>
+        </Collapsible>
+      )}
+    </div>
   );
 }

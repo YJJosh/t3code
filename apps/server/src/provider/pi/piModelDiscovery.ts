@@ -10,7 +10,9 @@
  * themselves are never read or exposed.
  *
  * The SDK is loaded via a dynamic import so it stays off the server's startup
- * path (discovery only runs during a provider probe).
+ * path (discovery only runs during a provider probe). It prefers the SDK of the
+ * Pi install that sessions launch, so every refresh lists that Pi version's
+ * catalog; T3's bundled SDK is only the fallback.
  *
  * @module provider/pi/piModelDiscovery
  */
@@ -25,7 +27,10 @@ import type {
   ServerProviderSlashCommand,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
@@ -67,6 +72,8 @@ export interface PiModelDiscoveryResult {
 }
 
 export interface PiModelDiscoveryOptions {
+  /** The Pi command sessions launch; its installed SDK is used for discovery. */
+  readonly binaryPath?: string | undefined;
   readonly agentDir?: string | undefined;
   readonly cwd?: string | undefined;
   readonly profile?: string | undefined;
@@ -144,6 +151,8 @@ interface PiSdkDiscoverySnapshot {
   readonly resources: PiResourceSnapshot;
   readonly diagnostics: PiSdkRuntimeServices["diagnostics"];
   readonly runtimeError?: string | undefined;
+  /** SDKs tried before the one that loaded, with the reason each was skipped. */
+  readonly skippedSdks?: ReadonlyArray<string> | undefined;
 }
 
 function piModelSlug(model: PiSdkModel): string {
@@ -446,8 +455,21 @@ const sendError = (error) => parentPort.postMessage({
   _tag: "error",
   error: error instanceof Error ? error.message : String(error),
 });
+const loadSdk = async (urls) => {
+  const skippedSdks = [];
+  for (const url of urls) {
+    try {
+      const sdk = await import(url);
+      if (typeof sdk.createAgentSessionServices === "function") return { sdk, skippedSdks };
+      skippedSdks.push(url + " does not export createAgentSessionServices");
+    } catch (error) {
+      skippedSdks.push(url + ": " + (error instanceof Error ? error.message : String(error)));
+    }
+  }
+  throw new Error("No usable Pi SDK. " + skippedSdks.join("; "));
+};
 (async () => {
-  const sdk = await import(workerData.sdkUrl);
+  const { sdk, skippedSdks } = await loadSdk(workerData.sdkUrls);
   const options = workerData.options;
   const services = await sdk.createAgentSessionServices({
     cwd: options.cwd,
@@ -501,6 +523,7 @@ const sendError = (error) => parentPort.postMessage({
       ...(services.modelRuntime.getError()
         ? { runtimeError: services.modelRuntime.getError() }
         : {}),
+      ...(skippedSdks.length > 0 ? { skippedSdks } : {}),
     },
   });
 })().catch(sendError);
@@ -521,6 +544,7 @@ function piDiscoveryWorkerEnvironment(environment: NodeJS.ProcessEnv | undefined
 }
 
 function loadPiDiscoverySnapshotInWorker(
+  sdkUrls: ReadonlyArray<string>,
   options: PiModelDiscoveryOptions,
 ): Promise<PiSdkDiscoverySnapshot> {
   return new Promise((resolve, reject) => {
@@ -528,7 +552,7 @@ function loadPiDiscoverySnapshotInWorker(
       eval: true,
       env: piDiscoveryWorkerEnvironment(options.environment),
       workerData: {
-        sdkUrl: import.meta.resolve("@earendil-works/pi-coding-agent"),
+        sdkUrls,
         options: {
           cwd: options.cwd?.trim() || process.cwd(),
           agentDir: options.agentDir?.trim() || undefined,
@@ -571,6 +595,73 @@ function loadPiDiscoverySnapshotInWorker(
   });
 }
 
+const PI_SDK_PACKAGE = "@earendil-works/pi-coding-agent";
+
+const PiPackageManifest = Schema.fromJsonString(
+  Schema.Struct({
+    name: Schema.String,
+    main: Schema.optional(Schema.String),
+    exports: Schema.optional(Schema.Unknown),
+  }),
+);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function piSdkEntry(manifest: typeof PiPackageManifest.Type): string {
+  const root = isRecord(manifest.exports) ? manifest.exports["."] : manifest.exports;
+  if (typeof root === "string") return root;
+  if (isRecord(root)) {
+    const entry = root.import ?? root.default;
+    if (typeof entry === "string") return entry;
+  }
+  return manifest.main ?? "index.js";
+}
+
+/**
+ * Locate the SDK of the Pi install that `binaryPath` launches, following a
+ * symlinked bin into its package or an npm Windows shim to the adjacent
+ * `node_modules`. Returns undefined for other installs, such as a compiled
+ * binary, so discovery falls back to the bundled SDK.
+ */
+const resolveInstalledPiSdkUrl = Effect.fn("resolveInstalledPiSdkUrl")(
+  function* (binaryPath: string, environment: NodeJS.ProcessEnv | undefined) {
+    const fs = yield* FileSystem.FileSystem;
+    const paths = yield* Path.Path;
+    const readManifest = (directory: string) =>
+      fs.readFileString(paths.join(directory, "package.json")).pipe(
+        Effect.map(Schema.decodeUnknownOption(PiPackageManifest)),
+        Effect.orElseSucceed(() => Option.none<typeof PiPackageManifest.Type>()),
+      );
+    const sdkUrl = (directory: string, manifest: typeof PiPackageManifest.Type) =>
+      paths
+        .toFileUrl(paths.join(directory, piSdkEntry(manifest)))
+        .pipe(Effect.map((url) => url.href));
+
+    const command = yield* resolveCommandPath(binaryPath, environment ? { env: environment } : {});
+    // The first named package.json above the real bin owns it; build-output
+    // manifests such as `{"type":"module"}` have no name and are skipped.
+    let directory = paths.dirname(yield* fs.realPath(command));
+    while (true) {
+      const manifest = yield* readManifest(directory);
+      if (Option.isSome(manifest)) {
+        if (manifest.value.name === PI_SDK_PACKAGE) return yield* sdkUrl(directory, manifest.value);
+        break;
+      }
+      const parent = paths.dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
+    const shimPackage = paths.join(paths.dirname(command), "node_modules", PI_SDK_PACKAGE);
+    const shimManifest = yield* readManifest(shimPackage);
+    return Option.isSome(shimManifest) && shimManifest.value.name === PI_SDK_PACKAGE
+      ? yield* sdkUrl(shimPackage, shimManifest.value)
+      : undefined;
+  },
+  Effect.orElseSucceed(() => undefined),
+);
+
 class PiModelDiscoveryError extends Schema.TaggedError<PiModelDiscoveryError>()(
   "PiModelDiscoveryError",
   { cause: Schema.Defect() },
@@ -587,13 +678,25 @@ export const discoverPiModels = Effect.fn("discoverPiModels")(function* (
   const paths = yield* Path.Path;
   const agentDir = resolvePiAgentDir(paths, options);
   const environment = { ...(options.environment ?? process.env), PI_CODING_AGENT_DIR: agentDir };
+  const installedSdkUrl = options.binaryPath
+    ? yield* resolveInstalledPiSdkUrl(options.binaryPath, options.environment)
+    : undefined;
+  const sdkUrls = [
+    ...(installedSdkUrl ? [installedSdkUrl] : []),
+    import.meta.resolve("@earendil-works/pi-coding-agent"),
+  ];
   return yield* Effect.tryPromise({
-    try: async (): Promise<PiModelDiscoveryResult> =>
-      finishPiModelDiscovery(
-        await loadPiDiscoverySnapshotInWorker({ ...options, agentDir, environment }),
-      ),
+    try: () => loadPiDiscoverySnapshotInWorker(sdkUrls, { ...options, agentDir, environment }),
     catch: (cause) => new PiModelDiscoveryError({ cause }),
   }).pipe(
+    Effect.tap((snapshot) =>
+      snapshot.skippedSdks
+        ? Effect.logWarning("Pi model discovery used T3's bundled Pi SDK.", {
+            skippedSdks: snapshot.skippedSdks,
+          })
+        : Effect.void,
+    ),
+    Effect.map(finishPiModelDiscovery),
     Effect.catch(({ cause }) =>
       Effect.succeed<PiModelDiscoveryResult>({
         models: [],

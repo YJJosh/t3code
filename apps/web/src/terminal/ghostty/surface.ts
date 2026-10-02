@@ -561,6 +561,18 @@ export class GhosttyTerminalSurface {
   readonly scrollbar: HTMLDivElement;
   cols = 1;
   rows = 1;
+  private gridOverride: { cols: number; rows: number } | null = null;
+  private fittedGrid = { cols: 1, rows: 1 };
+
+  /** Snapshot viewers retain the remote grid without resizing the PTY as spectators. */
+  setGridSizeOverride(cols: number, rows: number): void {
+    this.gridOverride = { cols, rows };
+    this.fit();
+  }
+
+  get fittedDimensions(): Readonly<{ cols: number; rows: number }> {
+    return this.fittedGrid;
+  }
 
   private readonly mount: HTMLElement;
   private readonly context: CanvasRenderingContext2D;
@@ -867,8 +879,20 @@ export class GhosttyTerminalSurface {
     }
     this.hasSize = true;
     const ratio = window.devicePixelRatio || 1;
-    const pixelWidth = Math.max(1, Math.round(width * ratio));
-    const pixelHeight = Math.max(1, Math.round(height * ratio));
+    // A spectator must be able to scroll across the remote screen rather than
+    // clipping its cursor to the locally fitted grid. Ordinary PTYs stay fitted.
+    const canvasWidth = this.gridOverride
+      ? Math.max(width, this.gridOverride.cols * this.metrics.width + CONTENT_PADDING * 2)
+      : width;
+    const canvasHeight = this.gridOverride
+      ? Math.max(height, this.gridOverride.rows * this.metrics.height + CONTENT_PADDING * 2)
+      : height;
+    if (this.gridOverride) {
+      this.canvas.style.width = `${canvasWidth}px`;
+      this.canvas.style.height = `${canvasHeight}px`;
+    }
+    const pixelWidth = Math.max(1, Math.round(canvasWidth * ratio));
+    const pixelHeight = Math.max(1, Math.round(canvasHeight * ratio));
     let shouldRender = false;
     // The DPR transform must be installed even when the target size happens to
     // equal the canvas default 300x150 backing store, so the first fit always
@@ -886,7 +910,16 @@ export class GhosttyTerminalSurface {
       this.scrollbarDirty = true;
       shouldRender = true;
     }
-    const grid = terminalGridSize(width, height, this.metrics, CONTENT_PADDING);
+    const fitted = terminalGridSize(width, height, this.metrics, CONTENT_PADDING);
+    if (
+      fitted.cols !== this.fittedGrid.cols ||
+      fitted.rows !== this.fittedGrid.rows ||
+      !this.resizeNotified
+    ) {
+      this.fittedGrid = fitted;
+      this.notifyResize();
+    }
+    const grid = this.gridOverride ?? fitted;
     this.mountHeight = height;
     // onResize is the only PTY resize channel, so the first successful fit must
     // notify even when the measured grid equals the 1x1 construction sentinel.
@@ -894,7 +927,6 @@ export class GhosttyTerminalSurface {
       this.cols = grid.cols;
       this.rows = grid.rows;
       this.core.resize(grid.cols, grid.rows, this.metrics.width, this.metrics.height);
-      this.notifyResize();
       this.forceFullRender = true;
       this.scrollbarDirty = true;
       shouldRender = true;
@@ -916,7 +948,7 @@ export class GhosttyTerminalSurface {
     if (this.resizeNotifyTimer !== null) window.clearTimeout(this.resizeNotifyTimer);
     this.resizeNotifyTimer = window.setTimeout(() => {
       this.resizeNotifyTimer = null;
-      if (!this.disposed) this.options.onResize(this.cols, this.rows);
+      if (!this.disposed) this.options.onResize(this.fittedGrid.cols, this.fittedGrid.rows);
     }, 150);
   }
 
@@ -1033,7 +1065,7 @@ export class GhosttyTerminalSurface {
       this.resizeNotifyTimer = null;
       // Flush the settled dimensions so the PTY keeps the final size even when
       // the surface unmounts inside the debounce window.
-      this.options.onResize(this.cols, this.rows);
+      this.options.onResize(this.fittedGrid.cols, this.fittedGrid.rows);
     }
     this.cancelRender();
     if (this.compositionSuppressionTimer !== null) {
@@ -1557,6 +1589,7 @@ export class GhosttyTerminalSurface {
 
   private readonly onWheel = (event: WheelEvent) => {
     if (event.deltaY === 0) return;
+    if (this.gridOverride) return; // Native scrolling reveals a larger watched screen.
     event.preventDefault();
     const delta = terminalWheelDeltaRows(
       event,

@@ -277,6 +277,36 @@ export function composerStateAtPromptEnd(text: string): {
   };
 }
 
+export type ClientSlashCommand =
+  | { kind: "open-surface"; surface: "terminals" | "agents" }
+  | { kind: "start-terminal"; command: string; keepOpen: boolean };
+
+/**
+ * Slash commands the client answers itself instead of sending to the provider.
+ * Pi's /ps, /subagents and /workflows open terminal-only pickers that an RPC
+ * session cannot show, so the matching T3 surface opens instead; /terminal
+ * starts a shared terminal the way Pi's own command would. An empty /terminal
+ * just opens the surface, where the start form lives.
+ */
+export function parseClientSlashCommand(text: string): ClientSlashCommand | null {
+  const trimmed = text.trim();
+  const surface = /^\/(ps|subagents|workflows)\s*$/i.exec(trimmed);
+  if (surface) {
+    return {
+      kind: "open-surface",
+      surface: surface[1]?.toLowerCase() === "ps" ? "terminals" : "agents",
+    };
+  }
+  const terminal = /^\/terminal(?:\s+([\s\S]*))?$/i.exec(trimmed);
+  if (!terminal) {
+    return null;
+  }
+  const rest = (terminal[1] ?? "").trim();
+  const flag = /^(?:-k|--keep-open)(?=\s|$)/.exec(rest);
+  const command = flag ? rest.slice(flag[0].length).trim() : rest;
+  return { kind: "start-terminal", command, keepOpen: flag !== null };
+}
+
 export function parseStandaloneComposerSlashCommand(
   text: string,
 ): Exclude<ComposerSlashCommand, "model"> | null {

@@ -230,7 +230,11 @@ import {
 } from "~/lib/composerContextRecords";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
-import type { ComposerContextClipboardFragment, ComposerContextRecord } from "@t3tools/contracts";
+import type {
+  ComposerContextClipboardFragment,
+  ComposerContextRecord,
+  ServerProviderSlashCommand,
+} from "@t3tools/contracts";
 import { resolveAssetUrl } from "~/assets/assetUrls";
 import { assetEnvironment } from "~/state/assets";
 import { readPreparedConnection } from "~/state/session";
@@ -1360,6 +1364,10 @@ export interface ChatComposerProps {
   bannerItems: readonly ComposerBannerStackItem[];
   /** Picking /usage-limits from the menu is the action itself; the draft keeps nothing of it. */
   onUsageLimitsCommand?: (() => void) | undefined;
+  /** Provider commands with a T3 surface (/ps, /subagents): returns true when it opened one instead of inserting. */
+  onClientSlashCommand?: ((commandName: string) => boolean) | undefined;
+  /** Commands T3 handles itself (/subagents, /workflows), listed in the slash menu next to the provider's own. */
+  clientSlashCommands?: ReadonlyArray<ServerProviderSlashCommand> | undefined;
   environmentUnavailable: {
     readonly label: string;
     readonly connection: EnvironmentConnectionPresentation;
@@ -1958,6 +1966,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedProviderSlashCommands = selectedProviderStatus
     ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, gitCwd)
     : [];
+  const clientSlashCommands = props.clientSlashCommands;
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -2402,6 +2411,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         label: `/${command.name}`,
         description: command.description ?? command.input?.hint ?? "Run provider command",
       }));
+      // Compare against the commands the menu shows: a provider command that
+      // shares a skill's name is hidden, so it must not hide the client entry.
+      const providerCommandNames = new Set(
+        providerSlashCommandItems.map((item) => item.command.name),
+      );
+      const clientSlashCommandItems = (clientSlashCommands ?? [])
+        .filter((command) => !providerCommandNames.has(command.name))
+        .map((command) => ({
+          id: `client-slash-command:${selectedProvider}:${command.name}`,
+          type: "provider-slash-command" as const,
+          provider: selectedProvider,
+          command,
+          label: `/${command.name}`,
+          description: command.description ?? "Open in T3",
+        }));
       const query = composerTrigger.query.trim().toLowerCase();
       const skillItems = slashMenuSkills.map((skill) => ({
         id: `skill:${selectedProvider}:${skill.name}`,
@@ -2418,7 +2442,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         (item) => item.command.name !== "compact" || compactSlashCommandAvailable,
       );
       const slashCommandItems = slashCommandItemsForPromptPosition(
-        [...builtInSlashCommandItems, ...visibleProviderSlashCommandItems, ...skillItems],
+        [
+          ...builtInSlashCommandItems,
+          ...visibleProviderSlashCommandItems,
+          ...clientSlashCommandItems,
+          ...skillItems,
+        ],
         composerTrigger.rangeStart === 0,
       );
       return searchSlashCommandItems(slashCommandItems, query);
@@ -2489,6 +2518,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     return [];
   }, [
+    clientSlashCommands,
     compactSlashCommandAvailable,
     composerTrigger,
     exactPullRequestLookup.data,
@@ -2671,14 +2701,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     iconOnlyBlockCount: restingControlsIconOnlyBlockCount,
     controlsVisible: restingControlsVisible,
   } = useRestingComposerControlsLayout(restingControlsHost);
-  const providerProfilePickerInput = {
+  const providerConfigurationPickerInput = {
     ...providerTraitsPickerInput,
-    descriptorScope: "pi-profile",
+    descriptorScope: "pi-configuration",
   } satisfies Parameters<typeof renderProviderTraitsPicker>[0];
-  const providerProfileMenuContent =
-    selectedProvider === "pi" ? renderProviderTraitsMenuContent(providerProfilePickerInput) : null;
-  const providerProfilePicker =
-    selectedProvider === "pi" ? renderProviderTraitsPicker(providerProfilePickerInput) : null;
+  const providerConfigurationMenuContent =
+    selectedProvider === "pi"
+      ? renderProviderTraitsMenuContent(providerConfigurationPickerInput)
+      : null;
+  const providerConfigurationPicker =
+    selectedProvider === "pi" ? renderProviderTraitsPicker(providerConfigurationPickerInput) : null;
   const expandedControlsLayout = useRestingComposerControlsLayout(null, true);
   const pendingPrimaryAction = useMemo(
     () =>
@@ -3592,7 +3624,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     };
   }, [readComposerSnapshot, resolveComposerTrigger]);
 
-  const { onUsageLimitsCommand } = props;
+  const { onUsageLimitsCommand, onClientSlashCommand } = props;
   const onSelectComposerItem = useCallback(
     (item: ComposerCommandItem) => {
       if (composerSelectLockRef.current) return;
@@ -3651,6 +3683,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           if (applied) {
             setComposerHighlightedItemId(null);
             onUsageLimitsCommand();
+          }
+          return;
+        }
+        if (onClientSlashCommand?.(item.command.name)) {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+            focusEditorAfterReplace: false,
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
           }
           return;
         }
@@ -3727,6 +3769,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       handleInteractionModeChange,
       planModeUiEnabled,
       onUsageLimitsCommand,
+      onClientSlashCommand,
       resolveActiveComposerTrigger,
     ],
   );
@@ -4972,7 +5015,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     : expandedControlsLayout.iconOnlyBlockCount;
   const restingBlockIds = [
     ...(providerTraitsPicker ? ["traits"] : []),
-    ...(providerProfilePicker ? ["profile"] : []),
+    ...(providerConfigurationPicker ? ["profile"] : []),
     ...(showRuntimeMode || planModeUiEnabled ? ["mode"] : []),
   ];
   const hiddenRestingBlockIds = restingBlockIds.slice(
@@ -4983,10 +5026,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     size: composerControlsInStrip ? "xs" : "sm",
     hidden: composerControlsHidden || hiddenRestingBlockIds.includes("traits"),
   });
-  const restingProviderProfilePicker =
+  const restingProviderConfigurationPicker =
     selectedProvider === "pi"
       ? renderProviderTraitsPicker({
-          ...providerProfilePickerInput,
+          ...providerConfigurationPickerInput,
           size: composerControlsInStrip ? "xs" : "sm",
           hidden: composerControlsHidden || hiddenRestingBlockIds.includes("profile"),
         })
@@ -5008,7 +5051,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ) : (
         <>
           <ComposerControlSeparator size={composerControlsInStrip ? "xs" : "sm"} />
-          {id === "profile" ? restingProviderProfilePicker : restingProviderTraitsPicker}
+          {id === "profile" ? restingProviderConfigurationPicker : restingProviderTraitsPicker}
         </>
       ),
   }));
@@ -5162,7 +5205,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               hiddenRestingBlockIds.includes("traits") ? providerTraitsMenuContent : undefined
             }
             profileMenuContent={
-              hiddenRestingBlockIds.includes("profile") ? providerProfileMenuContent : undefined
+              hiddenRestingBlockIds.includes("profile")
+                ? providerConfigurationMenuContent
+                : undefined
             }
             showRuntimeMode={showRuntimeMode && hiddenRestingBlockIds.includes("mode")}
             onToggleInteractionMode={toggleInteractionMode}

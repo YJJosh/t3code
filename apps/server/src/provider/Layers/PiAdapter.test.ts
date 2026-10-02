@@ -1,10 +1,12 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  ApprovalRequestId,
   ProviderInstanceId,
   ThreadId,
   type ModelSelection,
   PiBackgroundTerminalEvent as PiBackgroundTerminalEventSchema,
+  PiBackgroundTerminalControlAction,
   type PiBackgroundTerminalEvent,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
@@ -12,6 +14,7 @@ import { PiSettings } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -27,13 +30,18 @@ import {
   PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX,
   PI_SUBAGENTS_RPC_EVENT_PREFIX,
 } from "../pi/piRpcProtocol.ts";
+import { PiThreadSpawner, PiThreadSpawnError } from "../Services/PiThreadSpawner.ts";
 import { makePiAdapter, projectPiTaskBridgeEvent, splitPiModelSlug } from "./PiAdapter.ts";
 
+const decodeBackgroundControlAction = Schema.decodeUnknownSync(PiBackgroundTerminalControlAction);
 const decodePiSettings = Schema.decodeSync(PiSettings);
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeBackgroundTerminalEvent = Schema.encodeSync(
   Schema.fromJsonString(PiBackgroundTerminalEventSchema),
 );
 const encoder = new TextEncoder();
+const encodeJsonSync = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decoder = new TextDecoder();
 
 interface FakeTaskControlRequest {
@@ -47,12 +55,17 @@ interface FakePi {
   readonly args: ReadonlyArray<string>;
   readonly env: Record<string, string>;
   readonly written: ReadonlyArray<Record<string, unknown>>;
+  readonly uiResponses: Queue.Dequeue<Record<string, unknown>>;
+  readonly launches: ReadonlyArray<{ args: ReadonlyArray<string>; env: NodeJS.ProcessEnv }>;
   readonly taskControlRequests: Queue.Dequeue<FakeTaskControlRequest>;
   readonly pushFrame: (frame: unknown) => Effect.Effect<void>;
 }
 
 const makeFakePi = Effect.fn("makeFakePi")(function* (
   options: {
+    readonly sessionFile?: string;
+    /** Session ids this fake home lacks; launching with one exits like real Pi. */
+    readonly missingSessions?: ReadonlyArray<string>;
     readonly subagentsCommand?: boolean;
     readonly backgroundTerminalsCommand?: boolean;
     readonly commands?: ReadonlyArray<{
@@ -63,6 +76,7 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
       readonly name: string;
       readonly infoMessage?: string;
       readonly startsAgent?: boolean;
+      readonly dialog?: boolean;
     };
     readonly taskControl?: {
       readonly acknowledgment?: "success" | "failure";
@@ -72,18 +86,27 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
   } = {},
 ) {
   const stdout = yield* Queue.unbounded<Uint8Array>();
+  const uiResponses = yield* Queue.unbounded<Record<string, unknown>>();
   const taskControlRequests = yield* Queue.unbounded<FakeTaskControlRequest>();
-  const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
   const args: string[] = [];
+  const launches: Array<{ args: ReadonlyArray<string>; env: NodeJS.ProcessEnv }> = [];
   const env: Record<string, string> = {};
   const written: Array<Record<string, unknown>> = [];
   let isStreaming = false;
+  let dialogPromptResponse: Record<string, unknown> | undefined;
 
   const spawner = ChildProcessSpawner.make((command) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      let missingSession: string | undefined;
       if (command._tag === "StandardCommand") {
+        launches.push({ args: [...command.args], env: { ...command.options.env } });
         args.push(...command.args);
         Object.assign(env, command.options.env);
+        const resume = command.args[command.args.indexOf("--session") + 1];
+        if (command.args.includes("--session") && options.missingSessions?.includes(resume ?? "")) {
+          missingSession = resume;
+        }
       }
       return ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(4242),
@@ -92,10 +115,24 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
         kill: () => Deferred.succeed(exit, 0 as ChildProcessSpawner.ExitCode).pipe(Effect.asVoid),
         unref: Effect.succeed(Effect.void),
         stdin: Sink.forEach((chunk: Uint8Array) => {
+          if (missingSession !== undefined) {
+            return Deferred.succeed(exit, 1 as ChildProcessSpawner.ExitCode).pipe(Effect.asVoid);
+          }
           const parsed = parseJsonlLine(decoder.decode(chunk).trim());
           if (!parsed || typeof parsed !== "object") return Effect.void;
           const request = parsed as Record<string, unknown>;
           written.push(request);
+          if (request.type === "extension_ui_response")
+            return Effect.gen(function* () {
+              yield* Queue.offer(uiResponses, request);
+              if (dialogPromptResponse) {
+                yield* Queue.offer(
+                  stdout,
+                  encoder.encode(serializeJsonlLine(dialogPromptResponse)),
+                );
+                dialogPromptResponse = undefined;
+              }
+            });
           if (typeof request.id !== "string" || typeof request.type !== "string") {
             return Effect.void;
           }
@@ -142,6 +179,7 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
                 ? {
                     data: {
                       sessionId: "pi-session-test",
+                      ...(options.sessionFile ? { sessionFile: options.sessionFile } : {}),
                       isStreaming,
                       isCompacting: false,
                       pendingMessageCount: 0,
@@ -198,9 +236,9 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
           const backgroundControl =
             backgroundControlMessage !== null && backgroundRequestId !== undefined
               ? {
-                  action: backgroundControlMessage.includes('"action":"kill"')
-                    ? ("kill" as const)
-                    : ("replay" as const),
+                  action: decodeBackgroundControlAction(
+                    backgroundControlMessage.match(/"action":"([^"]+)"/)?.[1],
+                  ),
                   request_id: backgroundRequestId,
                 }
               : null;
@@ -243,12 +281,23 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
                   ...(extensionCommand.startsAgent ? [{ type: "agent_start" }] : []),
                 ]
               : [];
+          if (runsExtensionCommand && extensionCommand?.dialog) dialogPromptResponse = response;
           const frames = [
             ...(taskControlResult !== null && options.taskControl?.order === "before-acknowledgment"
               ? [taskControlResult]
               : []),
             ...extensionFrames,
-            response,
+            ...(runsExtensionCommand && extensionCommand?.dialog
+              ? [
+                  {
+                    type: "extension_ui_request",
+                    id: "pm-menu",
+                    method: "select",
+                    title: "Profile Manager",
+                    options: ["Delete", "Inspect"],
+                  },
+                ]
+              : [response]),
             ...(taskControlResult !== null && options.taskControl?.order !== "before-acknowledgment"
               ? [taskControlResult]
               : []),
@@ -269,7 +318,10 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
           );
         }),
         stdout: Stream.fromQueue(stdout),
-        stderr: Stream.empty,
+        stderr:
+          missingSession === undefined
+            ? Stream.empty
+            : Stream.make(encoder.encode(`Error: No session found matching '${missingSession}'\n`)),
         all: Stream.empty,
         getInputFd: () => Sink.drain,
         getOutputFd: () => Stream.empty,
@@ -282,7 +334,9 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
     args,
     env,
     written,
+    launches,
     taskControlRequests,
+    uiResponses,
     pushFrame: (frame) =>
       Effect.sync(() => {
         if (typeof frame === "object" && frame !== null && "type" in frame) {
@@ -325,6 +379,351 @@ describe("Pi adapter", () => {
     expect(splitPiModelSlug("/leading")).toBeUndefined();
     expect(splitPiModelSlug("trailing/")).toBeUndefined();
   });
+
+  for (const method of ["select", "confirm", "input", "editor"] as const) {
+    it.effect(`round trips ${method} with no active model turn`, () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+        const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+        yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+          Effect.forkScoped,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* fake.pushFrame({
+          type: "extension_ui_request",
+          id: "dialog",
+          method,
+          title: "Choose",
+          message: "Proceed?",
+          options: ["First", "Second"],
+        });
+        const seen = yield* takeThroughType(events, "user-input.requested");
+        const requested = seen.at(-1)!;
+        expect(requested.turnId).toBeUndefined();
+        expect(fake.written.some((frame) => frame.type === "extension_ui_response")).toBe(false);
+        const answer =
+          method === "select" ? "Second" : method === "confirm" ? "No" : "Free text\nsecond line";
+        yield* adapter.respondToUserInput(THREAD, ApprovalRequestId.make(requested.requestId!), {
+          answer,
+        });
+        expect(yield* Queue.take(fake.uiResponses)).toEqual({
+          type: "extension_ui_response",
+          id: "dialog",
+          ...(method === "confirm" ? { confirmed: false } : { value: answer }),
+        });
+        const resolved = (yield* takeThroughType(events, "user-input.resolved")).at(-1)!;
+        expect(resolved.requestId).toBe(requested.requestId);
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+    );
+  }
+
+  for (const action of ["timeout", "stop", "interrupt", "dismiss"] as const) {
+    it.effect(`cancels and clears a dialog on ${action}`, () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const adapter = yield* makePiAdapter(settings).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+        const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+        yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+          Effect.forkScoped,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* fake.pushFrame({
+          type: "extension_ui_request",
+          id: "dialog",
+          method: "input",
+          title: "Name",
+          timeout: 1000,
+        });
+        const requested = (yield* takeThroughType(events, "user-input.requested")).at(-1)!;
+        if (action === "timeout") yield* TestClock.adjust("1 second");
+        if (action === "stop") yield* adapter.stopSession(THREAD);
+        if (action === "interrupt") yield* adapter.interruptTurn(THREAD);
+        if (action === "dismiss")
+          yield* adapter.respondToUserInput(
+            THREAD,
+            ApprovalRequestId.make(requested.requestId!),
+            {},
+          );
+        expect((yield* takeThroughType(events, "user-input.resolved")).at(-1)?.requestId).toBe(
+          requested.requestId,
+        );
+        expect(yield* Queue.take(fake.uiResponses)).toEqual({
+          type: "extension_ui_response",
+          id: "dialog",
+          cancelled: true,
+        });
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+    );
+  }
+
+  it.effect(
+    "keeps /pm open beyond the ordinary RPC deadline and delivers its selected answer",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi({
+          commands: [{ name: "pm", source: "extension" }],
+          extensionCommand: { name: "pm", dialog: true },
+        });
+        const adapter = yield* makePiAdapter(settings).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+        );
+        const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+        yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+          Effect.forkScoped,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        let finished = false;
+        const send = yield* adapter.sendTurn({ threadId: THREAD, input: "/pm" }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              finished = true;
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        const requested = (yield* takeThroughType(events, "user-input.requested")).at(-1)!;
+        yield* TestClock.adjust("45 seconds");
+        expect(finished).toBe(false);
+        yield* adapter.respondToUserInput(THREAD, ApprovalRequestId.make(requested.requestId!), {
+          answer: "Inspect",
+        });
+        expect(yield* Queue.take(fake.uiResponses)).toMatchObject({ value: "Inspect" });
+        yield* Fiber.join(send);
+        expect((yield* takeThroughType(events, "turn.completed")).at(-1)?.payload).toMatchObject({
+          state: "completed",
+        });
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  for (const action of ["interrupt", "timeout", "stop"] as const) {
+    it.effect(`cancels an in-flight bridge on ${action} without surfacing it`, () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const started = yield* Deferred.make<void>();
+        const adapter = yield* makePiAdapter(settings).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+          Effect.provideService(PiThreadSpawner, {
+            spawn: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+          }),
+        );
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        yield* fake.pushFrame({
+          type: "extension_ui_request",
+          id: "bridge",
+          method: "input",
+          timeout: 1000,
+          title:
+            'pi-background-threads:request:v1:{"contractVersion":1,"requestId":"cancel-me","prompt":"Work"}',
+        });
+        yield* Deferred.await(started);
+        if (action === "interrupt") yield* adapter.interruptTurn(THREAD);
+        if (action === "timeout") yield* TestClock.adjust("1 second");
+        if (action === "stop") yield* adapter.stopSession(THREAD);
+        expect(yield* Queue.take(fake.uiResponses)).toEqual({
+          type: "extension_ui_response",
+          id: "bridge",
+          cancelled: true,
+        });
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+    );
+  }
+
+  for (const outcome of ["success", "error", "invalid"] as const) {
+    it.effect(`intercepts private thread bridge: ${outcome}`, () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi();
+        const calls: unknown[] = [];
+        const adapter = yield* makePiAdapter(settings).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+          Effect.provideService(PiThreadSpawner, {
+            spawn: (parent, request) => {
+              calls.push({ parent, request });
+              return outcome === "error"
+                ? Effect.fail(new PiThreadSpawnError({ message: "Cannot spawn" }))
+                : Effect.succeed(ThreadId.make("child"));
+            },
+          }),
+        );
+        const events: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ).pipe(Effect.forkScoped);
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const request = {
+          contractVersion: outcome === "invalid" ? 2 : 1,
+          requestId: "spawn-1",
+          prompt: "Inspect tests",
+          title: "Tests",
+        };
+        yield* fake.pushFrame({
+          type: "extension_ui_request",
+          id: "bridge",
+          method: "input",
+          title: `pi-background-threads:request:v1:${yield* encodeJson(request)}`,
+        });
+        const response = yield* Queue.take(fake.uiResponses);
+        expect(response.type).toBe("extension_ui_response");
+        expect(yield* decodeJson(String(response.value))).toMatchObject({
+          contractVersion: 1,
+          requestId: "spawn-1",
+          status: outcome === "success" ? "queued" : "error",
+          ...(outcome === "success" ? { threadId: "child" } : {}),
+        });
+        expect(calls).toHaveLength(outcome === "invalid" ? 0 : 1);
+        expect(events.some((event) => event.type === "user-input.requested")).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+    );
+  }
+
+  it.effect(
+    "restarts idle Pi when the config set or profile changes and retains the conversation file",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-pi-adapter-sets-" })
+          .pipe(Effect.flatMap((directory) => fs.realPath(directory)));
+        const main = `${root}/main`;
+        const dev = `${root}/dev`;
+        yield* fs.makeDirectory(main);
+        yield* fs.makeDirectory(dev);
+        const registryPath = `${root}/config-sets.json`;
+        const registry = encodeJsonSync({
+          version: 1,
+          active: "main",
+          sets: { main: { path: main }, dev: { path: dev } },
+        });
+        yield* fs.writeFileString(registryPath, registry);
+        const sessionFile = `${main}/sessions/thread.jsonl`;
+        const fake = yield* makeFakePi({ sessionFile });
+        const adapter = yield* makePiAdapter(decodePiSettings({ agentDir: main }), {
+          instanceId: INSTANCE,
+          environment: { HOME: root, PI_CONFIG_SET_REGISTRY: registryPath },
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+        const selection = (set: string, profile = "coder"): ModelSelection => ({
+          instanceId: INSTANCE,
+          model: "anthropic/claude-sonnet-5",
+          options: [
+            { id: "configSet", value: set },
+            { id: "profile", value: profile },
+          ],
+        });
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: root,
+          runtimeMode: "full-access",
+          modelSelection: selection("main"),
+        });
+        const turn = yield* adapter.sendTurn({
+          threadId: THREAD,
+          input: "Continue",
+          modelSelection: selection("dev"),
+        });
+        expect(fake.launches).toHaveLength(2);
+        expect(fake.launches[1]?.env).toMatchObject({
+          PI_CODING_AGENT_DIR: dev,
+          PI_CONFIG_SET_NAME: "dev",
+          PI_CONFIG_SET_DIR: dev,
+          PI_CONFIG_SET_ROOT: root,
+          PI_CONFIG_SET_REGISTRY: registryPath,
+        });
+        expect(fake.launches[1]?.args).toContain(sessionFile);
+        expect(turn.resumeCursor).toEqual({
+          piSessionId: "pi-session-test",
+          piSessionFile: sessionFile,
+        });
+        const busy = yield* adapter
+          .sendTurn({ threadId: THREAD, input: "Switch", modelSelection: selection("main") })
+          .pipe(Effect.flip);
+        expect(busy).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          issue: "Wait for the Pi turn to finish before changing config set or profile.",
+        });
+        expect(fake.launches).toHaveLength(2);
+        yield* adapter.sendTurn({
+          threadId: THREAD,
+          input: "Steer",
+          modelSelection: selection("dev"),
+        });
+        expect(fake.launches).toHaveLength(2);
+        // Restart a ready session with a new profile, exercising the same boundary.
+        yield* adapter.stopSession(THREAD);
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: root,
+          runtimeMode: "full-access",
+          modelSelection: selection("dev"),
+          resumeCursor: turn.resumeCursor,
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD,
+          input: "Review",
+          modelSelection: selection("dev", "reviewer"),
+        });
+        expect(fake.launches).toHaveLength(4);
+        expect(fake.launches[3]?.args).toContain("reviewer");
+        expect(fake.launches[3]?.env.PI_CODING_AGENT_DIR).toBe(dev);
+        expect(yield* fs.readFileString(registryPath)).toBe(registry);
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("starts a new Pi conversation when the resumed session is missing", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ missingSessions: ["legacy-session"] });
+      const adapter = yield* makePiAdapter(decodePiSettings({}), {
+        instanceId: INSTANCE,
+        environment: { HOME: "/tmp/pi-home" },
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: { piSessionId: "legacy-session" },
+      });
+
+      expect(fake.launches).toHaveLength(2);
+      expect(fake.launches[0]?.args).toContain("legacy-session");
+      expect(fake.launches[1]?.args).not.toContain("--session");
+      expect(session.resumeCursor).toEqual({ piSessionId: "pi-session-test" });
+      const startup = yield* takeThroughType(events, "runtime.warning");
+      expect(startup.at(-1)).toMatchObject({
+        type: "runtime.warning",
+        payload: { detail: { missingSession: "legacy-session" } },
+      });
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
 
   it.effect("keeps a long-lived turn open until agent_settled", () =>
     Effect.gen(function* () {
@@ -1278,6 +1677,61 @@ describe("Pi adapter", () => {
       );
       expect(control?.message).toContain('"action":"kill"');
       expect(control?.message).toContain('"terminal_id":"bt-1"');
+      for (const action of ["watch", "unwatch", "attach", "release", "send", "resize"] as const) {
+        const common = {
+          threadId: THREAD,
+          terminalId: "bt-1",
+          managerId: "manager-1",
+          clientId: "browser",
+          requestId: `interactive-${action}`,
+        };
+        yield* adapter.backgroundTerminals!.control(
+          action === "send"
+            ? { ...common, action, data: "\x03\x1b[A" }
+            : action === "resize"
+              ? { ...common, action, cols: 90, rows: 30 }
+              : { ...common, action },
+        );
+        const message = fake.written.find(
+          (command) =>
+            typeof command.message === "string" &&
+            command.message.includes(`interactive-${action}`),
+        )?.message;
+        expect(message).toContain(`"action":"${action}"`);
+        expect(message).toContain('"client_id":"browser"');
+        if (action === "send") expect(message).toContain('"data":"\\u0003\\u001b[A"');
+        if (action === "resize") expect(message).toContain('"cols":90,"rows":30');
+      }
+      yield* adapter.backgroundTerminals!.control({
+        threadId: THREAD,
+        action: "start",
+        managerId: "manager-1",
+        requestId: "start-1",
+        command: "bash --norc -i",
+        title: "Shell",
+        interactive: true,
+        keepOpen: true,
+        cols: 120,
+        rows: 32,
+      });
+      const startMessage = fake.written.find(
+        (command) => typeof command.message === "string" && command.message.includes("start-1"),
+      )?.message;
+      expect(startMessage).toContain('"action":"start"');
+      expect(startMessage).toContain('"command":"bash --norc -i"');
+      expect(startMessage).toContain('"keep_open":true');
+      expect(startMessage).toContain('"cols":120,"rows":32');
+      expect(startMessage).not.toContain("terminal_id");
+      const stale = yield* adapter
+        .backgroundTerminals!.control({
+          threadId: THREAD,
+          action: "attach",
+          terminalId: "bt-1",
+          managerId: "old",
+          clientId: "browser",
+        })
+        .pipe(Effect.flip);
+      expect(stale._tag).toBe("ProviderAdapterValidationError");
     }).pipe(Effect.provide(TestEnv)),
   );
 
@@ -1384,7 +1838,7 @@ describe("Pi adapter", () => {
         contractVersion: 1,
         managerId: "manager-live",
         sequence: 4,
-        timestamp: "2026-01-01T00:00:01.200Z",
+        timestamp: "2026-01-01T00:00:02.200Z",
         kind: "child_message",
         runId: "run-live",
         view,
@@ -1421,6 +1875,81 @@ describe("Pi adapter", () => {
       );
     }).pipe(Effect.provide(TestEnv)),
   );
+
+  it("repeats child usage only when a token count changed", () => {
+    const memo = new Map<string, string>();
+    const view = {
+      runId: "run-usage",
+      task: "Count tokens",
+      state: "running",
+      usageSoFar: { input: 10, output: 5, cacheRead: 2, total: 17, turns: 1 },
+      activeMs: 100,
+    };
+    const base = {
+      contractVersion: 1,
+      managerId: "manager-usage",
+      runId: "run-usage",
+      kind: "child_turn" as const,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    };
+    const first = projectPiTaskBridgeEvent(
+      {
+        ...base,
+        sequence: 1,
+        view,
+        activity: { type: "turn_start", data: {} },
+      } as PiTaskBridgeEvent,
+      memo,
+    );
+    expect(first[0]?.payload).toEqual(
+      expect.objectContaining({ typedUsage: expect.objectContaining({ totalTokens: 17 }) }),
+    );
+
+    // Same counts, more elapsed time: the duration tick alone is not worth an event.
+    const repeated = projectPiTaskBridgeEvent(
+      {
+        ...base,
+        sequence: 2,
+        view: { ...view, activeMs: 900 },
+        activity: { type: "turn_end", data: {} },
+      } as PiTaskBridgeEvent,
+      memo,
+    );
+    expect(repeated[0]?.payload).not.toHaveProperty("typedUsage");
+
+    const grown = projectPiTaskBridgeEvent(
+      {
+        ...base,
+        sequence: 3,
+        view: { ...view, usageSoFar: { ...view.usageSoFar, output: 9, total: 21 } },
+        activity: { type: "turn_start", data: {} },
+      } as PiTaskBridgeEvent,
+      memo,
+    );
+    expect(grown[0]?.payload).toEqual(
+      expect.objectContaining({ typedUsage: expect.objectContaining({ totalTokens: 21 }) }),
+    );
+
+    // Completion always carries the final numbers, even when unchanged.
+    const done = projectPiTaskBridgeEvent(
+      {
+        ...base,
+        sequence: 4,
+        kind: "terminal",
+        view: { ...view, state: "done", usageSoFar: { ...view.usageSoFar, output: 9, total: 21 } },
+      } as PiTaskBridgeEvent,
+      memo,
+    );
+    expect(done[0]).toEqual(
+      expect.objectContaining({
+        type: "task.completed",
+        payload: expect.objectContaining({
+          typedUsage: expect.objectContaining({ totalTokens: 21 }),
+        }),
+      }),
+    );
+    expect(memo.has("run-usage")).toBe(false);
+  });
 
   it("replays durable child transcript events from Pi snapshots", () => {
     const view = {

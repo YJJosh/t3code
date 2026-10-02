@@ -239,6 +239,11 @@ describe("discoverPiModelsWithSdk", () => {
               {
                 commands: new Map([
                   ["review", { description: "Review the change", sourceInfo: userSource }],
+                  ["pm", { description: "pm", sourceInfo: userSource }],
+                  ["pm-subagents", { description: "pm-subagents", sourceInfo: userSource }],
+                  ["config-set", { description: "config-set", sourceInfo: userSource }],
+                  ["judge", { description: "judge", sourceInfo: userSource }],
+                  ["mcp", { description: "mcp", sourceInfo: userSource }],
                   ["subagents-rpc", { description: "Private subagent control" }],
                   ["background-terminals-rpc", { description: "Private terminal control" }],
                   ["project-only", { sourceInfo: projectSource }],
@@ -279,6 +284,10 @@ describe("discoverPiModelsWithSdk", () => {
 
     expect(result.slashCommands).toEqual([
       { name: "review", description: "Review the change" },
+      ...["pm", "pm-subagents", "config-set", "judge", "mcp"].map((name) => ({
+        name,
+        description: name,
+      })),
       {
         name: "fix-tests",
         description: "Fix focused tests",
@@ -404,6 +413,89 @@ describe("discoverPiModelsWithSdk", () => {
       expect(result.models).toContainEqual(expect.objectContaining({ slug: "openai/gpt-6-astra" }));
       expect(result.slashCommands).toContainEqual({ name: "isolated-watch-environment" });
       expect(environment).toEqual(originalEnvironment);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  // Mirrors an npm/nvm global install: `bin/pi` links into the package's CLI.
+  const writeFakePiInstall = Effect.fn(function* (root: string, sdkSource: string) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const paths = yield* Path.Path;
+    const packageDir = paths.join(
+      root,
+      "lib",
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+    );
+    yield* fileSystem.makeDirectory(paths.join(packageDir, "dist", "bundle"), { recursive: true });
+    yield* fileSystem.writeFileString(
+      paths.join(packageDir, "package.json"),
+      `{"name":"@earendil-works/pi-coding-agent","type":"module",
+"exports":{".":{"types":"./dist/index.d.ts","import":"./dist/index.js"}}}`,
+    );
+    yield* fileSystem.writeFileString(paths.join(packageDir, "dist", "index.js"), sdkSource);
+    yield* fileSystem.writeFileString(
+      paths.join(packageDir, "dist", "bundle", "package.json"),
+      '{"type":"module"}',
+    );
+    const cli = paths.join(packageDir, "dist", "bundle", "cli.js");
+    yield* fileSystem.writeFileString(cli, "#!/usr/bin/env node\n");
+    yield* fileSystem.chmod(cli, 0o755);
+    yield* fileSystem.makeDirectory(paths.join(root, "bin"));
+    const bin = paths.join(root, "bin", "pi");
+    yield* fileSystem.symlink(cli, bin);
+    return bin;
+  });
+
+  it.effect("discovers with the SDK of the Pi install that sessions launch", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pi-installed-sdk-" });
+      const binaryPath = yield* writeFakePiInstall(
+        root,
+        `export async function createAgentSessionServices() {
+  return {
+    modelRuntime: {
+      getAvailable: async () => [{ id: "claude-opus-5-5", provider: "claude-agent-sdk" }],
+      getError: () => undefined,
+    },
+    diagnostics: [],
+  };
+}\n`,
+      );
+      const result = yield* discoverPiModels({
+        binaryPath,
+        cwd: root,
+        environment: { HOME: root, PI_OFFLINE: "1" },
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.models.map((model) => model.slug)).toEqual([
+        "claude-agent-sdk/claude-opus-5-5",
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("falls back to the bundled SDK when the installed Pi lacks the discovery API", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pi-legacy-sdk-" });
+      const binaryPath = yield* writeFakePiInstall(root, "export const version = '0.1.0';\n");
+      yield* fileSystem.makeDirectory(paths.join(root, "agent"));
+      const result = yield* discoverPiModels({
+        binaryPath,
+        agentDir: paths.join(root, "agent"),
+        cwd: root,
+        environment: {
+          HOME: root,
+          PI_OFFLINE: "1",
+          OPENAI_API_KEY: "t3-discovery-fixture-not-a-credential",
+        },
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.models).toContainEqual(expect.objectContaining({ slug: "openai/gpt-6-astra" }));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

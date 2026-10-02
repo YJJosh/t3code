@@ -12,7 +12,11 @@ Open **Settings → Providers**, add or select **Pi**, and configure any overrid
 
 Pi model names use `provider/model`, for example `openai-codex/gpt-6-astra`. Model discovery uses the bundled Pi SDK and your configured extensions and credentials. The picker also exposes profile, reasoning, context-window, and supported service-tier options. Fast is shown only for models supported by the loaded `/fast` extension; GPT-6 Astra does not currently expose it.
 
-Pi sessions always run with full local access because T3 owns the surrounding runtime approval boundary, so the composer does not show an access-mode selector for Pi. The Pi profile selector occupies that footer position, while reasoning, context-window, and service-tier controls remain separate. Extension input and editor prompts that cannot be represented safely in the provider protocol are cancelled rather than answered with fabricated values.
+Pi sessions always run with full local access because T3 owns the surrounding runtime approval boundary, so the composer does not show an access-mode selector for Pi. Its place holds one menu for **Config set** and **Profile** (for example, `main · coder`); reasoning, context-window, and service-tier controls remain separate. On mobile both are in the thread's model options.
+
+Config sets are the Pi homes registered with Profile Manager. The set you choose applies to that thread only and never changes the global selection. Remote sets must already be mounted on the server machine. The set is hidden when fewer than two sets are registered. Changing the set or profile restarts Pi before the next message and keeps the conversation; wait for the current turn to finish first. A profile must exist in the chosen set.
+
+Extension menus, confirmations, and text prompts (for example `/pm`) appear as questions in chat on web, desktop, and mobile. Choose an answer or dismiss the question to cancel; T3 never picks a menu entry for you. Timed dialogs disappear when they expire.
 
 ## Conversation display
 
@@ -26,9 +30,13 @@ Thinking rows show the reasoning summary or text supplied by the model and expan
 
 Registered extension commands such as `/ps` and `/subagents` run directly in Pi, including while an agent is working. Commands that do not start model work finish without leaving the thread's working indicator active. Private inspector-control commands are hidden from the slash menu.
 
+## Background threads
+
+With `pi-background-threads` installed, ask Pi to use `thread_spawn` with a task and optional title. The new thread appears in the same project, shares the parent’s branch and working directory, and inherits its provider instance, model options (including profile), and modes. Its first turn starts with the requested task. Open the new thread to follow, reply to, or stop it; the extension’s `thread_status` does not mirror T3 thread status. Both threads can edit the same files, so give parallel tasks non-overlapping scope.
+
 ## Background terminals
 
-Background terminals started by Pi appear above the composer for the active thread. Running terminals show their title and status without mixing terminal output into the chat timeline; selecting one opens its command, directory, process details, stdout, and stderr. A running terminal can be stopped from this view. Settled terminals remain available in a collapsed summary for the rest of the provider session.
+Background terminals started by Pi, and terminals you start yourself, live in the **Shared terminals** surface of the right panel. Open it from the panel's **+** menu, press **S** in the empty panel, or type `/ps` in the composer. The surface lists running and settled terminals; selecting one shows its command, directory, process details and output, and a running terminal can be stopped there. **Start terminal** runs a command in the thread's working directory inside the live Pi session, so Pi can see and use it too; `/terminal <command>` (or `/terminal -k <command>` to keep a shell open after the command exits) does the same from the composer. Both need Pi to be running in the thread, so send a message first in a brand-new thread. Running terminals also show in a compact strip above the composer that opens the surface. With an updated `pi-background-terminals` extension, interactive terminals open a live color screen in web and desktop. Choose **Take control** to type, paste, use arrow keys or Ctrl+C, and resize the terminal to the panel; **Release control** returns input to the agent. Only one person (including Pi’s terminal UI) can control a terminal at a time. Closing the panel releases it; a disconnected browser’s control expires within a minute. Ordinary background commands and mobile retain the read-only text view. `/subagents` and `/workflows` open the Agents surface the same way.
 
 Terminal state belongs to the active Pi process. T3 requests a replay when a client subscribes, ignores updates from an older manager after Pi restarts, and never sends a terminal control to a stale provider session.
 

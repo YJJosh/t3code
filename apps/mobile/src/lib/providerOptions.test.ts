@@ -49,6 +49,38 @@ describe("mobile provider options", () => {
     expect(applyProviderOptionSelection(descriptors, { id: "unknown", value: "high" })).toBeNull();
   });
 
+  it("keeps config set and profile together in the generic options sheet", () => {
+    const descriptors = resolveProviderOptionDescriptors({
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "configSet",
+            label: "Config set",
+            type: "select",
+            options: [
+              { id: "main", label: "main", isDefault: true },
+              { id: "dev", label: "dev" },
+            ],
+          },
+          {
+            id: "profile",
+            label: "Profile",
+            type: "select",
+            options: [
+              { id: "coder", label: "coder", isDefault: true },
+              { id: "research", label: "research" },
+            ],
+          },
+        ],
+      },
+      selections: undefined,
+    });
+    expect(applyProviderOptionSelection(descriptors, { id: "configSet", value: "dev" })).toEqual([
+      { id: "configSet", value: "dev" },
+      { id: "profile", value: "coder" },
+    ]);
+  });
+
   it("updates generic boolean options", () => {
     const descriptors = resolveProviderOptionDescriptors({
       capabilities: {

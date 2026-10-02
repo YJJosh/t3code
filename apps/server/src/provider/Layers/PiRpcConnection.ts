@@ -48,6 +48,7 @@ export interface PiRpcConnection {
   /** Send a correlated command and wait for its matching Pi response. */
   readonly request: (
     command: PiRpcCommand,
+    waitForDialog?: boolean,
   ) => Effect.Effect<PiRpcResponse, ProviderAdapterProcessError>;
   /** Resolves with the process exit code (or -1 if it could not be observed). */
   readonly awaitExit: Effect.Effect<number>;
@@ -234,7 +235,7 @@ export const makePiRpcConnection = (
         ),
       );
 
-    const request: PiRpcConnection["request"] = (command) =>
+    const request: PiRpcConnection["request"] = (command, waitForDialog = false) =>
       Effect.gen(function* () {
         const initialExitError = currentExitError();
         if (initialExitError) return yield* initialExitError;
@@ -251,7 +252,9 @@ export const makePiRpcConnection = (
         }
         const result = yield* send({ ...command, id } as PiRpcCommand).pipe(
           Effect.andThen(Deferred.await(deferred)),
-          Effect.timeoutOption("30 seconds"),
+          // Extension commands acknowledge only after their dialog chain returns.
+          // Keep the normal RPC deadline everywhere else; process exit still fails this waiter.
+          waitForDialog ? Effect.map(Option.some) : Effect.timeoutOption("30 seconds"),
           Effect.ensuring(Effect.sync(() => pending.delete(id))),
         );
         if (Option.isNone(result)) {
