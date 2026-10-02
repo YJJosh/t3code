@@ -221,6 +221,9 @@ jobs:
               stdio: "inherit",
             });
 
+            // Upstream syncs touch tens of thousands of files; the 1 MB default
+            // buffer overflows (ENOBUFS) on their numstat output.
+            const numstatMaxBuffer = 64 * 1024 * 1024;
             const diffArgs = [
               "diff",
               "--numstat",
@@ -233,12 +236,13 @@ jobs:
               execFileSync(
                 "git",
                 diffArgs,
-                { encoding: "utf8" },
+                { encoding: "utf8", maxBuffer: numstatMaxBuffer },
               ),
             );
             const nonTestChangedLines = sumNumstat(
               execFileSync("git", [...diffArgs, "--", ".", ...testExcludePathspecs], {
                 encoding: "utf8",
+                maxBuffer: numstatMaxBuffer,
               }),
             );
             const testChangedLines = Math.max(0, totalChangedLines - nonTestChangedLines);
