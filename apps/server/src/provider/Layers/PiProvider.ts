@@ -12,6 +12,7 @@
  */
 import {
   PI_PROFILE_OPTION_ID,
+  PI_CONFIG_SET_OPTION_ID,
   type PiSettings,
   type ServerProviderModel,
 } from "@t3tools/contracts";
@@ -25,12 +26,14 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { discoverPiModels } from "../pi/piModelDiscovery.ts";
 import {
-  discoverPiProfileChoices,
-  parsePiProfileChoices,
-  type PiProfileChoice,
-} from "../pi/piProfileDiscovery.ts";
+  discoverPiConfigSets,
+  discoverPiConfigSetProfiles,
+  PI_DEFAULT_CONFIG_SET,
+  type PiConfigSet,
+} from "../pi/piConfigSetDiscovery.ts";
+import { discoverPiModels } from "../pi/piModelDiscovery.ts";
+import { parsePiProfileChoices, type PiProfileChoice } from "../pi/piProfileDiscovery.ts";
 import { resolvePiBinary } from "../pi/piRpcProtocol.ts";
 import {
   buildSelectOptionDescriptor,
@@ -57,7 +60,7 @@ function piProfileDescriptor(profileChoices: ReadonlyArray<PiProfileChoice>) {
   return buildSelectOptionDescriptor({
     id: PI_PROFILE_OPTION_ID,
     label: "Profile",
-    description: "Pi profile loaded when this thread starts.",
+    description: "Pi profile for this thread. Changes restart the idle session on the next send.",
     options: profileChoices.map((profile) => ({
       value: profile.id,
       label: profile.label,
@@ -70,16 +73,40 @@ function piProfileDescriptor(profileChoices: ReadonlyArray<PiProfileChoice>) {
 function withPiProfileChoices(
   models: ReadonlyArray<ServerProviderModel>,
   profileChoices: ReadonlyArray<PiProfileChoice>,
+  configSets: ReadonlyArray<PiConfigSet>,
+  defaultSet: string,
 ): ReadonlyArray<ServerProviderModel> {
   const profileDescriptor = piProfileDescriptor(profileChoices);
+  const configDescriptor =
+    configSets.length > 0
+      ? buildSelectOptionDescriptor({
+          id: PI_CONFIG_SET_OPTION_ID,
+          label: "Config set",
+          description:
+            "Pi home for this thread only. Changes restart the idle Pi session on the next send.",
+          options: [
+            ...(defaultSet === PI_DEFAULT_CONFIG_SET
+              ? [{ value: PI_DEFAULT_CONFIG_SET, label: "Provider default", isDefault: true }]
+              : []),
+            ...configSets.map((set) => ({
+              value: set.name,
+              label: set.name,
+              ...(set.description ? { description: set.description } : {}),
+              ...(set.name === defaultSet ? { isDefault: true } : {}),
+            })),
+          ],
+        })
+      : undefined;
   return models.map((model) => ({
     ...model,
     capabilities: {
       ...model.capabilities,
       optionDescriptors: [
         ...(model.capabilities?.optionDescriptors ?? []).filter(
-          (descriptor) => descriptor.id !== PI_PROFILE_OPTION_ID,
+          (descriptor) =>
+            descriptor.id !== PI_PROFILE_OPTION_ID && descriptor.id !== PI_CONFIG_SET_OPTION_ID,
         ),
+        ...(configDescriptor ? [configDescriptor] : []),
         profileDescriptor,
       ],
     },
@@ -90,11 +117,13 @@ function piModelsFromSettings(
   customModels: ReadonlyArray<string> | undefined,
   builtInModels: ReadonlyArray<ServerProviderModel> = [],
   profileChoices: ReadonlyArray<PiProfileChoice> = parsePiProfileChoices(undefined),
+  configSets: ReadonlyArray<PiConfigSet> = [],
+  defaultSet: string = PI_DEFAULT_CONFIG_SET,
 ): ReadonlyArray<ServerProviderModel> {
   const models = providerModelsFromSettings(builtInModels, customModels ?? [], {
     optionDescriptors: [],
   });
-  return withPiProfileChoices(models, profileChoices);
+  return withPiProfileChoices(models, profileChoices, configSets, defaultSet);
 }
 
 export function buildInitialPiProviderSnapshot(
@@ -160,12 +189,20 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
 > {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  const profileChoices = yield* discoverPiProfileChoices({
+  const discoveryOptions = {
     agentDir: settings.agentDir || undefined,
     configuredProfile: settings.profile,
     environment,
-  });
-  const fallbackModels = piModelsFromSettings(settings.customModels, [], profileChoices);
+  };
+  const configDiscovery = yield* discoverPiConfigSets(discoveryOptions);
+  const profileChoices = yield* discoverPiConfigSetProfiles(discoveryOptions, configDiscovery);
+  const fallbackModels = piModelsFromSettings(
+    settings.customModels,
+    [],
+    profileChoices,
+    configDiscovery.sets,
+    configDiscovery.defaultName,
+  );
 
   if (!settings.enabled) {
     return buildServerProvider({
@@ -264,7 +301,13 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   const discovered = discoveryOutcome._tag === "success" ? discoveryOutcome.discovered : undefined;
   const models =
     discovered && discovered.models.length > 0
-      ? piModelsFromSettings(settings.customModels, discovered.models, profileChoices)
+      ? piModelsFromSettings(
+          settings.customModels,
+          discovered.models,
+          profileChoices,
+          configDiscovery.sets,
+          configDiscovery.defaultName,
+        )
       : fallbackModels;
   const auth = discovered?.auth ?? { status: "unknown" as const };
   const discoveryError = discovered?.error?.trim();

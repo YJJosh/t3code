@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import type { PiConfigSetSelection } from "./piConfigSetDiscovery.ts";
 import { resolvePiAgentDir } from "./piPaths.ts";
 
 export type PiRpcImage = {
@@ -187,6 +188,7 @@ export function buildPiRpcEnv(
   paths: Path.Path,
   config: PiSettings,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  configSet?: PiConfigSetSelection,
 ): NodeJS.ProcessEnv {
   const agentDir = resolvePiAgentDir(paths, { agentDir: config.agentDir, environment: baseEnv });
   return {
@@ -197,7 +199,15 @@ export function buildPiRpcEnv(
     [PI_SUBAGENTS_RPC_BRIDGE_ENV]: "1",
     [PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV]: "1",
     PI_BACKGROUND_THREADS_RPC_BRIDGE: "1",
-    PI_CODING_AGENT_DIR: agentDir,
+    PI_CODING_AGENT_DIR: configSet?.directory ?? agentDir,
+    ...(configSet
+      ? {
+          PI_CONFIG_SET_NAME: configSet.name,
+          PI_CONFIG_SET_DIR: configSet.directory,
+          PI_CONFIG_SET_ROOT: configSet.root,
+          PI_CONFIG_SET_REGISTRY: configSet.registryPath,
+        }
+      : {}),
   };
 }
 

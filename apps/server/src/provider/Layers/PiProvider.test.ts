@@ -17,6 +17,7 @@ import { buildInitialPiProviderSnapshot, checkPiProviderStatus } from "./PiProvi
 vi.mock("../pi/piModelDiscovery.ts", { spy: true });
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const discoveryFailure = (error: string): PiModelDiscoveryResult => ({
   models: [],
@@ -82,6 +83,57 @@ const runPiChecks = (discoveries: ReadonlyArray<DiscoveryEffect>) =>
       return snapshots;
     }),
   );
+
+describe("Pi config set model options", () => {
+  it.effect(
+    "publishes set defaults and the profile union through the existing descriptor contract",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-provider-sets-" });
+        const main = `${root}/main`;
+        const dev = `${root}/dev`;
+        yield* fs.makeDirectory(main);
+        yield* fs.makeDirectory(dev);
+        yield* fs.writeFileString(
+          `${root}/config-sets.json`,
+          encodeJson({
+            version: 1,
+            active: "dev",
+            sets: { main: { path: main }, dev: { path: dev } },
+          }),
+        );
+        yield* fs.writeFileString(
+          `${main}/profiles.json`,
+          '{"profiles":{"coder":{},"reviewer":{}}}',
+        );
+        yield* fs.writeFileString(`${dev}/profiles.json`, '{"profiles":{"research":{}}}');
+        const settings = decodePiSettings({
+          enabled: false,
+          agentDir: main,
+          customModels: ["anthropic/claude-sonnet-5"],
+        });
+        const snapshot = yield* checkPiProviderStatus(settings, { HOME: root });
+        const descriptors = snapshot.models[0]?.capabilities?.optionDescriptors;
+        expect(descriptors?.find((descriptor) => descriptor.id === "configSet")).toMatchObject({
+          label: "Config set",
+          currentValue: "main",
+          options: [{ id: "dev" }, { id: "main", isDefault: true }],
+        });
+        expect(descriptors?.find((descriptor) => descriptor.id === "profile")).toMatchObject({
+          currentValue: "coder",
+          options: [{ id: "coder", isDefault: true }, { id: "research" }, { id: "reviewer" }],
+        });
+        yield* fs.writeFileString(`${root}/config-sets.json`, "invalid");
+        const invalid = yield* checkPiProviderStatus(settings, { HOME: root });
+        expect(
+          invalid.models[0]?.capabilities?.optionDescriptors?.some(
+            (descriptor) => descriptor.id === "configSet",
+          ),
+        ).toBe(false);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+});
 
 describe("buildInitialPiProviderSnapshot", () => {
   it.effect("advertises the configured Pi profile as a model option", () =>

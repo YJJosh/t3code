@@ -14,6 +14,7 @@ import { PiSettings } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -40,6 +41,7 @@ const encodeBackgroundTerminalEvent = Schema.encodeSync(
   Schema.fromJsonString(PiBackgroundTerminalEventSchema),
 );
 const encoder = new TextEncoder();
+const encodeJsonSync = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decoder = new TextDecoder();
 
 interface FakeTaskControlRequest {
@@ -54,12 +56,14 @@ interface FakePi {
   readonly env: Record<string, string>;
   readonly written: ReadonlyArray<Record<string, unknown>>;
   readonly uiResponses: Queue.Dequeue<Record<string, unknown>>;
+  readonly launches: ReadonlyArray<{ args: ReadonlyArray<string>; env: NodeJS.ProcessEnv }>;
   readonly taskControlRequests: Queue.Dequeue<FakeTaskControlRequest>;
   readonly pushFrame: (frame: unknown) => Effect.Effect<void>;
 }
 
 const makeFakePi = Effect.fn("makeFakePi")(function* (
   options: {
+    readonly sessionFile?: string;
     readonly subagentsCommand?: boolean;
     readonly backgroundTerminalsCommand?: boolean;
     readonly commands?: ReadonlyArray<{
@@ -82,16 +86,18 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
   const stdout = yield* Queue.unbounded<Uint8Array>();
   const uiResponses = yield* Queue.unbounded<Record<string, unknown>>();
   const taskControlRequests = yield* Queue.unbounded<FakeTaskControlRequest>();
-  const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
   const args: string[] = [];
+  const launches: Array<{ args: ReadonlyArray<string>; env: NodeJS.ProcessEnv }> = [];
   const env: Record<string, string> = {};
   const written: Array<Record<string, unknown>> = [];
   let isStreaming = false;
   let dialogPromptResponse: Record<string, unknown> | undefined;
 
   const spawner = ChildProcessSpawner.make((command) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
       if (command._tag === "StandardCommand") {
+        launches.push({ args: [...command.args], env: { ...command.options.env } });
         args.push(...command.args);
         Object.assign(env, command.options.env);
       }
@@ -163,6 +169,7 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
                 ? {
                     data: {
                       sessionId: "pi-session-test",
+                      ...(options.sessionFile ? { sessionFile: options.sessionFile } : {}),
                       isStreaming,
                       isCompacting: false,
                       pendingMessageCount: 0,
@@ -314,6 +321,7 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
     args,
     env,
     written,
+    launches,
     taskControlRequests,
     uiResponses,
     pushFrame: (frame) =>
@@ -580,6 +588,98 @@ describe("Pi adapter", () => {
       }).pipe(Effect.scoped, Effect.provide(TestEnv)),
     );
   }
+
+  it.effect(
+    "restarts idle Pi when the config set or profile changes and retains the conversation file",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs
+          .makeTempDirectoryScoped({ prefix: "t3-pi-adapter-sets-" })
+          .pipe(Effect.flatMap((directory) => fs.realPath(directory)));
+        const main = `${root}/main`;
+        const dev = `${root}/dev`;
+        yield* fs.makeDirectory(main);
+        yield* fs.makeDirectory(dev);
+        const registryPath = `${root}/config-sets.json`;
+        const registry = encodeJsonSync({
+          version: 1,
+          active: "main",
+          sets: { main: { path: main }, dev: { path: dev } },
+        });
+        yield* fs.writeFileString(registryPath, registry);
+        const sessionFile = `${main}/sessions/thread.jsonl`;
+        const fake = yield* makeFakePi({ sessionFile });
+        const adapter = yield* makePiAdapter(decodePiSettings({ agentDir: main }), {
+          instanceId: INSTANCE,
+          environment: { HOME: root, PI_CONFIG_SET_REGISTRY: registryPath },
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+        const selection = (set: string, profile = "coder"): ModelSelection => ({
+          instanceId: INSTANCE,
+          model: "anthropic/claude-sonnet-5",
+          options: [
+            { id: "configSet", value: set },
+            { id: "profile", value: profile },
+          ],
+        });
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: root,
+          runtimeMode: "full-access",
+          modelSelection: selection("main"),
+        });
+        const turn = yield* adapter.sendTurn({
+          threadId: THREAD,
+          input: "Continue",
+          modelSelection: selection("dev"),
+        });
+        expect(fake.launches).toHaveLength(2);
+        expect(fake.launches[1]?.env).toMatchObject({
+          PI_CODING_AGENT_DIR: dev,
+          PI_CONFIG_SET_NAME: "dev",
+          PI_CONFIG_SET_DIR: dev,
+          PI_CONFIG_SET_ROOT: root,
+          PI_CONFIG_SET_REGISTRY: registryPath,
+        });
+        expect(fake.launches[1]?.args).toContain(sessionFile);
+        expect(turn.resumeCursor).toEqual({
+          piSessionId: "pi-session-test",
+          piSessionFile: sessionFile,
+        });
+        const busy = yield* adapter
+          .sendTurn({ threadId: THREAD, input: "Switch", modelSelection: selection("main") })
+          .pipe(Effect.flip);
+        expect(busy).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          issue: "Wait for the Pi turn to finish before changing config set or profile.",
+        });
+        expect(fake.launches).toHaveLength(2);
+        yield* adapter.sendTurn({
+          threadId: THREAD,
+          input: "Steer",
+          modelSelection: selection("dev"),
+        });
+        expect(fake.launches).toHaveLength(2);
+        // Restart a ready session with a new profile, exercising the same boundary.
+        yield* adapter.stopSession(THREAD);
+        yield* adapter.startSession({
+          threadId: THREAD,
+          cwd: root,
+          runtimeMode: "full-access",
+          modelSelection: selection("dev"),
+          resumeCursor: turn.resumeCursor,
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD,
+          input: "Review",
+          modelSelection: selection("dev", "reviewer"),
+        });
+        expect(fake.launches).toHaveLength(4);
+        expect(fake.launches[3]?.args).toContain("reviewer");
+        expect(fake.launches[3]?.env.PI_CODING_AGENT_DIR).toBe(dev);
+        expect(yield* fs.readFileString(registryPath)).toBe(registry);
+      }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
 
   it.effect("keeps a long-lived turn open until agent_settled", () =>
     Effect.gen(function* () {

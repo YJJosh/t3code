@@ -20,6 +20,7 @@ import {
   type ModelSelection,
   PI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION,
   PI_PROFILE_OPTION_ID,
+  PI_CONFIG_SET_OPTION_ID,
   type PiBackgroundTerminalControlInput,
   type PiBackgroundTerminalControlResult,
   type PiSettings,
@@ -51,6 +52,10 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { discoverPiProfileChoices } from "../pi/piProfileDiscovery.ts";
+import { resolvePiAgentDir } from "../pi/piPaths.ts";
+import { resolvePiSessionConfigSet, PI_DEFAULT_CONFIG_SET } from "../pi/piConfigSetDiscovery.ts";
+import { DEFAULT_PI_PROFILE } from "../pi/piRpcProtocol.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -159,6 +164,9 @@ interface PiSessionContext {
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   /** Pi session id (from get_state / session events) for resume. */
   piSessionId: string | undefined;
+  readonly profile: string;
+  readonly configSetName: string;
+  readonly defaultConfigSetName: string;
   /** Current canonical segment + indexed blocks for the whole native assistant message. */
   assistantItemId: ProviderItemId | undefined;
   assistantItemHasText: boolean;
@@ -1934,6 +1942,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         contextWindow,
         fastServiceEnabled,
         profile: profile || undefined,
+        configSet:
+          getModelSelectionStringOptionValue(selection, PI_CONFIG_SET_OPTION_ID)?.trim() ||
+          undefined,
       };
     };
 
@@ -1954,17 +1965,59 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           });
         }
         const cwd = path.resolve(input.cwd.trim());
-        const existing = sessions.get(input.threadId);
-        if (existing && !existing.stopped) {
-          yield* stopSessionInternal(existing);
-        }
-
-        const { model, thinkingLevel, contextWindow, fastServiceEnabled, profile } =
+        const { model, thinkingLevel, contextWindow, fastServiceEnabled, profile, configSet } =
           resolveModelSelection(input.modelSelection);
-        const resumeSessionId =
-          isRecord(input.resumeCursor) && typeof input.resumeCursor.piSessionId === "string"
-            ? input.resumeCursor.piSessionId
-            : undefined;
+        const selectedSet = yield* resolvePiSessionConfigSet(
+          { agentDir: piSettings.agentDir, environment: baseEnv },
+          configSet,
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "startSession",
+                issue: cause.message,
+              }),
+          ),
+        );
+        const effectiveAgentDir =
+          selectedSet?.directory ??
+          resolvePiAgentDir(path, { agentDir: piSettings.agentDir, environment: baseEnv });
+        if (
+          profile &&
+          (yield* fileSystem
+            .exists(path.join(effectiveAgentDir, "profiles.json"))
+            .pipe(Effect.orElseSucceed(() => false)))
+        ) {
+          const profiles = yield* discoverPiProfileChoices({
+            agentDir: effectiveAgentDir,
+            configuredProfile: piSettings.profile,
+            environment: baseEnv,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          );
+          if (!profiles.some((choice) => choice.id === profile)) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: `Pi profile "${profile}" is not available in ${selectedSet ? `config set "${selectedSet.name}"` : "the provider home"}. Choose a profile defined in that home.`,
+            });
+          }
+        }
+        const resumeSessionId = isRecord(input.resumeCursor)
+          ? typeof input.resumeCursor.piSessionFile === "string" &&
+            path.isAbsolute(input.resumeCursor.piSessionFile)
+            ? input.resumeCursor.piSessionFile
+            : typeof input.resumeCursor.piSessionId === "string"
+              ? input.resumeCursor.piSessionId
+              : undefined
+          : undefined;
+
+        const existing = sessions.get(input.threadId);
+        if (existing && !existing.stopped) yield* stopSessionInternal(existing);
 
         const sessionScope = yield* Scope.make();
         let scopeTransferred = false;
@@ -1981,6 +2034,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           activeTurnId: undefined,
           turns: [],
           piSessionId: resumeSessionId,
+          profile: profile || piSettings.profile?.trim() || DEFAULT_PI_PROFILE,
+          configSetName: selectedSet?.name ?? PI_DEFAULT_CONFIG_SET,
+          defaultConfigSetName: selectedSet?.providerDefaultName ?? PI_DEFAULT_CONFIG_SET,
           assistantItemId: undefined,
           assistantItemHasText: false,
           assistantItemHasReasoning: false,
@@ -2019,7 +2075,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             ...(resumeSessionId ? { resumeSessionId } : {}),
           }),
           cwd,
-          env: buildPiRpcEnv(path, piSettings, baseEnv),
+          env: buildPiRpcEnv(path, piSettings, baseEnv, selectedSet),
           onMessage: (message) =>
             handlePiMessage(ctx)(message).pipe(Effect.catchCause(() => Effect.void)),
           onParseFailure: (line) =>
@@ -2064,7 +2120,14 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           cwd,
           ...(model ? { model } : {}),
           threadId: input.threadId,
-          resumeCursor: { piSessionId: activePiSessionId },
+          resumeCursor: {
+            piSessionId: activePiSessionId,
+            ...(isRecord(stateResponse.data) &&
+            typeof stateResponse.data.sessionFile === "string" &&
+            path.isAbsolute(stateResponse.data.sessionFile)
+              ? { piSessionFile: stateResponse.data.sessionFile }
+              : {}),
+          },
           createdAt: now,
           updatedAt: now,
         };
@@ -2101,6 +2164,53 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       }).pipe(Effect.scoped);
 
     const sendTurn: PiAdapterShape["sendTurn"] = (input) =>
+      Effect.gen(function* () {
+        const ctx = yield* requireSession(input.threadId);
+        const selected = resolveModelSelection(input.modelSelection);
+        const nextProfile = selected.profile || piSettings.profile?.trim() || DEFAULT_PI_PROFILE;
+        const homeChanged =
+          input.modelSelection !== undefined &&
+          (selected.configSet ?? ctx.defaultConfigSetName) !== ctx.configSetName;
+        const profileChanged = input.modelSelection !== undefined && nextProfile !== ctx.profile;
+        if (homeChanged || profileChanged) {
+          return yield* ctx.sendSemaphore.withPermit(
+            Effect.gen(function* () {
+              if (ctx.activeTurnId !== undefined) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "sendTurn",
+                  issue: "Wait for the Pi turn to finish before changing config set or profile.",
+                });
+              }
+              // Pi IDs are home-local. The absolute session file retains this thread's
+              // history across homes; --profile takes precedence over saved PM state.
+              if (
+                homeChanged &&
+                isRecord(ctx.session.resumeCursor) &&
+                !ctx.session.resumeCursor.piSessionFile
+              ) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "sendTurn",
+                  issue:
+                    "This Pi session did not expose its conversation file. Start a new thread to use another config set.",
+                });
+              }
+              yield* startSession({
+                threadId: input.threadId,
+                cwd: ctx.session.cwd ?? "",
+                runtimeMode: ctx.session.runtimeMode,
+                modelSelection: input.modelSelection,
+                resumeCursor: ctx.session.resumeCursor,
+              });
+              return yield* sendTurnToSession(input);
+            }),
+          );
+        }
+        return yield* sendTurnToSession(input);
+      });
+
+    const sendTurnToSession: PiAdapterShape["sendTurn"] = (input) =>
       Effect.flatMap(requireSession(input.threadId), (ctx) =>
         ctx.sendSemaphore.withPermit(
           Effect.gen(function* () {

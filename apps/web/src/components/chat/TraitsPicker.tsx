@@ -41,19 +41,22 @@ import { useComposerMenuProps } from "./composerEventScope";
 import { useComposerMenuState } from "./useComposerMenuState";
 
 type ProviderOptions = ReadonlyArray<ProviderOptionSelection>;
-export type TraitsDescriptorScope = "all" | "pi-profile" | "pi-other";
+export type TraitsDescriptorScope = "all" | "pi-configuration" | "pi-other";
 
 export function filterTraitsDescriptors(
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
   scope: TraitsDescriptorScope,
 ): ReadonlyArray<ProviderOptionDescriptor> {
-  return descriptors.filter((descriptor) =>
-    scope === "pi-profile"
-      ? descriptor.id === "profile"
+  const filtered = descriptors.filter((descriptor) =>
+    scope === "pi-configuration"
+      ? descriptor.id === "profile" || descriptor.id === "configSet"
       : scope === "pi-other"
-        ? descriptor.id !== "profile"
+        ? descriptor.id !== "profile" && descriptor.id !== "configSet"
         : true,
   );
+  return scope === "pi-configuration"
+    ? [...filtered].sort((a, b) => (a.id === "configSet" ? -1 : b.id === "configSet" ? 1 : 0))
+    : filtered;
 }
 
 export function mergeScopedProviderOptions(
@@ -524,6 +527,13 @@ export function buildTraitsTriggerDisplay(input: {
   let fastModeEnabled = false;
   const labels: Array<string> = [];
   for (const descriptor of input.descriptors) {
+    if (
+      input.provider === "pi" &&
+      descriptor.id === "configSet" &&
+      descriptor.type === "select" &&
+      descriptor.options.filter((option) => option.id !== "__providerDefault").length < 2
+    )
+      continue;
     if (descriptor.id === "fastMode" && descriptor.type === "boolean") {
       fastModeEnabled = descriptor.currentValue === true;
       fastModeFallbackLabel = fastModeEnabled ? "Fast" : "Normal";
