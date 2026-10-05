@@ -157,14 +157,7 @@ it.layer(NodeServices.layer)("PiSessionTranscript", (it) => {
     }).pipe(Effect.scoped, Effect.provide(PiSessionTranscript.layer)),
   );
 
-  for (const mode of [
-    "id",
-    "cwd",
-    "duplicate",
-    "timestamp",
-    "version",
-    "partial",
-  ] as const) {
+  for (const mode of ["id", "cwd", "duplicate", "timestamp", "version", "partial"] as const) {
     it.effect(`rejects corrupt ${mode}`, () =>
       Effect.gen(function* () {
         const f = yield* fixture;
