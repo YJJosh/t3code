@@ -20,11 +20,12 @@ const ThreadInfo = Schema.Struct({
   status: Schema.Literals(["new", "running", "waiting", "done", "interrupted"]),
   owner: Schema.Literals(["daemon", "foreground", "t3"]),
   t3: Schema.optional(
-    Schema.Struct({ thread: Schema.String, environment: Schema.optional(Schema.String) }),
+    Schema.Struct({ thread: Schema.NonEmptyString, environment: Schema.optional(Schema.String) }),
   ),
   createdAt: Schema.Finite,
   updatedAt: Schema.Finite,
   settledAt: Schema.optional(Schema.Finite),
+  settleRev: Schema.optional(Schema.Finite),
   live: Schema.Boolean,
   attached: Schema.Int,
 });
@@ -47,6 +48,12 @@ export class PiSessionsClient extends Context.Service<
   {
     /** No autostart. An unavailable or incompatible daemon is indistinguishable from no extension. */
     readonly list: Effect.Effect<ReadonlyArray<PiSessionInfo> | null>;
+    /** Conflicts, unsupported requests and timeouts leave reconciliation for the next round. */
+    readonly settle: (input: {
+      readonly sessionId: string;
+      readonly settled: boolean;
+      readonly ifRev: number;
+    }) => Effect.Effect<PiSessionInfo | null>;
   }
 >()("t3/provider/PiSessionsClient") {}
 
@@ -56,7 +63,7 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const environment = yield* HostProcessEnvironment;
   const platform = yield* HostProcessPlatform;
-  const list = Effect.gen(function* () {
+  const request = Effect.fn(function* (message: object) {
     const home = environment.PI_SESSIONS_HOME || path.join(NodeOS.homedir(), ".pi", "pi-sessions");
     const socketPath =
       platform === "win32"
@@ -64,7 +71,7 @@ const make = Effect.gen(function* () {
         : path.join(home, "daemon.sock");
     const connected = yield* Deferred.make<boolean>();
     const hello = yield* Deferred.make<unknown>();
-    const listed = yield* Deferred.make<unknown>();
+    const replied = yield* Deferred.make<unknown>();
     let waitingFor = 0;
     const socket = yield* Effect.acquireRelease(
       Effect.sync(() => {
@@ -73,7 +80,7 @@ const make = Effect.gen(function* () {
         function fail() {
           Deferred.doneUnsafe(connected, Effect.succeed(false));
           Deferred.doneUnsafe(hello, Effect.succeed(null));
-          Deferred.doneUnsafe(listed, Effect.succeed(null));
+          Deferred.doneUnsafe(replied, Effect.succeed(null));
           socket.destroy();
         }
         socket.on("connect", () => Deferred.doneUnsafe(connected, Effect.succeed(true)));
@@ -105,7 +112,7 @@ const make = Effect.gen(function* () {
             if (Option.isNone(response)) return fail();
             if (response.value.id !== waitingFor) continue;
             const target =
-              response.value.id === 1 ? hello : response.value.id === 2 ? listed : undefined;
+              response.value.id === 1 ? hello : response.value.id === 2 ? replied : undefined;
             if (target)
               Deferred.doneUnsafe(
                 target,
@@ -135,15 +142,34 @@ const make = Effect.gen(function* () {
     yield* send(1, { type: "hello", protocol: 1, role: "control", pid: process.pid });
     const handshake = yield* Deferred.await(hello).pipe(Effect.timeoutOption("3 seconds"));
     if (Option.isNone(handshake) || Option.isNone(decodeHello(handshake.value))) return null;
-    yield* send(2, { type: "list", includeSettled: true });
-    const response = yield* Deferred.await(listed).pipe(Effect.timeoutOption("3 seconds"));
-    if (Option.isNone(response) || !Array.isArray(response.value)) return null;
-    return response.value.flatMap((entry: unknown) => {
-      const decoded = decodeThread(entry);
-      return Option.isSome(decoded) ? [decoded.value] : [];
-    });
-  }).pipe(Effect.scoped);
-  return PiSessionsClient.of({ list });
+    yield* send(2, message);
+    return yield* Deferred.await(replied).pipe(
+      Effect.timeoutOption("3 seconds"),
+      Effect.map(Option.getOrNull),
+    );
+  }, Effect.scoped);
+  const list = request({ type: "list", includeSettled: true }).pipe(
+    Effect.map((response) => {
+      if (!Array.isArray(response)) return null;
+      return response.flatMap((entry: unknown) => {
+        const decoded = decodeThread(entry);
+        return Option.isSome(decoded) ? [decoded.value] : [];
+      });
+    }),
+  );
+  const settle: PiSessionsClient["Service"]["settle"] = (input) =>
+    request({ type: "settle", ...input }).pipe(
+      Effect.map((response) => {
+        const decoded = decodeThread(response);
+        return Option.isSome(decoded) &&
+          decoded.value.sessionId === input.sessionId &&
+          decoded.value.settleRev !== undefined &&
+          (decoded.value.settledAt !== undefined) === input.settled
+          ? decoded.value
+          : null;
+      }),
+    );
+  return PiSessionsClient.of({ list, settle });
 });
 
 export const layer = Layer.effect(PiSessionsClient, make);

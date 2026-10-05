@@ -75,13 +75,22 @@ match exactly one enabled provider instance; unknown or ambiguous configurations
 are skipped. Each check processes a bounded batch, so larger lists can take more
 than one check.
 
-Imported threads appear in the project's settled history; open or unsettle them
-to continue. History is imported once, as user and assistant text from the active
-branch (up to 200 messages). Files over 64 MiB or corrupt session files are skipped.
-Later transcript edits, live viewing, and settlement synchronization are not
-supported yet. T3-created sessions are linked rather than imported again. When
-resuming, stop or detach the session's other Pi process first if pi-sessions
-reports an ownership conflict.
+Imported threads follow the daemon's settled state; settled threads appear in the
+project's history, where you can open or unsettle them to continue. History is
+imported once, as user and assistant text from the active branch (up to 200
+messages). Files over 64 MiB or corrupt session files are skipped. Later transcript
+edits and live viewing are not supported yet. T3-created sessions are linked
+rather than imported again. When resuming, stop or detach the session's other Pi
+process first if pi-sessions reports an ownership conflict.
+
+Settled state syncs both ways on the same five-minute checks and explicit refreshes,
+for imported threads and T3-created Pi threads linked to this environment. On the
+first check, an imported thread follows the daemon; a T3-created thread follows
+T3. Later changes on either side carry over to the other. If both sides changed
+and disagree, **unsettled wins**, keeping the thread visible on both sides. A
+settlement T3 cannot accept yet (for example, while the agent is running) is
+retried on a later check. Older daemons without settlement revisions still support
+imports, but skip settled-state synchronization.
 
 Without a running compatible daemon, Pi works as usual. Existing background
 terminal, subagent, and background-thread integrations do not require pi-sessions.

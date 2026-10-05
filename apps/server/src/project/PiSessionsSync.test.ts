@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
+  EnvironmentId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -17,6 +18,8 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
+import * as PiSessionsSettlement from "../persistence/PiSessionsSettlement.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as PiSessionsClient from "../provider/PiSessionsClient.ts";
@@ -54,7 +57,12 @@ const fixture = Effect.fn(function* (mapping?: "custom" | "ambiguous" | "disable
   let listGate: Effect.Effect<void> = Effect.void;
   let calls = 0;
   const external = Layer.mergeAll(
+    Layer.mock(PiSessionsSettlement.PiSessionsSettlement)({}),
+    Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+      getEnvironmentId: Effect.succeed(EnvironmentId.make("env")),
+    }),
     Layer.succeed(PiSessionsClient.PiSessionsClient, {
+      settle: () => Effect.succeed(null),
       list: Effect.gen(function* () {
         calls++;
         yield* Queue.offer(requests, undefined);

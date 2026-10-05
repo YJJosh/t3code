@@ -92,6 +92,7 @@ import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import * as PiSessionsClient from "./provider/PiSessionsClient.ts";
 import * as PiSessionTranscript from "./project/PiSessionTranscript.ts";
+import * as PiSessionsSettlement from "./persistence/PiSessionsSettlement.ts";
 import * as PiSessionsSync from "./project/PiSessionsSync.ts";
 import * as ThreadSettlementReactor from "./orchestration/ThreadSettlementReactor.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
@@ -277,6 +278,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(
     PiSessionsSync.layer.pipe(
       Layer.provide(PiSessionsClient.layer),
+      Layer.provide(PiSessionsSettlement.layer),
       Layer.provide(PiSessionTranscript.layer),
     ),
   ),

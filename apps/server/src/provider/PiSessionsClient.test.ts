@@ -20,6 +20,9 @@ const decode = Schema.decodeUnknownSync(
       includeSettled: Schema.optional(Schema.Boolean),
       protocol: Schema.optional(Schema.Int),
       role: Schema.optional(Schema.String),
+      sessionId: Schema.optional(Schema.String),
+      settled: Schema.optional(Schema.Boolean),
+      ifRev: Schema.optional(Schema.Finite),
     }),
   ),
 );
@@ -207,6 +210,45 @@ it.layer(NodeServices.layer)("PiSessionsClient", (it) => {
       yield* Deferred.await(server.closed);
     }).pipe(Effect.scoped),
   );
+
+  for (const mode of ["success", "conflict", "timeout"] as const) {
+    it.effect(`settle request: ${mode}`, () =>
+      Effect.gen(function* () {
+        const { home, client } = yield* fixture;
+        const updated = { ...record, settledAt: 3, settleRev: 7 };
+        const server = yield* daemon(home, (request, socket) => {
+          if (request.type === "hello") socket.write(frame(hello));
+          else if (mode !== "timeout")
+            socket.write(
+              frame(
+                mode === "success"
+                  ? { type: "response", id: 2, ok: true, result: updated }
+                  : {
+                      type: "response",
+                      id: 2,
+                      ok: false,
+                      error: "settle conflict: the thread changed (revision 7)",
+                    },
+              ),
+            );
+        });
+        const fiber = yield* client
+          .settle({ sessionId: "session", settled: true, ifRev: 6 })
+          .pipe(Effect.forkScoped);
+        yield* Queue.take(server.requests);
+        expect(yield* Queue.take(server.requests)).toEqual({
+          type: "settle",
+          id: 2,
+          sessionId: "session",
+          settled: true,
+          ifRev: 6,
+        });
+        if (mode === "timeout") yield* TestClock.adjust("3 seconds");
+        expect(yield* Fiber.join(fiber)).toEqual(mode === "success" ? updated : null);
+        yield* Deferred.await(server.closed);
+      }).pipe(Effect.scoped),
+    );
+  }
 
   it.effect("cancellation closes an in-flight request", () =>
     Effect.gen(function* () {

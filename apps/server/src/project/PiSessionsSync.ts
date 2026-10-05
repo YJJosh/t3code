@@ -1,4 +1,5 @@
 import {
+  CommandId,
   PiSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -8,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
+import * as Crypto from "effect/Crypto";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -17,6 +19,9 @@ import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as PiSessionsSettlement from "../persistence/PiSessionsSettlement.ts";
+import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as PiSessionsClient from "../provider/PiSessionsClient.ts";
 import * as ProviderSessionDirectory from "../provider/Services/ProviderSessionDirectory.ts";
@@ -45,6 +50,11 @@ const decodeCursor = Schema.decodeUnknownOption(
 );
 const make = Effect.gen(function* () {
   const client = yield* PiSessionsClient.PiSessionsClient;
+  const baselines = yield* PiSessionsSettlement.PiSessionsSettlement;
+  const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const crypto = yield* Crypto.Crypto;
+  const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
+  const environmentId = yield* environment.getEnvironmentId;
   const transcripts = yield* PiSessionTranscript.PiSessionTranscript;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
@@ -58,10 +68,8 @@ const make = Effect.gen(function* () {
   let offset = 0;
   let result: AgentSessionImportResult = { importedCount: 0, skippedCount: 0 };
   let queued = false;
-  const sweep = Effect.gen(function* () {
-    result = { importedCount: 0, skippedCount: 0 };
-    const listed = yield* client.list;
-    const records = listed?.filter(
+  const importListed = Effect.fn(function* (listed: ReadonlyArray<PiSessionsClient.PiSessionInfo>) {
+    const records = listed.filter(
       (record) =>
         !record.live &&
         record.owner !== "t3" &&
@@ -175,11 +183,139 @@ const make = Effect.gen(function* () {
       }
     }
   });
+  // Imports and settlement share the same list and worker, but independent rotating budgets.
+  let settleOffset = 0;
+  const reconcile = Effect.fn(function* (
+    record: PiSessionsClient.PiSessionInfo,
+    threadId: ThreadId,
+    imported: boolean,
+  ) {
+    if (record.settleRev === undefined) return;
+    const link = { environmentId, threadId, sessionId: record.sessionId };
+    const saved = yield* baselines.get(link);
+    const baseline = Option.getOrNull(saved);
+    if (baseline !== null && baseline.daemonRev > record.settleRev) return;
+    // Capture before reading the shell. Dispatch checks this aggregate inside its serialized
+    // queue, so even a user change queued during the daemon round trip cannot be overwritten.
+    const sequence = yield* engine.latestSequence;
+    const shell = yield* snapshots.getThreadShellById(threadId);
+    if (Option.isNone(shell)) return;
+    // The clients classify persisted settled state by this override (not turn completion).
+    const t3Settled = shell.value.settledOverride === "settled";
+    const daemonSettled = record.settledAt !== undefined;
+    const daemonChanged =
+      baseline !== null &&
+      (record.settleRev !== baseline.daemonRev || daemonSettled !== baseline.daemonSettled);
+    const t3Changed = baseline !== null && t3Settled !== baseline.t3Settled;
+    let target = t3Settled;
+    if (baseline === null) {
+      if (imported) target = daemonSettled;
+    } else if (daemonChanged) {
+      // Concurrent disagreement keeps work visible. A daemon revision also detects
+      // settle/unsettle cycles whose final boolean equals the previous baseline.
+      target = t3Changed ? daemonSettled && t3Settled : daemonSettled;
+    }
+    let revision = record.settleRev;
+    if (daemonSettled !== target || t3Settled !== target) {
+      // Also confirm inbound changes with an idempotent CAS. A stale list must not undo
+      // a newer daemon change while we were importing or waiting in the worker.
+      const updated = yield* client.settle({
+        sessionId: record.sessionId,
+        settled: target,
+        ifRev: revision,
+      });
+      if (updated?.settleRev === undefined) return;
+      if (daemonSettled === target && updated.settleRev !== revision) return;
+      revision = updated.settleRev;
+    }
+    if (t3Settled !== target) {
+      const commandId = CommandId.make(`pi-sessions:settle:${yield* crypto.randomUUIDv4}`);
+      yield* engine.dispatch(
+        target
+          ? { type: "thread.settle", commandId, threadId }
+          : { type: "thread.unsettle", commandId, threadId, reason: "user" },
+        { expectedSequence: sequence },
+      );
+    }
+    // Acknowledge only the state we applied/read, never a later reread: an edit during
+    // the request or baseline write must remain a change for the next round.
+    if (
+      baseline?.daemonRev !== revision ||
+      baseline.daemonSettled !== target ||
+      baseline.t3Settled !== target
+    ) {
+      yield* baselines.set(link, { daemonRev: revision, daemonSettled: target, t3Settled: target });
+    }
+  });
+  const isolate = <A, E>(effect: Effect.Effect<A, E>) =>
+    effect.pipe(
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterruptsOnly(cause),
+        (cause) => Effect.logWarning("Pi session sync skipped", { cause: Cause.pretty(cause) }),
+      ),
+    );
+  const sweep = Effect.gen(function* () {
+    result = { importedCount: 0, skippedCount: 0 };
+    const listed = yield* client.list;
+    if (!listed?.length) return;
+    yield* isolate(importListed(listed));
+    const bindings = (yield* directory.listBindings()).filter(
+      (binding) => binding.provider === "pi",
+    );
+    const byThread = new Map(bindings.map((binding) => [binding.threadId, binding]));
+    const bySession = new Map<string, typeof bindings>();
+    for (const binding of bindings) {
+      const cursor = decodeCursor(binding.resumeCursor);
+      if (Option.isSome(cursor) && cursor.value.piSessionId) {
+        const sessionId = cursor.value.piSessionId;
+        bySession.set(sessionId, [...(bySession.get(sessionId) ?? []), binding]);
+      }
+    }
+    const count = Math.min(listed.length, 100);
+    const start = settleOffset % listed.length;
+    settleOffset = (start + count) % listed.length;
+    const importedByProject = new Map<string, Set<ThreadId>>();
+    for (let index = 0; index < count; index++) {
+      const record = listed[(start + index) % listed.length]!;
+      if (record.settleRev === undefined) continue;
+      // Explicit links must name this environment. Never settle another environment's thread.
+      if (record.t3 && record.t3.environment !== environmentId) continue;
+      const candidates = record.t3
+        ? [byThread.get(ThreadId.make(record.t3.thread))].filter((binding) => binding !== undefined)
+        : (bySession.get(record.sessionId) ?? []);
+      if (candidates.length !== 1) continue;
+      const binding = candidates[0]!;
+      const cursor = decodeCursor(binding.resumeCursor);
+      if (
+        Option.isSome(cursor) &&
+        cursor.value.piSessionId &&
+        cursor.value.piSessionId !== record.sessionId
+      )
+        continue;
+      yield* isolate(
+        Effect.gen(function* () {
+          const shell = yield* snapshots.getThreadShellById(binding.threadId);
+          if (Option.isNone(shell)) return;
+          let imported = importedByProject.get(shell.value.projectId);
+          if (!imported) {
+            imported = new Set(
+              (yield* snapshots.getImportedAgentSessionSources(shell.value.projectId))
+                .filter((entry) => entry.source.provider === "pi")
+                .map((entry) => entry.threadId),
+            );
+            importedByProject.set(shell.value.projectId, imported);
+          }
+          if (!record.t3 && !imported.has(binding.threadId)) return;
+          yield* reconcile(record, binding.threadId, imported.has(binding.threadId));
+        }),
+      );
+    }
+  });
   const worker = yield* makeDrainableWorker(() =>
     sweep.pipe(
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterruptsOnly(cause),
-        (cause) => Effect.logWarning("Pi session import skipped", { cause: Cause.pretty(cause) }),
+        (cause) => Effect.logWarning("Pi session sync skipped", { cause: Cause.pretty(cause) }),
       ),
       Effect.ensuring(
         Effect.sync(() => {
