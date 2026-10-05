@@ -77,11 +77,11 @@ than one check.
 
 Imported threads appear in the project's settled history; open or unsettle them
 to continue. History is imported once, as user and assistant text from the active
-branch (up to 200 messages). Files over 16 MiB or corrupt session files are skipped.
+branch (up to 200 messages). Files over 64 MiB or corrupt session files are skipped.
 Later transcript edits, live viewing, and settlement synchronization are not
-supported yet. T3-created
-sessions are linked rather than imported again. When resuming, stop or detach the
-session's other Pi process first if pi-sessions reports an ownership conflict.
+supported yet. T3-created sessions are linked rather than imported again. When
+resuming, stop or detach the session's other Pi process first if pi-sessions
+reports an ownership conflict.
 
 Without a running compatible daemon, Pi works as usual. Existing background
 terminal, subagent, and background-thread integrations do not require pi-sessions.

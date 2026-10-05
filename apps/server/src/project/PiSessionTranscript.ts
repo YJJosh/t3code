@@ -17,18 +17,10 @@ const Header = Schema.Struct({
   cwd: Schema.NonEmptyString,
   timestamp: Schema.String,
 });
+// Pi adds entry types over time (usage, context_edit, ...). Unknown types are kept in the
+// tree so parent links stay valid; only messages, model changes and session info are read.
 const Entry = Schema.Struct({
-  type: Schema.Literals([
-    "message",
-    "model_change",
-    "thinking_level_change",
-    "compaction",
-    "branch_summary",
-    "custom",
-    "label",
-    "session_info",
-    "custom_message",
-  ]),
+  type: Schema.NonEmptyString,
   id: Schema.NonEmptyString,
   parentId: Schema.NullOr(Schema.NonEmptyString),
   timestamp: Schema.String,
@@ -42,7 +34,8 @@ const decodeEntry = Schema.decodeUnknownSync(Schema.fromJsonString(Entry));
 const decodeBlocks = Schema.decodeUnknownSync(
   Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) })),
 );
-const MAX_BYTES = 16 * 1024 * 1024;
+// Sessions with screenshots grow quickly; the size is checked before anything is read.
+const MAX_BYTES = 64 * 1024 * 1024;
 const iso = (value: string) => DateTime.formatIso(DateTime.makeUnsafe(value));
 
 export class PiSessionTranscript extends Context.Service<
@@ -107,16 +100,18 @@ const make = Effect.gen(function* () {
         for (const line of lines.slice(1)) {
           const entry = decodeEntry(line);
           iso(entry.timestamp);
-          if (entries.has(entry.id) || (entry.parentId !== null && !entries.has(entry.parentId)))
-            throw new Error("Invalid Pi session tree");
+          if (entries.has(entry.id)) throw new Error("Invalid Pi session tree");
           if (entry.type === "message" && !entry.message) throw new Error("Missing Pi message");
           if (entry.type === "model_change" && (!entry.provider || !entry.modelId))
             throw new Error("Missing Pi model");
           entries.set(entry.id, entry);
           leaf = entry;
         }
+        // Same walk as Pi's getBranch: a missing parent ends the branch (Pi treats it as a root).
         const branch: (typeof Entry.Type)[] = [];
-        while (leaf) {
+        const seen = new Set<string>();
+        while (leaf && !seen.has(leaf.id)) {
+          seen.add(leaf.id);
           branch.push(leaf);
           leaf = leaf.parentId === null ? undefined : entries.get(leaf.parentId);
         }

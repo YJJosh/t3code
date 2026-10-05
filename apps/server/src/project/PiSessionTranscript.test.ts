@@ -114,10 +114,52 @@ it.layer(NodeServices.layer)("PiSessionTranscript", (it) => {
     }).pipe(Effect.scoped, Effect.provide(PiSessionTranscript.layer)),
   );
 
+  it.effect("keeps reading through entry types it does not interpret", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.write([
+        f.header,
+        message("u", null, "user", "first prompt"),
+        entry("usage", "u", { type: "usage", usage: { input: 1, output: 2 } }),
+        entry("edit", "usage", { type: "context_edit", targetId: "u", replacement: null }),
+        entry("future", "edit", { type: "added_in_a_later_pi" }),
+        message("a", "future", "assistant", "answer"),
+      ]);
+      expect(yield* f.read()).toMatchObject({
+        _tag: "Importable",
+        thread: {
+          messages: [
+            { role: "user", text: "first prompt" },
+            { role: "assistant", text: "answer" },
+          ],
+        },
+      });
+    }).pipe(Effect.scoped, Effect.provide(PiSessionTranscript.layer)),
+  );
+
+  it.effect("treats an entry with a missing parent as the start of the branch, like Pi", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.write([
+        f.header,
+        message("u", null, "user", "before the gap"),
+        message("orphan", "missing", "user", "after the gap"),
+        message("a", "orphan", "assistant", "answer"),
+      ]);
+      expect(yield* f.read()).toMatchObject({
+        thread: {
+          messages: [
+            { role: "user", text: "after the gap" },
+            { role: "assistant", text: "answer" },
+          ],
+        },
+      });
+    }).pipe(Effect.scoped, Effect.provide(PiSessionTranscript.layer)),
+  );
+
   for (const mode of [
     "id",
     "cwd",
-    "parent",
     "duplicate",
     "timestamp",
     "version",
@@ -139,7 +181,7 @@ it.layer(NodeServices.layer)("PiSessionTranscript", (it) => {
                     ? { timestamp: "not a date" }
                     : {}),
           },
-          message("u", mode === "parent" ? "missing" : null, "user", "hello"),
+          message("u", null, "user", "hello"),
           ...(mode === "duplicate" ? [message("u", null, "user", "duplicate")] : []),
         ]);
         if (mode === "partial")
@@ -170,7 +212,7 @@ it.layer(NodeServices.layer)("PiSessionTranscript", (it) => {
         expect(outcome.thread.messages[0]?.text).toBe("text 0");
         expect(outcome.thread.messages.at(-1)?.text).toBe("text 219");
       }
-      yield* f.fs.truncate(f.record.sessionFile, 16 * 1024 * 1024 + 1);
+      yield* f.fs.truncate(f.record.sessionFile, 64 * 1024 * 1024 + 1);
       expect(yield* f.read()).toBeNull();
     }).pipe(Effect.scoped, Effect.provide(PiSessionTranscript.layer)),
   );
