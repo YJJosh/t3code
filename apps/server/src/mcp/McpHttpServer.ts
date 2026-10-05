@@ -31,6 +31,7 @@ import {
   PreviewStandardToolkit,
 } from "./toolkits/preview/tools.ts";
 import { PullRequestsToolkitHandlersLive } from "./toolkits/pullRequests/handlers.ts";
+import * as PiSessionsTools from "./toolkits/piSessions.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import {
   DeviceScreenshotToolkitHandlersLive,
@@ -670,5 +671,8 @@ const McpTransportLive = McpServer.layerHttp({
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
+  McpServer.toolkit(PiSessionsTools.PiSessionsToolkit).pipe(
+    Layer.provide(PiSessionsTools.handlersLayer),
+  ),
   DeviceToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

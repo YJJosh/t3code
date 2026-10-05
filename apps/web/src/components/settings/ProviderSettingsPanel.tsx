@@ -606,6 +606,10 @@ export function EnvironmentProviderSettings({
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider, {
     reportFailure: false,
   });
+  const refreshPiSessions = useAtomCommand(serverEnvironment.refreshPiSessions);
+  const [piSessionsNotice, setPiSessionsNotice] = useState<string | null>(null);
+  const [isRefreshingPiSessions, setIsRefreshingPiSessions] = useState(false);
+  const piSessionsRefreshingRef = useRef(false);
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(
@@ -1150,7 +1154,43 @@ export function EnvironmentProviderSettings({
           <div className="min-w-0 @min-[48rem]/providers:min-h-0">
             {selectedRow ? (
               <ScrollArea scrollFade chainVerticalScroll className="@min-[48rem]/providers:h-full">
-                <div className="space-y-6 p-4">{renderProviderInstance(selectedRow, "editor")}</div>
+                <div className="space-y-6 p-4">
+                  {renderProviderInstance(selectedRow, "editor")}
+                  {selectedRow.driver === "pi" ? (
+                    <SettingsRow
+                      title="Import Pi sessions"
+                      description={
+                        piSessionsNotice ??
+                        "Import stopped sessions from the optional pi-sessions daemon into existing projects."
+                      }
+                    >
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={readOnly || isRefreshingPiSessions}
+                        onClick={() => {
+                          if (piSessionsRefreshingRef.current) return;
+                          piSessionsRefreshingRef.current = true;
+                          setIsRefreshingPiSessions(true);
+                          setPiSessionsNotice(null);
+                          void refreshPiSessions({ environmentId, input: {} })
+                            .then((result) => {
+                              if (result._tag === "Success")
+                                setPiSessionsNotice(
+                                  `Imported ${result.value.importedCount} sessions. Already imported, live, and unmatched sessions are skipped.`,
+                                );
+                            })
+                            .finally(() => {
+                              piSessionsRefreshingRef.current = false;
+                              setIsRefreshingPiSessions(false);
+                            });
+                        }}
+                      >
+                        {isRefreshingPiSessions ? "Importing sessions…" : "Refresh Pi sessions"}
+                      </Button>
+                    </SettingsRow>
+                  ) : null}
+                </div>
               </ScrollArea>
             ) : (
               <div className="p-6 text-sm text-muted-foreground">

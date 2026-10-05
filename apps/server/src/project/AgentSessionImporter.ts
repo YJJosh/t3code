@@ -14,6 +14,7 @@ import {
   ProviderDriverKind,
   ThreadId,
   type AgentSessionImportInput,
+  type AgentSessionImportSource,
   type AgentSessionImportResult,
   type OrchestrationThread,
 } from "@t3tools/contracts";
@@ -98,10 +99,13 @@ function hasImportBlockingActivity(
 }
 
 /** Import recent transcript text and persist the cursor needed to resume its provider session. */
-export const importRecentAgentThreads = Effect.fn("importRecentAgentThreads")(function* (
+const importAgentThreads = Effect.fn("importAgentThreads")(function* (
   input: AgentSessionImportInput,
+  recentThreads: (
+    workspaceRoot: string,
+    completed: ReadonlyArray<AgentSessionImportSource>,
+  ) => Stream.Stream<AgentSessionScanner.AgentSessionRecentThread, AgentSessionScanError>,
 ) {
-  const scanner = yield* AgentSessionScanner.AgentSessionScanner;
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
@@ -129,7 +133,7 @@ export const importRecentAgentThreads = Effect.fn("importRecentAgentThreads")(fu
     .pipe(
       Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-projects", cause })),
     );
-  const threads = scanner.recentThreads(
+  const threads = recentThreads(
     workspaceRoot,
     completedSources.map((entry) => entry.source),
   );
@@ -234,7 +238,12 @@ export const importRecentAgentThreads = Effect.fn("importRecentAgentThreads")(fu
               resumeCursor:
                 thread.source === "codex"
                   ? { threadId: thread.providerSessionId }
-                  : { threadId, resume: thread.providerSessionId },
+                  : thread.source === "pi"
+                    ? {
+                        piSessionId: thread.providerSessionId,
+                        piSessionFile: outcome.source.filePath,
+                      }
+                    : { threadId, resume: thread.providerSessionId },
               runtimePayload: { cwd: workspaceRoot },
             },
             { onConflict: "ignore" },
@@ -295,4 +304,17 @@ export const importRecentAgentThreads = Effect.fn("importRecentAgentThreads")(fu
   );
 
   return { importedCount, skippedCount } satisfies AgentSessionImportResult;
+});
+
+/** Import prepared daemon transcripts without invoking filesystem discovery for other providers. */
+export const importPreparedAgentThreads = (
+  input: AgentSessionImportInput,
+  outcomes: ReadonlyArray<AgentSessionScanner.AgentSessionRecentThread>,
+) => importAgentThreads(input, () => Stream.fromIterable(outcomes));
+
+export const importRecentAgentThreads = Effect.fn("importRecentAgentThreads")(function* (
+  input: AgentSessionImportInput,
+) {
+  const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+  return yield* importAgentThreads(input, scanner.recentThreads);
 });

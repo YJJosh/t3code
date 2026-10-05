@@ -15,6 +15,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Fiber from "effect/Fiber";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -140,11 +141,21 @@ export const makePiRpcConnection = (
     const currentExitError = (): ProviderAdapterProcessError | undefined => exitError;
     const stderrDiagnostic = (stderr: string) =>
       stderr.length > 0 ? ` (stderr ${stderr.length} chars)` : "";
+    const exitDetail = (code: number, stderr: string, command = "a response") => {
+      const claimError =
+        code === 3
+          ? stderr.split(/\r?\n/).find((line) => line.startsWith("pi-sessions: "))
+          : undefined;
+      return (
+        claimError ??
+        `Pi RPC process exited (code ${code}) while waiting for ${command}.${stderrDiagnostic(stderr)}`
+      );
+    };
     const processExitError = (code: number, stderr: string) =>
       new ProviderAdapterProcessError({
         provider: PROVIDER,
         threadId: input.threadId,
-        detail: `Pi RPC process exited (code ${code}) while waiting for a response.${stderrDiagnostic(stderr)}`,
+        detail: exitDetail(code, stderr),
         ...(stderr.length > 0 ? { cause: stderr } : {}),
       });
     const handleMessage = (message: unknown) =>
@@ -183,7 +194,7 @@ export const makePiRpcConnection = (
 
     // stderr: retained (capped) for diagnostics on unexpected exit.
     const stderrRef = yield* Ref.make("");
-    yield* child.stderr.pipe(
+    const stderrFiber = yield* child.stderr.pipe(
       Stream.decodeText(),
       Stream.runForEach((chunk) =>
         Ref.update(stderrRef, (current) => `${current}${chunk}`.slice(-8_192)),
@@ -199,6 +210,9 @@ export const makePiRpcConnection = (
       Effect.orElseSucceed(() => -1),
       Effect.flatMap((code) =>
         Effect.gen(function* () {
+          // Ownership failures are written immediately before exit. Drain that line
+          // before failing get_state, without waiting indefinitely on inherited pipes.
+          if (code === 3) yield* Fiber.join(stderrFiber).pipe(Effect.timeoutOption("1 second"));
           const stderr = (yield* Ref.get(stderrRef)).trim();
           exitError = processExitError(code, stderr);
           yield* Effect.forEach(
@@ -209,7 +223,7 @@ export const makePiRpcConnection = (
                 new ProviderAdapterProcessError({
                   provider: PROVIDER,
                   threadId: input.threadId,
-                  detail: `Pi RPC process exited (code ${code}) while waiting for '${command}'.${stderrDiagnostic(stderr)}`,
+                  detail: exitDetail(code, stderr, `'${command}'`),
                   ...(stderr.length > 0 ? { cause: stderr } : {}),
                 }),
               ).pipe(Effect.ignore),

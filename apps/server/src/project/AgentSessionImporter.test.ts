@@ -59,7 +59,7 @@ import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import { TerminalManager } from "../terminal/Manager.ts";
 import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
-import { importRecentAgentThreads } from "./AgentSessionImporter.ts";
+import { importRecentAgentThreads, importPreparedAgentThreads } from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 
 const PROJECT_ID = ProjectId.make("project-1");
@@ -199,6 +199,60 @@ const runImport = (input: {
   );
 
 it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
+  it.effect(
+    "imports prepared Pi history without a scanner and persists its explicit file cursor",
+    () =>
+      Effect.gen(function* () {
+        const commands: OrchestrationCommand[] = [];
+        const bindings: ProviderSessionDirectory.ProviderRuntimeBinding[] = [];
+        const thread = {
+          ...makeThread("codex"),
+          source: "pi" as const,
+          providerInstanceId: ProviderInstanceId.make("pi-custom"),
+          providerSessionId: "pi-session",
+          model: "anthropic/model",
+        };
+        const outcome = makeThreadOutcome(thread);
+        const result = yield* importPreparedAgentThreads({ projectId: PROJECT_ID }, [outcome]).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              makeSnapshotsLayer({ project: makeProject() }),
+              Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
+                dispatch: (command) => Effect.sync(() => ({ sequence: commands.push(command) })),
+              }),
+              Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({
+                getBinding: () => Effect.succeedNone,
+                upsert: (binding) =>
+                  Effect.sync(() => {
+                    bindings.push(binding);
+                  }),
+                recordImportedTranscript: () => Effect.void,
+              }),
+            ),
+          ),
+        );
+        expect(result).toEqual({ importedCount: 1, skippedCount: 0 });
+        expect(bindings[0]).toMatchObject({
+          provider: "pi",
+          providerInstanceId: "pi-custom",
+          status: "stopped",
+          resumeCursor: { piSessionId: "pi-session", piSessionFile: outcome.source.filePath },
+        });
+        expect(commands[0]).toMatchObject({
+          type: "thread.create",
+          threadId: "import:pi-custom:pi-session",
+          modelSelection: { instanceId: "pi-custom", model: "anthropic/model" },
+        });
+        expect(commands[1]).toMatchObject({
+          type: "thread.history.import",
+          messages: [
+            { role: "user", text: "Fix the bug" },
+            { role: "assistant", text: "Fixed" },
+          ],
+        });
+      }),
+  );
+
   describe("importRecentAgentThreads", () => {
     it.effect("uses the project root and stores provider-specific resume cursors", () =>
       Effect.gen(function* () {

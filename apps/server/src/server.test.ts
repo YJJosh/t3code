@@ -119,6 +119,7 @@ import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+import * as PiSessionsSync from "./project/PiSessionsSync.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
@@ -1252,7 +1253,16 @@ const buildAppUnderTest = (options?: {
           : Layer.succeed(HttpClient.HttpClient, options.layers.httpClient),
       ),
       Layer.provide(GitHubCli.layer.pipe(Layer.provideMerge(VcsProcess.layer))),
-      Layer.provide(layerConfig),
+      Layer.provide(
+        Layer.mergeAll(
+          layerConfig,
+          Layer.succeed(PiSessionsSync.PiSessionsSync, {
+            start: () => Effect.void,
+            drain: Effect.void,
+            refresh: Effect.succeed({ importedCount: 0, skippedCount: 0 }),
+          }),
+        ),
+      ),
     );
 
     yield* Layer.build(appLayer);
@@ -6239,6 +6249,37 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("refreshes Pi sessions over RPC only for operate-authorized clients", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const result = yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[WS_METHODS.piSessionsRefresh]({}),
+        ),
+      );
+      assert.deepEqual(result, { importedCount: 0, skippedCount: 0 });
+      const pairing = yield* HttpClient.post("/api/auth/pairing-token", {
+        headers: { cookie: yield* getAuthenticatedSessionCookieHeader() },
+        body: yield* HttpBody.json({ scopes: ["orchestration:read"] }),
+      });
+      assert.equal(pairing.status, 200);
+      const credential = (yield* pairing.json) as { readonly credential: string };
+      const cookie = yield* getAuthenticatedSessionCookieHeader(credential.credential);
+      const url = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie,
+      );
+      const error = yield* Effect.scoped(
+        withWsRpcClient(url, (client) =>
+          client[WS_METHODS.piSessionsRefresh]({}).pipe(Effect.flip),
+        ),
+      );
+      assert.equal(error._tag, "EnvironmentAuthorizationError");
+      if (error._tag === "EnvironmentAuthorizationError")
+        assert.equal(error.requiredScope, "orchestration:operate");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("keeps agent session import project failures structured over websocket rpc", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
@@ -6792,7 +6833,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             for (const error of errors) {
               assert.equal(error._tag, "EnvironmentAuthorizationError");
               if (error._tag === "EnvironmentAuthorizationError") {
-                assert.equal(error.requiredScope, "orchestration:operate");
+                if (error._tag === "EnvironmentAuthorizationError")
+                  assert.equal(error.requiredScope, "orchestration:operate");
               }
             }
           }),

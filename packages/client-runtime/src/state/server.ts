@@ -1093,6 +1093,11 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input]),
       },
     }),
+    refreshPiSessions: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:refresh-pi-sessions",
+      tag: WS_METHODS.piSessionsRefresh,
+      concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
+    }),
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",
       tag: WS_METHODS.serverRefreshProviders,

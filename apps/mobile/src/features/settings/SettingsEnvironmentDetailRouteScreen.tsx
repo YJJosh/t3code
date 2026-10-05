@@ -51,6 +51,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
   const updateState = useAtomValue(serverEnvironment.updateStateAtom(environmentId));
   const updateServer = useAtomCommand(serverEnvironment.updateServer);
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider);
+  const refreshPiSessions = useAtomCommand(serverEnvironment.refreshPiSessions);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders);
   const [connectionExpanded, setConnectionExpanded] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
@@ -270,6 +271,27 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       });
                     }}
                   />
+                  {config.providers.some(
+                    (provider) => provider.driver === "pi" && provider.enabled,
+                  ) ? (
+                    <SettingsActionRow
+                      icon="arrow.clockwise"
+                      label="Refresh Pi sessions"
+                      disabled={disabled}
+                      loading={pending === "pi-sessions"}
+                      onPress={() => {
+                        if (disabled) return;
+                        void run("pi-sessions", async () => {
+                          const result = await refreshPiSessions({ environmentId, input: {} });
+                          if (AsyncResult.isFailure(result)) throw squashAtomCommandFailure(result);
+                          if (AsyncResult.isSuccess(result))
+                            setNotice(
+                              `Imported ${result.value.importedCount} Pi sessions. Live, unmatched, and already imported sessions are skipped.`,
+                            );
+                        });
+                      }}
+                    />
+                  ) : null}
                   {config.providers
                     .filter((provider) => provider.enabled)
                     .map((provider) => (

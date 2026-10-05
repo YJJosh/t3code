@@ -59,3 +59,29 @@ Controls wait for the extension's correlated result, so an accepted request is n
 ## Usage history
 
 The Usage view includes bounded scans of Pi and legacy Tau session layouts, including child sessions discovered from supported subagent transcripts. An explicit Pi agent directory or session-directory environment override takes precedence over default locations.
+
+## Import sessions from pi-sessions
+
+If you use the optional **pi-sessions** extension, T3 can import stopped Pi sessions
+from its running daemon on the same machine as your T3 environment. T3 checks after
+startup and every five minutes. To check now, use **Refresh Pi sessions** in Pi's
+provider settings (web or desktop), or in the environment's settings on mobile.
+Agents can also call the `refresh_pi_sessions` MCP tool.
+
+Only sessions whose working directory exactly matches an existing project's root
+are imported. T3 does not create projects, start the daemon, or import sessions
+that are still open in another process. The session's Pi agent directory must
+match exactly one enabled provider instance; unknown or ambiguous configurations
+are skipped. Each check processes a bounded batch, so larger lists can take more
+than one check.
+
+Imported threads appear in the project's settled history; open or unsettle them
+to continue. History is imported once, as user and assistant text from the active
+branch (up to 200 messages). Files over 16 MiB or corrupt session files are skipped.
+Later transcript edits, live viewing, and settlement synchronization are not
+supported yet. T3-created
+sessions are linked rather than imported again. When resuming, stop or detach the
+session's other Pi process first if pi-sessions reports an ownership conflict.
+
+Without a running compatible daemon, Pi works as usual. Existing background
+terminal, subagent, and background-thread integrations do not require pi-sessions.

@@ -15,6 +15,8 @@ import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/uns
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ServerConfig from "../config.ts";
+import * as PiSessionsSync from "../project/PiSessionsSync.ts";
+import * as PiSessionsTools from "./toolkits/piSessions.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -869,4 +871,38 @@ it.effect("registers annotated tools and preserves authenticated request context
       }
     }),
   ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("exposes the optional Pi import as a mutating MCP tool with structured counts", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const tool = server.tools.find(({ tool }) => tool.name === "refresh_pi_sessions");
+    expect(tool?.tool.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+    });
+    const result = yield* server
+      .callTool({ name: "refresh_pi_sessions", arguments: {} })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual({ importedCount: 2, skippedCount: 1 });
+  }).pipe(
+    Effect.provide(
+      McpServer.toolkit(PiSessionsTools.PiSessionsToolkit).pipe(
+        Layer.provide(PiSessionsTools.handlersLayer),
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(
+          Layer.succeed(PiSessionsSync.PiSessionsSync, {
+            refresh: Effect.succeed({ importedCount: 2, skippedCount: 1 }),
+            start: () => Effect.void,
+            drain: Effect.void,
+          }),
+        ),
+      ),
+    ),
+  ),
 );

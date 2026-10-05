@@ -149,6 +149,7 @@ import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as NewProject from "./project/NewProject.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
+import * as PiSessionsSync from "./project/PiSessionsSync.ts";
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import { importRecentAgentThreads } from "./project/AgentSessionImporter.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -634,6 +635,7 @@ const makeWsRpcLayer = (
         | ServerConfig.ServerConfig
         | WorkspacePaths.WorkspacePaths
       >();
+      const piSessionsSync = yield* PiSessionsSync.PiSessionsSync;
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
@@ -3485,6 +3487,10 @@ const makeWsRpcLayer = (
             deletePendingAttachment(input.attachmentId),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.piSessionsRefresh]: () =>
+          observeRpcEffect(WS_METHODS.piSessionsRefresh, piSessionsSync.refresh, {
+            "rpc.aggregate": "workspace",
+          }),
         [WS_METHODS.agentSessionsScan]: () =>
           observeRpcEffect(WS_METHODS.agentSessionsScan, agentSessionScanner.scan, {
             "rpc.aggregate": "workspace",

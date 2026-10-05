@@ -132,6 +132,7 @@ type PiAssistantOrigin = "normal" | "async_result";
 
 export interface PiAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
+  readonly environmentId?: string;
   readonly instanceId?: ProviderInstanceId;
   readonly nativeEventLogger?: EventNdjsonLogger | undefined;
 }
@@ -232,6 +233,7 @@ function isMissingPiSessionError(error: unknown): boolean {
     isRecord(error) &&
     error._tag === "ProviderAdapterProcessError" &&
     typeof error.cause === "string" &&
+    !error.cause.includes("pi-sessions:") &&
     error.cause.includes("No session found")
   );
 }
@@ -2128,7 +2130,13 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                 ...(resume ? { resumeSessionId: resume } : {}),
               }),
               cwd,
-              env: buildPiRpcEnv(path, piSettings, baseEnv, selectedSet),
+              env: {
+                ...buildPiRpcEnv(path, piSettings, baseEnv, selectedSet),
+                PI_SESSIONS_T3_THREAD: input.threadId,
+                ...(options?.environmentId
+                  ? { PI_SESSIONS_T3_ENVIRONMENT: options.environmentId }
+                  : {}),
+              },
               onMessage: (message) =>
                 handlePiMessage(ctx)(message).pipe(Effect.catchCause(() => Effect.void)),
               onParseFailure: (line) =>

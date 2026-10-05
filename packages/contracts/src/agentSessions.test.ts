@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { AgentSessionScanResult } from "./agentSessions.ts";
+import { AgentSessionScanResult, AgentSessionImportSource } from "./agentSessions.ts";
 
 const decodeScanResult = Schema.decodeUnknownSync(AgentSessionScanResult);
 
@@ -33,4 +33,20 @@ describe("AgentSessionScanResult", () => {
 
     expect(result.candidates[0]?.git).toEqual(git);
   });
+});
+
+it("decodes Pi import identities without changing existing source formats", () => {
+  const decode = Schema.decodeUnknownSync(AgentSessionImportSource);
+  const source = {
+    provider: "pi",
+    providerInstanceId: "pi-work",
+    providerSessionId: "session",
+    filePath: "/pi/session.jsonl",
+    size: 10,
+    mtimeMs: 1,
+    device: 1,
+    inode: 2,
+    birthtimeMs: 1,
+  };
+  expect(decode(source)).toEqual(source);
 });
