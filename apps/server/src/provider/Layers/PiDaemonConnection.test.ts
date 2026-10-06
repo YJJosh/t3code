@@ -33,7 +33,12 @@ const frame = (message: unknown) => {
 };
 const decodeSettings = Schema.decodeSync(PiSettings);
 const threadId = ThreadId.make("shared-thread");
-const fixture = Effect.fn(function* (openError?: string, panels = true, replay = false) {
+const fixture = Effect.fn(function* (
+  openError?: string,
+  panels = true,
+  replay = false,
+  started = !replay,
+) {
   const fs = yield* FileSystem.FileSystem;
   const home = yield* fs.makeTempDirectoryScoped({ prefix: "pi-share-" });
   const requests = yield* Queue.unbounded<Record<string, unknown>>();
@@ -68,6 +73,7 @@ const fixture = Effect.fn(function* (openError?: string, panels = true, replay =
               sessionId: "session",
               sessionFile: "/sessions/session.jsonl",
               pid: 123,
+              started,
             });
         }
         if (request.type === "rpc-open" && !openError && replay) {
@@ -152,7 +158,7 @@ it.layer(env)("shared Pi", (it) => {
     Effect.gen(function* () {
       const f = yield* fixture();
       const messages = yield* Queue.unbounded<unknown>();
-      const connection = yield* makePiDaemonConnection({
+      const { connection, started } = yield* makePiDaemonConnection({
         threadId,
         binaryPath: "/bin/pi",
         args: ["--mode", "rpc", "--session", "/sessions/session.jsonl"],
@@ -173,6 +179,7 @@ it.layer(env)("shared Pi", (it) => {
         launch: { args: ["--session", "/sessions/session.jsonl"] },
       });
       expect(connection.pid).toBe(123);
+      expect(started).toBe(true);
       expect((yield* connection.request({ type: "get_state" })).success).toBe(true);
       yield* Queue.take(messages);
       yield* f.send({ type: "rpc-out", message: { type: "agent_start" } });
@@ -188,7 +195,7 @@ it.layer(env)("shared Pi", (it) => {
   it.effect("treats an unexpected socket close as exit", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
-      const connection = yield* makePiDaemonConnection({
+      const { connection } = yield* makePiDaemonConnection({
         threadId,
         binaryPath: "pi",
         args: ["--mode", "rpc"],
@@ -253,6 +260,50 @@ it.layer(env)("shared Pi", (it) => {
       }
     }).pipe(Effect.scoped),
   );
+
+  for (const started of [true, false]) {
+    it.effect(`applies T3's model only to a Pi it started (started: ${started})`, () =>
+      Effect.gen(function* () {
+        const f = yield* fixture(undefined, false, false, started);
+        const adapter = yield* makePiAdapter(decodeSettings({}), {
+          environment: { PI_SESSIONS_HOME: f.home },
+        }).pipe(
+          Effect.provide(
+            Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({
+              spawn: () => Effect.die("unexpected own-RPC spawn"),
+            }),
+          ),
+        );
+        yield* adapter.startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("pi"),
+            model: "test/selected",
+            options: [{ id: "reasoning", value: "high" }],
+          },
+        });
+        const sent: Array<unknown> = [];
+        while (true) {
+          const request = yield* Queue.take(f.requests);
+          if (request.type !== "rpc-in") continue;
+          const message = request.message as { type: string };
+          sent.push(message.type);
+          if (message.type === "get_commands") break;
+        }
+        if (started) {
+          expect(sent).toEqual(
+            expect.arrayContaining(["get_state", "set_model", "set_thinking_level"]),
+          );
+        } else {
+          expect(sent).not.toContain("set_model");
+          expect(sent).not.toContain("set_thinking_level");
+        }
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped),
+    );
+  }
 
   for (const mode of [
     "shared",

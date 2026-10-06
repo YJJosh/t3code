@@ -2257,6 +2257,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // its authoritative id before returning so T3 persists a usable resume
         // cursor even if the process dies before the first turn.
         let shared = false;
+        // Only a Pi the daemon started for this request gets T3's model and thinking level.
+        let joinedRunning = false;
         let initialized = false;
         let bufferStartup = piSettings.shareWithTerminal !== false;
         const startupMessages: unknown[] = [];
@@ -2310,14 +2312,15 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                       yield* Effect.logDebug("Pi sharing unavailable; using own RPC process", {
                         detail: error.detail,
                       });
-                      return Option.none<PiRpcConnection>();
+                      return Option.none<{ connection: PiRpcConnection; started: boolean }>();
                     }),
                   ),
                 );
                 if (Option.isSome(daemon)) {
                   shared = true;
                   ctx.shared = true;
-                  return daemon.value;
+                  joinedRunning = !daemon.value.started;
+                  return daemon.value.connection;
                 }
               }
               // Own-RPC Pi can ask startup dialogs before get_state returns. Preserve
@@ -2362,10 +2365,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // Profiles can intentionally choose their own default during
         // session_start, overriding Pi's CLI --model argument. Reassert T3's
         // selected model over RPC before configuring model-specific options.
-        if (model && !shared) {
+        if (model && !joinedRunning) {
           yield* selectPiModel(ctx, model, "startSession");
         }
-        if (thinkingLevel && !shared) {
+        if (thinkingLevel && !joinedRunning) {
           yield* request(ctx, { type: "set_thinking_level", level: thinkingLevel });
         }
 

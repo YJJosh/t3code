@@ -110,10 +110,12 @@ export const makePiDaemonConnection = Effect.fn(function* (input: PiRpcConnectio
         return yield* error(`Timed out waiting for Pi RPC '${command.type}' response.`);
       return result.value;
     });
-  return {
+  const connection: PiRpcConnection = {
     send,
     request,
     awaitExit: Deferred.await(exited),
     pid: opened.pid,
-  } satisfies PiRpcConnection;
+  };
+  // false when T3 joined a Pi that was already running (for example in a terminal).
+  return { connection, started: opened.started === true };
 });
