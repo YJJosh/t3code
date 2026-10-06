@@ -561,6 +561,110 @@ describe("ProviderRuntimeIngestion", () => {
     },
   );
 
+  it("persists external Pi inputs without resending them, updates model and clears terminal dialogs", async () => {
+    const harness = await createHarness();
+    const base = {
+      provider: ProviderDriverKind.make("pi"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+    };
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "turn.started",
+        eventId: asEventId("pi-start"),
+        turnId: "external-turn",
+        payload: {},
+      },
+      {
+        ...base,
+        type: "item.completed",
+        eventId: asEventId("pi-user"),
+        itemId: "external-user",
+        turnId: "external-turn",
+        payload: {
+          itemType: "user_message",
+          data: { text: "Typed in the terminal", external: true },
+        },
+      },
+      {
+        ...base,
+        type: "item.completed",
+        eventId: asEventId("pi-echo"),
+        itemId: "rpc-echo",
+        payload: { itemType: "user_message", data: { text: "RPC echo" } },
+      },
+      {
+        ...base,
+        type: "thread.metadata.updated",
+        eventId: asEventId("pi-state"),
+        payload: {
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("pi"),
+            model: "test/new",
+            options: [{ id: "reasoning", value: "high" }],
+          },
+        },
+      },
+      {
+        ...base,
+        type: "user-input.requested",
+        eventId: asEventId("pi-dialog"),
+        requestId: "terminal-dialog",
+        payload: {
+          responseMode: "terminal",
+          questions: [
+            {
+              id: "terminal",
+              header: "Waiting in the terminal",
+              question: "Choose profile",
+              options: [],
+              allowCustomAnswer: false,
+            },
+          ],
+        },
+      },
+    ]);
+    const detail = (await harness.readFreshDetail()).thread;
+    expect(
+      detail.messages.filter((message) => message.role === "user").map((message) => message.text),
+    ).toEqual(["Typed in the terminal"]);
+    expect(detail.modelSelection).toMatchObject({
+      instanceId: "pi",
+      model: "test/new",
+      options: [{ id: "reasoning", value: "high" }],
+    });
+    expect(detail.session?.activeTurnId).toBe("external-turn");
+    expect((await harness.readThreadShell()).hasPendingUserInput).toBe(true);
+    expect(detail.messages.find((message) => message.id === "external-user")?.turnId).toBe(
+      "external-turn",
+    );
+    expect((await harness.readTurn(asTurnId("external-turn")))?.pendingMessageId).toBe(
+      "external-user",
+    );
+    expect(
+      detail.activities.find((activity) => activity.kind === "user-input.requested")?.payload,
+    ).toMatchObject({ responseMode: "terminal" });
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "user-input.resolved",
+        eventId: asEventId("pi-dialog-end"),
+        requestId: "terminal-dialog",
+        payload: { answers: {} },
+      },
+      {
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("pi-completed"),
+        turnId: "external-turn",
+        payload: { state: "completed" },
+      },
+    ]);
+    expect((await harness.readThreadShell()).hasPendingUserInput).toBe(false);
+    expect((await harness.readThreadShell()).session?.status).toBe("ready");
+  });
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

@@ -32,6 +32,15 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
   if (!activePrompt) return null;
+  if (activePrompt.terminalOnly)
+    return (
+      <ComposerBanner.Row>
+        <ComposerBanner.Icon />
+        <ComposerBanner.Content>
+          Waiting for you in the terminal: {activePrompt.questions[0]?.question}
+        </ComposerBanner.Content>
+      </ComposerBanner.Row>
+    );
 
   return (
     <ComposerPendingUserInputCard

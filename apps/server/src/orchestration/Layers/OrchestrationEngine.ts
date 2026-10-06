@@ -57,6 +57,7 @@ const isOrchestrationCommandIdConflictError = Schema.is(OrchestrationCommandIdCo
 interface CommandEnvelope {
   command: OrchestrationCommand;
   origin: OrchestrationClientOrigin | undefined;
+  expectedSequence: number | undefined;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
 }
@@ -168,6 +169,19 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           return yield* new OrchestrationCommandPreviouslyRejectedError({
             commandId: envelope.command.commandId,
             detail: existingReceipt.value.error ?? "Previously rejected.",
+          });
+        }
+
+        if (
+          envelope.expectedSequence !== undefined &&
+          (yield* eventStore.hasEventAfter({
+            ...aggregateRef,
+            sequenceExclusive: envelope.expectedSequence,
+          }))
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: "aggregate changed before conditional dispatch",
           });
         }
 
@@ -441,6 +455,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       yield* Queue.offer(commandQueue, {
         command,
         origin: options?.origin,
+        expectedSequence: options?.expectedSequence,
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
       });

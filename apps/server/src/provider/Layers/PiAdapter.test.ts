@@ -66,6 +66,7 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
     readonly sessionFile?: string;
     /** Session ids this fake home lacks; launching with one exits like real Pi. */
     readonly missingSessions?: ReadonlyArray<string>;
+    readonly ownershipConflict?: boolean;
     readonly subagentsCommand?: boolean;
     readonly backgroundTerminalsCommand?: boolean;
     readonly commands?: ReadonlyArray<{
@@ -115,8 +116,11 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
         kill: () => Deferred.succeed(exit, 0 as ChildProcessSpawner.ExitCode).pipe(Effect.asVoid),
         unref: Effect.succeed(Effect.void),
         stdin: Sink.forEach((chunk: Uint8Array) => {
-          if (missingSession !== undefined) {
-            return Deferred.succeed(exit, 1 as ChildProcessSpawner.ExitCode).pipe(Effect.asVoid);
+          if (missingSession !== undefined || options.ownershipConflict) {
+            return Deferred.succeed(
+              exit,
+              (options.ownershipConflict ? 3 : 1) as ChildProcessSpawner.ExitCode,
+            ).pipe(Effect.asVoid);
           }
           const parsed = parseJsonlLine(decoder.decode(chunk).trim());
           if (!parsed || typeof parsed !== "object") return Effect.void;
@@ -318,8 +322,13 @@ const makeFakePi = Effect.fn("makeFakePi")(function* (
           );
         }),
         stdout: Stream.fromQueue(stdout),
-        stderr:
-          missingSession === undefined
+        stderr: options.ownershipConflict
+          ? Stream.make(
+              encoder.encode(
+                "pi-sessions: this Pi session is open in another Pi process (terminal thread); detach or stop it there first\nNo session found\n",
+              ),
+            )
+          : missingSession === undefined
             ? Stream.empty
             : Stream.make(encoder.encode(`Error: No session found matching '${missingSession}'\n`)),
         all: Stream.empty,
@@ -355,7 +364,7 @@ const TestEnv = ServerConfig.layerTest(process.cwd(), process.cwd()).pipe(
 );
 const INSTANCE = ProviderInstanceId.make("pi-1");
 const THREAD = ThreadId.make("11111111-1111-4111-8111-111111111111");
-const settings = decodePiSettings({});
+const settings = decodePiSettings({ shareWithTerminal: false });
 
 const takeThroughType = (
   events: Queue.Dequeue<ProviderRuntimeEvent>,
@@ -370,6 +379,53 @@ const takeThroughType = (
   );
 
 describe("Pi adapter", () => {
+  it.effect("tags only conversation spawns with distinct T3 thread identities", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, {
+        instanceId: INSTANCE,
+        environmentId: "environment-1",
+        environment: { HOME: "/tmp/pi-home", KEEP_ME: "unchanged" },
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+      for (const threadId of [THREAD, ThreadId.make("second-thread")]) {
+        yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      }
+      expect(fake.launches.map((launch) => launch.env.PI_SESSIONS_T3_THREAD)).toEqual([
+        THREAD,
+        "second-thread",
+      ]);
+      for (const launch of fake.launches) {
+        expect(launch.env).toMatchObject({
+          PI_SESSIONS_T3_ENVIRONMENT: "environment-1",
+          KEEP_ME: "unchanged",
+          PI_BACKGROUND_THREADS_RPC_BRIDGE: "1",
+        });
+        expect(launch.args).toEqual(["--mode", "rpc", "--approve", "--profile", "coder"]);
+      }
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
+  it.effect("surfaces ownership conflicts without retrying a new conversation", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi({ ownershipConflict: true });
+      const adapter = yield* makePiAdapter(settings).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const result = yield* adapter
+        .startSession({
+          threadId: THREAD,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: { piSessionId: "occupied" },
+        })
+        .pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure")
+        expect(result.failure.message).toContain("this Pi session is open in another Pi process");
+      expect(fake.launches).toHaveLength(1);
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
   it("splits provider/model slugs and rejects malformed ones", () => {
     expect(splitPiModelSlug("anthropic/claude-sonnet-5")).toEqual({
       provider: "anthropic",

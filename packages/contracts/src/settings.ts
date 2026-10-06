@@ -908,6 +908,14 @@ export const PiSettings = makeProviderSettingsSchema(
         providerSettingsForm: { placeholder: "pi", clearWhenEmpty: "omit" },
       }),
     ),
+    shareWithTerminal: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "Share Pi chats with the terminal",
+        description:
+          "Use the same Pi in T3 and the terminal when pi-sessions is running. Applies to new connections.",
+      }),
+    ),
     profile: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("coder")),
       Schema.annotateKey({
@@ -929,7 +937,7 @@ export const PiSettings = makeProviderSettingsSchema(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
   },
-  { order: ["binaryPath", "profile", "agentDir"] },
+  { order: ["binaryPath", "profile", "agentDir", "shareWithTerminal"] },
 );
 export type PiSettings = typeof PiSettings.Type;
 
@@ -1515,6 +1523,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 });
 
 const PiSettingsPatch = Schema.Struct({
+  shareWithTerminal: Schema.optionalKey(Schema.Boolean),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
   profile: Schema.optionalKey(TrimmedString),

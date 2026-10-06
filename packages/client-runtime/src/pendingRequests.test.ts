@@ -535,3 +535,31 @@ describe.each(["approval", "user-input"])("%s request completion", (requestKind)
     });
   });
 });
+
+it("keeps terminal-only dialogs read-only until their end event", () => {
+  const requested = makeActivity({
+    kind: "user-input.requested",
+    payload: {
+      requestId: "terminal-dialog",
+      responseMode: "terminal",
+      questions: [
+        {
+          id: "terminal",
+          header: "Waiting in the terminal",
+          question: "Choose a profile",
+          options: [],
+          allowCustomAnswer: false,
+        },
+      ],
+    },
+  });
+  expect(derivePendingRequests([requested]).userInputs[0]).toMatchObject({
+    terminalOnly: true,
+    dismissible: false,
+  });
+  const resolved = makeActivity({
+    kind: "user-input.resolved",
+    payload: { requestId: "terminal-dialog", answers: {} },
+  });
+  expect(derivePendingRequests([requested, resolved]).userInputs).toEqual([]);
+});

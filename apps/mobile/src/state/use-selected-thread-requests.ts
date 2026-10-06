@@ -234,7 +234,12 @@ export function useSelectedThreadRequests() {
   );
 
   const onSubmitUserInput = useCallback(async () => {
-    if (!selectedThreadShell || !activePendingUserInput || !activePendingUserInputAnswers) {
+    if (
+      !selectedThreadShell ||
+      !activePendingUserInput ||
+      activePendingUserInput.terminalOnly ||
+      !activePendingUserInputAnswers
+    ) {
       return;
     }
 
@@ -310,7 +315,7 @@ export function useSelectedThreadRequests() {
 
   // Closes an async question without messaging the agent.
   const onDismissUserInput = useCallback(async () => {
-    if (!selectedThreadShell || !activePendingUserInput) {
+    if (!selectedThreadShell || !activePendingUserInput || activePendingUserInput.terminalOnly) {
       return;
     }
 

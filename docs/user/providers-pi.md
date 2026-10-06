@@ -1,6 +1,6 @@
 # Pi provider
 
-T3 Dulli can run [Pi](https://github.com/earendil-works/pi) as a built-in provider. Each T3 thread owns one long-lived `pi --mode rpc` process, so normal Pi profiles, extensions, skills, prompt templates, and project `.pi` resources remain available.
+T3 Dulli can run [Pi](https://github.com/earendil-works/pi) as a built-in provider. Normal Pi profiles, extensions, skills, prompt templates, and project `.pi` resources remain available. With pi-sessions, the same chat can be used from T3 and the terminal at the same time.
 
 ## Configure Pi
 
@@ -8,15 +8,34 @@ Open **Settings → Providers**, add or select **Pi**, and configure any overrid
 
 - **Binary path** – defaults to `pi` on `PATH`.
 - **Profile** – defaults to `coder`.
+- **Share Pi chats with the terminal** – on by default. Uses pi-sessions when its daemon is available; applies to new connections.
 - **Agent directory** – overrides Pi's configuration root. T3 Dulli also honors `PI_CODING_AGENT_DIR` and the legacy `TAU_CODING_AGENT_DIR` when no explicit value is set. Discovery, chat, and text generation use the same resolved directory, including `~` expansion.
 
 Pi model names use `provider/model`, for example `openai-codex/gpt-6-astra`. Model discovery uses the bundled Pi SDK and your configured extensions and credentials. The picker also exposes profile, reasoning, context-window, and supported service-tier options. Fast is shown only for models supported by the loaded `/fast` extension; GPT-6 Astra does not currently expose it.
 
 Pi sessions always run with full local access because T3 owns the surrounding runtime approval boundary, so the composer does not show an access-mode selector for Pi. Its place holds one menu for **Config set** and **Profile** (for example, `main · coder`); reasoning, context-window, and service-tier controls remain separate. On mobile both are in the thread's model options.
 
-Config sets are the Pi homes registered with Profile Manager. The set you choose applies to that thread only and never changes the global selection. Remote sets must already be mounted on the server machine. The set is hidden when fewer than two sets are registered. Changing the set or profile restarts Pi before the next message and keeps the conversation; wait for the current turn to finish first. A profile must exist in the chosen set.
+Config sets are the Pi homes registered with Profile Manager. The set you choose applies to that thread only and never changes the global selection. Remote sets must already be mounted on the server machine. The set is hidden when fewer than two sets are registered. In T3-owned sessions, changing the set or profile restarts Pi before the next message and keeps the conversation; wait for the current turn to finish first. A profile must exist in the chosen set.
 
-Extension menus, confirmations, and text prompts (for example `/pm`) appear as questions in chat on web, desktop, and mobile. Choose an answer or dismiss the question to cancel; T3 never picks a menu entry for you. Timed dialogs disappear when they expire.
+When using T3’s own Pi process, extension menus, confirmations, and text prompts (for example `/pm`) appear as questions in chat on web, desktop, and mobile. Choose an answer or dismiss the question to cancel; T3 never picks a menu entry for you. Timed dialogs disappear when they expire.
+
+## Shared chats with the terminal
+
+Install and start **pi-sessions** on the same machine as your T3 environment, then leave **Settings → Providers → Pi → Share Pi chats with the terminal** on. T3 joins the daemon’s interactive Pi instead of starting a second writer. Open the chat from Pi’s `/overview` to use its real terminal screen, including extension UIs. Messages, aborts, model changes and thinking-level changes work against the same chat from either side.
+
+Terminal chats appear automatically when their working directory exactly matches an existing T3 project root and their agent directory matches one enabled, sharing-enabled Pi provider instance. T3 never creates projects for them. Discovery waits until Pi has written a session file; initial history keeps up to 200 text messages from the active conversation branch. Ambiguous provider homes are skipped.
+
+T3 receives changes as they happen; there is no refresh button or periodic session scan. Settle and unsettle synchronize in both directions. Newly discovered chats follow Pi’s settled state; existing T3 chats initially follow T3. If both sides change at once, unsettled wins so work stays visible.
+
+In an existing shared chat, change the profile or config set in the terminal rather than restarting Pi from T3.
+
+Extension dialogs are answered **only in the terminal**. T3 shows “Waiting for you in the terminal” until the dialog closes. Background terminals and subagent panels still work. Claude Code tool activity appears as the terminal’s text trace rather than separate structured tool rows in a shared chat.
+
+Closing T3’s connection leaves the shared Pi running. If Pi exits or switches to another session in the terminal, T3 ends that connection. Sending another message reopens the original conversation. A session held by classic Pi or a separate T3 RPC process cannot be shared; T3 reports “open elsewhere” instead of starting a new conversation.
+
+**Current limit:** initial discovery imports bounded history, but reconnecting an already-linked chat does not backfill completed turns missed while T3 was disconnected. Those messages remain in Pi’s session and terminal history; new live messages resume in T3. An in-progress assistant response is replayed on attach. Images sent from the terminal are not copied into T3 attachments; image-only prompts appear as a placeholder.
+
+Without pi-sessions, without a running daemon, or with sharing turned off, T3 uses its own `pi --mode rpc` process as before. Background-terminal and subagent extensions continue to work without pi-sessions. Only the environment’s server talks to the local daemon, so web, desktop, mobile, and remote T3 connections use the same shared chat.
 
 ## Conversation display
 

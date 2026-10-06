@@ -2922,7 +2922,7 @@ export default function ChatView(props: ChatViewProps) {
     () => derivePendingRequests(threadActivities),
     [threadActivities],
   );
-  const activePendingUserInput = pendingUserInputs[0] ?? null;
+  const activePendingUserInput = pendingUserInputs.find((request) => !request.terminalOnly) ?? null;
   const activePendingRequestKey = JSON.stringify([
     environmentId,
     activeThreadId,

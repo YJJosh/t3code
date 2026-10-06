@@ -1,9 +1,9 @@
 /**
- * PiAdapter — long-lived `pi --mode rpc` subprocess adapter (one per thread).
+ * PiAdapter — one RPC session per thread, over stdio or a shared daemon Pi.
  *
  * Maps Pi RPC `AgentSessionEvent`s (agent/message/tool/turn/retry/compaction)
  * and `extension_ui_request`s onto the canonical `ProviderRuntimeEvent` stream.
- * The subprocess keeps normal extensions/skills/prompt-templates/context files
+ * Both transports keep normal extensions/skills/prompt-templates/context files
  * enabled and discovers project `.pi` resources from the thread cwd; it runs
  * against the real default `~/.pi/agent` unless an override is configured.
  *
@@ -103,6 +103,7 @@ import {
   type PiRpcConnection,
   type PiRpcResponse,
 } from "./PiRpcConnection.ts";
+import { makePiDaemonConnection } from "./PiDaemonConnection.ts";
 import { PiThreadSpawner, PiThreadSpawnError } from "../Services/PiThreadSpawner.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 
@@ -132,6 +133,7 @@ type PiAssistantOrigin = "normal" | "async_result";
 
 export interface PiAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
+  readonly environmentId?: string;
   readonly instanceId?: ProviderInstanceId;
   readonly nativeEventLogger?: EventNdjsonLogger | undefined;
 }
@@ -160,6 +162,8 @@ interface PiSessionContext {
   readonly connection: PiRpcConnection;
   readonly scope: Scope.Closeable;
   session: ProviderSession;
+  shared: boolean;
+  terminalPromptId?: RuntimeRequestId;
   activeTurnId: TurnId | undefined;
   turns: Array<{ id: TurnId; items: Array<unknown> }>;
   /** Pi session id (from get_state / session events) for resume. */
@@ -232,6 +236,7 @@ function isMissingPiSessionError(error: unknown): boolean {
     isRecord(error) &&
     error._tag === "ProviderAdapterProcessError" &&
     typeof error.cause === "string" &&
+    !error.cause.includes("pi-sessions:") &&
     error.cause.includes("No session found")
   );
 }
@@ -761,6 +766,21 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     };
 
     const sessions = new Map<ThreadId, PiSessionContext>();
+    const starting = new Map<ThreadId, { semaphore: Semaphore.Semaphore; users: number }>();
+    const serializeStart = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
+      Effect.suspend(() => {
+        const lock = starting.get(threadId) ?? { semaphore: Semaphore.makeUnsafe(1), users: 0 };
+        starting.set(threadId, lock);
+        lock.users++;
+        return effect.pipe(
+          lock.semaphore.withPermit,
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (--lock.users === 0) starting.delete(threadId);
+            }),
+          ),
+        );
+      });
     const runtimeEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const backgroundTerminalEvents = yield* makeBackgroundTerminalEventPubSub();
     const backgroundTerminalControlWaiters = new Map<
@@ -1078,8 +1098,19 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         payload: { answers },
       });
     });
-    const cancelDialogs = (ctx: PiSessionContext) =>
+    const cancelDialogs = (ctx: PiSessionContext, disconnected = false) =>
       Effect.gen(function* () {
+        if (disconnected && ctx.terminalPromptId) {
+          yield* emit({
+            type: "user-input.resolved",
+            ...(yield* makeStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            requestId: ctx.terminalPromptId,
+            payload: { answers: {} },
+          });
+          delete ctx.terminalPromptId;
+        }
         yield* Effect.forEach(
           Array.from(ctx.pendingDialogs.keys()),
           (id) => settleDialog(ctx, id, {}),
@@ -1708,6 +1739,71 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           observePiMessageOrigin(ctx, message.message);
         }
         switch (message.type) {
+          case "pi_sessions_state": {
+            const model = message.model;
+            if (
+              !isRecord(model) ||
+              typeof model.provider !== "string" ||
+              typeof model.id !== "string"
+            )
+              return;
+            const slug = `${model.provider}/${model.id}`;
+            ctx.session = { ...ctx.session, model: slug };
+            yield* emit({
+              type: "thread.metadata.updated",
+              ...(yield* makeStamp()),
+              provider: PROVIDER,
+              threadId: ctx.threadId,
+              payload: {
+                modelSelection: {
+                  instanceId: boundInstanceId,
+                  model: slug,
+                  ...(typeof message.thinkingLevel === "string"
+                    ? { options: [{ id: PI_THINKING_OPTION_ID, value: message.thinkingLevel }] }
+                    : {}),
+                },
+              },
+            });
+            return;
+          }
+          case "pi_sessions_ui_prompt": {
+            if (ctx.terminalPromptId) {
+              yield* emit({
+                type: "user-input.resolved",
+                ...(yield* makeStamp()),
+                provider: PROVIDER,
+                threadId: ctx.threadId,
+                requestId: ctx.terminalPromptId,
+                payload: { answers: {} },
+              });
+              delete ctx.terminalPromptId;
+            }
+            if (message.phase !== "start") return;
+            ctx.terminalPromptId = RuntimeRequestId.make(yield* randomUUIDv4);
+            yield* emit({
+              type: "user-input.requested",
+              ...(yield* makeStamp()),
+              provider: PROVIDER,
+              threadId: ctx.threadId,
+              requestId: ctx.terminalPromptId,
+              payload: {
+                responseMode: "terminal",
+                questions: [
+                  {
+                    id: "terminal",
+                    header: "Waiting in the terminal",
+                    question:
+                      typeof message.title === "string" && message.title.trim()
+                        ? message.title
+                        : "Answer the Pi dialog in the terminal.",
+                    options: [],
+                    allowCustomAnswer: false,
+                  },
+                ],
+              },
+            });
+            return;
+          }
           case "extension_ui_request":
             yield* handleExtensionUiRequest(ctx, message as unknown as PiExtensionUiRequest);
             return;
@@ -1751,6 +1847,38 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             }
             return;
           case "message_end":
+            if (
+              isRecord(message.message) &&
+              message.message.role === "user" &&
+              (message.piSessionsOrigin === "terminal" || message.piSessionsOrigin === "extension")
+            ) {
+              const content = message.message.content;
+              const extracted =
+                typeof content === "string"
+                  ? content
+                  : extractPiAssistantText(message.message).text;
+              // Terminal images have no T3 attachment asset. Keep their prompt visible
+              // without persisting the base64 payload as chat text.
+              const text = extracted.trim()
+                ? extracted
+                : Array.isArray(content) &&
+                    content.some((part) => isRecord(part) && part.type === "image")
+                  ? "[Image sent from Pi; view it in the terminal]"
+                  : "";
+              if (text.trim()) {
+                const turnId = yield* ensureActiveTurnForAgentStart(ctx);
+                yield* emit({
+                  type: "item.completed",
+                  ...(yield* makeStamp()),
+                  provider: PROVIDER,
+                  threadId: ctx.threadId,
+                  turnId,
+                  itemId: RuntimeItemId.make(yield* randomUUIDv4),
+                  payload: { itemType: "user_message", data: { text, external: true } },
+                });
+              }
+              return;
+            }
             if (
               ctx.activeTurnId === undefined ||
               !isRecord(message.message) ||
@@ -1915,7 +2043,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                 threadId: ctx.threadId,
                 payload: { exitKind: code === 0 ? "graceful" : "error" },
               });
-              yield* cancelDialogs(ctx);
+              yield* cancelDialogs(ctx, true);
               sessions.delete(ctx.threadId);
               yield* resetBackgroundTerminals(ctx.threadId);
               ctx.stopped = true;
@@ -1942,7 +2070,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         if (ctx.stopped) return;
         ctx.stopped = true;
         const hadDialogs = ctx.pendingDialogs.size > 0 || ctx.pendingBridges.size > 0;
-        yield* cancelDialogs(ctx);
+        yield* cancelDialogs(ctx, true);
         // send() queues stdin. A correlated round trip is a flush barrier before
         // closing the process scope; otherwise cancellation can be dropped.
         if (hadDialogs)
@@ -2011,6 +2139,17 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             issue: "cwd is required and must be non-empty.",
           });
         }
+        const attachOnly =
+          isRecord(input.resumeCursor) && input.resumeCursor.piSessionsAttach === true;
+        if (attachOnly && piSettings.shareWithTerminal === false) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: "Pi chat sharing is disabled.",
+          });
+        }
+        const attached = sessions.get(input.threadId);
+        if (attachOnly && attached && !attached.stopped) return attached.session;
         const cwd = path.resolve(input.cwd.trim());
         const { model, thinkingLevel, contextWindow, fastServiceEnabled, profile, configSet } =
           resolveModelSelection(input.modelSelection);
@@ -2079,6 +2218,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           scope: sessionScope,
           session: undefined as unknown as ProviderSession,
           activeTurnId: undefined,
+          shared: false,
           turns: [],
           piSessionId: resumeSessionId,
           profile: profile || piSettings.profile?.trim() || DEFAULT_PI_PROFILE,
@@ -2116,9 +2256,13 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // Pi creates/opens the durable session during process startup. Resolve
         // its authoritative id before returning so T3 persists a usable resume
         // cursor even if the process dies before the first turn.
+        let shared = false;
+        let initialized = false;
+        let bufferStartup = piSettings.shareWithTerminal !== false;
+        const startupMessages: unknown[] = [];
         const connect = (resume: string | undefined) =>
           Effect.gen(function* () {
-            const connection = yield* makePiRpcConnection({
+            const connectionInput = {
               threadId: input.threadId,
               binaryPath: resolvePiBinary(piSettings),
               args: buildPiRpcArgs(piSettings, {
@@ -2128,20 +2272,63 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                 ...(resume ? { resumeSessionId: resume } : {}),
               }),
               cwd,
-              env: buildPiRpcEnv(path, piSettings, baseEnv, selectedSet),
-              onMessage: (message) =>
-                handlePiMessage(ctx)(message).pipe(Effect.catchCause(() => Effect.void)),
-              onParseFailure: (line) =>
+              env: {
+                ...buildPiRpcEnv(path, piSettings, baseEnv, selectedSet),
+                PI_SESSIONS_T3_THREAD: input.threadId,
+                ...(options?.environmentId
+                  ? { PI_SESSIONS_T3_ENVIRONMENT: options.environmentId }
+                  : {}),
+              },
+              onMessage: (message: unknown) =>
+                bufferStartup && !initialized && (!isRecord(message) || message.type !== "response")
+                  ? Effect.sync(() => {
+                      startupMessages.push(message);
+                    })
+                  : handlePiMessage(ctx)(message).pipe(Effect.catchCause(() => Effect.void)),
+              onParseFailure: (line: string) =>
                 emitWarning(
                   input.threadId,
                   ctx.activeTurnId,
                   "Pi emitted an unparseable RPC frame.",
                   { line: line.slice(0, 2_000) },
                 ).pipe(Effect.catchCause(() => Effect.void)),
-            }).pipe(
-              Effect.provideService(Scope.Scope, sessionScope),
-              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            );
+            };
+            const connection = yield* Effect.gen(function* () {
+              if (piSettings.shareWithTerminal !== false) {
+                bufferStartup = true;
+                const daemonScope = yield* Scope.make();
+                yield* Scope.addFinalizer(sessionScope, Scope.close(daemonScope, Exit.void));
+                const daemon = yield* makePiDaemonConnection(connectionInput).pipe(
+                  Effect.provideService(Scope.Scope, daemonScope),
+                  Effect.provideService(Path.Path, path),
+                  Effect.map(Option.some),
+                  Effect.catch((error) =>
+                    Effect.gen(function* () {
+                      yield* Scope.close(daemonScope, Exit.void);
+                      if (attachOnly || error.detail.includes("open elsewhere"))
+                        return yield* error;
+                      yield* Effect.logDebug("Pi sharing unavailable; using own RPC process", {
+                        detail: error.detail,
+                      });
+                      return Option.none<PiRpcConnection>();
+                    }),
+                  ),
+                );
+                if (Option.isSome(daemon)) {
+                  shared = true;
+                  ctx.shared = true;
+                  return daemon.value;
+                }
+              }
+              // Own-RPC Pi can ask startup dialogs before get_state returns. Preserve
+              // that path; only daemon replay needs to wait for the session context.
+              bufferStartup = false;
+              startupMessages.length = 0;
+              return yield* makePiRpcConnection(connectionInput).pipe(
+                Effect.provideService(Scope.Scope, sessionScope),
+                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              );
+            });
             (ctx as { connection: PiRpcConnection }).connection = connection;
             return yield* request(ctx, { type: "get_state" });
           });
@@ -2175,10 +2362,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // Profiles can intentionally choose their own default during
         // session_start, overriding Pi's CLI --model argument. Reassert T3's
         // selected model over RPC before configuring model-specific options.
-        if (model) {
+        if (model && !shared) {
           yield* selectPiModel(ctx, model, "startSession");
         }
-        if (thinkingLevel) {
+        if (thinkingLevel && !shared) {
           yield* request(ctx, { type: "set_thinking_level", level: thinkingLevel });
         }
 
@@ -2231,6 +2418,29 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           threadId: input.threadId,
           payload: { providerThreadId: activePiSessionId },
         });
+        if (shared) {
+          yield* handlePiMessage(ctx)({
+            type: "pi_sessions_state",
+            ...(isRecord(stateResponse.data) ? stateResponse.data : {}),
+          });
+          // Incoming replay stays buffered until the backlog is drained, so a final
+          // message cannot overtake its agent_start or cumulative partial snapshot.
+          for (const message of startupMessages) yield* handlePiMessage(ctx)(message);
+          startupMessages.length = 0;
+          initialized = true;
+          // These commands are handled by extensions, not model turns.
+          const catalog = yield* loadPiCommandCatalog(ctx).pipe(
+            Effect.orElseSucceed(() => undefined),
+          );
+          for (const command of ["background-terminals-rpc", "subagents-rpc"]) {
+            if (catalog?.extensionNames.has(command)) {
+              yield* request(ctx, {
+                type: "prompt",
+                message: `/${command} {"action":"replay"}`,
+              }).pipe(Effect.ignore);
+            }
+          }
+        }
         if (resumeDropped) {
           yield* emitWarning(
             input.threadId,
@@ -2239,8 +2449,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             { missingSession: resumeSessionId },
           );
         }
-        return session;
-      }).pipe(Effect.scoped);
+        return ctx.session;
+      }).pipe(Effect.scoped, (effect) => serializeStart(input.threadId, effect));
 
     const sendTurn: PiAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
@@ -2250,6 +2460,14 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const homeChanged =
           input.modelSelection !== undefined &&
           (selected.configSet ?? ctx.defaultConfigSetName) !== ctx.configSetName;
+        if (ctx.shared && (homeChanged || nextProfile !== ctx.profile)) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "sendTurn",
+            issue:
+              "Change this shared chat's profile or config set in the terminal. T3 cannot restart a Pi that the terminal is using.",
+          });
+        }
         const profileChanged = input.modelSelection !== undefined && nextProfile !== ctx.profile;
         if (homeChanged || profileChanged) {
           return yield* ctx.sendSemaphore.withPermit(

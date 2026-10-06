@@ -43,6 +43,7 @@ describe("ProviderSettingsForm helpers", () => {
       "binaryPath",
       "profile",
       "agentDir",
+      "shareWithTerminal",
     ]);
   });
 

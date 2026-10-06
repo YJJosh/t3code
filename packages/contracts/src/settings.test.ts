@@ -1024,3 +1024,15 @@ it("validates remote device hosts and rejects ambiguous host ids", () => {
   ).toThrow();
   expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, port: 0 }] })).toThrow();
 });
+
+describe("Pi chat sharing", () => {
+  it("defaults on and preserves an explicit off setting through settings patches", () => {
+    expect(decodeServerSettings({}).providers.pi.shareWithTerminal).toBe(true);
+    const patch = decodeServerSettingsPatch({ providers: { pi: { shareWithTerminal: false } } });
+    expect(patch.providers?.pi?.shareWithTerminal).toBe(false);
+    expect(
+      decodeServerSettings({ providers: { pi: { shareWithTerminal: false } } }).providers.pi
+        .shareWithTerminal,
+    ).toBe(false);
+  });
+});

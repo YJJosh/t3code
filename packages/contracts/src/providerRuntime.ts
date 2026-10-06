@@ -15,7 +15,11 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 import { ProviderUsageLimitsUpdate } from "./providerUsageLimits.ts";
-import { OrchestrationMessagePhase, ProviderApprovalOption } from "./orchestration.ts";
+import {
+  ModelSelection,
+  OrchestrationMessagePhase,
+  ProviderApprovalOption,
+} from "./orchestration.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -256,6 +260,7 @@ const ThreadStateChangedPayload = Schema.Struct({
 export type ThreadStateChangedPayload = typeof ThreadStateChangedPayload.Type;
 
 const ThreadMetadataUpdatedPayload = Schema.Struct({
+  modelSelection: Schema.optional(ModelSelection),
   name: Schema.optional(TrimmedNonEmptyStringSchema),
   metadata: Schema.optional(UnknownRecordSchema),
 });
@@ -497,7 +502,7 @@ export const UserInputRequestedPayload = Schema.Struct({
   /** Native dialogs that accept an empty answer map as cancellation. */
   dismissible: Schema.optional(Schema.Boolean),
   questions: Schema.Array(UserInputQuestion),
-  responseMode: Schema.optional(Schema.Literal("message")),
+  responseMode: Schema.optional(Schema.Literals(["message", "terminal"])),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
