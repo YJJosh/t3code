@@ -26,8 +26,14 @@ export const skipPiDaemon = (key: string) =>
     skipped.set(key, now + PI_DAEMON_SKIP_MS);
   });
 
-/** Same RPC contract as stdio, but scope close only detaches T3 from the shared Pi. */
-export const makePiDaemonConnection = Effect.fn(function* (input: PiRpcConnectionInput) {
+/**
+ * Same RPC contract as stdio, but scope close only detaches T3 from the shared Pi.
+ * `attach` only joins a Pi that already runs the chat (never starts one, nor the daemon).
+ */
+export const makePiDaemonConnection = Effect.fn(function* (
+  input: PiRpcConnectionInput,
+  options: { readonly attach?: boolean } = {},
+) {
   const error = (detail: string, cause?: unknown) =>
     new ProviderAdapterProcessError({ provider: "pi", threadId: input.threadId, detail, cause });
   const path = yield* Path.Path;
@@ -36,12 +42,14 @@ export const makePiDaemonConnection = Effect.fn(function* (input: PiRpcConnectio
   // No daemon yet (e.g. after a reboot, before any terminal ran pi): start it from the
   // start.json pi-sessions left, so this chat is shared from its first message.
   const transport = yield* connectPiSessions(socketPath, "rpc").pipe(
-    Effect.catchIf(isPiSessionsDaemonMissing, (cause) =>
-      startPiSessionsDaemon(input.env, path, platform).pipe(
-        Effect.flatMap((started) =>
-          started ? connectPiSessions(socketPath, "rpc") : Effect.fail(cause),
+    Effect.catchIf(
+      (cause) => !options.attach && isPiSessionsDaemonMissing(cause),
+      (cause) =>
+        startPiSessionsDaemon(input.env, path, platform).pipe(
+          Effect.flatMap((started) =>
+            started ? connectPiSessions(socketPath, "rpc") : Effect.fail(cause),
+          ),
         ),
-      ),
     ),
     Effect.mapError((cause) => error(cause.detail, cause)),
   );
@@ -61,6 +69,7 @@ export const makePiDaemonConnection = Effect.fn(function* (input: PiRpcConnectio
     .request(
       {
         type: "rpc-open",
+        ...(options.attach ? { attach: true } : {}),
         ...(session
           ? path.isAbsolute(session)
             ? { sessionFile: session }

@@ -313,6 +313,46 @@ it.layer(env)("shared Pi", (it) => {
     );
   }
 
+  it.effect("following a terminal chat only joins its running Pi and never starts one", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("this chat is not running");
+      let spawns = 0;
+      const adapter = yield* makePiAdapter(decodeSettings({ shareWithTerminal: true }), {
+        environmentId: "env",
+        environment: { PI_SESSIONS_HOME: f.home },
+      }).pipe(
+        Effect.provide(
+          Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({
+            spawn: () =>
+              Effect.sync(() => {
+                spawns++;
+              }).pipe(Effect.andThen(Effect.die("fake own-RPC spawn"))),
+          }),
+        ),
+      );
+      const result = yield* adapter
+        .startSession({
+          threadId,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: {
+            piSessionId: "session",
+            piSessionFile: "/sessions/session.jsonl",
+            piSessionsAttach: true,
+          },
+        })
+        .pipe(Effect.exit);
+      expect(result._tag).toBe("Failure");
+      expect(spawns).toBe(0);
+      expect((yield* Queue.take(f.requests)).type).toBe("hello");
+      expect(yield* Queue.take(f.requests)).toMatchObject({
+        type: "rpc-open",
+        attach: true,
+        sessionFile: "/sessions/session.jsonl",
+      });
+    }),
+  );
+
   for (const mode of [
     "shared",
     "no-panels",

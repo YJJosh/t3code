@@ -2308,7 +2308,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                 bufferStartup = true;
                 const daemonScope = yield* Scope.make();
                 yield* Scope.addFinalizer(sessionScope, Scope.close(daemonScope, Exit.void));
-                const daemon = yield* makePiDaemonConnection(connectionInput).pipe(
+                const daemon = yield* makePiDaemonConnection(connectionInput, {
+                  attach: attachOnly,
+                }).pipe(
                   Effect.provideService(Scope.Scope, daemonScope),
                   Effect.provideService(Path.Path, path),
                   Effect.map(Option.some),
