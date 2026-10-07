@@ -50,8 +50,21 @@ export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "utf-8-validate",
 ] as const;
 
+/**
+ * Packages the server resolves by name at runtime and imports from a worker by
+ * URL. They never enter the bundle's module graph, so the bundler policy above
+ * does not apply, but the staged install has to carry them and their full
+ * dependency closure. Pi model discovery falls back to T3's own Pi SDK when the
+ * configured Pi command does not lead to an installed SDK.
+ */
+export const CLI_RUNTIME_RESOLVED_PACKAGES = ["@earendil-works/pi-coding-agent"] as const;
+
 export function isRuntimeExternalCliDependency(id: string): boolean {
   return CLI_RUNTIME_EXTERNAL_PREFIXES.some((prefix) => id.startsWith(prefix));
+}
+
+function isRuntimeResolvedCliDependency(name: string): boolean {
+  return CLI_RUNTIME_RESOLVED_PACKAGES.some((resolved) => resolved === name);
 }
 
 /**
@@ -79,7 +92,9 @@ export function selectCliRuntimeExternalDependencies(
   dependencies: Readonly<Record<string, string>>,
 ): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(dependencies).filter(([name]) => isRuntimeExternalCliDependency(name)),
+    Object.entries(dependencies).filter(
+      ([name]) => isRuntimeExternalCliDependency(name) || isRuntimeResolvedCliDependency(name),
+    ),
   );
 }
 

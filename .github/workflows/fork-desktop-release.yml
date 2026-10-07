@@ -89,6 +89,7 @@ jobs:
             packages/client-runtime/src/state/subagentRuntime.test.ts \
             apps/server/src/provider/pi/piJsonl.test.ts \
             apps/server/src/provider/pi/piModelDiscovery.test.ts \
+            apps/server/src/provider/pi/piModelDiscovery.bundle.test.ts \
             apps/server/src/provider/pi/piRpcProtocol.test.ts \
             apps/server/src/provider/Layers/PiAdapter.test.ts \
             apps/server/scripts/cli.test.ts \
