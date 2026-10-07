@@ -1507,6 +1507,13 @@ const stageClerkPasskeyNativeBinaries = Effect.fn("stageClerkPasskeyNativeBinari
   }
 });
 
+// Lifecycle scripts the staged install must skip even when the workspace
+// allows them. esbuild (pulled in by the Pi SDK) only validates the build
+// host's binary in postinstall, which a cross-arch stage lacks: macOS x64 is
+// staged on arm64 runners. At runtime esbuild loads the target's platform
+// package directly, so skipping it changes nothing the app uses.
+const STAGE_SKIPPED_BUILDS = { esbuild: false } as const;
+
 export function createStageWorkspaceConfig(input: {
   readonly platform: typeof BuildPlatform.Type;
   readonly arch: typeof BuildArch.Type;
@@ -1534,7 +1541,9 @@ export function createStageWorkspaceConfig(input: {
 
   return {
     supportedArchitectures,
-    ...(allowBuilds && Object.keys(allowBuilds).length > 0 ? { allowBuilds } : {}),
+    ...(allowBuilds && Object.keys(allowBuilds).length > 0
+      ? { allowBuilds: { ...allowBuilds, ...STAGE_SKIPPED_BUILDS } }
+      : {}),
     ...(patchedDependencies && Object.keys(patchedDependencies).length > 0
       ? { patchedDependencies }
       : {}),
@@ -3441,7 +3450,10 @@ export const validateWindowsPackagedPayload = Effect.fn(
       });
     }
     // The CLI archive runs the single-executable, never a loose server bundle.
-    const bundleEntry = members.find((member) => member.endsWith("/bin.mjs"));
+    // Dependencies may ship their own bin.mjs (yaml does), so skip node_modules.
+    const bundleEntry = members.find(
+      (member) => member.endsWith("/bin.mjs") && !member.startsWith(`${stem}/node_modules/`),
+    );
     if (bundleEntry !== undefined) {
       return yield* invalidWslRuntime(
         new Error(`WSL runtime archive contains a server bundle entry ${bundleEntry}`),
