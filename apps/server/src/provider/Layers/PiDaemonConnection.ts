@@ -15,7 +15,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const skipped = new Map<string, number>();
 /** A shared start that timed out means this Pi binary does not load pi-sessions; skip the daemon for a while. */
-export const PI_DAEMON_SKIP_MS = 10 * 60_000;
+const PI_DAEMON_SKIP_MS = 10 * 60_000;
 /** Per pi-sessions home and Pi binary. */
 export const piDaemonSkipKey = (input: PiRpcConnectionInput, path: Path.Path) =>
   `${piSessionsHome(input.env, path)}\0${input.binaryPath}`;
