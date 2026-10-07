@@ -138,7 +138,16 @@ const make = Effect.gen(function* () {
       if (!file) continue;
       // Resolve the instance before deciding whether a stopped import cursor is a retry.
       const root = yield* identity(record.cwd);
-      const matches = projectRoots.filter((entry) => root !== null && entry.root === root);
+      if (root === null) continue;
+      let matches = projectRoots.filter((entry) => entry.root === root);
+      // A Workler workspace (`<project>/.worktrees/<name>`, e.g. from `/workler`) belongs to its
+      // project, exactly like the workspaces T3 creates itself.
+      const inWorkspace =
+        matches.length === 0 && path.basename(path.dirname(root)) === ".worktrees";
+      if (inWorkspace) {
+        const parent = path.dirname(path.dirname(root));
+        matches = projectRoots.filter((entry) => entry.root === parent);
+      }
       if (matches.length !== 1) continue;
       const home = yield* identity(record.agentDir!);
       const owners = homes.filter(
@@ -171,11 +180,24 @@ const make = Effect.gen(function* () {
         // A previous import may have installed its stopped cursor before crashing.
         // The importer checks for real activity and never resurrects archived/deleted threads.
       }
-      const outcome = yield* transcripts.read(record, owners[0].id, root!);
-      if (!outcome) {
+      const read = yield* transcripts.read(record, owners[0].id, root);
+      if (!read) {
         result = { ...result, skippedCount: result.skippedCount + 1 };
         continue;
       }
+      const outcome =
+        inWorkspace && read._tag === "Importable"
+          ? {
+              ...read,
+              thread: {
+                ...read.thread,
+                worktree: {
+                  path: path.join(project.workspaceRoot, ".worktrees", path.basename(root)),
+                  branch: record.branch ?? null,
+                },
+              },
+            }
+          : read;
       const imported = yield* importPreparedAgentThreads(
         { projectId: project.id, expectedWorkspaceRoot: project.workspaceRoot },
         [outcome],
@@ -194,6 +216,41 @@ const make = Effect.gen(function* () {
         });
       }
     }
+  });
+  // The branch a workspace has checked out, read from its HEAD (`.git` is a folder in a Workler
+  // clone and a `gitdir:` file in a git worktree).
+  const headBranch = (dir: string) =>
+    Effect.gen(function* () {
+      const dotGit = path.join(dir, ".git");
+      const info = yield* fs.stat(dotGit);
+      let gitDir = dotGit;
+      if (info.type !== "Directory") {
+        const pointer = /^gitdir:\s*(.+)$/m.exec(yield* fs.readFileString(dotGit))?.[1]?.trim();
+        if (!pointer) return null;
+        gitDir = path.resolve(dir, pointer);
+      }
+      const head = yield* fs.readFileString(path.join(gitDir, "HEAD"));
+      return /^ref: refs\/heads\/(.+)$/m.exec(head)?.[1]?.trim() ?? null;
+    }).pipe(Effect.orElseSucceed(() => null));
+  // A branch renamed in the terminal (the agent does this after `/workler`) follows into T3.
+  // The workspace's HEAD is the truth, and `expectedBranch` keeps a rename T3 made meanwhile:
+  // a stale record must never undo T3's own first-turn rename.
+  const followBranch = Effect.fn(function* (
+    record: PiSessionsClient.PiSessionInfo,
+    threadId: ThreadId,
+    shell: { readonly branch: string | null; readonly worktreePath: string | null },
+  ) {
+    if (!record.branch || !shell.worktreePath || record.branch === shell.branch) return;
+    const dir = yield* identity(shell.worktreePath);
+    if (dir === null || dir !== (yield* identity(record.cwd))) return;
+    if ((yield* headBranch(dir)) !== record.branch) return;
+    yield* engine.dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make(`pi-sessions:branch:${yield* crypto.randomUUIDv4}`),
+      threadId,
+      branch: record.branch,
+      expectedBranch: shell.branch,
+    });
   });
   // Imports and settlement share the same list and worker, but independent rotating budgets.
   let settleOffset = 0;
@@ -328,6 +385,7 @@ const make = Effect.gen(function* () {
           )
             return;
           yield* reconcile(record, binding.threadId, imported.has(binding.threadId));
+          yield* followBranch(record, binding.threadId, shell.value);
           if (
             record.live &&
             record.owner === "daemon" &&

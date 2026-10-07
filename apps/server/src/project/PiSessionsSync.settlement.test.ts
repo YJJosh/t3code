@@ -247,6 +247,8 @@ const fixture = Effect.fn(function* () {
       .getThreadShellById(threadId)
       .pipe(Effect.map((shell) => Option.getOrThrow(shell).settledOverride === "settled"));
   return {
+    root,
+    snapshots,
     sync,
     starts,
     disconnected: () => {
@@ -279,6 +281,85 @@ const fixture = Effect.fn(function* () {
 });
 
 it.layer(NodeServices.layer)("Pi session settlement (real engine and SQLite)", (it) => {
+  it.effect(
+    "imports a Workler workspace chat with its folder and branch, and follows a renamed branch",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        const fs = yield* FileSystem.FileSystem;
+        const workspace = `${f.root}/.worktrees/t3code-abcd1234`;
+        yield* fs.makeDirectory(`${workspace}/.git`, { recursive: true });
+        yield* fs.makeDirectory(`${f.root}/sub`);
+        const setHead = (branch: string) =>
+          fs.writeFileString(`${workspace}/.git/HEAD`, `ref: refs/heads/${branch}\n`);
+        yield* setHead("t3code/abcd1234");
+        const record = (sessionId: string, cwd: string, branch?: string) =>
+          Effect.gen(function* () {
+            const sessionFile = `${f.root}/${sessionId}.jsonl`;
+            yield* fs.writeFileString(
+              sessionFile,
+              [
+                { type: "session", version: 3, id: sessionId, cwd, timestamp: now },
+                {
+                  type: "message",
+                  id: "u",
+                  parentId: null,
+                  timestamp: now,
+                  message: { role: "user", content: "Hello" },
+                },
+              ]
+                .map((entry) => encode(entry))
+                .join("\n") + "\n",
+            );
+            f.records.set(sessionId, {
+              sessionId,
+              sessionFile,
+              cwd,
+              agentDir: f.root,
+              owner: "foreground",
+              status: "done",
+              createdAt: 1,
+              updatedAt: 2,
+              live: false,
+              attached: 0,
+              settleRev: 0,
+              ...(branch ? { branch } : {}),
+            });
+          });
+        yield* record("wk", workspace, "t3code/abcd1234");
+        // Only `<project>/.worktrees/<name>` belongs to the project, not any sub-folder.
+        yield* record("sub", `${f.root}/sub`);
+        yield* f.sync.start();
+        yield* f.watching;
+        yield* f.sync.drain;
+        const threadId = ThreadId.make("import:pi:wk");
+        const shell = () =>
+          f.snapshots.getThreadShellById(threadId).pipe(Effect.map(Option.getOrThrow));
+        expect(yield* shell()).toMatchObject({
+          worktreePath: workspace,
+          branch: "t3code/abcd1234",
+        });
+        const binding = Option.getOrThrow(yield* f.directory.getBinding(threadId));
+        expect(binding.runtimePayload).toMatchObject({ cwd: workspace });
+        expect(
+          Option.isNone(yield* f.snapshots.getThreadShellById(ThreadId.make("import:pi:sub"))),
+        ).toBe(true);
+
+        // The agent renamed the branch: the workspace's HEAD and the record agree.
+        yield* setHead("feature/hello");
+        f.records.set("wk", { ...f.records.get("wk")!, branch: "feature/hello" });
+        yield* f.push;
+        yield* f.sync.drain;
+        expect((yield* shell()).branch).toBe("feature/hello");
+
+        // A stale record (HEAD says otherwise) never moves T3 back.
+        f.records.set("wk", { ...f.records.get("wk")!, branch: "t3code/abcd1234" });
+        yield* f.push;
+        yield* f.sync.drain;
+        expect((yield* shell()).branch).toBe("feature/hello");
+      }).pipe(Effect.scoped),
+  );
+
   for (const daemonSettled of [false, true]) {
     it.effect("settles both ways from pushes and T3 events without polling or ping-pong", () =>
       Effect.gen(function* () {

@@ -16,6 +16,8 @@ const ThreadInfo = Schema.Struct({
   sessionFile: Schema.optional(Schema.NonEmptyString),
   cwd: Schema.NonEmptyString,
   agentDir: Schema.optional(Schema.NonEmptyString),
+  /** Current git branch, reported for chats in a Workler workspace. */
+  branch: Schema.optional(Schema.NonEmptyString),
   title: Schema.optional(Schema.String),
   preview: Schema.optional(Schema.String),
   status: Schema.Literals(["new", "running", "waiting", "done", "interrupted"]),

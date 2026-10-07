@@ -166,6 +166,8 @@ export interface AgentSessionThread {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly messages: ReadonlyArray<AgentSessionThreadMessage>;
+  /** Set when the session ran in a workspace (worktree) of the project instead of its root. */
+  readonly worktree?: { readonly path: string; readonly branch: string | null };
 }
 
 export type AgentSessionRecentThread =

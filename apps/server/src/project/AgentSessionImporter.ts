@@ -244,7 +244,7 @@ const importAgentThreads = Effect.fn("importAgentThreads")(function* (
                         piSessionFile: outcome.source.filePath,
                       }
                     : { threadId, resume: thread.providerSessionId },
-              runtimePayload: { cwd: workspaceRoot },
+              runtimePayload: { cwd: thread.worktree?.path ?? workspaceRoot },
             },
             { onConflict: "ignore" },
           );
@@ -260,8 +260,8 @@ const importAgentThreads = Effect.fn("importAgentThreads")(function* (
             modelSelection: { instanceId: thread.providerInstanceId, model },
             runtimeMode: DEFAULT_RUNTIME_MODE,
             interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-            branch: null,
-            worktreePath: null,
+            branch: thread.worktree?.branch ?? null,
+            worktreePath: thread.worktree?.path ?? null,
             createdAt: thread.createdAt,
             historyImport: true,
           });
