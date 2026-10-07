@@ -79,6 +79,8 @@ import {
   PI_BACKGROUND_THREADS_REQUEST_PREFIX,
   buildPiRpcArgs,
   buildPiRpcEnv,
+  piSessionsEnabled,
+  piSharingEnabled,
   extractPiAssistantContent,
   extractPiAssistantText,
   parsePiBackgroundTerminalNotification,
@@ -109,6 +111,8 @@ import {
   piDaemonSkipKey,
   skipPiDaemon,
 } from "./PiDaemonConnection.ts";
+import { findPiSessionsExtension } from "../PiSessionsStart.ts";
+import { piSessionsHome } from "../PiSessionsSocket.ts";
 import { PiThreadSpawner, PiThreadSpawnError } from "../Services/PiThreadSpawner.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 
@@ -2146,7 +2150,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         }
         const attachOnly =
           isRecord(input.resumeCursor) && input.resumeCursor.piSessionsAttach === true;
-        if (attachOnly && piSettings.shareWithTerminal === false) {
+        if (attachOnly && !piSharingEnabled(piSettings)) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
             operation: "startSession",
@@ -2265,26 +2269,39 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         // Only a Pi the daemon started for this request gets T3's model and thinking level.
         let joinedRunning = false;
         let initialized = false;
-        let bufferStartup = piSettings.shareWithTerminal !== false;
+        let bufferStartup = piSharingEnabled(piSettings);
+        // With pi-sessions on, every Pi T3 starts loads it (its own and the daemon's for shared
+        // chats), whether or not Pi's config already does; off makes any copy in the config inert.
+        const piSessionsOn = piSessionsEnabled(piSettings);
+        const piSessionsExtension = piSessionsOn
+          ? findPiSessionsExtension(piSessionsHome(baseEnv, path), path)
+          : undefined;
         const startupMessages: unknown[] = [];
         const connect = (resume: string | undefined) =>
           Effect.gen(function* () {
             const connectionInput = {
               threadId: input.threadId,
               binaryPath: resolvePiBinary(piSettings),
-              args: buildPiRpcArgs(piSettings, {
-                ...(profile ? { profile } : {}),
-                ...(model ? { model } : {}),
-                ...(thinkingLevel ? { thinkingLevel } : {}),
-                ...(resume ? { resumeSessionId: resume } : {}),
-              }),
+              args: [
+                ...buildPiRpcArgs(piSettings, {
+                  ...(profile ? { profile } : {}),
+                  ...(model ? { model } : {}),
+                  ...(thinkingLevel ? { thinkingLevel } : {}),
+                  ...(resume ? { resumeSessionId: resume } : {}),
+                }),
+                ...(piSessionsExtension ? ["-e", piSessionsExtension] : []),
+              ],
               cwd,
               env: {
                 ...buildPiRpcEnv(path, piSettings, baseEnv, selectedSet),
-                PI_SESSIONS_T3_THREAD: input.threadId,
-                ...(options?.environmentId
-                  ? { PI_SESSIONS_T3_ENVIRONMENT: options.environmentId }
-                  : {}),
+                ...(piSessionsOn
+                  ? {
+                      PI_SESSIONS_T3_THREAD: input.threadId,
+                      ...(options?.environmentId
+                        ? { PI_SESSIONS_T3_ENVIRONMENT: options.environmentId }
+                        : {}),
+                    }
+                  : { PI_SESSIONS: "off" }),
               },
               onMessage: (message: unknown) =>
                 bufferStartup && !initialized && (!isRecord(message) || message.type !== "response")
@@ -2302,7 +2319,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             };
             const connection = yield* Effect.gen(function* () {
               if (
-                piSettings.shareWithTerminal !== false &&
+                piSharingEnabled(piSettings) &&
                 (attachOnly || !(yield* isPiDaemonSkipped(piDaemonSkipKey(connectionInput, path))))
               ) {
                 bufferStartup = true;

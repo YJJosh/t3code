@@ -908,12 +908,22 @@ export const PiSettings = makeProviderSettingsSchema(
         providerSettingsForm: { placeholder: "pi", clearWhenEmpty: "omit" },
       }),
     ),
+    piSessions: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "pi-sessions",
+        description:
+          "Load the pi-sessions extension in T3's Pi, from where it last ran on this computer, so T3 and the terminal see the same chats. Off: T3's Pi runs without it. Applies to new connections.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
     shareWithTerminal: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({
         title: "Share Pi chats with the terminal",
         description:
-          "Use the same Pi in T3 and the terminal when pi-sessions is running. Applies to new connections.",
+          "Run T3's Pi chats in pi-sessions, so the terminal can open them too. Off: T3 keeps its own Pi, and extension dialogs show in T3. Needs pi-sessions on. Applies to new connections.",
+        providerSettingsForm: { control: "switch" },
       }),
     ),
     profile: TrimmedString.pipe(
@@ -937,7 +947,7 @@ export const PiSettings = makeProviderSettingsSchema(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
   },
-  { order: ["binaryPath", "profile", "agentDir", "shareWithTerminal"] },
+  { order: ["binaryPath", "profile", "agentDir", "piSessions", "shareWithTerminal"] },
 );
 export type PiSettings = typeof PiSettings.Type;
 
@@ -1523,6 +1533,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 });
 
 const PiSettingsPatch = Schema.Struct({
+  piSessions: Schema.optionalKey(Schema.Boolean),
   shareWithTerminal: Schema.optionalKey(Schema.Boolean),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),

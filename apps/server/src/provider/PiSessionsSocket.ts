@@ -18,7 +18,8 @@ class PiSessionsSocketError extends Schema.TaggedError<PiSessionsSocketError>()(
 }
 
 export function piSessionsHome(env: NodeJS.ProcessEnv, path: Path.Path) {
-  return env.PI_SESSIONS_HOME || path.join(NodeOS.homedir(), ".pi", "pi-sessions");
+  // Same as pi-sessions inside a Pi started with this environment (os.homedir() follows HOME).
+  return env.PI_SESSIONS_HOME || path.join(env.HOME || NodeOS.homedir(), ".pi", "pi-sessions");
 }
 export function piSessionsSocketPath(
   env: NodeJS.ProcessEnv,

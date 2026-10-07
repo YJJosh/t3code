@@ -8,7 +8,8 @@ Open **Settings → Providers**, add or select **Pi**, and configure any overrid
 
 - **Binary path** – defaults to `pi` on `PATH`.
 - **Profile** – defaults to `coder`.
-- **Share Pi chats with the terminal** – on by default. Uses pi-sessions when its daemon is available; applies to new connections.
+- **pi-sessions** – on by default. T3's Pi loads the pi-sessions extension from where it last ran on this computer (`~/.pi/pi-sessions/start.json`), so it does not need to be in your Pi config set. Off: T3's Pi runs without it (`PI_SESSIONS=off`), nothing is shared and nothing is reported to the daemon. Applies to new connections.
+- **Share Pi chats with the terminal** – on by default; needs **pi-sessions** on. Uses pi-sessions when its daemon is available; applies to new connections.
 - **Agent directory** – overrides Pi's configuration root. T3 Dulli also honors `PI_CODING_AGENT_DIR` and the legacy `TAU_CODING_AGENT_DIR` when no explicit value is set. Discovery, chat, and text generation use the same resolved directory, including `~` expansion.
 
 Pi model names use `provider/model`, for example `openai-codex/gpt-6-astra`. Model discovery uses the bundled Pi SDK and your configured extensions and credentials. The picker also exposes profile, reasoning, context-window, and supported service-tier options. Fast is shown only for models supported by the loaded `/fast` extension; GPT-6 Astra does not currently expose it.
@@ -21,7 +22,7 @@ When using T3’s own Pi process, extension menus, confirmations, and text promp
 
 ## Shared chats with the terminal
 
-Install and start **pi-sessions** on the same machine as your T3 environment, then leave **Settings → Providers → Pi → Share Pi chats with the terminal** on. T3 joins the daemon’s interactive Pi instead of starting a second writer. Open the chat from Pi’s `/overview` to use its real terminal screen, including extension UIs. Messages, aborts, model changes and thinking-level changes work against the same chat from either side.
+Install and start **pi-sessions** on the same machine as your T3 environment, then leave **pi-sessions** and **Share Pi chats with the terminal** on in **Settings → Providers → Pi**. pi-sessions only has to have run once on this computer; it does not have to be in the config set T3's Pi uses. T3 joins the daemon’s interactive Pi instead of starting a second writer. Open the chat from Pi’s `/overview` to use its real terminal screen, including extension UIs. Messages, aborts, model changes and thinking-level changes work against the same chat from either side.
 
 Terminal chats appear automatically when their working directory exactly matches an existing T3 project root, or is a Workler workspace of one (`<project>/.worktrees/<name>`, for example from pi-sessions' `/workler`), and their agent directory matches one enabled, sharing-enabled Pi provider instance. Workspace chats keep their workspace and branch, and a branch the agent renames in the terminal is shown in T3 once the workspace's `HEAD` confirms it. T3 never creates projects for them. Discovery waits until Pi has written a session file; initial history keeps up to 200 text messages from the active conversation branch. Ambiguous provider homes are skipped.
 
@@ -35,7 +36,7 @@ Closing T3’s connection leaves the shared Pi running. If Pi exits or switches 
 
 **Current limit:** initial discovery imports bounded history, but reconnecting an already-linked chat does not backfill completed turns missed while T3 was disconnected. Those messages remain in Pi’s session and terminal history; new live messages resume in T3. An in-progress assistant response is replayed on attach. Images sent from the terminal are not copied into T3 attachments; image-only prompts appear as a placeholder.
 
-When no daemon is running yet (for example after a restart, before any terminal ran `pi`), T3 starts it the way pi-sessions last started it, so the first chat is shared too. Without pi-sessions, when the daemon cannot be started, or with sharing turned off, T3 uses its own `pi --mode rpc` process as before. If T3's Pi does not load pi-sessions, a shared start times out once and T3 then uses its own Pi for that Pi binary for 10 minutes. Background-terminal and subagent extensions continue to work without pi-sessions. Only the environment’s server talks to the local daemon, so web, desktop, mobile, and remote T3 connections use the same shared chat.
+When no daemon is running yet (for example after a restart, before any terminal ran `pi`), T3 starts it the way pi-sessions last started it, so the first chat is shared too. Without pi-sessions, when the daemon cannot be started, or with sharing turned off, T3 uses its own `pi --mode rpc` process as before. If pi-sessions has never run on this computer (no `start.json` yet), T3 cannot find it: run `pi` in a terminal once. If T3's Pi still does not load pi-sessions, a shared start fails after about 8 seconds and T3 then uses its own Pi for that Pi binary for 10 minutes. Background-terminal and subagent extensions continue to work without pi-sessions. Only the environment’s server talks to the local daemon, so web, desktop, mobile, and remote T3 connections use the same shared chat.
 
 ## Conversation display
 

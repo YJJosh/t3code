@@ -405,6 +405,63 @@ describe("Pi adapter", () => {
     }).pipe(Effect.scoped, Effect.provide(TestEnv)),
   );
 
+  it.effect("loads pi-sessions with -e when it is on, and makes it inert when it is off", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped({ prefix: "pi-adapter-home-" });
+      const extension = `${home}/pi-sessions`;
+      yield* fs.makeDirectory(`${extension}/src`, { recursive: true });
+      yield* fs.writeFileString(`${extension}/index.ts`, "");
+      yield* fs.writeFileString(`${extension}/package.json`, "{}");
+      yield* fs.makeDirectory(`${home}/.pi/pi-sessions`, { recursive: true });
+      yield* fs.writeFileString(
+        `${home}/.pi/pi-sessions/start.json`,
+        yield* encodeJson({
+          version: 1,
+          command: [process.execPath, `${extension}/src/daemon-main.ts`],
+        }),
+      );
+      yield* fs.chmod(`${home}/.pi/pi-sessions/start.json`, 0o600);
+      const launch = (piSessions: boolean) =>
+        Effect.gen(function* () {
+          const fake = yield* makeFakePi();
+          const adapter = yield* makePiAdapter(
+            decodePiSettings({ shareWithTerminal: false, piSessions }),
+            {
+              instanceId: INSTANCE,
+              environmentId: "environment-1",
+              environment: { HOME: home },
+            },
+          ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner));
+          yield* adapter.startSession({
+            threadId: THREAD,
+            cwd: process.cwd(),
+            runtimeMode: "full-access",
+          });
+          return fake.launches[0]!;
+        });
+      const on = yield* launch(true);
+      expect(on.args).toEqual([
+        "--mode",
+        "rpc",
+        "--approve",
+        "--profile",
+        "coder",
+        "-e",
+        extension,
+      ]);
+      expect(on.env).toMatchObject({
+        PI_SESSIONS_T3_THREAD: THREAD,
+        PI_SESSIONS_T3_ENVIRONMENT: "environment-1",
+      });
+      expect(on.env.PI_SESSIONS).toBeUndefined();
+      const off = yield* launch(false);
+      expect(off.args).toEqual(["--mode", "rpc", "--approve", "--profile", "coder"]);
+      expect(off.env.PI_SESSIONS).toBe("off");
+      expect(off.env.PI_SESSIONS_T3_THREAD).toBeUndefined();
+    }).pipe(Effect.scoped, Effect.provide(TestEnv)),
+  );
+
   it.effect("surfaces ownership conflicts without retrying a new conversation", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi({ ownershipConflict: true });

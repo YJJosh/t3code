@@ -29,6 +29,7 @@ import * as PiSessionsClient from "../provider/PiSessionsClient.ts";
 import * as ProviderSessionDirectory from "../provider/Services/ProviderSessionDirectory.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { resolvePiAgentDir } from "../provider/pi/piPaths.ts";
+import { piSharingEnabled } from "../provider/pi/piRpcProtocol.ts";
 import { forkParked } from "../serverActivation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { importPreparedAgentThreads } from "./AgentSessionImporter.ts";
@@ -99,7 +100,7 @@ const make = Effect.gen(function* () {
     const homes = yield* Effect.forEach(instances, ([id, instance]) =>
       Effect.gen(function* () {
         const pi = decodeConfig(instance.config ?? {});
-        if (Option.isNone(pi) || !pi.value.shareWithTerminal) return null;
+        if (Option.isNone(pi) || !piSharingEnabled(pi.value)) return null;
         const home = yield* identity(
           resolvePiAgentDir(path, {
             agentDir: pi.value.agentDir,
@@ -380,7 +381,7 @@ const make = Effect.gen(function* () {
           const pi = decodeConfig(instance ? (instance.config ?? {}) : config.providers.pi);
           if (
             Option.isNone(pi) ||
-            !pi.value.shareWithTerminal ||
+            !piSharingEnabled(pi.value) ||
             (instance && !resolveProviderInstanceEnabled(instance))
           )
             return;
@@ -456,7 +457,7 @@ const make = Effect.gen(function* () {
           configs.push(config.providers.pi);
         const enabled = configs.some((value) => {
           const pi = decodeConfig(value);
-          return Option.isSome(pi) && pi.value.shareWithTerminal;
+          return Option.isSome(pi) && piSharingEnabled(pi.value);
         });
         if (!enabled && watching) {
           yield* Fiber.interrupt(watching);

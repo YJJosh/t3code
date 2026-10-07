@@ -43,8 +43,22 @@ describe("ProviderSettingsForm helpers", () => {
       "binaryPath",
       "profile",
       "agentDir",
+      "piSessions",
       "shareWithTerminal",
     ]);
+  });
+
+  it("draws Pi's pi-sessions settings as switches that default to on", () => {
+    const pi = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("pi")];
+    expect(pi).toBeDefined();
+
+    const fields = deriveProviderSettingsFields(pi!);
+    for (const key of ["piSessions", "shareWithTerminal"]) {
+      expect(fields.find((field) => field.key === key)).toMatchObject({
+        control: "switch",
+        defaultBooleanValue: true,
+      });
+    }
   });
 
   it("derives a select control with its choices for the Antigravity sign-in method", () => {

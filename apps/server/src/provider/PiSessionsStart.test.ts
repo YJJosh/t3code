@@ -6,6 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import {
+  findPiSessionsExtension,
   isPiSessionsDaemonMissing,
   readPiSessionsStartCommand,
   startPiSessionsDaemon,
@@ -33,6 +34,27 @@ it.layer(NodeServices.layer)("pi-sessions start.json", (it) => {
       expect(readPiSessionsStartCommand(dir, path)).toBeUndefined();
       yield* writeStart(dir, { version: 1, command });
       expect(readPiSessionsStartCommand(dir, path)).toEqual(command);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("finds the pi-sessions folder that wrote start.json", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* home;
+      const root = `${dir}/pi-sessions`;
+      yield* writeStart(dir, {
+        version: 1,
+        command: [process.execPath, `${root}/src/daemon-main.ts`],
+      });
+      // Not a pi-sessions folder (yet): no index.ts and package.json.
+      expect(findPiSessionsExtension(dir, path)).toBeUndefined();
+      yield* fs.makeDirectory(`${root}/src`, { recursive: true });
+      yield* fs.writeFileString(`${root}/index.ts`, "");
+      yield* fs.writeFileString(`${root}/package.json`, "{}");
+      expect(findPiSessionsExtension(dir, path)).toBe(root);
+      yield* writeStart(dir, { version: 1, command: [process.execPath, `${root}/src/other.ts`] });
+      expect(findPiSessionsExtension(dir, path)).toBeUndefined();
     }).pipe(Effect.scoped),
   );
 

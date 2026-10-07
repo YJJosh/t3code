@@ -180,6 +180,16 @@ export function buildPiRpcArgs(config: PiSettings, options: PiSpawnOptions = {})
   return args;
 }
 
+/** pi-sessions is loaded in T3's Pi (the default). */
+export function piSessionsEnabled(config: PiSettings): boolean {
+  return config.piSessions !== false;
+}
+
+/** T3's Pi chats run in the pi-sessions daemon, shared with the terminal. */
+export function piSharingEnabled(config: PiSettings): boolean {
+  return piSessionsEnabled(config) && config.shareWithTerminal !== false;
+}
+
 export function resolvePiBinary(config: PiSettings): string {
   return config.binaryPath?.trim() || DEFAULT_PI_BINARY;
 }

@@ -34,6 +34,31 @@ export function readPiSessionsStartCommand(home: string, path: Path.Path): strin
   }
 }
 
+/**
+ * The pi-sessions folder that last started its daemon on this computer, from `start.json`
+ * (`… <pi-sessions>/src/daemon-main.ts`). T3 loads it into its Pi with `-e`; when Pi
+ * already loads pi-sessions from its config, that copy wins and this one stays inert.
+ */
+export function findPiSessionsExtension(home: string, path: Path.Path): string | undefined {
+  const command = readPiSessionsStartCommand(home, path);
+  const entry = command?.find(
+    (part) =>
+      path.isAbsolute(part) &&
+      path.basename(part) === "daemon-main.ts" &&
+      path.basename(path.dirname(part)) === "src",
+  );
+  if (!entry) return undefined;
+  const root = path.dirname(path.dirname(entry));
+  try {
+    return NodeFS.statSync(path.join(root, "index.ts")).isFile() &&
+      NodeFS.statSync(path.join(root, "package.json")).isFile()
+      ? root
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Whether a connection failure means no daemon is listening (as opposed to a broken one). */
 export function isPiSessionsDaemonMissing(error: unknown): boolean {
   const code = (error as { cause?: { code?: unknown } } | undefined)?.cause?.code;
