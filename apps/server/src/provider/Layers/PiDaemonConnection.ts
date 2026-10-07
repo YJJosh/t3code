@@ -1,25 +1,50 @@
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import { ProviderAdapterProcessError } from "../Errors.ts";
-import { connectPiSessions, piSessionsSocketPath } from "../PiSessionsSocket.ts";
+import { connectPiSessions, piSessionsHome, piSessionsSocketPath } from "../PiSessionsSocket.ts";
+import { isPiSessionsDaemonMissing, startPiSessionsDaemon } from "../PiSessionsStart.ts";
 import type { PiRpcConnection, PiRpcConnectionInput, PiRpcResponse } from "./PiRpcConnection.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+const skipped = new Map<string, number>();
+/** A shared start that timed out means this Pi binary does not load pi-sessions; skip the daemon for a while. */
+export const PI_DAEMON_SKIP_MS = 10 * 60_000;
+/** Per pi-sessions home and Pi binary. */
+export const piDaemonSkipKey = (input: PiRpcConnectionInput, path: Path.Path) =>
+  `${piSessionsHome(input.env, path)}\0${input.binaryPath}`;
+export const isPiDaemonSkipped = (key: string) =>
+  Effect.map(Clock.currentTimeMillis, (now) => (skipped.get(key) ?? 0) > now);
+export const skipPiDaemon = (key: string) =>
+  Effect.map(Clock.currentTimeMillis, (now) => {
+    skipped.set(key, now + PI_DAEMON_SKIP_MS);
+  });
 
 /** Same RPC contract as stdio, but scope close only detaches T3 from the shared Pi. */
 export const makePiDaemonConnection = Effect.fn(function* (input: PiRpcConnectionInput) {
   const error = (detail: string, cause?: unknown) =>
     new ProviderAdapterProcessError({ provider: "pi", threadId: input.threadId, detail, cause });
   const path = yield* Path.Path;
-  const transport = yield* connectPiSessions(
-    piSessionsSocketPath(input.env, path, yield* HostProcessPlatform),
-    "rpc",
-  ).pipe(Effect.mapError((cause) => error(cause.detail, cause)));
+  const platform = yield* HostProcessPlatform;
+  const socketPath = piSessionsSocketPath(input.env, path, platform);
+  // No daemon yet (e.g. after a reboot, before any terminal ran pi): start it from the
+  // start.json pi-sessions left, so this chat is shared from its first message.
+  const transport = yield* connectPiSessions(socketPath, "rpc").pipe(
+    Effect.catchIf(isPiSessionsDaemonMissing, (cause) =>
+      startPiSessionsDaemon(input.env, path, platform).pipe(
+        Effect.flatMap((started) =>
+          started ? connectPiSessions(socketPath, "rpc") : Effect.fail(cause),
+        ),
+      ),
+    ),
+    Effect.mapError((cause) => error(cause.detail, cause)),
+  );
   const env = Object.fromEntries(
     Object.entries(input.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
   );

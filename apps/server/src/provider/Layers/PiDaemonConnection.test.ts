@@ -38,6 +38,8 @@ const fixture = Effect.fn(function* (
   panels = true,
   replay = false,
   started = !replay,
+  // Listen only once something wrote `started` into the home (the daemon T3 starts).
+  deferListen = false,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const home = yield* fs.makeTempDirectoryScoped({ prefix: "pi-share-" });
@@ -134,9 +136,15 @@ const fixture = Effect.fn(function* (
       server.close(() => resume(Effect.void));
     }),
   );
-  yield* Effect.callback<void>((resume) => {
+  const listen = Effect.callback<void>((resume) => {
     server.listen(`${home}/daemon.sock`, () => resume(Effect.void));
   });
+  if (deferListen)
+    yield* Effect.gen(function* () {
+      while (!(yield* fs.exists(`${home}/started`))) yield* Effect.sleep("20 millis");
+      yield* listen;
+    }).pipe(Effect.forkScoped);
+  else yield* listen;
   const send = (message: unknown) =>
     Effect.sync(() => {
       rpc!.write(frame(message));
@@ -351,6 +359,18 @@ it.layer(env)("shared Pi", (it) => {
         if (mode !== "shared" && mode !== "no-panels") {
           expect(result._tag).toBe("Failure");
           expect(spawns).toBe(mode === "conflict" ? 0 : 1);
+          if (mode === "failure") {
+            // The shared Pi never reported in, so this Pi lacks pi-sessions: the next
+            // start goes straight to T3's own Pi instead of waiting on the daemon again.
+            expect((yield* Queue.take(f.requests)).type).toBe("hello");
+            expect((yield* Queue.take(f.requests)).type).toBe("rpc-open");
+            const again = yield* adapter
+              .startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" })
+              .pipe(Effect.exit);
+            expect(again._tag).toBe("Failure");
+            expect(spawns).toBe(2);
+            expect(yield* Queue.size(f.requests)).toBe(0);
+          }
           return;
         }
         expect(result._tag).toBe("Success");
@@ -494,3 +514,46 @@ it.layer(env)("shared Pi", (it) => {
     );
   }
 });
+
+it.live("starts the daemon from start.json when none answers, then shares the chat", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture(undefined, false, false, true, true);
+    const fs = yield* FileSystem.FileSystem;
+    // Stands in for the pi-sessions daemon: marks that it ran (the fixture then listens)
+    // and records the environment T3 gave it.
+    const script =
+      "require('fs').writeFileSync(process.env.PI_SESSIONS_HOME + '/started', JSON.stringify({" +
+      " home: process.env.PI_SESSIONS_HOME, t3: process.env.PI_SESSIONS_T3_THREAD ?? null }));" +
+      " setTimeout(() => {}, 1500);";
+    yield* fs.writeFileString(
+      `${f.home}/start.json`,
+      encode({ version: 1, command: [process.execPath, "-e", script] }),
+      { mode: 0o600 },
+    );
+    let spawns = 0;
+    const adapter = yield* makePiAdapter(decodeSettings({ shareWithTerminal: true }), {
+      environmentId: "env",
+      environment: { PI_SESSIONS_HOME: f.home },
+    }).pipe(
+      Effect.provide(
+        Layer.mock(ChildProcessSpawner.ChildProcessSpawner)({
+          spawn: () =>
+            Effect.sync(() => {
+              spawns++;
+            }).pipe(Effect.andThen(Effect.die("fake own-RPC spawn"))),
+        }),
+      ),
+    );
+    yield* adapter.streamEvents.pipe(Stream.runDrain, Effect.forkScoped);
+    const result = yield* adapter
+      .startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" })
+      .pipe(Effect.exit);
+    expect(result._tag).toBe("Success");
+    expect(spawns).toBe(0);
+    expect(yield* Queue.take(f.requests)).toMatchObject({ type: "hello" });
+    expect(yield* Queue.take(f.requests)).toMatchObject({ type: "rpc-open" });
+    const ran = decode(yield* fs.readFileString(`${f.home}/started`));
+    expect(ran).toEqual({ home: f.home, t3: null });
+    yield* adapter.stopSession(threadId);
+  }).pipe(Effect.scoped, Effect.provide(env)),
+);

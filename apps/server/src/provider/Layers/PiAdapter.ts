@@ -103,7 +103,12 @@ import {
   type PiRpcConnection,
   type PiRpcResponse,
 } from "./PiRpcConnection.ts";
-import { makePiDaemonConnection } from "./PiDaemonConnection.ts";
+import {
+  isPiDaemonSkipped,
+  makePiDaemonConnection,
+  piDaemonSkipKey,
+  skipPiDaemon,
+} from "./PiDaemonConnection.ts";
 import { PiThreadSpawner, PiThreadSpawnError } from "../Services/PiThreadSpawner.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 
@@ -2296,7 +2301,10 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                 ).pipe(Effect.catchCause(() => Effect.void)),
             };
             const connection = yield* Effect.gen(function* () {
-              if (piSettings.shareWithTerminal !== false) {
+              if (
+                piSettings.shareWithTerminal !== false &&
+                (attachOnly || !(yield* isPiDaemonSkipped(piDaemonSkipKey(connectionInput, path))))
+              ) {
                 bufferStartup = true;
                 const daemonScope = yield* Scope.make();
                 yield* Scope.addFinalizer(sessionScope, Scope.close(daemonScope, Exit.void));
@@ -2309,6 +2317,9 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                       yield* Scope.close(daemonScope, Exit.void);
                       if (attachOnly || error.detail.includes("open elsewhere"))
                         return yield* error;
+                      // The shared Pi never reported in: this Pi binary does not load pi-sessions.
+                      if (error.detail.includes("did not start in time"))
+                        yield* skipPiDaemon(piDaemonSkipKey(connectionInput, path));
                       yield* Effect.logDebug("Pi sharing unavailable; using own RPC process", {
                         detail: error.detail,
                       });

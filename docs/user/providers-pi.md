@@ -35,7 +35,7 @@ Closing T3’s connection leaves the shared Pi running. If Pi exits or switches 
 
 **Current limit:** initial discovery imports bounded history, but reconnecting an already-linked chat does not backfill completed turns missed while T3 was disconnected. Those messages remain in Pi’s session and terminal history; new live messages resume in T3. An in-progress assistant response is replayed on attach. Images sent from the terminal are not copied into T3 attachments; image-only prompts appear as a placeholder.
 
-Without pi-sessions, without a running daemon, or with sharing turned off, T3 uses its own `pi --mode rpc` process as before. Background-terminal and subagent extensions continue to work without pi-sessions. Only the environment’s server talks to the local daemon, so web, desktop, mobile, and remote T3 connections use the same shared chat.
+When no daemon is running yet (for example after a restart, before any terminal ran `pi`), T3 starts it the way pi-sessions last started it, so the first chat is shared too. Without pi-sessions, when the daemon cannot be started, or with sharing turned off, T3 uses its own `pi --mode rpc` process as before. If T3's Pi does not load pi-sessions, a shared start times out once and T3 then uses its own Pi for that Pi binary for 10 minutes. Background-terminal and subagent extensions continue to work without pi-sessions. Only the environment’s server talks to the local daemon, so web, desktop, mobile, and remote T3 connections use the same shared chat.
 
 ## Conversation display
 
