@@ -180,6 +180,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
   readonly wslRuntime?: "valid" | "loose-server-tree" | "missing-pty" | "bad-digest";
   readonly targetArch?: "x64" | "arm64";
   readonly ptyPrebuildArch?: "x64" | "arm64";
+  readonly wslRuntimeExtraMembers?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -218,6 +219,12 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
 
   if (input.wslRuntime !== undefined) {
     const stem = wslRuntimeArchiveStem(WINDOWS_PAYLOAD_FIXTURE_VERSION, input.targetArch ?? "x64");
+    const extraMembers = [
+      ...(input.ptyPrebuildArch !== undefined
+        ? [`${stem}/node_modules/node-pty/prebuilds/linux-${input.ptyPrebuildArch}/pty.node`]
+        : []),
+      ...(input.wslRuntimeExtraMembers ?? []),
+    ];
     const sourceArchivePath =
       input.wslRuntime === "loose-server-tree"
         ? // The old hand-rolled runtime: apps/server/dist + node_modules at the
@@ -234,13 +241,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
             ...(input.wslRuntime === "missing-pty" || input.ptyPrebuildArch !== undefined
               ? { omitMembers: [`${stem}/node_modules/node-pty/build/Release/pty.node`] }
               : {}),
-            ...(input.ptyPrebuildArch !== undefined
-              ? {
-                  extraMembers: [
-                    `${stem}/node_modules/node-pty/prebuilds/linux-${input.ptyPrebuildArch}/pty.node`,
-                  ],
-                }
-              : {}),
+            ...(extraMembers.length > 0 ? { extraMembers } : {}),
           });
     const archivePath = path.join(resourcesDir, WSL_RUNTIME_ARCHIVE_NAME);
     const hashPath = path.join(resourcesDir, WSL_RUNTIME_ARCHIVE_HASH_NAME);
@@ -526,6 +527,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         arch: "x64",
         allowBuilds: {
           electron: true,
+          esbuild: true,
           "node-pty": true,
           "browser-tabs-lock": false,
         },
@@ -542,8 +544,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           cpu: ["x64"],
           libc: ["glibc"],
         },
+        // esbuild's postinstall fails in cross-arch stages, so it never runs.
         allowBuilds: {
           electron: true,
+          esbuild: false,
           "node-pty": true,
           "browser-tabs-lock": false,
         },
@@ -1311,6 +1315,51 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.equal(result.packagedAppDir, fixture.packagedAppDir);
       }),
     ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+  );
+
+  it.effect("accepts dependency bin.mjs files in the embedded archive's node_modules", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const stem = wslRuntimeArchiveStem(WINDOWS_PAYLOAD_FIXTURE_VERSION, "x64");
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          wslRuntime: "valid",
+          wslRuntimeExtraMembers: [`${stem}/node_modules/yaml/bin.mjs`],
+        });
+        const result = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+          expectWslRuntime: true,
+        });
+
+        assert.equal(result.packagedAppDir, fixture.packagedAppDir);
+      }),
+    ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+  );
+
+  it.effect("rejects an embedded archive that carries a loose server bundle", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const stem = wslRuntimeArchiveStem(WINDOWS_PAYLOAD_FIXTURE_VERSION, "x64");
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          wslRuntime: "valid",
+          wslRuntimeExtraMembers: [`${stem}/apps/server/dist/bin.mjs`],
+        });
+        const error = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+          expectWslRuntime: true,
+        }).pipe(Effect.flip);
+
+        assert.instanceOf(error, WindowsPackagedPayloadValidationError);
+        assert.equal(error.reason, "wsl-runtime-invalid");
+      }),
+    ),
   );
 
   for (const targetArch of ["x64", "arm64"] as const) {
