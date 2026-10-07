@@ -313,6 +313,11 @@ import {
   DraftId,
 } from "../composerDraftStore";
 import {
+  piModelSelectionToFollow,
+  readPiThreadModelSeen,
+  writePiThreadModelSeen,
+} from "../piSharedChatModel";
+import {
   formatTerminalContextLabel,
   type TerminalContextDraft,
   type TerminalContextSelection,
@@ -9391,6 +9396,36 @@ export default function ChatView(props: ChatViewProps) {
       settings,
     ],
   );
+  // Shared Pi chats can switch model in the terminal (pi-sessions). Follow such
+  // changes so the composer shows and sends the model the chat actually uses.
+  const activeServerThreadModelSelection = activeServerThread?.modelSelection;
+  const activeServerThreadEnvironmentId = activeServerThread?.environmentId;
+  const activeServerThreadId = activeServerThread?.id;
+  useEffect(() => {
+    if (!activeServerThreadEnvironmentId || !activeServerThreadId) return;
+    if (!activeServerThreadModelSelection) return;
+    const driver = providerStatuses.find(
+      (snapshot) => snapshot.instanceId === activeServerThreadModelSelection.instanceId,
+    )?.driver;
+    if (driver !== "pi") return;
+    const ref = scopeThreadRef(activeServerThreadEnvironmentId, activeServerThreadId);
+    const threadKey = `${activeServerThreadEnvironmentId}:${activeServerThreadId}`;
+    const draftPick = useComposerDraftStore.getState().getComposerDraft(ref)
+      ?.modelSelectionByProvider?.[activeServerThreadModelSelection.instanceId];
+    const { follow, seen } = piModelSelectionToFollow({
+      threadModel: activeServerThreadModelSelection,
+      draftPick,
+      lastSeen: readPiThreadModelSeen(threadKey),
+    });
+    writePiThreadModelSeen(threadKey, seen);
+    if (follow) setComposerDraftModelSelection(ref, follow);
+  }, [
+    activeServerThreadEnvironmentId,
+    activeServerThreadId,
+    activeServerThreadModelSelection,
+    providerStatuses,
+    setComposerDraftModelSelection,
+  ]);
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (multipleModelSelections !== null) return;
