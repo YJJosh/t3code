@@ -1584,9 +1584,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.message-sent": {
-          if (event.payload.turnId === null || event.payload.role !== "assistant") {
+          if (event.payload.turnId === null) return;
+          if (event.payload.role === "user") {
+            // External input joins a provider-started turn, rather than queuing another prompt.
+            const turn = yield* projectionTurnRepository.getByTurnId({
+              threadId: event.payload.threadId,
+              turnId: event.payload.turnId,
+            });
+            if (Option.isSome(turn) && turn.value.pendingMessageId === null) {
+              yield* projectionTurnRepository.upsertByTurnId({
+                ...turn.value,
+                pendingMessageId: event.payload.messageId,
+              });
+            }
             return;
           }
+          if (event.payload.role !== "assistant") return;
           // A completed assistant message only settles the turn once the
           // session is no longer running it — providers may emit several
           // assistant messages per turn (commentary between tool calls), and

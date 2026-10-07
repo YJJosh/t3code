@@ -19,6 +19,7 @@ export interface PendingApproval {
 }
 
 export interface PendingUserInput {
+  readonly terminalOnly?: boolean;
   readonly requestId: ApprovalRequestId;
   readonly createdAt: string;
   readonly questions: ReadonlyArray<UserInputQuestion>;
@@ -66,12 +67,12 @@ export function requestKindFromRequestType(requestType: unknown): ProviderReques
   }
 }
 
-function parseQuestions(value: unknown): UserInputQuestion[] {
+function parseQuestions(value: unknown, terminalOnly = false): UserInputQuestion[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((question) => {
     if (!Predicate.isObject(question) || !Array.isArray(question.options)) return [];
     const options = question.options.filter(isQuestionOption);
-    if (options.length === 0 && question.allowCustomAnswer === false) return [];
+    if (!terminalOnly && options.length === 0 && question.allowCustomAnswer === false) return [];
     const parsed = decodeQuestion({
       id: question.id,
       header: question.header,
@@ -162,12 +163,13 @@ export function derivePendingRequests(activities: ReadonlyArray<OrchestrationThr
       });
     } else if (activity.kind === "user-input.requested") {
       if (closedUserInputs.has(requestId)) continue;
-      const questions = parseQuestions(payload.questions);
+      const questions = parseQuestions(payload.questions, payload.responseMode === "terminal");
       if (questions.length === 0) continue;
       userInputs.set(requestId, {
         requestId,
         createdAt: activity.createdAt,
         questions,
+        ...(payload.responseMode === "terminal" ? { terminalOnly: true } : {}),
         dismissible: payload.responseMode === "message" || payload.dismissible === true,
       });
     } else if (

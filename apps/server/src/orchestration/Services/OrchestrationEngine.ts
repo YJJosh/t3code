@@ -72,7 +72,11 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
-    options?: { readonly origin?: OrchestrationClientOrigin },
+    options?: {
+      readonly origin?: OrchestrationClientOrigin;
+      /** Internal optimistic guard: reject if this aggregate changed since the read. */
+      readonly expectedSequence?: number;
+    },
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
 
   /**

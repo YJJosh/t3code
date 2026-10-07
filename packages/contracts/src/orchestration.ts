@@ -1560,12 +1560,14 @@ const ThreadHistoryImportCommand = Schema.Struct({
 /**
  * Persists a user message without starting a turn. Used by worktree bootstraps
  * so the send is durable while the worktree is still being prepared; the
- * turn that follows references the same message id.
+ * turn that follows references the same message id. Provider-observed inputs can
+ * instead reference an already-running turn without sending a new prompt.
  */
 const ThreadMessageUserAppendCommand = Schema.Struct({
   type: Schema.Literal("thread.message.user.append"),
   commandId: CommandId,
   threadId: ThreadId,
+  turnId: Schema.optional(TurnId),
   message: Schema.Struct({
     messageId: MessageId,
     text: Schema.String,

@@ -3,8 +3,8 @@
  *
  * Mirrors the Grok / OpenCode drivers: a plain value whose `create()` bundles
  * `snapshot` / `adapter` / `textGeneration` closures over the per-instance
- * `PiSettings`. Each instance owns its own Pi RPC subprocesses (one per thread)
- * and releases them when the registry scope closes.
+ * `PiSettings`. Each instance owns its Pi RPC connections (one per thread),
+ * either to its own subprocess or the shared daemon, and releases them on scope close.
  *
  * @module provider/Drivers/PiDriver
  */
@@ -16,6 +16,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -55,7 +56,8 @@ export type PiDriverEnv =
   | Path.Path
   | ProviderEventLoggers
   | ServerConfig
-  | ServerSettingsService;
+  | ServerSettingsService
+  | ServerEnvironment.ServerEnvironmentIdentity;
 
 const withInstanceIdentity =
   (input: {
@@ -83,6 +85,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
   defaultConfig: (): PiSettings => decodePiSettings({}),
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
+      const identity = yield* ServerEnvironment.ServerEnvironmentIdentity;
+      const environmentId = yield* identity.getEnvironmentId;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fileSystem = yield* FileSystem.FileSystem;
       const paths = yield* Path.Path;
@@ -103,6 +107,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
 
       const adapter = yield* makePiAdapter(effectiveConfig, {
         environment: processEnv,
+        environmentId,
         instanceId,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });

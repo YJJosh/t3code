@@ -1547,7 +1547,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           aggregateId: command.threadId,
           occurredAt: command.createdAt,
           commandId: command.commandId,
-          metadata: { deferredTurn: true },
+          metadata: { deferredTurn: command.turnId === undefined },
         })),
         type: "thread.message-sent",
         payload: {
@@ -1557,7 +1557,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: command.message.text,
           attachments: command.message.attachments,
           ...(command.message.context !== undefined ? { context: command.message.context } : {}),
-          turnId: null,
+          turnId: command.turnId ?? null,
           streaming: false,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,

@@ -1937,6 +1937,48 @@ const make = Effect.gen(function* () {
       const thread = yield* resolveThreadRuntimeContext(event.threadId);
       if (!thread) return;
 
+      if (
+        event.type === "item.completed" &&
+        event.payload.itemType === "user_message" &&
+        Predicate.isObject(event.payload.data) &&
+        "external" in event.payload.data &&
+        event.payload.data.external === true &&
+        "text" in event.payload.data &&
+        typeof event.payload.data.text === "string"
+      ) {
+        // A provider-observed input is already running. Persist it without sending it back.
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.user.append",
+          commandId: yield* providerCommandId(event, "external-user-message"),
+          threadId: thread.id,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          message: {
+            messageId: MessageId.make(String(event.itemId ?? event.eventId)),
+            text: event.payload.data.text,
+            attachments: [],
+          },
+          createdAt: event.createdAt,
+        });
+      }
+      if (event.type === "thread.metadata.updated" && event.payload.modelSelection) {
+        const shell = yield* projectionSnapshotQuery.getThreadShellById(thread.id);
+        const current = Option.isSome(shell) ? shell.value.modelSelection : undefined;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.meta.update",
+          commandId: yield* providerCommandId(event, "provider-model-selection"),
+          threadId: thread.id,
+          modelSelection: {
+            ...event.payload.modelSelection,
+            options: [
+              ...(current?.options ?? []).filter(
+                (option) =>
+                  !event.payload.modelSelection?.options?.some((next) => next.id === option.id),
+              ),
+              ...(event.payload.modelSelection.options ?? []),
+            ],
+          },
+        });
+      }
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;

@@ -1657,7 +1657,7 @@ function ImportRowMeta({
   threadCount,
   lastActiveAt,
 }: {
-  readonly sources: ReadonlyArray<"claudeAgent" | "codex"> | null;
+  readonly sources: ReadonlyArray<"claudeAgent" | "codex" | "pi"> | null;
   readonly threadCount: number;
   readonly lastActiveAt: string | null;
 }) {

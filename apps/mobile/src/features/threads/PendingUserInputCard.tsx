@@ -90,6 +90,18 @@ const EXPANDED_CARD_IS_OVERLAY = Platform.OS === "ios";
 const CARD_LAYOUT_TRANSITION = LinearTransition.duration(200);
 
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
+  if (props.pendingUserInput.terminalOnly)
+    return (
+      <View className="p-3">
+        <Text>
+          Waiting for you in the terminal: {props.pendingUserInput.questions[0]?.question}
+        </Text>
+      </View>
+    );
+  return <InteractivePendingUserInputCard {...props} />;
+}
+
+function InteractivePendingUserInputCard(props: PendingUserInputCardProps) {
   const questionCount = props.pendingUserInput.questions.length;
 
   const cardCoverage = props.cardCoverage;
