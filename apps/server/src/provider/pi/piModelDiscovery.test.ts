@@ -416,17 +416,12 @@ describe("discoverPiModelsWithSdk", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  // Mirrors an npm/nvm global install: `bin/pi` links into the package's CLI.
-  const writeFakePiInstall = Effect.fn(function* (root: string, sdkSource: string) {
+  // Writes a Pi package under `<modulesDir>/@earendil-works/pi-coding-agent`
+  // and returns its CLI.
+  const writeFakePiPackage = Effect.fn(function* (modulesDir: string, sdkSource: string) {
     const fileSystem = yield* FileSystem.FileSystem;
     const paths = yield* Path.Path;
-    const packageDir = paths.join(
-      root,
-      "lib",
-      "node_modules",
-      "@earendil-works",
-      "pi-coding-agent",
-    );
+    const packageDir = paths.join(modulesDir, "@earendil-works", "pi-coding-agent");
     yield* fileSystem.makeDirectory(paths.join(packageDir, "dist", "bundle"), { recursive: true });
     yield* fileSystem.writeFileString(
       paths.join(packageDir, "package.json"),
@@ -441,19 +436,21 @@ describe("discoverPiModelsWithSdk", () => {
     const cli = paths.join(packageDir, "dist", "bundle", "cli.js");
     yield* fileSystem.writeFileString(cli, "#!/usr/bin/env node\n");
     yield* fileSystem.chmod(cli, 0o755);
+    return cli;
+  });
+
+  // Mirrors an npm/nvm global install: `bin/pi` links into the package's CLI.
+  const writeFakePiInstall = Effect.fn(function* (root: string, sdkSource: string) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const paths = yield* Path.Path;
+    const cli = yield* writeFakePiPackage(paths.join(root, "lib", "node_modules"), sdkSource);
     yield* fileSystem.makeDirectory(paths.join(root, "bin"));
     const bin = paths.join(root, "bin", "pi");
     yield* fileSystem.symlink(cli, bin);
     return bin;
   });
 
-  it.effect("discovers with the SDK of the Pi install that sessions launch", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pi-installed-sdk-" });
-      const binaryPath = yield* writeFakePiInstall(
-        root,
-        `export async function createAgentSessionServices() {
+  const installedSdkSource = `export async function createAgentSessionServices() {
   return {
     modelRuntime: {
       getAvailable: async () => [{ id: "claude-opus-5-5", provider: "claude-agent-sdk" }],
@@ -461,8 +458,52 @@ describe("discoverPiModelsWithSdk", () => {
     },
     diagnostics: [],
   };
-}\n`,
+}\n`;
+
+  it.effect("discovers with the SDK of the Pi install that sessions launch", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pi-installed-sdk-" });
+      const binaryPath = yield* writeFakePiInstall(root, installedSdkSource);
+      const result = yield* discoverPiModels({
+        binaryPath,
+        cwd: root,
+        environment: { HOME: root, PI_OFFLINE: "1" },
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.models.map((model) => model.slug)).toEqual([
+        "claude-agent-sdk/claude-opus-5-5",
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  // Mirrors Pi's installer: a linked `<agent dir>/bin/pi` script runs the
+  // release named in `install/current-version`.
+  it.effect("discovers with the SDK of Pi's managed install", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pi-managed-sdk-" });
+      const agentDir = paths.join(root, "agent");
+      const releases = paths.join(agentDir, "install", "releases");
+      yield* writeFakePiPackage(
+        paths.join(releases, "1.0.4", "node_modules"),
+        "export const version = '1.0.4';\n",
       );
+      yield* writeFakePiPackage(paths.join(releases, "1.1.0", "node_modules"), installedSdkSource);
+      yield* fileSystem.writeFileString(
+        paths.join(agentDir, "install", "current-version"),
+        "1.1.0\n",
+      );
+      yield* fileSystem.makeDirectory(paths.join(agentDir, "bin"));
+      const launcher = paths.join(agentDir, "bin", "pi");
+      yield* fileSystem.writeFileString(launcher, "#!/bin/sh\n");
+      yield* fileSystem.chmod(launcher, 0o755);
+      yield* fileSystem.makeDirectory(paths.join(root, "local-bin"));
+      const binaryPath = paths.join(root, "local-bin", "pi");
+      yield* fileSystem.symlink(launcher, binaryPath);
+
       const result = yield* discoverPiModels({
         binaryPath,
         cwd: root,
