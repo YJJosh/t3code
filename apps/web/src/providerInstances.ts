@@ -79,6 +79,17 @@ export function isProviderInstancePickerReady(entry: ProviderInstanceEntry): boo
   return entry.enabled && entry.isAvailable && entry.status === "ready";
 }
 
+/**
+ * Whether a driver's model catalog comes from the user's own setup, so a
+ * thread's model can be missing from it. Pickers keep such a model and mark it
+ * unavailable instead of silently switching to another one.
+ */
+export function keepsUnavailableModelSelection(
+  driverKind: ProviderDriverKind | undefined,
+): boolean {
+  return driverKind === "opencode" || driverKind === "antigravity" || driverKind === "pi";
+}
+
 /** Picker rails contain configured, enabled instances only. */
 export function isProviderInstancePickerVisible(entry: ProviderInstanceEntry): boolean {
   return entry.enabled;

@@ -118,7 +118,9 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     promptInjectionState = "none",
     planModeEnabled,
   } = input;
-  if (provider === "opencode") {
+  // A model missing from these catalogs has no capabilities to validate its
+  // options against, so keep them as sent (Pi's include its profile and home).
+  if (provider === "opencode" || provider === "pi") {
     const normalizedModel = normalizeModelSlug(model, provider);
     const modelIsInCatalog = models.some((candidate) => candidate.slug === normalizedModel);
     if (!modelIsInCatalog) {
