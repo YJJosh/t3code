@@ -621,9 +621,10 @@ function piSdkEntry(manifest: typeof PiPackageManifest.Type): string {
 
 /**
  * Locate the SDK of the Pi install that `binaryPath` launches, following a
- * symlinked bin into its package or an npm Windows shim to the adjacent
- * `node_modules`. Returns undefined for other installs, such as a compiled
- * binary, so discovery falls back to the bundled SDK.
+ * symlinked bin into its package, an npm Windows shim to the adjacent
+ * `node_modules`, or Pi's managed-install launcher to its current release.
+ * Returns undefined for other installs, such as a compiled binary, so
+ * discovery falls back to the bundled SDK.
  */
 const resolveInstalledPiSdkUrl = Effect.fn("resolveInstalledPiSdkUrl")(
   function* (binaryPath: string, environment: NodeJS.ProcessEnv | undefined) {
@@ -638,11 +639,19 @@ const resolveInstalledPiSdkUrl = Effect.fn("resolveInstalledPiSdkUrl")(
       paths
         .toFileUrl(paths.join(directory, piSdkEntry(manifest)))
         .pipe(Effect.map((url) => url.href));
+    const piSdkUrlAt = (directory: string) =>
+      Effect.gen(function* () {
+        const manifest = yield* readManifest(directory);
+        return Option.isSome(manifest) && manifest.value.name === PI_SDK_PACKAGE
+          ? yield* sdkUrl(directory, manifest.value)
+          : undefined;
+      });
 
     const command = yield* resolveCommandPath(binaryPath, environment ? { env: environment } : {});
+    const realCommand = yield* fs.realPath(command);
     // The first named package.json above the real bin owns it; build-output
     // manifests such as `{"type":"module"}` have no name and are skipped.
-    let directory = paths.dirname(yield* fs.realPath(command));
+    let directory = paths.dirname(realCommand);
     while (true) {
       const manifest = yield* readManifest(directory);
       if (Option.isSome(manifest)) {
@@ -653,10 +662,18 @@ const resolveInstalledPiSdkUrl = Effect.fn("resolveInstalledPiSdkUrl")(
       if (parent === directory) break;
       directory = parent;
     }
-    const shimPackage = paths.join(paths.dirname(command), "node_modules", PI_SDK_PACKAGE);
-    const shimManifest = yield* readManifest(shimPackage);
-    return Option.isSome(shimManifest) && shimManifest.value.name === PI_SDK_PACKAGE
-      ? yield* sdkUrl(shimPackage, shimManifest.value)
+    const shimSdkUrl = yield* piSdkUrlAt(
+      paths.join(paths.dirname(command), "node_modules", PI_SDK_PACKAGE),
+    );
+    if (shimSdkUrl) return shimSdkUrl;
+    // Pi's installer launches `<agent dir>/bin/pi`, a script that runs the
+    // release named in `<agent dir>/install/current-version`.
+    const managedRoot = paths.join(paths.dirname(paths.dirname(realCommand)), "install");
+    const version = (yield* fs.readFileString(paths.join(managedRoot, "current-version"))).trim();
+    return version
+      ? yield* piSdkUrlAt(
+          paths.join(managedRoot, "releases", version, "node_modules", PI_SDK_PACKAGE),
+        )
       : undefined;
   },
   Effect.orElseSucceed(() => undefined),
