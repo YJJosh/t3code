@@ -279,14 +279,18 @@ describe("getComposerProviderState", () => {
   it("keeps a missing Pi model's thinking level, profile, and config set", () => {
     const state = getComposerProviderState({
       provider: ProviderDriverKind.make("pi"),
-      model: "claude-agent-sdk/claude-opus-5-5",
+      model: "openai/gpt-6.1-sol",
       models: modelWith([]),
-      modelOptions: selections(["reasoning", "xhigh"], ["profile", "coder"], ["configSet", "main"]),
+      modelOptions: selections(
+        ["reasoning", "medium"],
+        ["profile", "reviewer"],
+        ["configSet", "work"],
+      ),
       planModeEnabled: true,
     });
 
     expect(state.modelOptionsForDispatch).toEqual(
-      selections(["reasoning", "xhigh"], ["profile", "coder"], ["configSet", "main"]),
+      selections(["reasoning", "medium"], ["profile", "reviewer"], ["configSet", "work"]),
     );
   });
 

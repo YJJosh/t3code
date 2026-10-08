@@ -261,12 +261,12 @@ describe("Pi configuration descriptor placement", () => {
       shouldRenderTraitsControls({
         provider: ProviderDriverKind.make("pi"),
         models: [],
-        model: "claude-agent-sdk/claude-opus-5-5",
+        model: "openai/gpt-6.1-sol",
         prompt: "",
         modelOptions: [
-          { id: "reasoning", value: "xhigh" },
-          { id: "profile", value: "coder" },
-          { id: "configSet", value: "main" },
+          { id: "reasoning", value: "medium" },
+          { id: "profile", value: "reviewer" },
+          { id: "configSet", value: "work" },
         ],
         planModeEnabled: false,
         descriptorScope,

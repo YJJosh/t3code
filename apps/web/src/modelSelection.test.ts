@@ -352,8 +352,8 @@ describe("instance-scoped model selection", () => {
     },
     {
       driverName: "pi",
-      availableModel: "claude-agent-sdk/claude-haiku-4-5-20251001",
-      missingModel: "claude-agent-sdk/claude-opus-5-5",
+      availableModel: "openai/gpt-6",
+      missingModel: "openai/gpt-6.1-sol",
     },
   ])("$driverName catalog gaps", ({ driverName, availableModel, missingModel }) => {
     it("preserves a selected model when a catalog refresh no longer contains it", () => {
