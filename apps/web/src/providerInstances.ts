@@ -90,6 +90,15 @@ export function keepsUnavailableModelSelection(
   return driverKind === "opencode" || driverKind === "antigravity" || driverKind === "pi";
 }
 
+/**
+ * Whether a missing model keeps its saved options. With no capabilities to
+ * validate them against, the composer sends them unchanged and the traits
+ * picker shows them read-only. Pi's include the thread's profile and config set.
+ */
+export function keepsUnavailableModelOptions(driverKind: ProviderDriverKind | undefined): boolean {
+  return driverKind === "opencode" || driverKind === "pi";
+}
+
 /** Picker rails contain configured, enabled instances only. */
 export function isProviderInstancePickerVisible(entry: ProviderInstanceEntry): boolean {
   return entry.enabled;
