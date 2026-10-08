@@ -79,6 +79,26 @@ export function isProviderInstancePickerReady(entry: ProviderInstanceEntry): boo
   return entry.enabled && entry.isAvailable && entry.status === "ready";
 }
 
+/**
+ * Whether a driver's model catalog comes from the user's own setup, so a
+ * thread's model can be missing from it. Pickers keep such a model and mark it
+ * unavailable instead of silently switching to another one.
+ */
+export function keepsUnavailableModelSelection(
+  driverKind: ProviderDriverKind | undefined,
+): boolean {
+  return driverKind === "opencode" || driverKind === "antigravity" || driverKind === "pi";
+}
+
+/**
+ * Whether a missing model keeps its saved options. With no capabilities to
+ * validate them against, the composer sends them unchanged and the traits
+ * picker shows them read-only. Pi's include the thread's profile and config set.
+ */
+export function keepsUnavailableModelOptions(driverKind: ProviderDriverKind | undefined): boolean {
+  return driverKind === "opencode" || driverKind === "pi";
+}
+
 /** Picker rails contain configured, enabled instances only. */
 export function isProviderInstancePickerVisible(entry: ProviderInstanceEntry): boolean {
   return entry.enabled;

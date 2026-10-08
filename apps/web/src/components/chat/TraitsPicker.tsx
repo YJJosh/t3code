@@ -28,6 +28,7 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { useComposerDraftStore, DraftId } from "../../composerDraftStore";
+import { keepsUnavailableModelOptions } from "../../providerInstances";
 import { getProviderModelCapabilities } from "../../providerModels";
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
@@ -73,6 +74,7 @@ export function mergeScopedProviderOptions(
 
 const SAVED_OPTION_LABELS: Readonly<Record<string, string>> = {
   agent: "Agent",
+  configSet: "Config set",
   effort: "Effort",
   reasoningEffort: "Reasoning effort",
   variant: "Reasoning",
@@ -85,7 +87,7 @@ function savedOptionLabel(id: string): string {
   );
 }
 
-/** Read-only descriptors for saved values whose OpenCode model metadata is unavailable. */
+/** Read-only descriptors for saved values whose model is missing from the catalog. */
 export function buildUnavailableModelOptionDescriptors(
   selections: ProviderOptions | null | undefined,
 ): ReadonlyArray<ProviderOptionDescriptor> {
@@ -170,7 +172,7 @@ function getSelectedTraits(
 ) {
   const caps = getProviderModelCapabilities(models, model, provider, planModeEnabled);
   const modelIsUnavailable =
-    provider === "opencode" &&
+    keepsUnavailableModelOptions(provider) &&
     !models.some((candidate) => candidate.slug === normalizeModelSlug(model, provider));
   const allDescriptors = modelIsUnavailable
     ? buildUnavailableModelOptionDescriptors(

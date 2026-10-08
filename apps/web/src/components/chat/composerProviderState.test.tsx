@@ -276,6 +276,24 @@ describe("getComposerProviderState", () => {
     );
   });
 
+  it("keeps a missing Pi model's thinking level, profile, and config set", () => {
+    const state = getComposerProviderState({
+      provider: ProviderDriverKind.make("pi"),
+      model: "openai/gpt-6.1-sol",
+      models: modelWith([]),
+      modelOptions: selections(
+        ["reasoning", "medium"],
+        ["profile", "reviewer"],
+        ["configSet", "work"],
+      ),
+      planModeEnabled: true,
+    });
+
+    expect(state.modelOptionsForDispatch).toEqual(
+      selections(["reasoning", "medium"], ["profile", "reviewer"], ["configSet", "work"]),
+    );
+  });
+
   it.each(["codex", "claudeAgent", "cursor", "grok"])(
     "does not preserve unknown options for a missing %s model",
     (provider) => {

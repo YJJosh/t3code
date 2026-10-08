@@ -5,6 +5,8 @@ import {
   buildUnavailableModelOptionDescriptors,
   filterTraitsDescriptors,
   mergeScopedProviderOptions,
+  shouldRenderTraitsControls,
+  type TraitsDescriptorScope,
 } from "./TraitsPicker";
 
 function selectDescriptor(
@@ -252,6 +254,25 @@ describe("Pi configuration descriptor placement", () => {
       display([{ ...configSet, options: [{ id: "main", label: "main" }] }, profile]).label,
     ).toBe("coder");
     expect(display([profile]).label).toBe("coder");
+  });
+
+  it("keeps a missing model's saved Pi options visible in both pickers", () => {
+    const visible = (descriptorScope: TraitsDescriptorScope) =>
+      shouldRenderTraitsControls({
+        provider: ProviderDriverKind.make("pi"),
+        models: [],
+        model: "openai/gpt-6.1-sol",
+        prompt: "",
+        modelOptions: [
+          { id: "reasoning", value: "medium" },
+          { id: "profile", value: "reviewer" },
+          { id: "configSet", value: "work" },
+        ],
+        planModeEnabled: false,
+        descriptorScope,
+      });
+    expect(visible("pi-configuration")).toBe(true);
+    expect(visible("pi-other")).toBe(true);
   });
 
   it("updates a scoped control without dropping the other Pi selections", () => {
