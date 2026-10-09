@@ -508,6 +508,57 @@ describe("serverSettings helpers", () => {
     );
   });
 
+  it("falls back past signed-out providers to a model the fallback provider offers", () => {
+    const provider = (
+      driver: string,
+      auth: ServerProvider["auth"]["status"],
+      models: ServerProvider["models"],
+    ) =>
+      ({
+        instanceId: ProviderInstanceId.make(driver),
+        driver: ProviderDriverKind.make(driver),
+        enabled: true,
+        installed: driver !== "codex",
+        version: null,
+        status: "ready",
+        auth: { status: auth },
+        checkedAt: "2026-07-27T00:00:00.000Z",
+        models,
+        slashCommands: [],
+        skills: [],
+      }) satisfies ServerProvider;
+    const model = (slug: string, isDefault?: boolean) => ({
+      slug,
+      name: slug,
+      isCustom: false,
+      capabilities: null,
+      ...(isDefault ? { isDefault } : {}),
+    });
+    const codex = provider("codex", "unknown", []);
+    const signedOutClaude = provider("claudeAgent", "unauthenticated", [model("claude-haiku-4-5")]);
+
+    // OpenCode's catalog lacks the hard-coded `openai/gpt-5`, so its own default wins.
+    const opencode = provider("opencode", "authenticated", [
+      model("zai/glm-4.6"),
+      model("anthropic/claude-sonnet-4-5", true),
+    ]);
+    expect(
+      resolveTextGenerationModelSelection(DEFAULT_SERVER_SETTINGS, [
+        codex,
+        signedOutClaude,
+        opencode,
+      ]),
+    ).toEqual(createModelSelection(opencode.instanceId, "anthropic/claude-sonnet-4-5"));
+
+    const opencodeWithDefault = provider("opencode", "authenticated", [
+      model("anthropic/claude-sonnet-4-5", true),
+      model("openai/gpt-5"),
+    ]);
+    expect(
+      resolveTextGenerationModelSelection(DEFAULT_SERVER_SETTINGS, [codex, opencodeWithDefault]),
+    ).toEqual(createModelSelection(opencodeWithDefault.instanceId, "openai/gpt-5"));
+  });
+
   it("replaces providerInstances maps so omitted instance fields are cleared", () => {
     const codexId = ProviderInstanceId.make("codex");
     const current = {

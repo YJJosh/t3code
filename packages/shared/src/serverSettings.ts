@@ -88,13 +88,35 @@ export function canProviderGenerateText(provider: ServerProvider): boolean {
     provider.enabled &&
     provider.installed &&
     isProviderAvailable(provider) &&
+    provider.auth.status !== "unauthenticated" &&
     provider.supportsTextGeneration !== false
   );
 }
 
 /**
+ * The model a provider generates text with when none was chosen for it: the
+ * cheap per-driver default when its catalog offers it, else the catalog's own
+ * default or first model. An empty catalog (not yet discovered) keeps the
+ * per-driver default.
+ */
+export function defaultTextGenerationModel(
+  provider: Pick<ServerProvider, "driver" | "models">,
+): string | undefined {
+  const preferred = DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[provider.driver];
+  if (preferred && provider.models.length === 0) return preferred;
+  const advertised = preferred
+    ? provider.models.find(
+        (model) => model.slug === preferred || model.aliases?.includes(preferred) === true,
+      )
+    : undefined;
+  return (advertised ?? provider.models.find((model) => model.isDefault) ?? provider.models[0])
+    ?.slug;
+}
+
+/**
  * The configured text generation selection, or the first provider that can run
- * it when the configured one is missing, disabled, or not installed. The
+ * it when the configured one is missing, disabled, not installed, or signed
+ * out. The
  * default selection is Codex, which many machines never install. Without any
  * usable provider the configured selection is kept so the failure names it.
  */
@@ -110,8 +132,7 @@ export function resolveTextGenerationModelSelection(
 
   for (const provider of providers) {
     if (!canProviderGenerateText(provider)) continue;
-    const model =
-      DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[provider.driver] ?? provider.models[0]?.slug;
+    const model = defaultTextGenerationModel(provider);
     if (model) {
       return createModelSelection(provider.instanceId, model);
     }

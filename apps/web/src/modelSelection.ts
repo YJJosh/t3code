@@ -1,7 +1,6 @@
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL,
-  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
   ProviderDriverKind,
@@ -16,7 +15,10 @@ import {
   readCustomModelEntries,
   resolveSelectableModel,
 } from "@t3tools/shared/model";
-import { canProviderGenerateText } from "@t3tools/shared/serverSettings";
+import {
+  canProviderGenerateText,
+  defaultTextGenerationModel,
+} from "@t3tools/shared/serverSettings";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
@@ -411,17 +413,19 @@ export function resolveAppModelSelectionState(
   const entry = selectedEntry ?? entries[0];
   if (entry) {
     // When the instance changed due to fallback (e.g. selected instance was not installed),
-    // don't carry over the old instance's model — use the fallback instance's default.
-    const selectedModel = selectedEntry ? selection.model : null;
+    // don't carry over the old instance's model — use the model the server falls back to.
+    const fallbackModel = defaultTextGenerationModel({
+      driver: entry.driverKind,
+      models: entry.models,
+    });
+    const selectedModel = selectedEntry ? selection.model : fallbackModel;
     const model =
       resolveAppModelSelectionForInstance(
         entry.instanceId,
         settings,
         supportedProviders,
         selectedModel,
-      ) ??
-      DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[entry.driverKind] ??
-      entry.models[0]?.slug;
+      ) ?? fallbackModel;
     if (!model) {
       return createModelSelection(entry.instanceId, "", []);
     }
