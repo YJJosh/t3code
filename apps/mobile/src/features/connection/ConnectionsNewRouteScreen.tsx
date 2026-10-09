@@ -188,7 +188,7 @@ export function ConnectionsNewRouteScreen({
 
   return (
     <SettingsScreen
-      formSheet={routeName === "ConnectionsNew"}
+      formSheet={routeName === "ConnectionsNew" && Platform.OS !== "android"}
       title={showScanner ? "Scan QR Code" : "Add Environment"}
       actions={[
         {
