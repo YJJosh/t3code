@@ -16,6 +16,7 @@ import {
   isModelSelectionProviderEnabled,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
+  resolveTextGenerationModelSelection,
   resolveProjectAgentBrowserAccess,
   resolveProjectAutoPull,
 } from "./serverSettings.ts";
@@ -464,6 +465,98 @@ describe("serverSettings helpers", () => {
       settings.textGenerationModelSelection,
     );
     expect(settings.sourceControlWriterModelSelection).toBe(sourceControlWriterModelSelection);
+  });
+
+  it("uses the first installed provider when the configured text generation one is missing", () => {
+    const provider = (instanceId: string, driver: string, installed: boolean) =>
+      ({
+        instanceId: ProviderInstanceId.make(instanceId),
+        driver: ProviderDriverKind.make(driver),
+        enabled: true,
+        installed,
+        version: null,
+        status: installed ? "ready" : "error",
+        auth: { status: "unknown" },
+        checkedAt: "2026-07-27T00:00:00.000Z",
+        models: [
+          {
+            slug: `${instanceId}-model`,
+            name: "Model",
+            isCustom: false,
+            capabilities: null,
+          },
+        ],
+        slashCommands: [],
+        skills: [],
+      }) satisfies ServerProvider;
+    const codex = provider("codex", "codex", false);
+    const pi = provider("pi", "pi", true);
+
+    expect(resolveTextGenerationModelSelection(DEFAULT_SERVER_SETTINGS, [codex, pi])).toEqual(
+      createModelSelection(pi.instanceId, "pi-model"),
+    );
+    expect(resolveSourceControlWriterModelSelection(DEFAULT_SERVER_SETTINGS, [codex, pi])).toEqual(
+      createModelSelection(pi.instanceId, "pi-model"),
+    );
+
+    const installedCodex = provider("codex", "codex", true);
+    expect(resolveTextGenerationModelSelection(DEFAULT_SERVER_SETTINGS, [installedCodex, pi])).toBe(
+      DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+    );
+    expect(resolveTextGenerationModelSelection(DEFAULT_SERVER_SETTINGS, [codex])).toBe(
+      DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+    );
+  });
+
+  it("falls back past signed-out providers to a model the fallback provider offers", () => {
+    const provider = (
+      driver: string,
+      auth: ServerProvider["auth"]["status"],
+      models: ServerProvider["models"],
+    ) =>
+      ({
+        instanceId: ProviderInstanceId.make(driver),
+        driver: ProviderDriverKind.make(driver),
+        enabled: true,
+        installed: driver !== "codex",
+        version: null,
+        status: "ready",
+        auth: { status: auth },
+        checkedAt: "2026-07-27T00:00:00.000Z",
+        models,
+        slashCommands: [],
+        skills: [],
+      }) satisfies ServerProvider;
+    const model = (slug: string, isDefault?: boolean) => ({
+      slug,
+      name: slug,
+      isCustom: false,
+      capabilities: null,
+      ...(isDefault ? { isDefault } : {}),
+    });
+    const codex = provider("codex", "unknown", []);
+    const signedOutClaude = provider("claudeAgent", "unauthenticated", [model("claude-haiku-4-5")]);
+
+    // OpenCode's catalog lacks the hard-coded `openai/gpt-5`, so its own default wins.
+    const opencode = provider("opencode", "authenticated", [
+      model("zai/glm-4.6"),
+      model("anthropic/claude-sonnet-4-5", true),
+    ]);
+    expect(
+      resolveTextGenerationModelSelection(DEFAULT_SERVER_SETTINGS, [
+        codex,
+        signedOutClaude,
+        opencode,
+      ]),
+    ).toEqual(createModelSelection(opencode.instanceId, "anthropic/claude-sonnet-4-5"));
+
+    const opencodeWithDefault = provider("opencode", "authenticated", [
+      model("anthropic/claude-sonnet-4-5", true),
+      model("openai/gpt-5"),
+    ]);
+    expect(
+      resolveTextGenerationModelSelection(DEFAULT_SERVER_SETTINGS, [codex, opencodeWithDefault]),
+    ).toEqual(createModelSelection(opencodeWithDefault.instanceId, "openai/gpt-5"));
   });
 
   it("replaces providerInstances maps so omitted instance fields are cleared", () => {

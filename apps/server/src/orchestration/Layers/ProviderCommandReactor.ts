@@ -60,6 +60,7 @@ import {
 import { canReplaceThreadTitle, DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import {
   resolveSourceControlWriterModelSelection,
+  resolveTextGenerationModelSelection,
   ServerSettingsService,
 } from "../../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -904,13 +905,10 @@ const make = Effect.gen(function* () {
     const attachments = input.attachments ?? [];
     yield* Effect.gen(function* () {
       const settings = yield* projectSettingsForThread(input.threadId);
-      const modelSelection =
-        settings.sourceControlWriterModelSelection === null
-          ? settings.textGenerationModelSelection
-          : resolveSourceControlWriterModelSelection(
-              settings,
-              yield* providerRegistry.getProviders,
-            );
+      const modelSelection = resolveSourceControlWriterModelSelection(
+        settings,
+        yield* providerRegistry.getProviders,
+      );
 
       const generated = yield* textGeneration.generateBranchName({
         cwd,
@@ -961,8 +959,9 @@ const make = Effect.gen(function* () {
     }) {
       const attachments = input.attachments ?? [];
       yield* Effect.gen(function* () {
-        const { textGenerationModelSelection: modelSelection } = yield* projectSettingsForThread(
-          input.threadId,
+        const modelSelection = resolveTextGenerationModelSelection(
+          yield* projectSettingsForThread(input.threadId),
+          yield* providerRegistry.getProviders,
         );
 
         const generated = yield* textGeneration
@@ -1059,10 +1058,10 @@ const make = Effect.gen(function* () {
         thread,
         projects: project ? [project] : [],
       }) ?? process.cwd();
-    const { textGenerationModelSelection: modelSelection } = resolveProjectSettings(
-      yield* serverSettingsService.getSettings,
-      thread.projectId,
-    ).settings;
+    const modelSelection = resolveTextGenerationModelSelection(
+      resolveProjectSettings(yield* serverSettingsService.getSettings, thread.projectId).settings,
+      yield* providerRegistry.getProviders,
+    );
     const generated = yield* textGeneration.generateThreadTitle({
       cwd,
       message,
