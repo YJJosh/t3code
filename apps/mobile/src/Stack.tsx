@@ -792,11 +792,16 @@ const RootStackConfig = createNativeStackNavigator({
     ConnectionsNew: createNativeStackScreen({
       screen: ConnectionsNewRouteScreen,
       linking: "connections/new",
-      options: {
-        ...FORM_SHEET_PRESENTATION_OPTIONS,
-        sheetAllowedDetents: [0.55, 0.7],
-        sheetGrabberVisible: true,
-      },
+      // Android: full page like Connections. A formSheet opened by a
+      // cold-start deep link presents only its scrim, with no sheet.
+      options:
+        Platform.OS === "android"
+          ? { presentation: "card" as const, headerShown: false }
+          : {
+              ...FORM_SHEET_PRESENTATION_OPTIONS,
+              sheetAllowedDetents: [0.55, 0.7],
+              sheetGrabberVisible: true,
+            },
     }),
     NewTaskSheet: createNativeStackScreen({
       screen: NewTaskSheetStack,
