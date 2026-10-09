@@ -16,6 +16,7 @@ import {
   isModelSelectionProviderEnabled,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
+  resolveTextGenerationModelSelection,
   resolveProjectAgentBrowserAccess,
   resolveProjectAutoPull,
 } from "./serverSettings.ts";
@@ -464,6 +465,47 @@ describe("serverSettings helpers", () => {
       settings.textGenerationModelSelection,
     );
     expect(settings.sourceControlWriterModelSelection).toBe(sourceControlWriterModelSelection);
+  });
+
+  it("uses the first installed provider when the configured text generation one is missing", () => {
+    const provider = (instanceId: string, driver: string, installed: boolean) =>
+      ({
+        instanceId: ProviderInstanceId.make(instanceId),
+        driver: ProviderDriverKind.make(driver),
+        enabled: true,
+        installed,
+        version: null,
+        status: installed ? "ready" : "error",
+        auth: { status: "unknown" },
+        checkedAt: "2026-07-27T00:00:00.000Z",
+        models: [
+          {
+            slug: `${instanceId}-model`,
+            name: "Model",
+            isCustom: false,
+            capabilities: null,
+          },
+        ],
+        slashCommands: [],
+        skills: [],
+      }) satisfies ServerProvider;
+    const codex = provider("codex", "codex", false);
+    const pi = provider("pi", "pi", true);
+
+    expect(resolveTextGenerationModelSelection(DEFAULT_SERVER_SETTINGS, [codex, pi])).toEqual(
+      createModelSelection(pi.instanceId, "pi-model"),
+    );
+    expect(resolveSourceControlWriterModelSelection(DEFAULT_SERVER_SETTINGS, [codex, pi])).toEqual(
+      createModelSelection(pi.instanceId, "pi-model"),
+    );
+
+    const installedCodex = provider("codex", "codex", true);
+    expect(resolveTextGenerationModelSelection(DEFAULT_SERVER_SETTINGS, [installedCodex, pi])).toBe(
+      DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+    );
+    expect(resolveTextGenerationModelSelection(DEFAULT_SERVER_SETTINGS, [codex])).toBe(
+      DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+    );
   });
 
   it("replaces providerInstances maps so omitted instance fields are cleared", () => {

@@ -1,4 +1,5 @@
 import {
+  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   isProviderDriverKind,
   isProviderAvailable,
   resolveProviderInstanceEnabled,
@@ -81,22 +82,61 @@ export function isModelSelectionProviderEnabled(
   );
 }
 
+/** Whether a provider snapshot can run titles, branch names, and commit/PR text right now. */
+export function canProviderGenerateText(provider: ServerProvider): boolean {
+  return (
+    provider.enabled &&
+    provider.installed &&
+    isProviderAvailable(provider) &&
+    provider.supportsTextGeneration !== false
+  );
+}
+
+/**
+ * The configured text generation selection, or the first provider that can run
+ * it when the configured one is missing, disabled, or not installed. The
+ * default selection is Codex, which many machines never install. Without any
+ * usable provider the configured selection is kept so the failure names it.
+ */
+export function resolveTextGenerationModelSelection(
+  settings: Pick<ServerSettings, "textGenerationModelSelection">,
+  providers: ReadonlyArray<ServerProvider>,
+): ModelSelection {
+  const selection = settings.textGenerationModelSelection;
+  const configured = providers.find((provider) => provider.instanceId === selection.instanceId);
+  if (configured && canProviderGenerateText(configured)) {
+    return selection;
+  }
+
+  for (const provider of providers) {
+    if (!canProviderGenerateText(provider)) continue;
+    const model =
+      DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[provider.driver] ?? provider.models[0]?.slug;
+    if (model) {
+      return createModelSelection(provider.instanceId, model);
+    }
+  }
+  return selection;
+}
+
 export function resolveSourceControlWriterModelSelection(
   settings: ServerSettings,
   providers?: ReadonlyArray<ServerProvider>,
 ): ModelSelection {
+  const fallback =
+    providers === undefined
+      ? settings.textGenerationModelSelection
+      : resolveTextGenerationModelSelection(settings, providers);
   const selection = settings.sourceControlWriterModelSelection;
   if (!selection || !isModelSelectionProviderEnabled(settings, selection)) {
-    return settings.textGenerationModelSelection;
+    return fallback;
   }
   if (providers === undefined) {
     return selection;
   }
 
   const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
-  return provider?.enabled === true && isProviderAvailable(provider)
-    ? selection
-    : settings.textGenerationModelSelection;
+  return provider && canProviderGenerateText(provider) ? selection : fallback;
 }
 
 export interface PersistedServerObservabilitySettings {

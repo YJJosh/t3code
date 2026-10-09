@@ -16,6 +16,7 @@ import {
   readCustomModelEntries,
   resolveSelectableModel,
 } from "@t3tools/shared/model";
+import { canProviderGenerateText } from "@t3tools/shared/serverSettings";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
@@ -403,17 +404,13 @@ export function resolveAppModelSelectionState(
     instanceId: DEFAULT_TEXT_GENERATION_INSTANCE_ID,
     model: DEFAULT_TEXT_GENERATION_MODEL,
   };
-  const supportedProviders = providers.filter(
-    (provider) => provider.supportsTextGeneration !== false,
-  );
+  // Same rule the server uses, so Settings shows the model that actually runs.
+  const supportedProviders = providers.filter(canProviderGenerateText);
   const entries = deriveProviderInstanceEntries(supportedProviders);
-  const selectedEntry = entries.find(
-    (entry) => entry.instanceId === selection.instanceId && entry.enabled && entry.isAvailable,
-  );
-  const entry =
-    selectedEntry ?? entries.find((candidate) => candidate.enabled && candidate.isAvailable);
+  const selectedEntry = entries.find((entry) => entry.instanceId === selection.instanceId);
+  const entry = selectedEntry ?? entries[0];
   if (entry) {
-    // When the instance changed due to fallback (e.g. selected instance was disabled),
+    // When the instance changed due to fallback (e.g. selected instance was not installed),
     // don't carry over the old instance's model — use the fallback instance's default.
     const selectedModel = selectedEntry ? selection.model : null;
     const model =
@@ -423,8 +420,8 @@ export function resolveAppModelSelectionState(
         supportedProviders,
         selectedModel,
       ) ??
-      entry.models[0]?.slug ??
-      DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[entry.driverKind];
+      DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[entry.driverKind] ??
+      entry.models[0]?.slug;
     if (!model) {
       return createModelSelection(entry.instanceId, "", []);
     }
