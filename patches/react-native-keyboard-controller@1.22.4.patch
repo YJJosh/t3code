@@ -187,6 +187,80 @@ index cecee07..533a9e9 100644
    return {
      padding,
      currentHeight,
+diff --git a/lib/commonjs/components/KeyboardChatScrollView/useChatKeyboard/index.js b/lib/commonjs/components/KeyboardChatScrollView/useChatKeyboard/index.js
+index 0c6c5183c94c94fedc10e1deaa2485687396cb95..02bc0432d7074f4cf8d469b11eb092d524f5e33e 100644
+--- a/lib/commonjs/components/KeyboardChatScrollView/useChatKeyboard/index.js
++++ b/lib/commonjs/components/KeyboardChatScrollView/useChatKeyboard/index.js
+@@ -45,13 +45,27 @@ function useChatKeyboard(scrollViewRef, options) {
+     onLayout,
+     onContentSizeChange
+   } = (0, _useScrollState.default)(scrollViewRef);
++  // Keyboard events can land while the scroll view is detached (a screen
++  // mounting or unmounting mid-navigation). Skip those frames instead of
++  // dispatching to an empty ref. Reanimated 4.7+ passes the ref to the UI
++  // runtime as a shareable holding the node in `.value`.
++  const scrollToIfMounted = y => {
++    "worklet";
++
++    const node =
++      typeof scrollViewRef === "function" ? scrollViewRef() : scrollViewRef.value;
++    if (!node) {
++      return;
++    }
++    (0, _reactNativeReanimated.scrollTo)(scrollViewRef, 0, y, false);
++  };
+   const clampScrollIfNeeded = (effective, totalPaddingForMaxScroll) => {
+     "worklet";
+ 
+     const paddingForMax = totalPaddingForMaxScroll !== undefined ? totalPaddingForMaxScroll : effective;
+     const maxScroll = Math.max(size.value.height - layout.value.height + paddingForMax, 0);
+     if (scroll.value > maxScroll) {
+-      (0, _reactNativeReanimated.scrollTo)(scrollViewRef, 0, maxScroll, false);
++      scrollToIfMounted(maxScroll);
+     }
+   };
+   (0, _hooks.useKeyboardHandler)({
+@@ -136,7 +150,7 @@ function useChatKeyboard(scrollViewRef, options) {
+           if (scrollEffective === 0 && minimumPaddingAbsorbed > 0) {
+             return;
+           }
+-          (0, _reactNativeReanimated.scrollTo)(scrollViewRef, 0, 0, false);
++          scrollToIfMounted(0);
+           return;
+         }
+         if (!(0, _helpers.shouldShiftContent)(keyboardLiftBehavior, wasAtEnd)) {
+@@ -160,7 +174,7 @@ function useChatKeyboard(scrollViewRef, options) {
+             // When at end, allow scrolling back (snap to end + reduce padding)
+             if (wasAtEnd) {
+               padding.value = effective;
+-              (0, _reactNativeReanimated.scrollTo)(scrollViewRef, 0, 0, false);
++              scrollToIfMounted(0);
+             } else if (closing.value) {
+               // Not at end: reduce padding to avoid gap
+               padding.value = effective;
+@@ -170,7 +184,7 @@ function useChatKeyboard(scrollViewRef, options) {
+           }
+         }
+         const target = offsetBeforeScroll.value + padding.value - scrollEffective;
+-        (0, _reactNativeReanimated.scrollTo)(scrollViewRef, 0, target, false);
++        scrollToIfMounted(target);
+       } else {
+         const effective = (0, _helpers.getEffectiveHeight)(e.height, targetKeyboardHeight.value, offset);
+         const minimumPaddingAbsorbed = (0, _helpers.getMinimumPaddingAbsorbed)(blankSpace.value, extraContentPadding.value) * minimumPaddingFractionOnOpen.value;
+@@ -199,11 +213,11 @@ function useChatKeyboard(scrollViewRef, options) {
+         if (keyboardLiftBehavior === "persistent" && closing.value) {
+           const keepAt = offsetBeforeScroll.value + padding.value;
+           const maxScroll = Math.max(size.value.height - layout.value.height + actualTotalPadding, 0);
+-          (0, _reactNativeReanimated.scrollTo)(scrollViewRef, 0, Math.min(keepAt, maxScroll), false);
++          scrollToIfMounted(Math.min(keepAt, maxScroll));
+           return;
+         }
+         const target = (0, _helpers.clampedScrollTarget)(offsetBeforeScroll.value, scrollEffective, size.value.height, layout.value.height, actualTotalPadding);
+-        (0, _reactNativeReanimated.scrollTo)(scrollViewRef, 0, target, false);
++        scrollToIfMounted(target);
+ 
+         // Track actual (clamped) displacement during open for symmetric close
+         if (!closing.value) {
 diff --git a/lib/commonjs/components/KeyboardChatScrollView/useExtraContentPadding/index.js b/lib/commonjs/components/KeyboardChatScrollView/useExtraContentPadding/index.js
 index 54a1c57..00c2941 100644
 --- a/lib/commonjs/components/KeyboardChatScrollView/useExtraContentPadding/index.js
@@ -441,6 +515,80 @@ index 407275d..19427d7 100644
    return {
      padding,
      currentHeight,
+diff --git a/lib/module/components/KeyboardChatScrollView/useChatKeyboard/index.js b/lib/module/components/KeyboardChatScrollView/useChatKeyboard/index.js
+index b6824bd2bf3e5642703a596bfabd2360bf406458..04bb91089103e861167ccbd4141136773eb85beb 100644
+--- a/lib/module/components/KeyboardChatScrollView/useChatKeyboard/index.js
++++ b/lib/module/components/KeyboardChatScrollView/useChatKeyboard/index.js
+@@ -38,13 +38,27 @@ function useChatKeyboard(scrollViewRef, options) {
+     onLayout,
+     onContentSizeChange
+   } = useScrollState(scrollViewRef);
++  // Keyboard events can land while the scroll view is detached (a screen
++  // mounting or unmounting mid-navigation). Skip those frames instead of
++  // dispatching to an empty ref. Reanimated 4.7+ passes the ref to the UI
++  // runtime as a shareable holding the node in `.value`.
++  const scrollToIfMounted = y => {
++    "worklet";
++
++    const node =
++      typeof scrollViewRef === "function" ? scrollViewRef() : scrollViewRef.value;
++    if (!node) {
++      return;
++    }
++    scrollTo(scrollViewRef, 0, y, false);
++  };
+   const clampScrollIfNeeded = (effective, totalPaddingForMaxScroll) => {
+     "worklet";
+ 
+     const paddingForMax = totalPaddingForMaxScroll !== undefined ? totalPaddingForMaxScroll : effective;
+     const maxScroll = Math.max(size.value.height - layout.value.height + paddingForMax, 0);
+     if (scroll.value > maxScroll) {
+-      scrollTo(scrollViewRef, 0, maxScroll, false);
++      scrollToIfMounted(maxScroll);
+     }
+   };
+   useKeyboardHandler({
+@@ -129,7 +143,7 @@ function useChatKeyboard(scrollViewRef, options) {
+           if (scrollEffective === 0 && minimumPaddingAbsorbed > 0) {
+             return;
+           }
+-          scrollTo(scrollViewRef, 0, 0, false);
++          scrollToIfMounted(0);
+           return;
+         }
+         if (!shouldShiftContent(keyboardLiftBehavior, wasAtEnd)) {
+@@ -153,7 +167,7 @@ function useChatKeyboard(scrollViewRef, options) {
+             // When at end, allow scrolling back (snap to end + reduce padding)
+             if (wasAtEnd) {
+               padding.value = effective;
+-              scrollTo(scrollViewRef, 0, 0, false);
++              scrollToIfMounted(0);
+             } else if (closing.value) {
+               // Not at end: reduce padding to avoid gap
+               padding.value = effective;
+@@ -163,7 +177,7 @@ function useChatKeyboard(scrollViewRef, options) {
+           }
+         }
+         const target = offsetBeforeScroll.value + padding.value - scrollEffective;
+-        scrollTo(scrollViewRef, 0, target, false);
++        scrollToIfMounted(target);
+       } else {
+         const effective = getEffectiveHeight(e.height, targetKeyboardHeight.value, offset);
+         const minimumPaddingAbsorbed = getMinimumPaddingAbsorbed(blankSpace.value, extraContentPadding.value) * minimumPaddingFractionOnOpen.value;
+@@ -192,11 +206,11 @@ function useChatKeyboard(scrollViewRef, options) {
+         if (keyboardLiftBehavior === "persistent" && closing.value) {
+           const keepAt = offsetBeforeScroll.value + padding.value;
+           const maxScroll = Math.max(size.value.height - layout.value.height + actualTotalPadding, 0);
+-          scrollTo(scrollViewRef, 0, Math.min(keepAt, maxScroll), false);
++          scrollToIfMounted(Math.min(keepAt, maxScroll));
+           return;
+         }
+         const target = clampedScrollTarget(offsetBeforeScroll.value, scrollEffective, size.value.height, layout.value.height, actualTotalPadding);
+-        scrollTo(scrollViewRef, 0, target, false);
++        scrollToIfMounted(target);
+ 
+         // Track actual (clamped) displacement during open for symmetric close
+         if (!closing.value) {
 diff --git a/lib/module/components/KeyboardChatScrollView/useExtraContentPadding/index.js b/lib/module/components/KeyboardChatScrollView/useExtraContentPadding/index.js
 index 5885415..8b3c4f0 100644
 --- a/lib/module/components/KeyboardChatScrollView/useExtraContentPadding/index.js
@@ -826,6 +974,87 @@ index 129a74b..168ce1a 100644
    );
  
    return {
+diff --git a/src/components/KeyboardChatScrollView/useChatKeyboard/index.ts b/src/components/KeyboardChatScrollView/useChatKeyboard/index.ts
+index 48178d9246ab94d701983ac20473983eb746d1a6..f65079d624828dca161f3a0b85edb6608c3de2c5 100644
+--- a/src/components/KeyboardChatScrollView/useChatKeyboard/index.ts
++++ b/src/components/KeyboardChatScrollView/useChatKeyboard/index.ts
+@@ -57,6 +57,22 @@ function useChatKeyboard(
+     onLayout,
+     onContentSizeChange,
+   } = useScrollState(scrollViewRef);
++  // Keyboard events can land while the scroll view is detached (a screen
++  // mounting or unmounting mid-navigation). Skip those frames instead of
++  // dispatching to an empty ref. Reanimated 4.7+ passes the ref to the UI
++  // runtime as a shareable holding the node in `.value`.
++  const scrollToIfMounted = (y: number) => {
++    "worklet";
++
++    const node =
++      typeof scrollViewRef === "function"
++        ? scrollViewRef()
++        : (scrollViewRef as unknown as { value: unknown }).value;
++    if (!node) {
++      return;
++    }
++    scrollTo(scrollViewRef, 0, y, false);
++  };
+   const clampScrollIfNeeded = (
+     effective: number,
+     totalPaddingForMaxScroll?: number,
+@@ -73,7 +89,7 @@ function useChatKeyboard(
+     );
+ 
+     if (scroll.value > maxScroll) {
+-      scrollTo(scrollViewRef, 0, maxScroll, false);
++      scrollToIfMounted(maxScroll);
+     }
+   };
+ 
+@@ -218,7 +234,7 @@ function useChatKeyboard(
+               return;
+             }
+ 
+-            scrollTo(scrollViewRef, 0, 0, false);
++            scrollToIfMounted(0);
+ 
+             return;
+           }
+@@ -247,7 +263,7 @@ function useChatKeyboard(
+               // When at end, allow scrolling back (snap to end + reduce padding)
+               if (wasAtEnd) {
+                 padding.value = effective;
+-                scrollTo(scrollViewRef, 0, 0, false);
++                scrollToIfMounted(0);
+               } else if (closing.value) {
+                 // Not at end: reduce padding to avoid gap
+                 padding.value = effective;
+@@ -261,7 +277,7 @@ function useChatKeyboard(
+           const target =
+             offsetBeforeScroll.value + padding.value - scrollEffective;
+ 
+-          scrollTo(scrollViewRef, 0, target, false);
++          scrollToIfMounted(target);
+         } else {
+           const effective = getEffectiveHeight(
+             e.height,
+@@ -316,7 +332,7 @@ function useChatKeyboard(
+               0,
+             );
+ 
+-            scrollTo(scrollViewRef, 0, Math.min(keepAt, maxScroll), false);
++            scrollToIfMounted(Math.min(keepAt, maxScroll));
+ 
+             return;
+           }
+@@ -329,7 +345,7 @@ function useChatKeyboard(
+             actualTotalPadding,
+           );
+ 
+-          scrollTo(scrollViewRef, 0, target, false);
++          scrollToIfMounted(target);
+ 
+           // Track actual (clamped) displacement during open for symmetric close
+           if (!closing.value) {
 diff --git a/src/components/KeyboardChatScrollView/useChatKeyboard/types.ts b/src/components/KeyboardChatScrollView/useChatKeyboard/types.ts
 index 02abf5c..4ee0ddd 100644
 --- a/src/components/KeyboardChatScrollView/useChatKeyboard/types.ts
