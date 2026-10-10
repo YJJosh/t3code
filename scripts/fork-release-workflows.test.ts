@@ -24,19 +24,37 @@ function readWorkflow(name: string): Workflow {
   return YAML.parse(NodeFS.readFileSync(NodePath.join(workflowsDir, name), "utf8")) as Workflow;
 }
 
-function validateReleaseVersion(version: string) {
+function runPreflightStep(
+  stepId: string,
+  env: Readonly<Record<string, string>>,
+  tags: ReadonlyArray<string> = [],
+) {
   const workflow = readWorkflow("fork-desktop-release.yml");
-  const script = workflow.jobs.preflight?.steps?.find((step) => step.id === "release_meta")?.run;
-  if (!script) throw new Error("Missing release validation step");
+  const script = workflow.jobs.preflight?.steps?.find((step) => step.id === stepId)?.run;
+  if (!script) throw new Error(`Missing preflight step: ${stepId}`);
 
-  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "dulli-release-version-"));
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "dulli-release-preflight-"));
   const outputPath = NodePath.join(root, "output");
   try {
-    NodeChildProcess.execFileSync("git", ["init", "--quiet", root]);
+    const git = (...args: ReadonlyArray<string>) =>
+      NodeChildProcess.execFileSync("git", [
+        "-C",
+        root,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        ...args,
+      ]);
+    git("init", "--quiet");
+    if (tags.length > 0) {
+      git("commit", "--quiet", "--allow-empty", "-m", "c");
+      for (const tag of tags) git("tag", tag);
+    }
     const result = NodeChildProcess.spawnSync("bash", ["-c", script], {
       cwd: root,
       encoding: "utf8",
-      env: { ...process.env, RAW_VERSION: version, GITHUB_OUTPUT: outputPath },
+      env: { ...process.env, ...env, GITHUB_OUTPUT: outputPath },
     });
     if (result.error) throw result.error;
     return {
@@ -47,6 +65,14 @@ function validateReleaseVersion(version: string) {
   } finally {
     NodeFS.rmSync(root, { recursive: true, force: true });
   }
+}
+
+function validateReleaseVersion(version: string) {
+  return runPreflightStep("release_meta", { RAW_VERSION: version });
+}
+
+function resolvePreviousTag(currentTag: string, tags: ReadonlyArray<string>) {
+  return runPreflightStep("previous_tag", { CURRENT_TAG: currentTag }, tags).output;
 }
 
 const hardDisabledWorkflows = {
@@ -100,6 +126,28 @@ describe("fork release workflow safety", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("0.0.<patch>-dulli.<build>");
     expect(result.output).toBe("");
+  });
+
+  it.each([
+    ["v0.0.45-dulli.11", "v0.0.45-dulli.10"],
+    ["v0.0.46-dulli.0", "v0.0.45-dulli.10"],
+    ["v0.0.45-dulli.5", "v0.0.45-dulli.3"],
+  ])("compares %s release notes against the previous Dulli tag", (current, previous) => {
+    const tags = [
+      "v0.0.40-pi.1",
+      "v0.0.45-dulli.3",
+      "v0.0.45-dulli.9",
+      "v0.0.45-dulli.10",
+      "v0.0.46-preview.20261010.2909",
+      "v0.0.50",
+    ];
+    expect(resolvePreviousTag(current, tags)).toBe(`previous_tag=${previous}\n`);
+  });
+
+  it("lets GitHub choose release notes when no Dulli tag precedes the release", () => {
+    expect(resolvePreviousTag("v0.0.45-dulli.2", ["v0.0.40-pi.1", "v0.0.50"])).toBe(
+      "previous_tag=\n",
+    );
   });
 
   it("keeps Ubuntu CI setup independent of upstream's runner vendor", () => {
