@@ -1,4 +1,5 @@
 import * as NodeModule from "node:module";
+import * as NodeURL from "node:url";
 
 import type {
   DirItem,
@@ -32,7 +33,19 @@ import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 // Node single-executable (only built-ins resolve there), so load it through
 // `require`, which reads from the real filesystem in every runtime.
 const requireForFff = NodeModule.createRequire(import.meta.url);
-const { FileFinder } = requireForFff("@ff-labs/fff-node") as typeof import("@ff-labs/fff-node");
+
+// Our pnpm patch gives fff-node a `require` export. An npm install of the
+// published CLI gets the unpatched package, whose exports only map `import`,
+// so require the file that `import` resolves to. It is the same module.
+function loadFff(): typeof import("@ff-labs/fff-node") {
+  try {
+    return requireForFff("@ff-labs/fff-node");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error;
+    return requireForFff(NodeURL.fileURLToPath(import.meta.resolve("@ff-labs/fff-node")));
+  }
+}
+const { FileFinder } = loadFff();
 
 const WORKSPACE_INDEX_MAX_ENTRIES = 25_000;
 const WORKSPACE_INDEX_PAGE_SIZE = WORKSPACE_INDEX_MAX_ENTRIES + 2;
