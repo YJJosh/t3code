@@ -1210,6 +1210,135 @@ describe("Pi adapter", () => {
       }).pipe(Effect.provide(TestEnv)),
   );
 
+  const traceTimeline = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+    events.flatMap((event) => {
+      if (event.type === "content.delta") {
+        return [`${event.payload.streamKind}: ${event.payload.delta}`];
+      }
+      if (
+        (event.type === "item.started" || event.type === "item.completed") &&
+        event.payload.itemType !== "assistant_message"
+      ) {
+        const { itemType, title, detail } = event.payload;
+        return [`${event.type} ${itemType} ${title} ${detail}`];
+      }
+      if (event.type === "item.completed") {
+        return [`assistant ${(event.payload as { phase?: string }).phase}`];
+      }
+      return [];
+    });
+
+  it.effect("shows Claude Code tool traces from a shared Pi as tool work, not thinking", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* Queue.takeAll(events);
+      yield* adapter.sendTurn({ threadId: THREAD, input: "Run the checks" });
+      yield* takeThroughType(events, "turn.started");
+
+      // Without the RPC bridge, pi-claude-agent-sdk streams each call Claude
+      // Code runs itself as "◌ Name" and ends the block with its detail.
+      const content = [
+        { type: "text", text: "I’ll check the repository first." },
+        { type: "thinking", thinking: "✓ Bash git status", claudeCodeSyntheticTool: true },
+        { type: "thinking", thinking: "✓ Read /repo/README.md", claudeCodeSyntheticTool: true },
+        { type: "thinking", thinking: "The tree is clean." },
+        { type: "text", text: "All checks passed." },
+      ];
+      for (const [contentIndex, block] of content.entries()) {
+        const kind = block.type;
+        const text = block.text ?? block.thinking ?? "";
+        const streamed = block.claudeCodeSyntheticTool ? text.replace(/^✓ (\S+).*$/, "◌ $1") : text;
+        for (const assistantMessageEvent of [
+          { type: `${kind}_start`, contentIndex },
+          { type: `${kind}_delta`, contentIndex, delta: streamed },
+          ...(block.claudeCodeSyntheticTool
+            ? [{ type: `${kind}_delta`, contentIndex, delta: "" }]
+            : []),
+          { type: `${kind}_end`, contentIndex, content: text },
+        ]) {
+          yield* fake.pushFrame({ type: "message_update", assistantMessageEvent });
+        }
+      }
+      yield* fake.pushFrame({
+        type: "message_end",
+        message: { role: "assistant", stopReason: "stop", content },
+      });
+      yield* fake.pushFrame({ type: "agent_settled" });
+      const turn = yield* takeThroughType(events, "turn.completed");
+
+      expect(traceTimeline(turn)).toEqual([
+        "assistant_text: I’ll check the repository first.",
+        "assistant commentary",
+        "item.started command_execution Bash git status",
+        "item.started dynamic_tool_call Read /repo/README.md",
+        "item.completed command_execution Bash git status",
+        "item.completed dynamic_tool_call Read /repo/README.md",
+        "reasoning_text: The tree is clean.",
+        "assistant_text: All checks passed.",
+        "assistant final_answer",
+      ]);
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
+  it.effect("restores Claude Code tool traces from a replayed snapshot in order", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* Queue.takeAll(events);
+      yield* adapter.sendTurn({ threadId: THREAD, input: "Run the checks" });
+      yield* takeThroughType(events, "turn.started");
+
+      // A pi-sessions reattach replays the in-progress message as a cumulative
+      // snapshot with no block events, so traced calls only exist in it.
+      const content = [
+        { type: "text", text: "I’ll check the repository first." },
+        { type: "thinking", thinking: "✓ Bash git status", claudeCodeSyntheticTool: true },
+        { type: "text", text: "The tree is clean." },
+      ];
+      const replay = { type: "message_update", message: { role: "assistant", content } };
+      yield* fake.pushFrame(replay);
+      yield* fake.pushFrame(replay);
+      yield* fake.pushFrame({
+        type: "message_end",
+        message: { role: "assistant", stopReason: "stop", content },
+      });
+      yield* fake.pushFrame({ type: "agent_settled" });
+      const turn = yield* takeThroughType(events, "turn.completed");
+
+      expect(traceTimeline(turn)).toEqual([
+        "assistant_text: I’ll check the repository first.",
+        "assistant commentary",
+        "item.started command_execution Bash git status",
+        "item.completed command_execution Bash git status",
+        "assistant_text: The tree is clean.",
+        "assistant final_answer",
+      ]);
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
   it.effect("classifies terminal replies from native stop reasons and message origins", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi();

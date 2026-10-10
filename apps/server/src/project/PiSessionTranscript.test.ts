@@ -114,6 +114,29 @@ it.layer(NodeServices.layer)("PiSessionTranscript", (it) => {
     }).pipe(Effect.scoped, Effect.provide(PiSessionTranscript.layer)),
   );
 
+  it.effect("keeps each text block of an assistant message as its own paragraph", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.write([
+        f.header,
+        message("u", null, "user", "deploy it"),
+        message("a", "u", "assistant", [
+          { type: "text", text: "Checking the build." },
+          { type: "thinking", thinking: "✓ Bash npm run build", claudeCodeSyntheticTool: true },
+          { type: "text", text: "The build passed." },
+        ]),
+      ]);
+      expect(yield* f.read()).toMatchObject({
+        thread: {
+          messages: [
+            { role: "user", text: "deploy it" },
+            { role: "assistant", text: "Checking the build.\n\nThe build passed." },
+          ],
+        },
+      });
+    }).pipe(Effect.scoped, Effect.provide(PiSessionTranscript.layer)),
+  );
+
   it.effect("keeps reading through entry types it does not interpret", () =>
     Effect.gen(function* () {
       const f = yield* fixture;

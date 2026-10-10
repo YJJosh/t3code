@@ -345,7 +345,8 @@ export const decodePiBackgroundThreadRequest = Schema.decodeUnknownOption(
   Schema.fromJsonString(PiBackgroundThreadRequest),
 );
 
-function joinPiContentBlocks(parts: ReadonlyArray<string>): string {
+/** Joins Pi content blocks as separate Markdown paragraphs. */
+export function joinPiContentBlocks(parts: ReadonlyArray<string>): string {
   let result = "";
   for (const part of parts) {
     if (!result) {
@@ -370,12 +371,34 @@ export interface PiAssistantMessageContent {
     readonly content: string;
     readonly workBoundaryBefore?: boolean;
   }>;
+  /** Claude Code tool traces, kept out of `blocks`; see `parseClaudeCodeToolTrace`. */
+  readonly toolTraces: ReadonlyArray<
+    NonNullable<ReturnType<typeof parseClaudeCodeToolTrace>> & { readonly contentIndex: number }
+  >;
+}
+
+/**
+ * Without the RPC bridge (a Pi shared with the terminal), pi-claude-agent-sdk
+ * shows each tool Claude Code runs itself as a flagged thinking block: it
+ * streams "◌ Name", then ends with "✓ Name detail" once the call is complete.
+ */
+export function parseClaudeCodeToolTrace(
+  text: string,
+): { readonly done: boolean; readonly toolName: string; readonly detail?: string } | undefined {
+  const match = /^([◌✓]) ([^\s]+)(?: (.+))?$/su.exec(text);
+  if (!match) return undefined;
+  return {
+    done: match[1] === "✓",
+    toolName: match[2]!,
+    ...(match[3] ? { detail: match[3] } : {}),
+  };
 }
 
 export function extractPiAssistantContent(message: unknown): PiAssistantMessageContent {
   const textParts: string[] = [];
   const thinkingParts: string[] = [];
   const blocks: PiAssistantMessageContent["blocks"][number][] = [];
+  const toolTraces: PiAssistantMessageContent["toolTraces"][number][] = [];
   if (
     message &&
     typeof message === "object" &&
@@ -388,7 +411,12 @@ export function extractPiAssistantContent(message: unknown): PiAssistantMessageC
     ).content.entries()) {
       if (!part || typeof part !== "object") continue;
       const record = part as Record<string, unknown>;
-      if (record.type === "toolCall") {
+      if (record.type === "toolCall" || record.claudeCodeSyntheticTool === true) {
+        const trace =
+          record.claudeCodeSyntheticTool === true && typeof record.thinking === "string"
+            ? parseClaudeCodeToolTrace(record.thinking)
+            : undefined;
+        if (trace) toolTraces.push({ ...trace, contentIndex });
         workBoundaryBefore = true;
         continue;
       }
@@ -422,6 +450,7 @@ export function extractPiAssistantContent(message: unknown): PiAssistantMessageC
     text: joinPiContentBlocks(textParts),
     thinking: joinPiContentBlocks(thinkingParts),
     blocks,
+    toolTraces,
   };
 }
 

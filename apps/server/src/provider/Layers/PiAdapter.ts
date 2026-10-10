@@ -62,6 +62,7 @@ import {
   applyPiAssistantBlockEvent,
   applyPiAssistantSnapshot,
   makePiAssistantContentState,
+  piAssistantBlockHasContent,
   type PiAssistantContentDelta,
   type PiAssistantContentState,
 } from "../pi/piAssistantContent.ts";
@@ -83,6 +84,7 @@ import {
   piSharingEnabled,
   extractPiAssistantContent,
   extractPiAssistantText,
+  parseClaudeCodeToolTrace,
   parsePiBackgroundTerminalNotification,
   parsePiContextWindow,
   parsePiFastServiceEnabled,
@@ -186,6 +188,14 @@ interface PiSessionContext {
   assistantItemHasReasoning: boolean;
   assistantWorkBoundaryPending: boolean;
   assistantContent: PiAssistantContentState;
+  /** Claude Code tool trace indices in the current native message; true once the call started. */
+  claudeTraceBlocks: Map<number, boolean>;
+  /** Traced calls Claude Code is still running; they end when new content arrives. */
+  claudeTraceToolsRunning: Array<{
+    readonly toolCallId: string;
+    readonly toolName: string;
+    readonly detail: string | undefined;
+  }>;
   /** Native source of subsequent assistant replies; reset only by a real user message. */
   assistantOrigin: PiAssistantOrigin;
   hasPrimaryAssistantAnswer: boolean;
@@ -1401,12 +1411,38 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       ctx.assistantWorkBoundaryPending = false;
     });
 
+    const finishClaudeTraceTools = Effect.fn("finishClaudeTraceTools")(function* (
+      ctx: PiSessionContext,
+    ) {
+      const running = ctx.claudeTraceToolsRunning;
+      ctx.claudeTraceToolsRunning = [];
+      for (const { detail, ...tool } of running) {
+        yield* handleToolEvent(ctx, "item.completed", tool, { detail });
+      }
+    });
+
+    const startClaudeTraceTool = Effect.fn("startClaudeTraceTool")(function* (
+      ctx: PiSessionContext,
+      contentIndex: number,
+      trace: { readonly toolName: string; readonly detail?: string | undefined },
+    ) {
+      ctx.claudeTraceBlocks.set(contentIndex, true);
+      // Claude Code streams every block before it runs the calls, so text
+      // before a trace is final. Close it now so it sorts above the row.
+      if (ctx.assistantItemHasText) yield* finishAssistantSegment(ctx, "commentary");
+      const tool = { toolCallId: yield* randomUUIDv4, toolName: trace.toolName };
+      ctx.claudeTraceToolsRunning.push({ ...tool, detail: trace.detail });
+      yield* handleToolEvent(ctx, "item.started", tool, { detail: trace.detail });
+    });
+
     const finishAssistantMessage = Effect.fn("finishAssistantMessage")(function* (
       ctx: PiSessionContext,
       phase: PiAssistantPhase | undefined,
     ) {
+      yield* finishClaudeTraceTools(ctx);
       yield* finishAssistantSegment(ctx, phase);
       ctx.assistantContent = makePiAssistantContentState();
+      ctx.claudeTraceBlocks = new Map();
     });
 
     const emitAssistantContentDeltas = Effect.fn("emitAssistantContentDeltas")(function* (
@@ -1414,6 +1450,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       deltas: ReadonlyArray<PiAssistantContentDelta>,
     ) {
       for (const delta of deltas) {
+        // Claude Code returns to the model only after its traced calls ran.
+        if (ctx.claudeTraceToolsRunning.length > 0) yield* finishClaudeTraceTools(ctx);
         // Content-block boundaries alone are not semantic: providers can put
         // a legitimate final answer in several adjacent text blocks. Split
         // only when Pi exposed an intervening tool/work boundary.
@@ -1475,14 +1513,43 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       message: unknown,
     ) {
       if (!isRecord(message) || message.role !== "assistant") return;
-      const { text, thinking, blocks } = extractPiAssistantContent(message);
+      const { text, thinking, blocks, toolTraces } = extractPiAssistantContent(message);
       const result = applyPiAssistantSnapshot(ctx.assistantContent, {
         assistant_text: text,
         reasoning_text: thinking,
         blocks,
       });
       ctx.assistantContent = result.state;
-      yield* emitAssistantContentDeltas(ctx, result.deltas);
+      // A pi-sessions replay can carry traced calls that never streamed here.
+      // Start them in content order so they sit between the text around them.
+      const unstarted: Array<(typeof toolTraces)[number]> = [];
+      for (const trace of toolTraces) {
+        if (!ctx.claudeTraceBlocks.has(trace.contentIndex)) {
+          ctx.claudeTraceBlocks.set(trace.contentIndex, false);
+        }
+        if (trace.done && ctx.claudeTraceBlocks.get(trace.contentIndex) === false) {
+          unstarted.push(trace);
+        }
+      }
+      if (unstarted.length === 0) {
+        yield* emitAssistantContentDeltas(ctx, result.deltas);
+        return;
+      }
+      let next = 0;
+      for (const delta of result.deltas) {
+        while (
+          next < unstarted.length &&
+          delta.contentIndex !== undefined &&
+          delta.contentIndex > unstarted[next]!.contentIndex
+        ) {
+          yield* startClaudeTraceTool(ctx, unstarted[next]!.contentIndex, unstarted[next]!);
+          next += 1;
+        }
+        yield* emitAssistantContentDeltas(ctx, [delta]);
+      }
+      for (const trace of unstarted.slice(next)) {
+        yield* startClaudeTraceTool(ctx, trace.contentIndex, trace);
+      }
     });
 
     const emitAssistantEventDelta = Effect.fn("emitAssistantEventDelta")(function* (
@@ -1493,6 +1560,31 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       if (event.type === "toolcall_start") {
         if (ctx.assistantItemHasText) ctx.assistantWorkBoundaryPending = true;
         return;
+      }
+      if (
+        (event.type === "thinking_delta" || event.type === "thinking_end") &&
+        typeof event.contentIndex === "number"
+      ) {
+        const contentIndex = event.contentIndex;
+        if (ctx.claudeTraceBlocks.has(contentIndex)) {
+          const trace =
+            event.type === "thinking_end" && typeof event.content === "string"
+              ? parseClaudeCodeToolTrace(event.content)
+              : undefined;
+          if (trace?.done && ctx.claudeTraceBlocks.get(contentIndex) === false) {
+            yield* startClaudeTraceTool(ctx, contentIndex, trace);
+          }
+          return;
+        }
+        if (
+          event.type === "thinking_delta" &&
+          typeof event.delta === "string" &&
+          parseClaudeCodeToolTrace(event.delta)?.done === false &&
+          !piAssistantBlockHasContent(ctx.assistantContent, contentIndex)
+        ) {
+          ctx.claudeTraceBlocks.set(contentIndex, false);
+          return;
+        }
       }
       if (
         event.type === "text_start" ||
@@ -1652,6 +1744,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       ctx: PiSessionContext,
       lifecycle: "item.started" | "item.updated" | "item.completed",
       message: Record<string, unknown>,
+      /** A traced Claude Code call; its detail (command or path) stands in for result output. */
+      trace?: { readonly detail?: string | undefined },
     ) =>
       Effect.gen(function* () {
         if (lifecycle === "item.started" && ctx.assistantItemHasText) {
@@ -1679,7 +1773,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const args = ctx.toolArgsByCallId.get(toolCallId);
         const result = lifecycle === "item.completed" ? message.result : undefined;
         const partialResult = lifecycle === "item.updated" ? message.partialResult : undefined;
-        const summary = toolResultSummary(partialResult) ?? toolResultSummary(result);
+        const summary =
+          toolResultSummary(partialResult) ?? toolResultSummary(result) ?? trace?.detail;
         // Pi sends the entire accumulated tool result on every progress frame.
         // Persist only the bounded display summary for intermediate updates;
         // the final item.completed event retains the structured result once.
@@ -1687,7 +1782,12 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           partialResult === undefined ? undefined : (summary ?? "Tool output updated.");
         const itemId = RuntimeItemId.make(toolCallId);
         const turnId = ctx.activeTurnId;
-        const itemType = toolItemType((message as PiToolMeta).toolName);
+        // Clients read a command row's command from its detail, which only a
+        // traced call carries. Bridged Bash calls put their output there.
+        const itemType =
+          trace && message.toolName === "Bash"
+            ? "command_execution"
+            : toolItemType((message as PiToolMeta).toolName);
         const isError = message.isError === true;
         const status =
           lifecycle === "item.completed" ? (isError ? "failed" : "completed") : "inProgress";
@@ -2238,6 +2338,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           assistantItemHasReasoning: false,
           assistantWorkBoundaryPending: false,
           assistantContent: makePiAssistantContentState(),
+          claudeTraceBlocks: new Map(),
+          claudeTraceToolsRunning: [],
           assistantOrigin: "normal",
           hasPrimaryAssistantAnswer: false,
           subagentLiveMessages: new Map(),

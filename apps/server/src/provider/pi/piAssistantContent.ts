@@ -76,6 +76,14 @@ function blockKey(
     : `index:${contentIndex}`;
 }
 
+/** True once the indexed native block has received any content. */
+export function piAssistantBlockHasContent(
+  state: PiAssistantContentState,
+  contentIndex: number,
+): boolean {
+  return (state.blocks.get(`index:${contentIndex}`)?.content.length ?? 0) > 0;
+}
+
 function appendBlockContent(
   state: PiAssistantContentState,
   key: string,

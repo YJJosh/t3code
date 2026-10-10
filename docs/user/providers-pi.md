@@ -30,7 +30,7 @@ T3 receives changes as they happen; there is no refresh button or periodic sessi
 
 In an existing shared chat, change the profile or config set in the terminal rather than restarting Pi from T3.
 
-Extension dialogs are answered **only in the terminal**. T3 shows “Waiting for you in the terminal” until the dialog closes. Background terminals and subagent panels still work. Claude Code tool activity appears as the terminal’s text trace rather than separate structured tool rows in a shared chat.
+Extension dialogs are answered **only in the terminal**. T3 shows “Waiting for you in the terminal” until the dialog closes. Background terminals and subagent panels still work. In a shared chat, Claude Code’s own tool calls show as tool rows with their command or path, but without output.
 
 Closing T3’s connection leaves the shared Pi running. If Pi exits or switches to another session in the terminal, T3 ends that connection. Sending another message reopens the original conversation. A session held by classic Pi or a separate T3 RPC process cannot be shared; T3 reports “open elsewhere” instead of starting a new conversation.
 
