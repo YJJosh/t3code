@@ -62,6 +62,7 @@ import {
   applyPiAssistantBlockEvent,
   applyPiAssistantSnapshot,
   makePiAssistantContentState,
+  piAssistantBlockHasContent,
   type PiAssistantContentDelta,
   type PiAssistantContentState,
 } from "../pi/piAssistantContent.ts";
@@ -83,6 +84,7 @@ import {
   piSharingEnabled,
   extractPiAssistantContent,
   extractPiAssistantText,
+  parseClaudeCodeToolTrace,
   parsePiBackgroundTerminalNotification,
   parsePiContextWindow,
   parsePiFastServiceEnabled,
@@ -186,6 +188,14 @@ interface PiSessionContext {
   assistantItemHasReasoning: boolean;
   assistantWorkBoundaryPending: boolean;
   assistantContent: PiAssistantContentState;
+  /** Content indices of Claude Code tool traces in the current native message. */
+  claudeTraceBlocks: Set<number>;
+  /** Traced calls Claude Code is still running; they end when new content arrives. */
+  claudeTraceToolsRunning: Array<{
+    readonly toolCallId: string;
+    readonly toolName: string;
+    readonly detail: string | undefined;
+  }>;
   /** Native source of subsequent assistant replies; reset only by a real user message. */
   assistantOrigin: PiAssistantOrigin;
   hasPrimaryAssistantAnswer: boolean;
@@ -1401,12 +1411,24 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       ctx.assistantWorkBoundaryPending = false;
     });
 
+    const finishClaudeTraceTools = Effect.fn("finishClaudeTraceTools")(function* (
+      ctx: PiSessionContext,
+    ) {
+      const running = ctx.claudeTraceToolsRunning;
+      ctx.claudeTraceToolsRunning = [];
+      for (const { detail, ...tool } of running) {
+        yield* handleToolEvent(ctx, "item.completed", tool, detail);
+      }
+    });
+
     const finishAssistantMessage = Effect.fn("finishAssistantMessage")(function* (
       ctx: PiSessionContext,
       phase: PiAssistantPhase | undefined,
     ) {
+      yield* finishClaudeTraceTools(ctx);
       yield* finishAssistantSegment(ctx, phase);
       ctx.assistantContent = makePiAssistantContentState();
+      ctx.claudeTraceBlocks = new Set();
     });
 
     const emitAssistantContentDeltas = Effect.fn("emitAssistantContentDeltas")(function* (
@@ -1414,6 +1436,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       deltas: ReadonlyArray<PiAssistantContentDelta>,
     ) {
       for (const delta of deltas) {
+        // Claude Code returns to the model only after its traced calls ran.
+        if (ctx.claudeTraceToolsRunning.length > 0) yield* finishClaudeTraceTools(ctx);
         // Content-block boundaries alone are not semantic: providers can put
         // a legitimate final answer in several adjacent text blocks. Split
         // only when Pi exposed an intervening tool/work boundary.
@@ -1493,6 +1517,36 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       if (event.type === "toolcall_start") {
         if (ctx.assistantItemHasText) ctx.assistantWorkBoundaryPending = true;
         return;
+      }
+      if (
+        (event.type === "thinking_delta" || event.type === "thinking_end") &&
+        typeof event.contentIndex === "number"
+      ) {
+        const contentIndex = event.contentIndex;
+        if (ctx.claudeTraceBlocks.has(contentIndex)) {
+          const trace =
+            event.type === "thinking_end" && typeof event.content === "string"
+              ? parseClaudeCodeToolTrace(event.content)
+              : undefined;
+          if (trace?.done) {
+            // Claude Code streams every block before it runs the calls, so text
+            // before a trace is final. Close it now so it sorts above the row.
+            if (ctx.assistantItemHasText) yield* finishAssistantSegment(ctx, "commentary");
+            const tool = { toolCallId: yield* randomUUIDv4, toolName: trace.toolName };
+            ctx.claudeTraceToolsRunning.push({ ...tool, detail: trace.detail });
+            yield* handleToolEvent(ctx, "item.started", tool, trace.detail);
+          }
+          return;
+        }
+        if (
+          event.type === "thinking_delta" &&
+          typeof event.delta === "string" &&
+          parseClaudeCodeToolTrace(event.delta)?.done === false &&
+          !piAssistantBlockHasContent(ctx.assistantContent, contentIndex)
+        ) {
+          ctx.claudeTraceBlocks.add(contentIndex);
+          return;
+        }
       }
       if (
         event.type === "text_start" ||
@@ -1652,6 +1706,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       ctx: PiSessionContext,
       lifecycle: "item.started" | "item.updated" | "item.completed",
       message: Record<string, unknown>,
+      /** Shown when the tool has no result output, e.g. a traced Claude Code call. */
+      fallbackDetail?: string,
     ) =>
       Effect.gen(function* () {
         if (lifecycle === "item.started" && ctx.assistantItemHasText) {
@@ -1679,7 +1735,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
         const args = ctx.toolArgsByCallId.get(toolCallId);
         const result = lifecycle === "item.completed" ? message.result : undefined;
         const partialResult = lifecycle === "item.updated" ? message.partialResult : undefined;
-        const summary = toolResultSummary(partialResult) ?? toolResultSummary(result);
+        const summary =
+          toolResultSummary(partialResult) ?? toolResultSummary(result) ?? fallbackDetail;
         // Pi sends the entire accumulated tool result on every progress frame.
         // Persist only the bounded display summary for intermediate updates;
         // the final item.completed event retains the structured result once.
@@ -2238,6 +2295,8 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           assistantItemHasReasoning: false,
           assistantWorkBoundaryPending: false,
           assistantContent: makePiAssistantContentState(),
+          claudeTraceBlocks: new Set(),
+          claudeTraceToolsRunning: [],
           assistantOrigin: "normal",
           hasPrimaryAssistantAnswer: false,
           subagentLiveMessages: new Map(),

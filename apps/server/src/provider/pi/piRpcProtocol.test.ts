@@ -13,6 +13,7 @@ import {
   buildPiRpcArgs,
   buildPiRpcEnv,
   extractPiAssistantContent,
+  parseClaudeCodeToolTrace,
   extractPiAssistantText,
   parsePiBackgroundTerminalNotification,
   parsePiContextWindow,
@@ -322,6 +323,31 @@ describe("Pi RPC protocol", () => {
         workBoundaryBefore: true,
       },
     ]);
+  });
+
+  it("treats Claude Code tool traces as work boundaries, not thinking", () => {
+    const content = extractPiAssistantContent({
+      content: [
+        { type: "thinking", thinking: "Checking the repo." },
+        { type: "text", text: "I’ll look first." },
+        { type: "thinking", thinking: "✓ Bash git status", claudeCodeSyntheticTool: true },
+        { type: "text", text: "It is clean." },
+      ],
+    });
+    expect(content.thinking).toBe("Checking the repo.");
+    expect(content.blocks.at(-1)).toEqual({
+      streamKind: "assistant_text",
+      contentIndex: 3,
+      content: "It is clean.",
+      workBoundaryBefore: true,
+    });
+    expect(parseClaudeCodeToolTrace("◌ Bash")).toEqual({ done: false, toolName: "Bash" });
+    expect(parseClaudeCodeToolTrace("✓ Read /repo/a b.ts")).toEqual({
+      done: true,
+      toolName: "Read",
+      detail: "/repo/a b.ts",
+    });
+    expect(parseClaudeCodeToolTrace("Thinking about ◌ Bash")).toBeUndefined();
   });
 
   it("extracts assistant text and thinking with explicit content-block boundaries", () => {

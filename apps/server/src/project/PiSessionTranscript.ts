@@ -8,6 +8,7 @@ import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { PiSessionInfo } from "../provider/PiSessionsClient.ts";
+import { joinPiContentBlocks } from "../provider/pi/piRpcProtocol.ts";
 import type { AgentSessionRecentThread, AgentSessionThreadMessage } from "./AgentSessionScanner.ts";
 
 const Header = Schema.Struct({
@@ -127,10 +128,11 @@ const make = Effect.gen(function* () {
           const text =
             typeof message.content === "string"
               ? message.content
-              : decodeBlocks(message.content)
-                  .filter((block) => block.type === "text")
-                  .map((block) => block.text ?? "")
-                  .join("\n");
+              : joinPiContentBlocks(
+                  decodeBlocks(message.content).flatMap((block) =>
+                    block.type === "text" && block.text ? [block.text] : [],
+                  ),
+                );
           if (text.trim())
             messages.push({ role: message.role, text, createdAt: iso(entry.timestamp) });
         }
