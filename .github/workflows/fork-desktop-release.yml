@@ -25,6 +25,7 @@ jobs:
     outputs:
       version: ${{ steps.release_meta.outputs.version }}
       tag: ${{ steps.release_meta.outputs.tag }}
+      previous_tag: ${{ steps.previous_tag.outputs.previous_tag }}
       ref: ${{ github.sha }}
     steps:
       - name: Checkout
@@ -65,6 +66,22 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # Release notes compare against the previous Dulli tag. GitHub's own guess
+      # can land on upstream tags that this fork also carries.
+      - id: previous_tag
+        name: Resolve previous Dulli tag
+        shell: bash
+        env:
+          CURRENT_TAG: ${{ steps.release_meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          previous_tag="$(
+            { git tag --list 'v*-dulli.*'; printf '%s\n' "$CURRENT_TAG"; } |
+              sort -V |
+              awk -v tag="$CURRENT_TAG" '$0 == tag { print previous; exit } { previous = $0 }'
+          )"
+          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
 
       - name: Check
         run: vp check
@@ -802,16 +819,11 @@ jobs:
           name: T3 Dulli ${{ needs.preflight.outputs.tag }}
           prerelease: true
           make_latest: false
+          # The action appends GitHub's generated changelog after this body.
+          generate_release_notes: true
+          previous_tag: ${{ needs.preflight.outputs.previous_tag }}
           body: |
             T3 Dulli community build from `YJJosh/t3code`.
-
-            Highlights:
-            - First-class Dulli identity, :D artwork, isolated state, and built-in prerelease updates
-            - Pi as a first-class coding-agent provider, including extension-provided models
-            - Live Pi subagent activity, details, and controls on desktop/web and mobile
-            - Workler clones for isolated workspaces, with a Git-worktree fallback setting
-            - Sideloadable Android APK (`T3-Dulli-*-android.apk`) for controlling T3 Dulli servers remotely
-            - Headless CLI on npm: `npx @yjosh/t3` runs the server plus web UI on any machine
 
             The Android APK is signed with the persistent Dulli community keystore but is not
             distributed through Google Play, so Android requires enabling installs from unknown
