@@ -371,6 +371,10 @@ export interface PiAssistantMessageContent {
     readonly content: string;
     readonly workBoundaryBefore?: boolean;
   }>;
+  /** Claude Code tool traces, kept out of `blocks`; see `parseClaudeCodeToolTrace`. */
+  readonly toolTraces: ReadonlyArray<
+    NonNullable<ReturnType<typeof parseClaudeCodeToolTrace>> & { readonly contentIndex: number }
+  >;
 }
 
 /**
@@ -394,6 +398,7 @@ export function extractPiAssistantContent(message: unknown): PiAssistantMessageC
   const textParts: string[] = [];
   const thinkingParts: string[] = [];
   const blocks: PiAssistantMessageContent["blocks"][number][] = [];
+  const toolTraces: PiAssistantMessageContent["toolTraces"][number][] = [];
   if (
     message &&
     typeof message === "object" &&
@@ -407,6 +412,11 @@ export function extractPiAssistantContent(message: unknown): PiAssistantMessageC
       if (!part || typeof part !== "object") continue;
       const record = part as Record<string, unknown>;
       if (record.type === "toolCall" || record.claudeCodeSyntheticTool === true) {
+        const trace =
+          record.claudeCodeSyntheticTool === true && typeof record.thinking === "string"
+            ? parseClaudeCodeToolTrace(record.thinking)
+            : undefined;
+        if (trace) toolTraces.push({ ...trace, contentIndex });
         workBoundaryBefore = true;
         continue;
       }
@@ -440,6 +450,7 @@ export function extractPiAssistantContent(message: unknown): PiAssistantMessageC
     text: joinPiContentBlocks(textParts),
     thinking: joinPiContentBlocks(thinkingParts),
     blocks,
+    toolTraces,
   };
 }
 

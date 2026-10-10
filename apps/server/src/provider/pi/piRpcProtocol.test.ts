@@ -341,6 +341,9 @@ describe("Pi RPC protocol", () => {
       content: "It is clean.",
       workBoundaryBefore: true,
     });
+    expect(content.toolTraces).toEqual([
+      { contentIndex: 2, done: true, toolName: "Bash", detail: "git status" },
+    ]);
     expect(parseClaudeCodeToolTrace("◌ Bash")).toEqual({ done: false, toolName: "Bash" });
     expect(parseClaudeCodeToolTrace("✓ Read /repo/a b.ts")).toEqual({
       done: true,
