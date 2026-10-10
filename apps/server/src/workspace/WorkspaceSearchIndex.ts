@@ -1,5 +1,4 @@
 import * as NodeModule from "node:module";
-import * as NodeURL from "node:url";
 
 import type {
   DirItem,
@@ -28,24 +27,20 @@ import type {
 } from "@t3tools/contracts";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 
+import { requireImportOnlyPackage } from "./requireImportOnlyPackage.ts";
+
 // fff-node stays external to the CLI bundle because it dlopens a native
 // library. A static `import` of an external package is a hard error inside a
 // Node single-executable (only built-ins resolve there), so load it through
 // `require`, which reads from the real filesystem in every runtime.
-const requireForFff = NodeModule.createRequire(import.meta.url);
-
-// Our pnpm patch gives fff-node a `require` export. An npm install of the
-// published CLI gets the unpatched package, whose exports only map `import`,
-// so require the file that `import` resolves to. It is the same module.
-function loadFff(): typeof import("@ff-labs/fff-node") {
-  try {
-    return requireForFff("@ff-labs/fff-node");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error;
-    return requireForFff(NodeURL.fileURLToPath(import.meta.resolve("@ff-labs/fff-node")));
-  }
-}
-const { FileFinder } = loadFff();
+//
+// Our pnpm patch gives fff-node a `require` export, but an npm install of the
+// published CLI gets the unpatched package, whose exports only map `import`.
+const { FileFinder } = requireImportOnlyPackage<typeof import("@ff-labs/fff-node")>(
+  NodeModule.createRequire(import.meta.url),
+  (specifier) => import.meta.resolve(specifier),
+  "@ff-labs/fff-node",
+);
 
 const WORKSPACE_INDEX_MAX_ENTRIES = 25_000;
 const WORKSPACE_INDEX_PAGE_SIZE = WORKSPACE_INDEX_MAX_ENTRIES + 2;
