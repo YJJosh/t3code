@@ -76,12 +76,13 @@ describe("piModelCapabilities", () => {
     }
   });
 
-  it("advertises context-window choices from the configured default through the catalog max", () => {
+  it("advertises the context-window choices reported by the /context command", () => {
     const capabilities = piModelCapabilities(
       {
-        id: "gpt-5.6-sol",
+        id: "gpt-6.1-sol",
         provider: "openai-codex",
         contextWindow: 272_000,
+        contextWindowChoices: [872_000, 128_000, 272_000, 500_000, 1_048_576],
       },
       { contextCommandAvailable: true },
     );
@@ -95,12 +96,24 @@ describe("piModelCapabilities", () => {
       options: [
         { id: "auto", label: "Auto (272K)", isDefault: true },
         { id: "128k", label: "128K" },
-        { id: "200k", label: "200K" },
-        { id: "256k", label: "256K" },
         { id: "272k", label: "272K" },
-        { id: "372k", label: "372K" },
+        { id: "500k", label: "500K" },
+        { id: "872k", label: "872K" },
+        { id: "1048576", label: "1.05M" },
       ],
     });
+  });
+
+  it("only offers windows up to the default when /context does not report choices", () => {
+    const capabilities = piModelCapabilities(
+      { id: "gpt-5.6-sol", provider: "openai-codex", contextWindow: 272_000 },
+      { contextCommandAvailable: true },
+    );
+    const descriptor = capabilities.optionDescriptors?.find(
+      (option) => option.id === "contextWindow",
+    );
+    const optionIds = descriptor?.type === "select" ? descriptor.options.map((o) => o.id) : [];
+    expect(optionIds).toEqual(["auto", "128k", "200k", "256k", "272k"]);
   });
 
   it("does not advertise context-window controls without the /context extension command", () => {
@@ -216,6 +229,50 @@ describe("discoverPiModelsWithSdk", () => {
     expect(result.models[0]?.capabilities?.optionDescriptors).toContainEqual(
       expect.objectContaining({ id: "contextWindow", label: "Context Window" }),
     );
+  });
+
+  it("asks the /context command for each model's context-window choices", async () => {
+    const result = await discoverPiModelsWithSdk({
+      createAgentSessionServices: async () => ({
+        modelRuntime: {
+          getAvailable: async () => [
+            { id: "gpt-6.1-sol", provider: "openai-codex", contextWindow: 272_000 },
+            { id: "gpt-5.5", provider: "openai-codex", contextWindow: 272_000 },
+          ],
+          getError: () => undefined,
+        },
+        resourceLoader: {
+          getExtensions: () => ({
+            extensions: [
+              {
+                commands: new Map([
+                  [
+                    "context",
+                    {
+                      contextWindowChoices: (model: { id: string }) => {
+                        if (model.id === "gpt-5.5") throw new Error("unexpected model");
+                        return [272_000, 500_000, 872_000];
+                      },
+                    },
+                  ],
+                ]),
+              },
+            ],
+          }),
+        },
+        diagnostics: [],
+      }),
+    });
+
+    const contextOptionIds = (index: number) => {
+      const descriptor = result.models[index]?.capabilities?.optionDescriptors?.find(
+        (option) => option.id === "contextWindow",
+      );
+      return descriptor?.type === "select" ? descriptor.options.map((o) => o.id) : [];
+    };
+    expect(contextOptionIds(0)).toEqual(["auto", "272k", "500k", "872k"]);
+    // A failing hook falls back to lowering-only choices instead of failing discovery.
+    expect(contextOptionIds(1)).toEqual(["auto", "128k", "200k", "256k", "272k"]);
   });
 
   it("exposes provider-scoped extension commands, prompts, and skills", async () => {
@@ -377,6 +434,46 @@ describe("discoverPiModelsWithSdk", () => {
         );
       }
       expect(environment).not.toHaveProperty("PI_CODING_AGENT_DIR");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("reads context-window choices from the /context extension in the worker", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const paths = yield* Path.Path;
+      const home = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-pi-context-discovery-",
+      });
+      const agentDir = paths.join(home, "agent");
+      yield* fileSystem.makeDirectory(paths.join(agentDir, "extensions"), { recursive: true });
+      yield* fileSystem.writeFileString(
+        paths.join(agentDir, "extensions", "context.ts"),
+        `export default function (pi) {
+  const command = {
+    handler: async () => {},
+    contextWindowChoices: (model) =>
+      model.id === "gpt-6-astra" ? [128000, model.contextWindow, 500000, 872000] : undefined,
+  };
+  pi.registerCommand("context", command);
+}\n`,
+      );
+      const result = yield* discoverPiModels({
+        agentDir,
+        cwd: home,
+        environment: {
+          HOME: home,
+          PI_OFFLINE: "1",
+          OPENAI_API_KEY: "t3-discovery-fixture-not-a-credential",
+        },
+      });
+
+      expect(result.error).toBeUndefined();
+      const astra = result.models.find((model) => model.slug === "openai/gpt-6-astra");
+      const descriptor = astra?.capabilities?.optionDescriptors?.find(
+        (option) => option.id === "contextWindow",
+      );
+      const optionIds = descriptor?.type === "select" ? descriptor.options.map((o) => o.id) : [];
+      expect(optionIds).toEqual(["auto", "128k", "272k", "500k", "872k"]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

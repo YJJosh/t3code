@@ -60,6 +60,8 @@ interface PiSdkModel {
   readonly reasoning?: boolean;
   readonly thinkingLevelMap?: Record<string, string | null> | undefined;
   readonly contextWindow?: number | undefined;
+  /** Manual windows in tokens, reported by the loaded `/context` command. */
+  readonly contextWindowChoices?: ReadonlyArray<number> | undefined;
 }
 
 export interface PiModelDiscoveryResult {
@@ -105,6 +107,11 @@ interface PiResourceSourceInfo {
 interface PiExtensionCommand {
   readonly description?: string | undefined;
   readonly sourceInfo?: PiResourceSourceInfo | undefined;
+  /**
+   * Optional `/context` hook (pi-effort-commands) listing a model's manual
+   * context windows, so the menu follows the extension without T3 changes.
+   */
+  readonly contextWindowChoices?: ((model: PiSdkModel) => unknown) | undefined;
 }
 
 interface PiResourceSnapshot {
@@ -242,14 +249,11 @@ export interface PiModelCapabilityOptions {
   readonly contextCommandAvailable?: boolean | undefined;
 }
 
+// Fallback for `/context` commands without `contextWindowChoices`: any window
+// up to the configured default is valid, so offer the presets below it.
 const PI_CONTEXT_WINDOW_PRESETS = [
   128_000, 200_000, 256_000, 272_000, 372_000, 400_000, 1_000_000, 1_050_000,
 ] as const;
-const PI_CATALOG_CONTEXT_MAX_WINDOWS = new Map<string, number>([
-  ["openai-codex/gpt-5.6-luna", 372_000],
-  ["openai-codex/gpt-5.6-sol", 372_000],
-  ["openai-codex/gpt-5.6-terra", 372_000],
-]);
 
 function formatContextWindowValue(tokens: number): string {
   if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) return `${tokens / 1_000_000}m`;
@@ -277,16 +281,15 @@ function piContextWindowChoices(model: PiSdkModel) {
     return [];
   }
   const defaultWindow = Math.floor(configuredWindow);
-  const maximumWindow = Math.max(
-    defaultWindow,
-    PI_CATALOG_CONTEXT_MAX_WINDOWS.get(piModelSlug(model)) ?? defaultWindow,
+  const discoveredWindows = (model.contextWindowChoices ?? []).filter(
+    (tokens) => Number.isInteger(tokens) && tokens >= 1_000,
   );
   const manualWindows = Array.from(
-    new Set([
-      ...PI_CONTEXT_WINDOW_PRESETS.filter((tokens) => tokens <= maximumWindow),
-      defaultWindow,
-      maximumWindow,
-    ]),
+    new Set(
+      discoveredWindows.length > 0
+        ? discoveredWindows
+        : [...PI_CONTEXT_WINDOW_PRESETS.filter((tokens) => tokens <= defaultWindow), defaultWindow],
+    ),
   ).sort((left, right) => left - right);
 
   return [
@@ -339,7 +342,7 @@ export function piModelCapabilities(
           id: PI_CONTEXT_WINDOW_OPTION_ID,
           label: "Context Window",
           description:
-            "Auto uses Pi's configured model limit. Manual values can lower it or select a separately known catalog maximum.",
+            "Auto uses Pi's configured model limit. Manual values come from Pi's /context command and can lower it or opt into a larger supported window.",
           options: contextWindowOptions,
         }),
       );
@@ -408,6 +411,31 @@ function finishPiModelDiscovery(snapshot: PiSdkDiscoverySnapshot): PiModelDiscov
     : { models, auth, ...resources };
 }
 
+/**
+ * Reads the first `/context` command's `contextWindowChoices` hook. Mirrored in
+ * the discovery worker source, which cannot import this module.
+ */
+function piContextWindowHook(resources: PiResourceSnapshot) {
+  const hook = resources.extensions
+    .map((extension) => extension.commands.get(PI_CONTEXT_COMMAND))
+    .find((command) => command !== undefined)?.contextWindowChoices;
+  return (model: PiSdkModel): ReadonlyArray<number> | undefined => {
+    if (typeof hook !== "function" || typeof model.contextWindow !== "number") return undefined;
+    try {
+      const choices = hook({
+        provider: model.provider,
+        id: model.id,
+        contextWindow: model.contextWindow,
+      });
+      return Array.isArray(choices)
+        ? choices.filter((tokens): tokens is number => typeof tokens === "number")
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
 async function loadPiDiscoverySnapshot(
   sdk: PiSdkModule,
   options: PiModelDiscoveryOptions,
@@ -429,9 +457,15 @@ async function loadPiDiscoverySnapshot(
       noContextFiles: true,
     },
   });
+  const resources = snapshotPiResources(services.resourceLoader);
+  const contextWindowChoices = piContextWindowHook(resources);
+  const available = await services.modelRuntime.getAvailable();
   return {
-    available: await services.modelRuntime.getAvailable(),
-    resources: snapshotPiResources(services.resourceLoader),
+    available: available.map((model) => {
+      const choices = contextWindowChoices(model);
+      return choices ? { ...model, contextWindowChoices: choices } : model;
+    }),
+    resources,
     diagnostics: services.diagnostics,
     runtimeError: services.modelRuntime.getError(),
   };
@@ -503,14 +537,31 @@ const loadSdk = async (urls) => {
     filePath: skill.filePath,
     ...(sourceInfo(skill.sourceInfo) ? { sourceInfo: sourceInfo(skill.sourceInfo) } : {}),
   }));
-  const available = (await services.modelRuntime.getAvailable()).map((model) => ({
-    id: model.id,
-    ...(typeof model.name === "string" ? { name: model.name } : {}),
-    provider: model.provider,
-    ...(typeof model.reasoning === "boolean" ? { reasoning: model.reasoning } : {}),
-    ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
-    ...(typeof model.contextWindow === "number" ? { contextWindow: model.contextWindow } : {}),
-  }));
+  const contextCommand = (loader?.getExtensions().extensions ?? [])
+    .map((extension) => extension.commands.get("context"))
+    .find((command) => command !== undefined);
+  const contextWindowChoices = (model) => {
+    const hook = contextCommand?.contextWindowChoices;
+    if (typeof hook !== "function" || typeof model.contextWindow !== "number") return undefined;
+    try {
+      const choices = hook({ provider: model.provider, id: model.id, contextWindow: model.contextWindow });
+      return Array.isArray(choices) ? choices.filter((tokens) => typeof tokens === "number") : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const available = (await services.modelRuntime.getAvailable()).map((model) => {
+    const choices = contextWindowChoices(model);
+    return {
+      id: model.id,
+      ...(typeof model.name === "string" ? { name: model.name } : {}),
+      provider: model.provider,
+      ...(typeof model.reasoning === "boolean" ? { reasoning: model.reasoning } : {}),
+      ...(model.thinkingLevelMap ? { thinkingLevelMap: model.thinkingLevelMap } : {}),
+      ...(typeof model.contextWindow === "number" ? { contextWindow: model.contextWindow } : {}),
+      ...(choices ? { contextWindowChoices: choices } : {}),
+    };
+  });
   parentPort.postMessage({
     _tag: "success",
     snapshot: {
