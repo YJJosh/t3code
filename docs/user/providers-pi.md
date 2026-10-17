@@ -40,7 +40,7 @@ When no daemon is running yet (for example after a restart, before any terminal 
 
 ## Conversation display
 
-Completed work folds intermediate commentary, tool activity, and routine background-notification replies under **Worked for…**. The actual answer stays visible, even if a later subagent or workflow notification produces another reply. Expand the work log to review the progress messages. Pi text blocks render separately so headings, lists, and code blocks do not run into preceding text.
+Completed work folds intermediate commentary, tool activity, and routine subagent and workflow notification replies under **Worked for…**. The actual answer stays visible, even if a later subagent or workflow notification produces another reply. When a background terminal finishes, Pi's reply to it is shown as an answer. Expand the work log to review the progress messages. Pi text blocks render separately so headings, lists, and code blocks do not run into preceding text.
 
 Older saved Pi conversations may still show progress messages outside the fold because they did not record the distinction between commentary and answers. Ambiguous or partial replies also stay visible rather than risk hiding the only answer.
 

@@ -133,11 +133,10 @@ const TOOL_UPDATE_MIN_INTERVAL_NANOS = 1_000_000_000n;
 const TOOL_UPDATE_SUMMARY_MAX_CHARS = 4_000;
 const TOOL_UPDATE_TRUNCATION_MARKER = "…[truncated]\n";
 const PI_EXTENSION_CONTROL_TIMEOUT = "12 seconds";
-const PI_ASYNC_RESULT_CUSTOM_TYPES = new Set([
-  "subagents-result",
-  "subagents-workflow-result",
-  "background-terminal-result",
-]);
+const PI_ASYNC_RESULT_CUSTOM_TYPES = new Set(["subagents-result", "subagents-workflow-result"]);
+// A finished background terminal usually ends the work it was started for, so
+// its reply is a fresh answer rather than a routine acknowledgement.
+const PI_FRESH_ANSWER_CUSTOM_TYPES = new Set(["background-terminal-result"]);
 
 type PiAssistantPhase = "commentary" | "final_answer";
 type PiAssistantOrigin = "normal" | "async_result";
@@ -196,7 +195,7 @@ interface PiSessionContext {
     readonly toolName: string;
     readonly detail: string | undefined;
   }>;
-  /** Native source of subsequent assistant replies; reset only by a real user message. */
+  /** Native source of subsequent assistant replies; reset by a user message or finished terminal. */
   assistantOrigin: PiAssistantOrigin;
   hasPrimaryAssistantAnswer: boolean;
   /** Cumulative, rate-limited live assistant state for each child transcript. */
@@ -262,7 +261,12 @@ function isMissingPiSessionError(error: unknown): boolean {
 
 function observePiMessageOrigin(ctx: PiSessionContext, message: unknown): void {
   if (!isRecord(message)) return;
-  if (message.role === "user") {
+  if (
+    message.role === "user" ||
+    (message.role === "custom" &&
+      typeof message.customType === "string" &&
+      PI_FRESH_ANSWER_CUSTOM_TYPES.has(message.customType))
+  ) {
     ctx.assistantOrigin = "normal";
     ctx.hasPrimaryAssistantAnswer = false;
     return;

@@ -1401,8 +1401,11 @@ describe("Pi adapter", () => {
       yield* pushAssistant("Normal answer after the user message.");
       yield* pushCustom("subagents-workflow-result");
       yield* pushAssistant("Workflow result follow-up.");
+      // A finished terminal starts a fresh answer; later routine replies fold again.
       yield* pushCustom("background-terminal-result");
       yield* pushAssistant("Background terminal follow-up.");
+      yield* pushCustom("subagents-result");
+      yield* pushAssistant("Subagent follow-up after the terminal answer.");
       yield* pushMessageEnd({ role: "user", content: [{ type: "text", text: "One more" }] });
       yield* pushAssistant("I need to use a tool.", "toolUse");
       // Do not hide a first result merely because an asynchronous result
@@ -1427,6 +1430,7 @@ describe("Pi adapter", () => {
         "commentary",
         "final_answer",
         "commentary",
+        "final_answer",
         "commentary",
         "commentary",
         undefined,
@@ -1446,6 +1450,7 @@ describe("Pi adapter", () => {
         "Normal answer after the user message.",
         "Workflow result follow-up.",
         "Background terminal follow-up.",
+        "Subagent follow-up after the terminal answer.",
         "I need to use a tool.",
         "First result supplied after the background work.",
         "Partial answer retained.",

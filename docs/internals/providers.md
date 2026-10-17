@@ -112,8 +112,10 @@ than allowing a later commentary item to take over the checkpoint display.
 
 The [Pi adapter](../../apps/server/src/provider/Layers/PiAdapter.ts) uses native stop reasons,
 explicit tool boundaries, and known background-result message sources—not wording or text length.
-Adjacent text blocks alone are not a work boundary. Automatic acknowledgements after a primary
-answer are commentary; ambiguous first results and partial answers stay unclassified and visible.
+Adjacent text blocks alone are not a work boundary. Replies to subagent and workflow notifications
+after a primary answer are commentary; ambiguous first results and partial answers stay unclassified
+and visible. A finished background terminal starts a fresh answer like a user message, because it
+usually ends the work it was started for.
 `agent_settled`, not an individual assistant stop response, remains the turn lifecycle boundary.
 
 ## Attachments and stored history
