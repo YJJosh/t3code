@@ -13,7 +13,6 @@ import {
   backgroundTerminalTruncatedBytes,
   formatBytes,
   groupBackgroundTerminalsForRoster,
-  isBackgroundTerminalQuiet,
   sanitizeTerminalOutputText,
 } from "./backgroundTerminalPresentation";
 
@@ -57,13 +56,6 @@ describe("backgroundTerminalStatusLabel / tone", () => {
     });
   }
 
-  it("only done/killed are quiet", () => {
-    expect(isBackgroundTerminalQuiet("running")).toBe(false);
-    expect(isBackgroundTerminalQuiet("failed")).toBe(false);
-    expect(isBackgroundTerminalQuiet("done")).toBe(true);
-    expect(isBackgroundTerminalQuiet("killed")).toBe(true);
-  });
-
   it("calls out failed in the accessible status", () => {
     expect(backgroundTerminalAccessibleStatus("failed")).toContain("needs your attention");
     expect(backgroundTerminalAccessibleStatus("running")).toBe("Running");
@@ -81,22 +73,29 @@ describe("backgroundTerminalTitle", () => {
 });
 
 describe("groupBackgroundTerminalsForRoster", () => {
-  it("keeps running/failed in attention and done/killed in quiet", () => {
-    const running = entry({ id: "a", status: "running" });
-    const failed = entry({ id: "b", status: "failed" });
+  it("keeps only running terminals in running and every other status in settled", () => {
+    const failed = entry({ id: "a", status: "failed" });
+    const running = entry({ id: "b", status: "running" });
     const done = entry({ id: "c", status: "done" });
     const killed = entry({ id: "d", status: "killed" });
 
-    const { attention, quiet } = groupBackgroundTerminalsForRoster([running, failed, done, killed]);
-    expect(attention.map((item) => item.view.id)).toEqual(["a", "b"]);
-    expect(quiet.map((item) => item.view.id)).toEqual(["c", "d"]);
+    const { running: runningGroup, settled } = groupBackgroundTerminalsForRoster([
+      failed,
+      running,
+      done,
+      killed,
+    ]);
+    expect(runningGroup.map((item) => item.view.id)).toEqual(["b"]);
+    expect(settled.map((item) => item.view.id)).toEqual(["a", "c", "d"]);
   });
 });
 
 describe("backgroundTerminalRosterSummaryLabel", () => {
-  it("pluralizes correctly", () => {
-    expect(backgroundTerminalRosterSummaryLabel(1)).toBe("1 settled terminal");
-    expect(backgroundTerminalRosterSummaryLabel(3)).toBe("3 settled terminals");
+  it("names the group and pluralizes correctly", () => {
+    expect(backgroundTerminalRosterSummaryLabel("running", 1)).toBe("1 running terminal");
+    expect(backgroundTerminalRosterSummaryLabel("running", 2)).toBe("2 running terminals");
+    expect(backgroundTerminalRosterSummaryLabel("settled", 1)).toBe("1 settled terminal");
+    expect(backgroundTerminalRosterSummaryLabel("settled", 3)).toBe("3 settled terminals");
   });
 });
 

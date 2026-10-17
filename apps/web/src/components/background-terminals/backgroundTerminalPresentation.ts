@@ -1,6 +1,7 @@
-import type {
-  BackgroundTerminalEntry,
-  BackgroundTerminalOutputBuffer,
+import {
+  isBackgroundTerminalActive,
+  type BackgroundTerminalEntry,
+  type BackgroundTerminalOutputBuffer,
 } from "@t3tools/client-runtime/state/background-terminals";
 import type { PiBackgroundTerminalStatus, PiBackgroundTerminalView } from "@t3tools/contracts";
 
@@ -22,13 +23,6 @@ const STATUS_TONES: Record<PiBackgroundTerminalStatus, BackgroundTerminalStatusT
   killed: "warning",
 };
 
-/**
- * Statuses that no longer need attention: the terminal settled cleanly or was
- * stopped deliberately. Kept separate from `failed`, which stays in the
- * always-visible roster since a failure is something the user should notice.
- */
-const QUIET_STATUSES: ReadonlySet<PiBackgroundTerminalStatus> = new Set(["done", "killed"]);
-
 export function backgroundTerminalStatusLabel(status: PiBackgroundTerminalStatus): string {
   return STATUS_LABELS[status];
 }
@@ -37,11 +31,6 @@ export function backgroundTerminalStatusTone(
   status: PiBackgroundTerminalStatus,
 ): BackgroundTerminalStatusTone {
   return STATUS_TONES[status];
-}
-
-/** True once a terminal is done/killed and can collapse out of the way. */
-export function isBackgroundTerminalQuiet(status: PiBackgroundTerminalStatus): boolean {
-  return QUIET_STATUSES.has(status);
 }
 
 /** Short, human title for a terminal row: prefer the title, then the command, then the id. */
@@ -60,32 +49,35 @@ export function backgroundTerminalAccessibleStatus(status: PiBackgroundTerminalS
   return status === "failed" ? `${label} — needs your attention` : label;
 }
 
-export interface BackgroundTerminalRosterGroups {
-  /** Terminals that still need visibility: running or failed. */
-  readonly attention: ReadonlyArray<BackgroundTerminalEntry>;
-  /** Settled terminals (done/killed) that can collapse behind a summary. */
-  readonly quiet: ReadonlyArray<BackgroundTerminalEntry>;
-}
+export type BackgroundTerminalRosterGroup = "running" | "settled";
+
+export type BackgroundTerminalRosterGroups = Record<
+  BackgroundTerminalRosterGroup,
+  ReadonlyArray<BackgroundTerminalEntry>
+>;
 
 /**
- * Split terminals for the roster panel so running/failed terminals stay
- * always visible while settled terminals collapse behind a summary row.
- * Creation order is preserved within each group.
+ * Split terminals into running and settled (done, failed, killed) groups,
+ * each shown behind its own summary row. Creation order is preserved
+ * within each group.
  */
 export function groupBackgroundTerminalsForRoster(
   entries: ReadonlyArray<BackgroundTerminalEntry>,
 ): BackgroundTerminalRosterGroups {
-  const attention: BackgroundTerminalEntry[] = [];
-  const quiet: BackgroundTerminalEntry[] = [];
+  const running: BackgroundTerminalEntry[] = [];
+  const settled: BackgroundTerminalEntry[] = [];
   for (const entry of entries) {
-    (isBackgroundTerminalQuiet(entry.view.status) ? quiet : attention).push(entry);
+    (isBackgroundTerminalActive(entry.view.status) ? running : settled).push(entry);
   }
-  return { attention, quiet };
+  return { running, settled };
 }
 
-/** Label for the collapsed settled-terminal summary row. */
-export function backgroundTerminalRosterSummaryLabel(count: number): string {
-  return `${count} settled terminal${count === 1 ? "" : "s"}`;
+/** Label for a roster group's summary row, e.g. "2 running terminals". */
+export function backgroundTerminalRosterSummaryLabel(
+  group: BackgroundTerminalRosterGroup,
+  count: number,
+): string {
+  return `${count} ${group} terminal${count === 1 ? "" : "s"}`;
 }
 
 /** Elapsed duration from creation to settlement (or now, while still running). */
