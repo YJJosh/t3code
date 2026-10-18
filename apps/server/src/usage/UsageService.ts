@@ -411,7 +411,14 @@ export const make = Effect.gen(function* () {
         }
       }
       directories.push(discovered);
+      // REVIEW: header-derived roots repeat once per cached file (every session in
+      // a project yields the same ancestor chain). Collapse them before the per-root
+      // realPath/volume IO and the O(fileCache) retained-history walk below.
+      const requested = new Set<string>();
       for (const { dir: directory, ...scanOptions } of directories.flat()) {
+        const requestKey = `${directory}\0${encodeUsageRecordKey(scanOptions)}`;
+        if (requested.has(requestKey)) continue;
+        requested.add(requestKey);
         const sourceKey = provider + "\0" + directory;
         const previous = sourceCache.get(sourceKey);
         // Keep canonical paths and source fingerprints stable after root cleanup,
