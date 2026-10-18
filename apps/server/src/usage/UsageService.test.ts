@@ -558,10 +558,11 @@ describe("UsageService", () => {
           const pi = summary.buckets.filter((bucket) => bucket.provider === "pi");
           assert.strictEqual(pi.length, 1);
           assert.strictEqual(pi[0]?.totals.uncachedInputTokens, 7);
+          // Sources report canonical paths (macOS temp dirs live under /private/var).
           assert.strictEqual(
             summary.sources.find((source) => source.fingerprint.provider === "pi")?.fingerprint
               .resolvedHomePath,
-            dir,
+            yield* Effect.promise(() => NodeFSP.realpath(dir)),
           );
         }).pipe(
           Effect.scoped,
