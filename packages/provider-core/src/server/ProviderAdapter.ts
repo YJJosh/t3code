@@ -388,6 +388,8 @@ export interface ProviderAdapterV2OpenSessionInput {
   readonly resumeFromSession?: OrchestrationV2ProviderSession;
   /** Native thread to activate while an eager adapter opens its provider process. */
   readonly initialNativeThreadId?: string;
+  /** Join an existing shared native process; never launch a new writer. */
+  readonly attachOnly?: boolean;
   /** Preserves provider item identity across eager activation of a persisted thread. */
   readonly initialProviderItemIdentityVersion?: 2;
 }

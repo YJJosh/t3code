@@ -1,3 +1,4 @@
+import * as DulliSharedSessions from "./provider/dulli/DulliSharedSessions.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
@@ -88,6 +89,10 @@ import * as CodexInstallation from "./provider/CodexInstallation.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapterRegistry from "./orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
+import * as DulliBackgroundTerminals from "./provider/dulli/DulliBackgroundTerminals.ts";
+import * as DulliSubagents from "./provider/dulli/DulliSubagents.ts";
+import * as DulliBackgroundThreads from "./provider/dulli/DulliBackgroundThreads.ts";
+import * as DulliBridges from "./provider/dulli/DulliBridges.ts";
 import * as ProviderUsageLimitsIngestion from "./provider/ProviderUsageLimitsIngestion.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
@@ -575,6 +580,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // Asks T3 Connect to deliver webhooks it held while this environment was offline.
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
+  DulliSharedSessions.layerBinding,
+  DulliBackgroundThreads.layerBinding,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   layerThreadPullRequestWorker,
   Layer.effectDiscard(
@@ -635,7 +642,11 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // adapter lookup, and runtime ingestion all resolve `ProviderInstanceId`
   // through this layer. Built-in drivers come from `BUILT_IN_DRIVERS`;
   // hydration adds their default instances to `providerInstances` on boot.
-  Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+  // Both runtime and MCP facades retrieve these same adapters. Capture bridge
+  // factories here, including the registry's hot-reload construction context.
+  Layer.provideMerge(
+    ProviderInstanceRegistryHydration.layer.pipe(Layer.provide(DulliBridges.layer)),
+  ),
   Layer.provideMerge(
     Layer.mergeAll(
       AntigravityInstallation.AntigravityInstallation.layer,
@@ -645,6 +656,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
+  Layer.provideMerge(DulliBackgroundThreads.layer),
+  Layer.provideMerge(DulliSubagents.layer),
+  Layer.provideMerge(DulliBackgroundTerminals.layer),
+  Layer.provideMerge(ProjectionStoreV2.layer.pipe(Layer.provide(layerPersistence))),
   Layer.provideMerge(layerPtyAdapter),
   // Search, prepare, status inspection, and turn launch share one registry
   // cache so every client and provider instance sees the same prepared agents.
@@ -688,6 +703,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   Layer.provideMerge(Layer.mergeAll(NativeAppIconResolver.layer, layerProjectFaviconResolver)),
   Layer.provideMerge(layerRepositoryIdentityResolver),
   Layer.provideMerge(layerServerEnvironment),
+  Layer.provideMerge(DulliSharedSessions.layer),
   Layer.provideMerge(layerAuth),
   Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(

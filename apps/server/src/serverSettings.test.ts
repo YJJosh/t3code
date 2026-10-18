@@ -2357,6 +2357,9 @@ it.layer(NodeServices.layer)("fork Pi to Dulli settings migration", (it) => {
         );
         const persisted = JSON.parse(yield* fs.readFileString(config.settingsPath));
         assert.isUndefined(persisted.providerInstances.pi);
+        assert.isTrue(
+          yield* (yield* ServerSettingsModule.ServerSettingsService).legacyPiProviderMigrated!,
+        );
         assert.lengthOf(
           yield* sql`SELECT name FROM dulli_fork_migrations WHERE name = 'settings-checked'`,
           1,
@@ -2406,6 +2409,7 @@ it.layer(NodeServices.layer)("fork Pi to Dulli settings migration", (it) => {
       );
       const settings = yield* service.getSettings;
       assert.equal(settings.providerInstances[ProviderInstanceId.make("pi")]?.driver, "pi");
+      assert.isFalse(yield* service.legacyPiProviderMigrated!);
     }).pipe(Effect.provide(layerServerSettings())),
   );
   it.effect("materializes the omitted fork Pi default and marks a missing settings file once", () =>
@@ -2420,6 +2424,22 @@ it.layer(NodeServices.layer)("fork Pi to Dulli settings migration", (it) => {
         yield* sql`SELECT name FROM dulli_fork_migrations WHERE name = 'settings-checked'`,
         1,
       );
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("publishes the cutover signal when only the settings file identifies the fork", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fs.writeFileString(
+        config.settingsPath,
+        JSON.stringify({
+          providers: { pi: { binaryPath: "pi", profile: "coder", piSessions: true } },
+        }),
+      );
+      yield* service.getSettings;
+      assert.isTrue(yield* service.legacyPiProviderMigrated!);
     }).pipe(Effect.provide(layerServerSettings())),
   );
 

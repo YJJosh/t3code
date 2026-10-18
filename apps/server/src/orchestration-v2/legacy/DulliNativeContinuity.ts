@@ -1,3 +1,4 @@
+import { findDulliSessionFile } from "./DulliSessionFile.ts";
 import {
   EventId,
   OrchestrationV2AppThreadJson,
@@ -24,17 +25,24 @@ export const restoreDulliNativeContinuity = Effect.gen(function* () {
     thread_id: string;
     provider_instance_id: string;
     session_file: string;
-    payload_json: string;
   }>`
-    SELECT legacy.thread_id, legacy.provider_instance_id, legacy.session_file, thread.payload_json
+    SELECT legacy.thread_id, legacy.provider_instance_id, legacy.session_file
     FROM dulli_fork_native_threads AS legacy
     INNER JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = legacy.thread_id
     WHERE legacy.imported = 0
   `;
   for (const row of rows) {
-    const thread = yield* decodeThread(row.payload_json);
     yield* sql.withTransaction(
       Effect.gen(function* () {
+        // UUID recovery can perform filesystem I/O after startup. Re-read under
+        // the write transaction rather than trusting the earlier shell snapshot.
+        const current = yield* sql<{ payload_json: string }>`
+          SELECT thread.payload_json FROM orchestration_v2_projection_threads thread
+          JOIN dulli_fork_native_threads legacy ON legacy.thread_id = thread.thread_id
+          WHERE thread.thread_id = ${row.thread_id} AND legacy.imported = 0
+        `;
+        if (current[0] === undefined) return;
+        const thread = yield* decodeThread(current[0].payload_json);
         // Never displace an existing v2 binding or a selection the user already changed.
         if (
           thread.activeProviderThreadId === null &&
@@ -84,4 +92,35 @@ export const restoreDulliNativeContinuity = Effect.gen(function* () {
       }),
     );
   }
+});
+
+/** Repairs only the frozen fork installation's old UUID cursors, not upstream Pi.
+ * Called with configured Dulli homes by shared-session startup, after shell import. */
+export const recoverDulliUuidCursors = Effect.fn(function* (agentDirs: ReadonlyArray<string>) {
+  const sql = yield* SqlClient.SqlClient;
+  const detected = yield* sql`SELECT 1 FROM dulli_fork_migrations WHERE name = 'fork-detected'`;
+  if (!detected.length) return;
+  const rows = yield* sql<{
+    thread_id: string;
+    provider_instance_id: string;
+    session_id: string;
+    cwd: string;
+  }>`
+    SELECT r.thread_id, r.provider_instance_id, json_extract(r.resume_cursor_json, '$.piSessionId') AS session_id,
+      coalesce(json_extract(t.payload_json, '$.worktreePath'), json_extract(r.runtime_payload_json, '$.cwd')) AS cwd
+    FROM provider_session_runtime r JOIN orchestration_v2_projection_threads t ON t.thread_id = r.thread_id
+    WHERE r.provider_name = 'dulli' AND json_valid(r.resume_cursor_json)
+      AND json_type(r.resume_cursor_json, '$.piSessionId') = 'text'
+      AND json_extract(t.payload_json, '$.activeProviderThreadId') IS NULL
+      AND NOT EXISTS (SELECT 1 FROM dulli_fork_native_threads n WHERE n.thread_id = r.thread_id)
+    LIMIT 100
+  `;
+  for (const row of rows) {
+    if (!row.cwd) continue;
+    const file = yield* findDulliSessionFile(agentDirs, row.session_id, row.cwd);
+    if (file === null) continue;
+    yield* sql`INSERT OR IGNORE INTO dulli_fork_native_threads (thread_id, provider_instance_id, session_file)
+      VALUES (${row.thread_id}, ${row.provider_instance_id}, ${file})`;
+  }
+  yield* restoreDulliNativeContinuity;
 });

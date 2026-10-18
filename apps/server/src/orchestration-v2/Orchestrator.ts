@@ -2529,6 +2529,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     if (
+      (command.type === "thread.settle" ||
+        command.type === "thread.unsettle" ||
+        command.type === "thread.metadata.update") &&
+      command.expectedSequence !== undefined
+    ) {
+      const sequence = yield* eventSink
+        .latestSequence({ threadId: command.threadId })
+        .pipe(mapDispatchError(command));
+      if (sequence !== command.expectedSequence) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Thread changed before conditional dispatch.",
+        });
+      }
+    }
+    if (
       command.type === "thread.metadata.update" &&
       command.expectedWorktreePath !== undefined &&
       command.expectedWorktreePath !== thread.worktreePath

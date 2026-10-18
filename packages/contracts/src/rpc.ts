@@ -4,6 +4,13 @@ import {
   OrchestrationV2SearchThreadResult,
 } from "./orchestrationV2.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
+import { ProviderTaskControlInput, ProviderTaskControlError } from "./provider.ts";
+import {
+  DulliBackgroundTerminalControlInput,
+  DulliBackgroundTerminalControlError,
+  DulliBackgroundTerminalEvent,
+  DulliBackgroundTerminalSubscribeInput,
+} from "./backgroundTerminals.ts";
 import {
   McpAppCallToolInput,
   McpAppCallToolResult,
@@ -409,6 +416,7 @@ export const WS_METHODS = {
 
   // Provider methods
   providerUploadFeedback: "provider.uploadFeedback",
+  providerControlTask: "provider.controlTask",
   providerAuthStart: "provider.auth.start",
   providerConsumeResetCredit: "provider.consumeResetCredit",
   providerAuthComplete: "provider.auth.complete",
@@ -445,6 +453,8 @@ export const WS_METHODS = {
   reviewGetDiffFileContents: "review.getDiffFileContents",
 
   // Terminal methods
+  backgroundTerminalsControl: "backgroundTerminals.control",
+  subscribeBackgroundTerminalEvents: "subscribeBackgroundTerminalEvents",
   terminalOpen: "terminal.open",
   terminalAttach: "terminal.attach",
   terminalObserve: "terminal.observe",
@@ -1358,6 +1368,12 @@ const WsMcpAppsReadResourceRpc = Rpc.make(WS_METHODS.mcpAppsReadResource, {
   error: Schema.Union([McpAppRequestError, EnvironmentAuthorizationError]),
 });
 
+const WsProviderControlTaskRpc = Rpc.make(WS_METHODS.providerControlTask, {
+  payload: ProviderTaskControlInput,
+  success: Schema.Void,
+  error: Schema.Union([ProviderTaskControlError, EnvironmentAuthorizationError]),
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -1465,6 +1481,21 @@ const WsReviewGetDiffFileContentsRpc = Rpc.make(WS_METHODS.reviewGetDiffFileCont
   success: ReviewDiffFileContentsResult,
   error: Schema.Union([ReviewDiffPreviewError, EnvironmentAuthorizationError]),
 });
+
+const WsBackgroundTerminalsControlRpc = Rpc.make(WS_METHODS.backgroundTerminalsControl, {
+  payload: DulliBackgroundTerminalControlInput,
+  success: Schema.Void,
+  error: Schema.Union([DulliBackgroundTerminalControlError, EnvironmentAuthorizationError]),
+});
+const WsSubscribeBackgroundTerminalEventsRpc = Rpc.make(
+  WS_METHODS.subscribeBackgroundTerminalEvents,
+  {
+    payload: DulliBackgroundTerminalSubscribeInput,
+    success: DulliBackgroundTerminalEvent,
+    error: EnvironmentAuthorizationError,
+    stream: true,
+  },
+);
 
 const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {
   payload: TerminalOpenInput,
@@ -1709,6 +1740,15 @@ const WsOrchestrationV2GetWorkflowScriptRpc = Rpc.make(
     payload: OrchestrationV2RpcSchemas.getWorkflowScript.input,
     success: OrchestrationV2RpcSchemas.getWorkflowScript.output,
     error: Schema.Union([OrchestrationGetWorkflowScriptError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsOrchestrationV2GetSubagentTranscriptRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getSubagentTranscript,
+  {
+    payload: OrchestrationV2RpcSchemas.getSubagentTranscript.input,
+    success: OrchestrationV2RpcSchemas.getSubagentTranscript.output,
+    error: Schema.Union([OrchestrationV2GetThreadProjectionError, EnvironmentAuthorizationError]),
   },
 );
 
@@ -2023,6 +2063,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsMcpAppsReadResourceRpc,
   WsMcpAppsUpdateModelContextRpc,
   WsProviderUploadFeedbackRpc,
+  WsProviderControlTaskRpc,
   WsSubscribeVcsStatusRpc,
   WsSubscribeWorktreeSetupRpc,
   WsWorktreeSetupCancelRpc,
@@ -2039,6 +2080,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsInitRpc,
   WsReviewGetDiffPreviewRpc,
   WsReviewGetDiffFileContentsRpc,
+  WsBackgroundTerminalsControlRpc,
+  WsSubscribeBackgroundTerminalEventsRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,
   WsTerminalObserveRpc,
@@ -2079,6 +2122,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2StopWorkflowRpc,
   WsOrchestrationV2GetTurnItemRpc,
+  WsOrchestrationV2GetSubagentTranscriptRpc,
   WsOrchestrationV2GetTurnDiffRpc,
   WsOrchestrationV2GetFullThreadDiffRpc,
   WsOrchestrationV2SearchThreadsRpc,

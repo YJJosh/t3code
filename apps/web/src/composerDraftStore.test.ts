@@ -66,6 +66,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import {
   COMPOSER_DRAFT_STORAGE_KEY,
+  migrateDulliComposerState,
   clearComposerDraftsEnvironment,
   composerDraftHasUserContent,
   beginBackgroundDraftSubmissionByRef,
@@ -198,6 +199,47 @@ function draftFor(threadId: ThreadId, environmentId: EnvironmentId = LEGACY_TEST
 function draftByKey(key: string) {
   return useComposerDraftStore.getState().draftsByThreadKey[key] ?? undefined;
 }
+
+describe("Dulli fork client migration", () => {
+  beforeEach(resetComposerDraftStore);
+  afterEach(resetComposerDraftStore);
+  it("moves only the migrated environment's draft and preserves the model options and other environments", () => {
+    const env = EnvironmentId.make("dulli-env");
+    const other = EnvironmentId.make("upstream-env");
+    const a = scopeThreadRef(env, ThreadId.make("a"));
+    const b = scopeThreadRef(other, ThreadId.make("b"));
+    const pi = ProviderInstanceId.make("pi");
+    const selection = {
+      instanceId: pi,
+      model: "openai/model",
+      options: [{ id: "profile", value: "coder" }],
+    };
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(a, selection);
+    store.setModelSelection(b, selection);
+    useComposerDraftStore.setState({
+      stickyActiveProvider: pi,
+      stickyModelSelectionByProvider: { [pi]: selection },
+      stickyOptionsByModelByProvider: { [pi]: { "openai/model": selection.options } },
+    });
+    migrateDulliComposerState(env, true);
+    const next = useComposerDraftStore.getState();
+    expect(next.draftsByThreadKey[scopedThreadKey(a)]).toMatchObject({
+      activeProvider: "dulli",
+      modelSelectionByProvider: { dulli: { ...selection, instanceId: "dulli" } },
+    });
+    expect(
+      next.draftsByThreadKey[scopedThreadKey(a)]?.modelSelectionByProvider[pi],
+    ).toBeUndefined();
+    expect(next.draftsByThreadKey[scopedThreadKey(b)]?.modelSelectionByProvider[pi]).toEqual(
+      selection,
+    );
+    expect(next.stickyActiveProvider).toBe("dulli");
+    expect(next.stickyOptionsByModelByProvider[ProviderInstanceId.make("dulli")]).toEqual({
+      "openai/model": selection.options,
+    });
+  });
+});
 
 describe("composerDraftStore assistant citations", () => {
   beforeEach(resetComposerDraftStore);

@@ -149,11 +149,12 @@ export class ProviderTaskControlError extends Schema.TaggedError<ProviderTaskCon
   {
     threadId: ThreadId,
     taskId: TrimmedNonEmptyString,
+    detail: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return `Failed to control task ${this.taskId} for thread ${this.threadId}.`;
+    return this.detail ?? `Failed to control task ${this.taskId} for thread ${this.threadId}.`;
   }
 }
 

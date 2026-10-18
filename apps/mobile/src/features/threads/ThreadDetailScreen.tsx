@@ -126,6 +126,7 @@ import { ComposerFeedback } from "./ComposerFeedback";
 import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import { PendingUserInputCard } from "./PendingUserInputCard";
 import { ProviderSubagentBar } from "./ProviderSubagentBar";
+import { DulliSubagentRows } from "./DulliSubagents";
 import { ThreadCreationFailedCard } from "./ThreadCreationFailedCard";
 import {
   FLOATING_WORKING_CONTROL_COVERAGE,
@@ -1274,6 +1275,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   }}
                 />
                 <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+                  {props.selectedThreadDetailRef ? (
+                    <DulliSubagentRows target={props.selectedThreadDetailRef} />
+                  ) : null}
                   {props.queuedRunEdit !== null ? (
                     <Animated.View
                       className="shrink-0"

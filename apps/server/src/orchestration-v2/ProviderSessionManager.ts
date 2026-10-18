@@ -158,6 +158,7 @@ export interface ProviderSessionManagerV2Shape {
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly resumeFromSession?: OrchestrationV2ProviderSession;
     readonly initialNativeThreadId?: string;
+    readonly attachOnly?: boolean;
     readonly initialProviderItemIdentityVersion?: 2;
   }) => Effect.Effect<
     ProviderAdapter.ProviderAdapterV2SessionRuntime,
@@ -2237,6 +2238,7 @@ export const layerWithOptions = (
                   ...(input.resumeFromSession === undefined
                     ? {}
                     : { resumeFromSession: input.resumeFromSession }),
+                  ...(input.attachOnly ? { attachOnly: true } : {}),
                   ...(input.initialNativeThreadId === undefined
                     ? {}
                     : { initialNativeThreadId: input.initialNativeThreadId }),

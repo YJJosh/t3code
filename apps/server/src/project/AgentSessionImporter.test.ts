@@ -145,3 +145,108 @@ it.effect("imports messages once and preserves the provider native resume bindin
     expect(recorded).toHaveLength(2);
   }).pipe(Effect.provide(layerTest));
 });
+
+it.effect.each([false, true])(
+  "prepared Dulli imports retain file/worktree identity and migrated IDs (%s)",
+  (migrated) => {
+    const instanceId = ProviderInstanceId.make("dulli");
+    const nativeId = "pi-native";
+    const expectedId = ThreadId.make(`import:${migrated ? "pi" : "dulli"}:${nativeId}`);
+    const events: OrchestrationV2DomainEvent[] = [];
+    const markers: ThreadId[] = [];
+    const prepared: AgentSessionScanner.AgentSessionRecentThread = {
+      _tag: "Importable",
+      source: {
+        provider: "dulli",
+        providerInstanceId: instanceId,
+        providerSessionId: nativeId,
+        filePath: "/workspace/project/.pi/session.jsonl",
+        size: 100,
+        mtimeMs: 2,
+        device: 3,
+        inode: 4,
+        birthtimeMs: 1,
+      },
+      thread: {
+        source: "dulli",
+        providerInstanceId: instanceId,
+        providerSessionId: nativeId,
+        title: "Terminal",
+        model: "native/model",
+        createdAt: "2026-09-01T10:00:00.000Z",
+        updatedAt: "2026-09-01T10:01:00.000Z",
+        messages: [
+          { role: "user", text: "Terminal prompt", createdAt: "2026-09-01T10:00:00.000Z" },
+        ],
+        worktree: { path: "/workspace/project/.worktrees/topic", branch: "topic" },
+      },
+    };
+    const layer = AgentSessionImporter.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(AgentSessionScanner.AgentSessionScanner)({
+            recentThreads: () => Stream.die("prepared import must not scan"),
+          }),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () =>
+              Effect.succeed(
+                Option.some({ id: projectId, workspaceRoot: "/workspace/project" } as never),
+              ),
+          }),
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadRecords: (id) =>
+              migrated && id === expectedId
+                ? Effect.succeed({
+                    thread: {
+                      id,
+                      projectId,
+                      providerInstanceId: instanceId,
+                      historyOrigin: "v1_import",
+                      archivedAt: null,
+                      deletedAt: null,
+                    },
+                  } as never)
+                : Effect.fail(new Orchestrator.OrchestratorProjectionError({ threadId: id })),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            write: (input) =>
+              Effect.sync(() => {
+                events.push(...input.events);
+                return [];
+              }),
+          }),
+          Layer.mock(ProviderSessionRuntime.ProviderSessionRuntimeRepository)({
+            list: () => Effect.succeed([]),
+            upsert: () => Effect.void,
+            recordImportedTranscript: (input) =>
+              Effect.sync(() => {
+                markers.push(input.threadId);
+              }),
+          }),
+          IdAllocator.layer,
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const importer = yield* AgentSessionImporter.AgentSessionImporter;
+      expect(yield* importer.importPreparedAgentThreads({ projectId }, [prepared])).toEqual({
+        importedCount: 1,
+        skippedCount: 0,
+      });
+      expect(markers).toEqual([expectedId]);
+      if (migrated) expect(events).toHaveLength(0);
+      else {
+        expect(events.find((event) => event.type === "thread.created")?.payload).toMatchObject({
+          id: expectedId,
+          worktreePath: "/workspace/project/.worktrees/topic",
+          branch: "topic",
+        });
+        expect(
+          events.find((event) => event.type === "provider-thread.updated")?.payload,
+        ).toMatchObject({
+          nativeThreadRef: { driver: "dulli", nativeId: "/workspace/project/.pi/session.jsonl" },
+        });
+      }
+    }).pipe(Effect.provide(layer));
+  },
+);

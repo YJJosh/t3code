@@ -1,3 +1,4 @@
+import Migration0065 from "./Migrations/065_PiSessionsSettlement.ts";
 /**
  * Migration runner with an inline loader.
  *
@@ -163,6 +164,7 @@ export const migrationEntries = [
   [62, "ThreadFailureLookupIndex", Migration0062],
   [63, "ProjectionThreadMessagePhase", Migration0063],
   [64, "DulliProviderIdentity", Migration0064],
+  [65, "PiSessionsSettlement", Migration0065],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

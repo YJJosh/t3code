@@ -13,7 +13,13 @@ export {
 
 export {
   DulliBridgeRegistry,
+  DulliSharedEnvironment,
   type DulliBridge,
   type DulliBridgeContext,
   type DulliBridgeFactory,
 } from "./server/bridges.ts";
+
+export * as PiSessionsClient from "./server/PiSessionsClient.ts";
+export type { PiSessionInfo } from "./server/PiSessionsClient.ts";
+
+export { resolvePiAgentDir } from "./server/piPaths.ts";

@@ -174,6 +174,7 @@ const make = Effect.gen(function* () {
   const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
   const importRecentAgentThreads = Effect.fn("importRecentAgentThreadsV2")(function* (
     input: AgentSessionImportInput,
+    prepared?: ReadonlyArray<AgentSessionScanner.AgentSessionRecentThread>,
   ) {
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-projects", cause })),
@@ -211,7 +212,10 @@ const make = Effect.gen(function* () {
       }
       return payload.value.importedTranscripts ?? [];
     });
-    const outcomes = scanner.recentThreads(project.workspaceRoot, completedSources);
+    const outcomes =
+      prepared === undefined
+        ? scanner.recentThreads(project.workspaceRoot, completedSources)
+        : Stream.fromIterable(prepared);
     const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
     let skippedCount = 0;
@@ -223,9 +227,17 @@ const make = Effect.gen(function* () {
           return;
         }
         const source = outcome.source;
-        const threadId = ThreadId.make(
-          `import:${source.providerInstanceId}:${source.providerSessionId}`,
-        );
+        // Fork-imported IDs are durable identity, not a provider display name.
+        const legacyId = ThreadId.make(`import:pi:${source.providerSessionId}`);
+        const legacy =
+          source.provider === "dulli" && source.providerInstanceId === "dulli"
+            ? yield* Effect.option(orchestrator.getThreadRecords(legacyId, []))
+            : Option.none();
+        const threadId =
+          Option.isSome(legacy) &&
+          legacy.value.thread.providerInstanceId === source.providerInstanceId
+            ? legacyId
+            : ThreadId.make(`import:${source.providerInstanceId}:${source.providerSessionId}`);
         if (outcome._tag === "AlreadyImported") {
           importedThreadIds.add(threadId);
           importedCount += 1;
@@ -258,7 +270,13 @@ const make = Effect.gen(function* () {
                 actualProjectId: existing.value.thread.projectId,
               });
             }
-            if (existing.value.thread.historyOrigin !== "v1_import") {
+            if (
+              existing.value.thread.historyOrigin !== "v1_import" ||
+              existing.value.thread.archivedAt != null ||
+              existing.value.thread.deletedAt != null ||
+              (thread.source === "dulli" &&
+                existing.value.thread.providerInstanceId !== thread.providerInstanceId)
+            ) {
               return yield* new AgentSessionThreadModifiedError({ threadId });
             }
             yield* runtimes.recordImportedTranscript({ threadId, source });
@@ -266,10 +284,11 @@ const make = Effect.gen(function* () {
           }
 
           const driver = ProviderDriverKind.make(thread.source);
+          const nativeId = thread.source === "dulli" ? source.filePath : thread.providerSessionId;
           const model = thread.model ?? DEFAULT_MODEL_BY_PROVIDER[driver] ?? DEFAULT_MODEL;
           const providerThreadId = idAllocator.derive.providerThread({
             driver,
-            nativeThreadId: thread.providerSessionId,
+            nativeThreadId: nativeId,
           });
           const createdAt = dateTime(thread.createdAt);
           const updatedAt = dateTime(thread.updatedAt);
@@ -283,8 +302,8 @@ const make = Effect.gen(function* () {
             modelSelection: { instanceId: thread.providerInstanceId, model },
             runtimeMode: DEFAULT_RUNTIME_MODE,
             interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-            branch: null,
-            worktreePath: null,
+            branch: thread.worktree?.branch ?? null,
+            worktreePath: thread.worktree?.path ?? null,
             linkedPullRequest: null,
             branchPullRequest: null,
             activeProviderThreadId: providerThreadId,
@@ -318,7 +337,7 @@ const make = Effect.gen(function* () {
             ownerNodeId: null,
             nativeThreadRef: {
               driver,
-              nativeId: thread.providerSessionId,
+              nativeId,
               strength: "strong",
             },
             nativeConversationHeadRef: null,
@@ -342,9 +361,11 @@ const make = Effect.gen(function* () {
               status: "stopped",
               lastSeenAt: thread.updatedAt,
               resumeCursor:
-                thread.source === "codex"
-                  ? { threadId: thread.providerSessionId }
-                  : { threadId, resume: thread.providerSessionId },
+                thread.source === "dulli"
+                  ? { piSessionId: thread.providerSessionId, piSessionFile: source.filePath }
+                  : thread.source === "codex"
+                    ? { threadId: thread.providerSessionId }
+                    : { threadId, resume: thread.providerSessionId },
               runtimePayload: { cwd: project.workspaceRoot },
             },
             { onConflict: "ignore" },
@@ -396,7 +417,13 @@ const make = Effect.gen(function* () {
     return { importedCount, skippedCount } satisfies AgentSessionImportResult;
   });
 
-  return { importRecentAgentThreads };
+  return {
+    importRecentAgentThreads: (input: AgentSessionImportInput) => importRecentAgentThreads(input),
+    importPreparedAgentThreads: (
+      input: AgentSessionImportInput,
+      prepared: ReadonlyArray<AgentSessionScanner.AgentSessionRecentThread>,
+    ) => importRecentAgentThreads(input, prepared),
+  };
 });
 
 type AgentSessionImporterShape = Effect.Success<typeof make>;

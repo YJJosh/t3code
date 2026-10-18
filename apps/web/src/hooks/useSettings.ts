@@ -30,6 +30,7 @@ import {
   type UnifiedSettings,
 } from "@t3tools/contracts/settings";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
+import { migrateForkPiPreferences } from "@t3tools/client-runtime/dulli-migration";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -338,6 +339,9 @@ export function useMigrateModelPreferences(
   settings: ServerSettings | null,
 ) {
   const clientSettings = useClientSettingsValue();
+  const cutover =
+    useAtomValue(serverEnvironment.configValueAtom(environmentId))?.legacyPiProviderMigrated ===
+    true;
   const hydrated = useClientSettingsHydrated();
   const migrate = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
   useEffect(() => {
@@ -348,13 +352,16 @@ export function useMigrateModelPreferences(
       pendingModelPreferencesMigrations.has(environmentId)
     )
       return;
-    const patch = modelPreferencesMigrationPatch(settings, clientSettings);
+    const patch = modelPreferencesMigrationPatch(
+      settings,
+      cutover ? migrateForkPiPreferences(clientSettings) : clientSettings,
+    );
     if (!patch) return;
     pendingModelPreferencesMigrations.add(environmentId);
     void migrate({ environmentId, input: { patch } }).finally(() =>
       pendingModelPreferencesMigrations.delete(environmentId),
     );
-  }, [clientSettings, environmentId, hydrated, migrate, settings]);
+  }, [clientSettings, cutover, environmentId, hydrated, migrate, settings]);
 }
 
 function useMergedSettings<T>(
@@ -431,11 +438,19 @@ export function useLegacySidebarEnabled(): boolean {
 export async function prepareModelPreferencesPatch(
   settings: ServerSettings,
   patch: ServerSettingsPatch,
+  cutover = false,
 ): Promise<ServerSettingsPatch> {
   if (settings.favorites === null || settings.providerModelPreferences === null) {
     await ensureClientSettingsHydrated();
   }
-  return { ...modelPreferencesMigrationPatch(settings, getClientSettings()), ...patch };
+  const client = getClientSettings();
+  return {
+    ...modelPreferencesMigrationPatch(
+      settings,
+      cutover ? migrateForkPiPreferences(client) : client,
+    ),
+    ...patch,
+  };
 }
 
 export function useUpdateEnvironmentModelPreferences(environmentId: EnvironmentId | null) {
@@ -448,7 +463,12 @@ export function useUpdateEnvironmentModelPreferences(environmentId: EnvironmentI
       if (!environmentId || !settings) return;
       let prepared: ServerSettingsPatch;
       try {
-        prepared = await prepareModelPreferencesPatch(settings, patch);
+        prepared = await prepareModelPreferencesPatch(
+          settings,
+          patch,
+          appAtomRegistry.get(serverEnvironment.configValueAtom(environmentId))
+            ?.legacyPiProviderMigrated === true,
+        );
       } catch {
         toastManager.add({
           type: "error",
@@ -489,7 +509,14 @@ export function useToggleEnvironmentModelFavorite(environmentId: EnvironmentId |
         }
       }
       const currentSettings = registry.get(settingsAtom) ?? settings;
-      const favorites = resolveModelPreferences(currentSettings, getClientSettings()).favorites;
+      const client = getClientSettings();
+      const cutover =
+        registry.get(serverEnvironment.configValueAtom(environmentId))?.legacyPiProviderMigrated ===
+        true;
+      const favorites = resolveModelPreferences(
+        currentSettings,
+        cutover ? migrateForkPiPreferences(client) : client,
+      ).favorites;
       const key = JSON.stringify([environmentId, provider, model]);
       const previous = pendingFavorites.current.get(key);
       // Keep the acknowledged choice until the config stream catches up with the RPC reply.

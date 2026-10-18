@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./dulli-migration": {
+      "types": "./src/dulliMigration.ts",
+      "default": "./src/dulliMigration.ts"
+    },
+    "./state/background-terminals": {
+      "types": "./src/state/backgroundTerminals.ts",
+      "default": "./src/state/backgroundTerminals.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"

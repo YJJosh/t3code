@@ -40,6 +40,7 @@ import { DeepMutable } from "effect/Types";
 import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import { useMemo } from "react";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
+import { migrateForkPiMap, migrateForkPiSelections } from "@t3tools/client-runtime/dulli-migration";
 import { readThreadPreviewState } from "./previewStateStore";
 import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
 import {
@@ -4577,6 +4578,45 @@ export function markPromotedDraftThreadByRef(threadRef: ScopedThreadRef): void {
       draftStore.markDraftThreadPromoting(DraftId.make(draftId), threadRef);
     }
   }
+}
+
+/** Migrate only drafts owned by the migrated environment; global sticky state is claimed once. */
+export function migrateDulliComposerState(environmentId: EnvironmentId, global: boolean): void {
+  useComposerDraftStore.setState((state) => ({
+    draftsByThreadKey: Object.fromEntries(
+      Object.entries(state.draftsByThreadKey).map(([key, draft]) => {
+        const owner =
+          state.draftThreadsByThreadKey[key]?.environmentId ??
+          composerThreadRefFromKey(key)?.environmentId;
+        return [
+          key,
+          owner === environmentId
+            ? {
+                ...draft,
+                modelSelectionByProvider: migrateForkPiSelections(draft.modelSelectionByProvider),
+                activeProvider:
+                  draft.activeProvider === "pi"
+                    ? ProviderInstanceId.make("dulli")
+                    : draft.activeProvider,
+              }
+            : draft,
+        ];
+      }),
+    ),
+    ...(global
+      ? {
+          stickyModelSelectionByProvider: migrateForkPiSelections(
+            state.stickyModelSelectionByProvider,
+          ),
+          stickyOptionsByModelByProvider: migrateForkPiMap(state.stickyOptionsByModelByProvider),
+          stickyActiveProvider:
+            state.stickyActiveProvider === "pi"
+              ? ProviderInstanceId.make("dulli")
+              : state.stickyActiveProvider,
+        }
+      : {}),
+  }));
+  composerDebouncedStorage.flush();
 }
 
 export function restoreFailedBackgroundDraftThread(

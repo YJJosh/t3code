@@ -389,13 +389,13 @@ const makeAdapter = Effect.fnUntraced(function* (
         profile: "coder",
         agentDir: "/fake/.pi/agent",
         piSessions: true,
-        shareWithTerminal: true,
+        shareWithTerminal: false,
         customModels: [],
       },
     }).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.provideService(FileSystem.FileSystem, fixtureFs),
-      Effect.provideService(HostProcess.Environment, {}),
+      Effect.provideService(HostProcess.Environment, { PI_SESSIONS_HOME: "/fake/pi-sessions" }),
       Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
         ...continuationRequests,
         take: Effect.never,
@@ -410,10 +410,10 @@ const makeAdapter = Effect.fnUntraced(function* (
       profile: "coder",
       agentDir: "/fake/.pi/agent",
       piSessions: true,
-      shareWithTerminal: true,
+      shareWithTerminal: false,
       customModels: [],
     },
-    environment: {},
+    environment: { PI_SESSIONS_HOME: "/fake/pi-sessions" },
   }).pipe(
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     Effect.provideService(FileSystem.FileSystem, fixtureFs),
@@ -4508,6 +4508,40 @@ describe("Dulli fork policy", () => {
       });
       assert.equal((yield* fake.takeRequest("extension_ui_response"))["cancelled"], true);
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect(
+    "captures registered factories at adapter construction, before a Dulli session opens",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Queue.unbounded<string>();
+        const fake = yield* makeFakePi;
+        const factory: DulliBridgeFactory = (context) =>
+          Effect.succeed({
+            onStart: () =>
+              Queue.offer(
+                started,
+                context.getProviderThread()?.nativeThreadRef?.driver ?? "missing",
+              ).pipe(Effect.asVoid),
+          });
+        // Production provides the registry to hydration, not to the later MCP
+        // and orchestration facades that open sessions on the captured adapter.
+        const adapter = yield* makeAdapter(fake).pipe(
+          Effect.provide(Layer.succeed(DulliBridgeRegistry, [factory])),
+        );
+        const runtime = yield* adapter.openSession({
+          threadId: THREAD_ID,
+          providerSessionId: SESSION_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        assert.equal(yield* Queue.take(started), "dulli");
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect(

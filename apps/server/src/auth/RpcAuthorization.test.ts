@@ -177,6 +177,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.terminalObserve,
       WS_METHODS.subscribeTerminalEvents,
       WS_METHODS.subscribeTerminalMetadata,
+      WS_METHODS.subscribeBackgroundTerminalEvents,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalReadScope);
     }
@@ -188,6 +189,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.terminalClear,
       WS_METHODS.terminalRestart,
       WS_METHODS.terminalClose,
+      WS_METHODS.backgroundTerminalsControl,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalOperateScope);
     }

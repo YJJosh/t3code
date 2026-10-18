@@ -1,0 +1,164 @@
+import { assert, it } from "@effect/vitest";
+import {
+  EventId,
+  MessageId,
+  NodeId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
+import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
+import * as ServerSettings from "../../serverSettings.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
+import { buildBoundedThreadProjection } from "../../orchestration-v2/threadHistoryPaging.ts";
+
+it.effect.each([
+  { name: "memory", storeLayer: ProjectionStore.layerMemory },
+  { name: "sqlite", storeLayer: ProjectionStore.layer.pipe(Layer.provide(Sqlite.layerMemory)) },
+] as const)(
+  "loads selected Dulli node history outside the paged parent snapshot ($name)",
+  ({ storeLayer }) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("history-parent");
+      const instanceId = ProviderInstanceId.make("dulli");
+      const driver = ProviderDriverKind.make("dulli");
+      const subagentId = NodeId.make("dulli:subagent:history-child");
+      yield* store.apply({
+        id: EventId.make("created"),
+        type: "thread.created",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: threadId,
+          createdBy: "user",
+          creationSource: "web",
+          projectId: ProjectId.make("project"),
+          title: "Parent",
+          providerInstanceId: instanceId,
+          modelSelection: { instanceId, model: "default" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      yield* store.apply({
+        id: EventId.make("agent"),
+        type: "subagent.updated",
+        threadId,
+        occurredAt: now,
+        driver,
+        payload: {
+          id: subagentId,
+          threadId,
+          runId: null,
+          parentNodeId: NodeId.make("root"),
+          origin: "provider_native",
+          createdBy: "agent",
+          driver,
+          providerInstanceId: instanceId,
+          providerThreadId: null,
+          childThreadId: null,
+          nativeTaskRef: { driver, nativeId: "child", strength: "strong" },
+          prompt: "Investigate",
+          title: "Child",
+          model: "default",
+          status: "completed",
+          result: "Done",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        },
+      });
+      for (const [id, nodeId, ordinal] of [
+        ["child-answer", subagentId, 1],
+        ["parent-answer", NodeId.make("root"), 99],
+      ] as const) {
+        yield* store.apply({
+          id: EventId.make(`event:${id}`),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(id),
+            threadId,
+            runId: null,
+            nodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            parentItemId: null,
+            nativeItemRef: null,
+            ordinal,
+            status: "completed",
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "assistant_message",
+            text: id,
+            messageId: MessageId.make(id),
+            streaming: false,
+          },
+        });
+      }
+      const projection = yield* store.getThreadProjection(threadId);
+      const bounded = buildBoundedThreadProjection({
+        projection,
+        snapshotSequence: 3,
+        policy: { maxItems: 1, maxUserTurns: 1, maxEncodedBytes: 1024 * 1024 },
+      });
+      assert.isFalse(bounded.projection.turnItems.some((item) => item.id === "child-answer"));
+      const serviceLayer = ThreadManagement.layer.pipe(
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadRecords: (id, fields, filter) =>
+              store
+                .getThreadRecords(id, fields, filter)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new Orchestrator.OrchestratorProjectionError({ threadId: id, cause }),
+                  ),
+                ),
+          }),
+        ),
+        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(Sqlite.layerMemory))),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadManagement.ThreadManagementService;
+        const history = yield* service.getSubagentTranscript({ threadId, subagentId });
+        assert.deepEqual(
+          history.items.map((item) => item.id),
+          ["child-answer"],
+        );
+        assert.deepEqual(
+          (yield* service.getSubagentTranscript({ threadId, subagentId: NodeId.make("missing") }))
+            .items,
+          [],
+        );
+      }).pipe(Effect.provide(serviceLayer));
+    }).pipe(Effect.provide(storeLayer)),
+);

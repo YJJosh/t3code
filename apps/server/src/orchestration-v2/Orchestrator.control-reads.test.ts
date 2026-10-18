@@ -960,3 +960,64 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     });
   }).pipe(Effect.provide(DelegatedTaskQuestionReactor.layer.pipe(Layer.provideMerge(layerTest)))),
 );
+
+it.effect(
+  "conditional shared-session settlement and branch follow reject any intervening thread event",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:shared-cas");
+      const created = yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("shared-cas:create"),
+        threadId,
+        projectId: ProjectId.make("project:shared-cas"),
+        title: "Shared",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: "before",
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const renamed = yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("shared-cas:rename"),
+        threadId,
+        title: "User edit",
+      });
+      for (const command of [
+        {
+          type: "thread.settle" as const,
+          commandId: CommandId.make("shared-cas:settle"),
+          threadId,
+          expectedSequence: created.sequence,
+        },
+        {
+          type: "thread.unsettle" as const,
+          commandId: CommandId.make("shared-cas:unsettle"),
+          threadId,
+          reason: "user" as const,
+          expectedSequence: created.sequence,
+        },
+        {
+          type: "thread.metadata.update" as const,
+          commandId: CommandId.make("shared-cas:branch"),
+          threadId,
+          branch: "stale",
+          expectedSequence: created.sequence,
+        },
+      ])
+        assert.equal((yield* Effect.exit(orchestrator.dispatch(command)))._tag, "Failure");
+      assert.equal((yield* projections.getThread(threadId)).branch, "before");
+      yield* orchestrator.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("shared-cas:current"),
+        threadId,
+        expectedSequence: renamed.sequence,
+      });
+      assert.equal((yield* projections.getThread(threadId)).settledOverride, "settled");
+    }).pipe(Effect.provide(layerTest)),
+);

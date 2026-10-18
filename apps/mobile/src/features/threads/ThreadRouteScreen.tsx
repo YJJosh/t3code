@@ -70,6 +70,10 @@ import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-s
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
+import {
+  clearComposerDraftContent,
+  getComposerDraftSnapshot,
+} from "../../state/use-composer-drafts";
 import { resolveMergeBackTargetThreadId } from "@t3tools/client-runtime/state/thread-relationships";
 import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
 import { threadEnvironment } from "../../state/threads";
@@ -1068,7 +1072,32 @@ function ThreadRouteContent(
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
           onStopThread={awaitingBootstrapTurn ? handleCancelWorktreeSetup : handleStopThread}
-          onSendMessage={composer.onSendMessage}
+          onSendMessage={async (followUp) => {
+            const draft = composer.composerDraftKey
+              ? getComposerDraftSnapshot(composer.composerDraftKey)
+              : null;
+            const driver = serverConfig?.providers.find(
+              (provider) => provider.instanceId === composer.modelSelection?.instanceId,
+            )?.driver;
+            if (
+              selectedThread &&
+              composer.composerDraftKey &&
+              draft &&
+              driver === "dulli" &&
+              composer.queuedRunEdit === null &&
+              draft.attachments.length === 0 &&
+              (draft.context?.records.length ?? 0) === 0 &&
+              /^\/(subagents|workflows)\s*$/i.test(draft.text.trim())
+            ) {
+              navigation.navigate("ThreadAgents", {
+                environmentId: selectedThread.environmentId,
+                threadId: selectedThread.id,
+              });
+              clearComposerDraftContent(composer.composerDraftKey);
+              return null;
+            }
+            return composer.onSendMessage(followUp);
+          }}
           onReconnectEnvironment={handleReconnectEnvironment}
           canSwitchThreadProvider={composer.canSwitchThreadProvider}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}

@@ -1,0 +1,445 @@
+import {
+  isBackgroundTerminalActive,
+  isBackgroundTerminalOutputTruncated,
+  selectBackgroundTerminals,
+  type BackgroundTerminalEntry,
+  type BackgroundTerminalOutputBuffer,
+} from "@t3tools/client-runtime/state/background-terminals";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { ChevronRightIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { Badge } from "~/components/ui/badge";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "~/components/ui/collapsible";
+import { ScrollArea } from "~/components/ui/scroll-area";
+import { cn } from "~/lib/utils";
+
+import { useBackgroundTerminalRuntime } from "../../state/useBackgroundTerminalRuntime";
+import { InteractiveBackgroundTerminal } from "./InteractiveBackgroundTerminal";
+import { BackgroundTerminalControls } from "./BackgroundTerminalControls";
+import {
+  backgroundTerminalAccessibleStatus,
+  backgroundTerminalElapsedLabel,
+  backgroundTerminalExitSummary,
+  backgroundTerminalRosterSummaryLabel,
+  backgroundTerminalStatusLabel,
+  backgroundTerminalStatusTone,
+  backgroundTerminalTitle,
+  backgroundTerminalTruncatedBytes,
+  formatBytes,
+  groupBackgroundTerminalsForRoster,
+  sanitizeTerminalOutputText,
+  type BackgroundTerminalRosterGroup,
+} from "./backgroundTerminalPresentation";
+
+/** Refresh interval for the live elapsed-time readout while a terminal is running. */
+const ELAPSED_TICK_MS = 1_000;
+
+const TONE_BADGE_VARIANT = {
+  info: "info",
+  warning: "warning",
+  success: "success",
+  error: "error",
+} as const;
+
+const TONE_DOT_CLASS = {
+  info: "bg-info",
+  warning: "bg-warning",
+  success: "bg-success",
+  error: "bg-destructive",
+} as const;
+
+type OutputStreamKind = "stdout" | "stderr";
+
+function BackgroundTerminalStatusBadge({ terminal }: { terminal: BackgroundTerminalEntry }) {
+  const tone = backgroundTerminalStatusTone(terminal.view.status);
+  return (
+    <Badge variant={TONE_BADGE_VARIANT[tone]} size="sm">
+      {backgroundTerminalStatusLabel(terminal.view.status)}
+    </Badge>
+  );
+}
+
+/** Live elapsed time uses DOM writes so terminal output does not rerender every second. */
+function BackgroundTerminalElapsed({ terminal }: { terminal: BackgroundTerminalEntry }) {
+  const textRef = useRef<HTMLTimeElement>(null);
+  const running = isBackgroundTerminalActive(terminal.view.status);
+
+  useEffect(() => {
+    if (!running) return;
+    const update = () => {
+      if (textRef.current) {
+        textRef.current.textContent = backgroundTerminalElapsedLabel(terminal.view);
+      }
+    };
+    update();
+    const id = window.setInterval(update, ELAPSED_TICK_MS);
+    return () => window.clearInterval(id);
+  }, [running, terminal.view]);
+
+  return (
+    <time ref={textRef} className="tabular-nums">
+      {backgroundTerminalElapsedLabel(terminal.view)}
+    </time>
+  );
+}
+
+interface BackgroundTerminalRowProps {
+  terminal: BackgroundTerminalEntry;
+  selected: boolean;
+  /** Settled terminals render muted, since they're tucked behind the summary toggle. */
+  quiet: boolean;
+  onSelect: (terminalId: string) => void;
+}
+
+export function BackgroundTerminalRow({
+  terminal,
+  selected,
+  quiet,
+  onSelect,
+}: BackgroundTerminalRowProps) {
+  const tone = backgroundTerminalStatusTone(terminal.view.status);
+  const title = backgroundTerminalTitle(terminal.view);
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(terminal.view.id)}
+      aria-pressed={selected}
+      aria-label={`Background terminal: ${title}. Status: ${backgroundTerminalAccessibleStatus(terminal.view.status)}`}
+      className={cn(
+        "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent",
+        selected && "bg-accent",
+        terminal.view.status === "failed" && !selected && "bg-destructive/8",
+      )}
+    >
+      <span
+        aria-hidden="true"
+        className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT_CLASS[tone])}
+      />
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate",
+          quiet ? "text-muted-foreground" : "font-medium text-foreground",
+        )}
+      >
+        {title}
+      </span>
+      <span className="shrink-0 font-mono text-3xs text-muted-foreground">
+        {backgroundTerminalElapsedLabel(terminal.view)}
+      </span>
+      <span className="shrink-0 text-3xs uppercase tracking-wide text-muted-foreground">
+        {backgroundTerminalStatusLabel(terminal.view.status)}
+      </span>
+    </button>
+  );
+}
+
+interface BackgroundTerminalOutputPaneProps {
+  buffer: BackgroundTerminalOutputBuffer;
+}
+
+/** Sanitized plain preformatted live tail: sticky to the bottom while the reader hasn't scrolled up. */
+function BackgroundTerminalOutputPane({ buffer }: BackgroundTerminalOutputPaneProps) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
+  const text = useMemo(() => sanitizeTerminalOutputText(buffer.text), [buffer.text]);
+  const truncated = isBackgroundTerminalOutputTruncated(buffer);
+  const truncatedBytesLabel = useMemo(
+    () => formatBytes(backgroundTerminalTruncatedBytes(buffer)),
+    [buffer],
+  );
+
+  useEffect(() => {
+    const viewport = rootRef.current?.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
+    if (viewport === undefined || viewport === null) {
+      return;
+    }
+    const updateStickiness = () => {
+      const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      stickToBottomRef.current = distanceFromBottom <= 24;
+    };
+    viewport.addEventListener("scroll", updateStickiness, { passive: true });
+    return () => viewport.removeEventListener("scroll", updateStickiness);
+  }, []);
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) {
+      return;
+    }
+    const viewport = rootRef.current?.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
+    if (viewport !== undefined && viewport !== null) {
+      viewport.scrollTop = viewport.scrollHeight;
+    }
+  }, [text]);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-1">
+      {truncated && (
+        <p className="rounded-md bg-muted/50 px-2 py-1 text-2xs text-muted-foreground">
+          Earlier output truncated ({truncatedBytesLabel} dropped)
+        </p>
+      )}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border/60">
+        <ScrollArea ref={rootRef} className="min-h-0 flex-1">
+          {text.length === 0 ? (
+            <p className="p-1.5 text-xs text-muted-foreground">No output yet.</p>
+          ) : (
+            <pre className="min-w-0 whitespace-pre-wrap break-words p-1.5 font-mono text-2xs text-foreground/90">
+              {text}
+            </pre>
+          )}
+        </ScrollArea>
+      </div>
+    </div>
+  );
+}
+
+interface BackgroundTerminalDetailProps {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  managerId: string;
+  terminal: BackgroundTerminalEntry;
+}
+
+export function BackgroundTerminalDetail({
+  environmentId,
+  threadId,
+  managerId,
+  terminal,
+}: BackgroundTerminalDetailProps) {
+  const view = terminal.view;
+  const title = backgroundTerminalTitle(view);
+  const [selectedStream, setSelectedStream] = useState<OutputStreamKind>(
+    view.status === "failed" ? "stderr" : "stdout",
+  );
+  const exitSummary = backgroundTerminalExitSummary(view);
+  const activeBuffer = selectedStream === "stdout" ? terminal.stdout : terminal.stderr;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center gap-2">
+          <BackgroundTerminalStatusBadge terminal={terminal} />
+          <span className="truncate text-sm font-semibold text-foreground">{title}</span>
+        </div>
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <div className="col-span-2 flex gap-1">
+            <dt className="font-medium">Command</dt>
+            <dd className="min-w-0 truncate break-all font-mono">{view.command}</dd>
+          </div>
+          <div className="col-span-2 flex gap-1">
+            <dt className="font-medium">Directory</dt>
+            <dd className="min-w-0 truncate">{view.cwd}</dd>
+          </div>
+          {view.pid !== undefined && (
+            <div className="flex gap-1">
+              <dt className="font-medium">PID</dt>
+              <dd>{view.pid}</dd>
+            </div>
+          )}
+          <div className="flex gap-1">
+            <dt className="font-medium">Elapsed</dt>
+            <dd>
+              <BackgroundTerminalElapsed terminal={terminal} />
+            </dd>
+          </div>
+        </dl>
+      </div>
+
+      {exitSummary !== null && (
+        <div
+          className={cn(
+            "rounded-md border px-2.5 py-2 text-xs",
+            view.status === "failed"
+              ? "border-destructive/40 bg-destructive/8"
+              : "border-border/70 bg-muted/40",
+          )}
+        >
+          <p className="font-medium text-foreground">Exit details</p>
+          <p className="mt-0.5 whitespace-pre-wrap break-words text-muted-foreground">
+            {exitSummary}
+          </p>
+        </div>
+      )}
+
+      {view.interactive === true && view.status === "running" ? (
+        <InteractiveBackgroundTerminal
+          environmentId={environmentId}
+          threadId={threadId}
+          managerId={managerId}
+          terminal={terminal}
+        />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+          <div
+            role="tablist"
+            aria-label="Terminal output stream"
+            className="flex items-center gap-1"
+          >
+            {(["stdout", "stderr"] as const).map((stream) => (
+              <button
+                key={stream}
+                type="button"
+                role="tab"
+                id={`background-terminal-tab-${stream}`}
+                aria-selected={selectedStream === stream}
+                aria-controls={`background-terminal-tabpanel-${stream}`}
+                onClick={() => setSelectedStream(stream)}
+                className={cn(
+                  "rounded-md px-2 py-1 text-xs font-medium capitalize transition-colors",
+                  selectedStream === stream
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-accent/60",
+                )}
+              >
+                {stream}
+              </button>
+            ))}
+          </div>
+          <div
+            role="tabpanel"
+            id={`background-terminal-tabpanel-${selectedStream}`}
+            aria-labelledby={`background-terminal-tab-${selectedStream}`}
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <BackgroundTerminalOutputPane buffer={activeBuffer} />
+          </div>
+        </div>
+      )}
+
+      <BackgroundTerminalControls
+        environmentId={environmentId}
+        threadId={threadId}
+        managerId={managerId}
+        terminal={terminal}
+      />
+    </div>
+  );
+}
+
+interface BackgroundTerminalRosterGroupProps {
+  group: BackgroundTerminalRosterGroup;
+  terminals: ReadonlyArray<BackgroundTerminalEntry>;
+  onOpenTerminal: (terminalId: string) => void;
+}
+
+/**
+ * One collapsible strip group: a summary row with the count, rows when expanded.
+ * The settled summary also counts failures, since failed rows hide inside it.
+ * Starts collapsed; key it by environment and thread so switching threads resets it.
+ */
+function BackgroundTerminalRosterGroupSection({
+  group,
+  terminals,
+  onOpenTerminal,
+}: BackgroundTerminalRosterGroupProps) {
+  const label = backgroundTerminalRosterSummaryLabel(group, terminals.length);
+  const failedCount =
+    group === "settled"
+      ? terminals.filter((terminal) => terminal.view.status === "failed").length
+      : 0;
+  return (
+    <Collapsible>
+      <CollapsibleTrigger className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-2xs text-muted-foreground hover:bg-accent/60 data-panel-open:[&_svg]:rotate-90">
+        <ChevronRightIcon className="size-3 shrink-0 transition-transform" aria-hidden="true" />
+        {group === "running" && (
+          <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info" />
+        )}
+        {label}
+        {failedCount > 0 && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-destructive" />
+            <span className="sr-only">,</span>
+            {failedCount} failed
+          </>
+        )}
+      </CollapsibleTrigger>
+      <CollapsiblePanel>
+        <div
+          role="list"
+          aria-label={`${group === "running" ? "Running" : "Settled"} background terminals`}
+        >
+          {terminals.map((terminal) => (
+            <div role="listitem" key={terminal.view.id}>
+              <BackgroundTerminalRow
+                terminal={terminal}
+                selected={false}
+                quiet={group === "settled"}
+                onSelect={onOpenTerminal}
+              />
+            </div>
+          ))}
+        </div>
+      </CollapsiblePanel>
+    </Collapsible>
+  );
+}
+
+export interface BackgroundTerminalRunsProps {
+  environmentId: EnvironmentId | null;
+  threadId: ThreadId | null;
+  /** Whether the active provider/session can support Dulli background terminals. */
+  enabled: boolean;
+  /** Opens the Shared terminals surface with this terminal selected. */
+  onOpenTerminal: (terminalId: string) => void;
+}
+
+/**
+ * Compact roster strip for a thread's Dulli background terminals, rendered
+ * directly above the composer: running and settled (done, failed, killed)
+ * terminals each collapse behind a summary row with their count so they
+ * don't permanently eat composer space. Selecting a row opens the Shared
+ * terminals surface in the right panel with that terminal selected; the
+ * surface owns details, controls and starting new terminals.
+ *
+ * Renders nothing when there are no terminals so an idle/empty stream is
+ * invisible.
+ */
+export function BackgroundTerminalRuns({
+  environmentId,
+  threadId,
+  enabled,
+  onOpenTerminal,
+}: BackgroundTerminalRunsProps) {
+  const { state } = useBackgroundTerminalRuntime({ environmentId, threadId, enabled });
+  const terminals = useMemo(() => selectBackgroundTerminals(state), [state]);
+  const { running, settled } = useMemo(
+    () => groupBackgroundTerminalsForRoster(terminals),
+    [terminals],
+  );
+  if (
+    !enabled ||
+    environmentId === null ||
+    threadId === null ||
+    state.managerId === null ||
+    terminals.length === 0
+  ) {
+    return null;
+  }
+
+  return (
+    <div className="pointer-events-auto mx-auto mb-1.5 max-h-48 w-full max-w-3xl overflow-y-auto rounded-lg border border-border/70 bg-card/85 p-1 shadow-sm backdrop-blur-sm sm:max-h-56">
+      {running.length > 0 && (
+        <BackgroundTerminalRosterGroupSection
+          key={`${environmentId}:${threadId}:running`}
+          group="running"
+          terminals={running}
+          onOpenTerminal={onOpenTerminal}
+        />
+      )}
+      {settled.length > 0 && (
+        <BackgroundTerminalRosterGroupSection
+          key={`${environmentId}:${threadId}:settled`}
+          group="settled"
+          terminals={settled}
+          onOpenTerminal={onOpenTerminal}
+        />
+      )}
+    </div>
+  );
+}

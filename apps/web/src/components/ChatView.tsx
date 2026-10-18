@@ -190,6 +190,8 @@ import {
   type ComposerSubmissionIntent,
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
+  parseDulliTerminalCommand,
+  isDulliAgentsPanelCommand,
 } from "../composer-logic";
 import {
   derivePendingApprovals,
@@ -294,6 +296,12 @@ import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { BackgroundTerminalsPanel } from "./background-terminals/BackgroundTerminalsPanel";
+import { AgentsPanel } from "./AgentsPanel";
+import { BackgroundTerminalRuns } from "./background-terminals/BackgroundTerminalRuns";
+import { useStartBackgroundTerminal } from "./background-terminals/useStartBackgroundTerminal";
+import { useBackgroundTerminalRuntime } from "../state/useBackgroundTerminalRuntime";
+import { selectBackgroundTerminalControlResult } from "@t3tools/client-runtime/state/background-terminals";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import { useDeviceState } from "~/state/device";
@@ -354,6 +362,11 @@ import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useRemoveClonedProject } from "../hooks/useRemoveClonedProject";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import {
+  dulliModelSelectionToFollow,
+  readDulliThreadModelSeen,
+  writeDulliThreadModelSeen,
+} from "../dulliSharedChatModel";
 import {
   getComposerPromptInjectionState,
   getComposerProviderState,
@@ -3370,6 +3383,43 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
+  const backgroundTerminalsEnabled = selectedProvider === "dulli" && isServerThread;
+  const addAgentsSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "agents");
+  }, [activeThreadRef]);
+  const { state: backgroundTerminalState } = useBackgroundTerminalRuntime({
+    environmentId,
+    threadId: activeThreadId,
+    enabled: backgroundTerminalsEnabled,
+  });
+  const [pendingTerminalStart, setPendingTerminalStart] = useState<{
+    threadKey: string;
+    requestId: string;
+  } | null>(null);
+  useEffect(() => {
+    if (
+      !pendingTerminalStart ||
+      pendingTerminalStart.threadKey !== activeThreadKey ||
+      !activeThreadRef
+    )
+      return;
+    const result = selectBackgroundTerminalControlResult(
+      backgroundTerminalState,
+      pendingTerminalStart.requestId,
+    );
+    if (!result) return;
+    setPendingTerminalStart(null);
+    if (result.success && result.terminalId)
+      useRightPanelStore.getState().openTerminals(activeThreadRef, result.terminalId);
+  }, [pendingTerminalStart, activeThreadKey, activeThreadRef, backgroundTerminalState]);
+  const backgroundTerminalStarter = useStartBackgroundTerminal({
+    environmentId,
+    threadId: activeThreadId,
+    managerId: backgroundTerminalState.managerId,
+  });
+  const addTerminalsSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().openTerminals(activeThreadRef);
+  }, [activeThreadRef]);
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
   const { enabled: interactionModeEnabled, interactionMode } = resolveComposerInteractionMode({
@@ -9056,6 +9106,53 @@ export default function ChatView(props: ChatViewProps) {
       }
       return;
     }
+    if (
+      backgroundTerminalsEnabled &&
+      multipleModelSelections === null &&
+      composerImages.length === 0 &&
+      composerFiles.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      composerPreviewAnnotations.length === 0 &&
+      composerReviewComments.length === 0 &&
+      composerThreadContexts.length === 0 &&
+      isDulliAgentsPanelCommand(trimmed)
+    ) {
+      addAgentsSurface();
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      return;
+    }
+    const terminalCommand =
+      backgroundTerminalsEnabled &&
+      composerImages.length === 0 &&
+      composerFiles.length === 0 &&
+      sendableComposerTerminalContexts.length === 0 &&
+      composerPreviewAnnotations.length === 0 &&
+      composerReviewComments.length === 0 &&
+      composerThreadContexts.length === 0 &&
+      multipleModelSelections === null
+        ? parseDulliTerminalCommand(trimmed)
+        : null;
+    if (terminalCommand) {
+      addTerminalsSurface();
+      if (terminalCommand.kind === "terminal-start") {
+        const result = await backgroundTerminalStarter.start({
+          command: terminalCommand.command,
+          keepOpen: terminalCommand.keepOpen,
+        });
+        if ("error" in result) {
+          toastManager.add({ type: "error", title: result.error });
+          return;
+        }
+        if (activeThreadKey)
+          setPendingTerminalStart({ threadKey: activeThreadKey, requestId: result.requestId });
+      }
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      return;
+    }
     // Providers without the legacy toggle receive their native commands unchanged.
     const standaloneSlashCommand =
       sendInteractionModeEnabled &&
@@ -10633,6 +10730,36 @@ export default function ChatView(props: ChatViewProps) {
     if (options?.focusComposer !== false) scheduleComposerFocus();
   };
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
+  // A shared terminal can change model/thinking without touching this client's
+  // persisted composer pick. Adopt a newer native selection, not an older draft.
+  const sharedThreadSelection = serverThread?.modelSelection;
+  const sharedThreadId = serverThread?.id;
+  const sharedEnvironmentId = serverThread?.environmentId;
+  useEffect(() => {
+    if (!sharedThreadSelection || !sharedThreadId || !sharedEnvironmentId) return;
+    if (
+      providerStatuses.find((provider) => provider.instanceId === sharedThreadSelection.instanceId)
+        ?.driver !== "dulli"
+    )
+      return;
+    const ref = scopeThreadRef(sharedEnvironmentId, sharedThreadId);
+    const key = `${sharedEnvironmentId}:${sharedThreadId}`;
+    const draftPick = useComposerDraftStore.getState().getComposerDraft(ref)
+      ?.modelSelectionByProvider[sharedThreadSelection.instanceId];
+    const { follow, seen } = dulliModelSelectionToFollow({
+      threadModel: sharedThreadSelection,
+      draftPick,
+      lastSeen: readDulliThreadModelSeen(key),
+    });
+    writeDulliThreadModelSeen(key, seen);
+    if (follow) setComposerDraftModelSelection(ref, follow, { replaceOptions: true });
+  }, [
+    sharedThreadSelection,
+    sharedThreadId,
+    sharedEnvironmentId,
+    providerStatuses,
+    setComposerDraftModelSelection,
+  ]);
   const onEnvModeChange = (mode: DraftThreadEnvMode) => {
     if (multipleModelSelections !== null) return;
     if (canOverrideServerThreadEnvMode) {
@@ -10875,6 +11002,23 @@ export default function ChatView(props: ChatViewProps) {
         newShortcutLabel={newTerminalShortcutLabel ?? undefined}
         closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
       />
+    ) : renderedRightPanelSurface?.kind === "agents" ? (
+      serverProjection ? (
+        <AgentsPanel
+          key={activeThreadKey}
+          environmentId={activeThread.environmentId}
+          projection={serverProjection}
+        />
+      ) : null
+    ) : renderedRightPanelSurface?.kind === "terminals" ? (
+      rightPanelOpen ? (
+        <BackgroundTerminalsPanel
+          environmentId={activeThread.environmentId}
+          threadId={activeThread.id}
+          enabled={backgroundTerminalsEnabled}
+          selectedTerminalId={renderedRightPanelSurface.terminalId ?? null}
+        />
+      ) : null
     ) : renderedRightPanelSurface?.kind === "diff" ? (
       <Suspense fallback={null}>
         <DiffPanel
@@ -11498,6 +11642,19 @@ export default function ChatView(props: ChatViewProps) {
                               }
                             />
                           ) : null}
+                          {backgroundTerminalsEnabled && environmentId && activeThreadId ? (
+                            <BackgroundTerminalRuns
+                              environmentId={environmentId}
+                              threadId={activeThreadId}
+                              enabled={backgroundTerminalsEnabled}
+                              onOpenTerminal={(terminalId) => {
+                                if (activeThreadRef)
+                                  useRightPanelStore
+                                    .getState()
+                                    .openTerminals(activeThreadRef, terminalId);
+                              }}
+                            />
+                          ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
                               canOperateThread={canOperateThread}
@@ -11865,6 +12022,10 @@ export default function ChatView(props: ChatViewProps) {
           onCopyFilePath={copyRightPanelFilePathStable}
           onAddBrowser={() => createBrowserSurface()}
           onAddBrowserInProfile={createBrowserSurfaceStable}
+          onAddTerminals={addTerminalsSurface}
+          terminalsAvailable={backgroundTerminalsEnabled}
+          onAddAgents={addAgentsSurface}
+          agentsAvailable={backgroundTerminalsEnabled}
           onAddTerminal={addTerminalSurfaceStable}
           onAddDiff={addDiffSurfaceStable}
           onAddFiles={addFilesSurfaceStable}
@@ -11924,6 +12085,10 @@ export default function ChatView(props: ChatViewProps) {
             onCopyFilePath={copyRightPanelFilePathStable}
             onAddBrowser={() => createBrowserSurface()}
             onAddBrowserInProfile={createBrowserSurfaceStable}
+            onAddTerminals={addTerminalsSurface}
+            terminalsAvailable={backgroundTerminalsEnabled}
+            onAddAgents={addAgentsSurface}
+            agentsAvailable={backgroundTerminalsEnabled}
             onAddTerminal={addTerminalSurfaceStable}
             onAddDiff={addDiffSurfaceStable}
             onAddFiles={addFilesSurfaceStable}

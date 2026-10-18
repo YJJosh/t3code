@@ -1,3 +1,13 @@
+import * as Scope from "effect/Scope";
+import * as Exit from "effect/Exit";
+import {
+  makePiDaemonConnection,
+  piDaemonSkipKey,
+  isPiDaemonSkipped,
+  skipPiDaemon,
+} from "./PiDaemonConnection.ts";
+import { findPiSessionsExtension } from "./PiSessionsStart.ts";
+import { piSessionsHome } from "./PiSessionsSocket.ts";
 import {
   applyPiAssistantBlockEvent,
   applyPiAssistantSnapshot,
@@ -7,7 +17,7 @@ import {
   type PiAssistantContentDelta,
 } from "./piAssistantContent.ts";
 import * as Path from "effect/Path";
-import { DulliBridgeRegistry } from "./bridges.ts";
+import { DulliBridgeRegistry, DulliSharedEnvironment } from "./bridges.ts";
 import {
   buildPiRpcArgs,
   buildPiRpcEnv,
@@ -107,7 +117,6 @@ import {
   piRecordField as recordField,
   piRecordNumber as recordNumber,
   piRecordString as recordString,
-  type PiRpcConnection,
   type PiRpcRecord,
 } from "./rpc.ts";
 import { buildPiRpcLaunch, materializePiT3McpExtension } from "./mcpInjection.ts";
@@ -205,7 +214,7 @@ const PiProviderCapabilitiesV2 = {
     exposesSubagentThreadIds: false,
     emitsSubagentLifecycle: true,
     canWaitForSubagents: false,
-    canCloseSubagents: false,
+    canCloseSubagents: true,
     canForkSubagentThread: false,
   },
   context: {
@@ -522,6 +531,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
   const host = yield* ProviderHost.ProviderHost;
   const paths = yield* Path.Path;
   const bridgeFactories = yield* DulliBridgeRegistry;
+  const sharedEnvironment = yield* DulliSharedEnvironment;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const { continuationRequests } = options;
 
@@ -614,7 +624,12 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         environment: {
           ...nativeEnvironment,
           CLAUDE_AGENT_SDK_RPC_BRIDGE: "1",
-          ...(options.settings.piSessions ? {} : { PI_SESSIONS: "off" }),
+          ...(options.settings.piSessions
+            ? {
+                PI_SESSIONS_T3_THREAD: input.threadId,
+                ...(sharedEnvironment ? { PI_SESSIONS_T3_ENVIRONMENT: sharedEnvironment } : {}),
+              }
+            : { PI_SESSIONS: "off" }),
         },
         mcpSession,
         extensionPath,
@@ -622,20 +637,67 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         // still supplies T3 tools and orchestration guidance.
         runtimeMode: "full-access",
       });
+      const sessionsExtension = options.settings.piSessions
+        ? findPiSessionsExtension(piSessionsHome(launch.env, paths), paths)
+        : undefined;
       const scopedLaunch = yield* agentScope.wrap({
         command: options.settings.binaryPath || "pi",
-        args: launch.args,
+        args: sessionsExtension ? [...launch.args, "-e", sessionsExtension] : launch.args,
         name: "dulli",
         threadId: input.threadId,
         env: launch.env,
       });
-      const connection: PiRpcConnection = yield* makePiRpcConnection({
+      const spawnOptions = {
         command: scopedLaunch.command,
         args: scopedLaunch.args,
         cwd,
         env: launch.env,
-      }).pipe(
+      };
+      const daemonKey = piDaemonSkipKey(
+        { ...spawnOptions, command: options.settings.binaryPath || "pi" },
+        paths,
+      );
+      const owned = makePiRpcConnection(spawnOptions).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.map((connection) => ({ connection, shared: false, started: true })),
+      );
+      if (input.attachOnly && !(options.settings.piSessions && options.settings.shareWithTerminal))
+        return yield* protocolError("Shared sessions are disabled");
+      const daemonScope = yield* Scope.make();
+      yield* Scope.addFinalizer(scope, Scope.close(daemonScope, Exit.void));
+      const opened = yield* (
+        options.settings.piSessions &&
+        options.settings.shareWithTerminal &&
+        (input.attachOnly || !(yield* isPiDaemonSkipped(daemonKey)))
+          ? makePiDaemonConnection(
+              { ...spawnOptions, threadId: input.threadId },
+              {
+                ...(input.attachOnly ? { attach: true } : {}),
+                ...(input.initialNativeThreadId
+                  ? { sessionFile: input.initialNativeThreadId }
+                  : {}),
+              },
+            ).pipe(
+              Effect.provideService(Path.Path, paths),
+              Effect.provideService(Scope.Scope, daemonScope),
+              Effect.map((result) => ({ ...result, shared: true })),
+              Effect.catch((cause) => {
+                // A second writer is never a fallback. A binary without the extension
+                // is retried only after ten minutes, scoped to its home and executable.
+                return Scope.close(daemonScope, Exit.void).pipe(
+                  Effect.andThen(
+                    input.attachOnly || cause.detail?.includes("open elsewhere")
+                      ? Effect.fail(cause)
+                      : (cause.detail?.includes("did not start in time")
+                          ? skipPiDaemon(daemonKey)
+                          : Effect.void
+                        ).pipe(Effect.andThen(owned)),
+                  ),
+                );
+              }),
+            )
+          : owned
+      ).pipe(
         Effect.mapError(
           (cause) =>
             new ProviderAdapter.ProviderAdapterOpenSessionError({
@@ -645,6 +707,10 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             }),
         ),
       );
+      const connection = opened.connection;
+      const startupEvents: PiRpcRecord[] = [];
+      let externalUserOrdinal = 0;
+      let sharedReady = !opened.shared;
       const now = yield* DateTime.now;
       let sessionEntity: OrchestrationV2ProviderSession = {
         id: input.providerSessionId,
@@ -758,6 +824,8 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           emit,
           ids: idAllocator,
           getProviderThread: () => threadState?.providerThread ?? null,
+          getItemOrdinal: (nativeItemId) =>
+            threadState?.activeTurn ? itemOrdinal(threadState.activeTurn, nativeItemId) : 0,
           getActiveTurn: () =>
             threadState?.activeTurn
               ? {
@@ -2076,6 +2144,10 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       });
 
       const handleSessionEvent = Effect.fnUntraced(function* (event: PiRpcRecord) {
+        if (!sharedReady) {
+          startupEvents.push(event);
+          return;
+        }
         // Model-selection hooks can await a dialog before startTurn can claim
         // a wake. Keep interactive requests session-scoped until a turn owns
         // them; buffer native output and notifications for that turn.
@@ -2093,6 +2165,30 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           if (event["type"] === "agent_start") yield* updateProviderSession("running", null);
           if (event["type"] === "agent_settled") yield* updateProviderSession("ready", null);
           return;
+        }
+        for (const bridge of bridges) {
+          for (const handler of bridge.events ?? []) {
+            if (handler.type === event["type"]) yield* handler.handle(event);
+          }
+        }
+        if (event["type"] === "pi_sessions_state") {
+          const model = event["model"];
+          const provider = recordString(model, "provider");
+          const id = recordString(model, "id");
+          if (provider && id) {
+            appliedModel = `${provider}/${id}`;
+            sessionEntity = {
+              ...sessionEntity,
+              model: appliedModel,
+              updatedAt: yield* DateTime.now,
+            };
+            yield* emit({
+              type: "provider_session.updated",
+              driver: DULLI_PROVIDER,
+              providerSession: sessionEntity,
+            });
+          }
+          appliedThinking = recordString(event, "thinkingLevel") ?? appliedThinking;
         }
         const state = threadState;
         const turn = state?.activeTurn ?? null;
@@ -2229,9 +2325,87 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             return;
           }
           case "message_end": {
-            if (turn === null) return;
             const message = event["message"];
-            if (recordString(message, "role") !== "assistant") return;
+            if (
+              opened.shared &&
+              recordString(message, "role") === "user" &&
+              ["terminal", "extension"].includes(String(event["piSessionsOrigin"]))
+            ) {
+              const content = recordField(message, "content");
+              const text =
+                typeof content === "string"
+                  ? content
+                  : Array.isArray(content)
+                    ? content
+                        .filter((block) => recordString(block, "type") === "text")
+                        .map((block) => recordString(block, "text") ?? "")
+                        .join("\n")
+                    : "";
+              if (
+                !text.trim() &&
+                !(
+                  Array.isArray(content) &&
+                  content.some((block) => recordString(block, "type") === "image")
+                )
+              )
+                return;
+              const nativeItemId = `terminal-user:${input.providerSessionId}:${externalUserOrdinal++}`;
+              const at = yield* DateTime.now;
+              const messageId = idAllocator.derive.messageFromProviderItem({
+                driver: DULLI_PROVIDER,
+                nativeItemId,
+              });
+              yield* emit({
+                type: "message.updated",
+                driver: DULLI_PROVIDER,
+                message: {
+                  id: messageId,
+                  threadId: input.threadId,
+                  runId: turn?.turnInput.runId ?? null,
+                  nodeId: null,
+                  role: "user",
+                  text: text || "[Image sent from the terminal]",
+                  attachments: [],
+                  streaming: false,
+                  createdBy: "user",
+                  creationSource: "provider",
+                  createdAt: at,
+                  updatedAt: at,
+                },
+              });
+              yield* emit({
+                type: "turn_item.updated",
+                driver: DULLI_PROVIDER,
+                turnItem: {
+                  id: idAllocator.derive.turnItemFromProviderItem({
+                    driver: DULLI_PROVIDER,
+                    nativeItemId,
+                  }),
+                  threadId: input.threadId,
+                  runId: turn?.turnInput.runId ?? null,
+                  nodeId: null,
+                  providerThreadId: state?.providerThread.id ?? null,
+                  providerTurnId: turn?.providerTurn.id ?? null,
+                  nativeItemRef: providerRef(nativeItemId),
+                  parentItemId: null,
+                  ordinal: turn ? itemOrdinal(turn, nativeItemId) : 0,
+                  startedAt: at,
+                  updatedAt: at,
+                  type: "user_message",
+                  status: "completed",
+                  title: null,
+                  completedAt: at,
+                  messageId,
+                  text: text || "[Image sent from the terminal]",
+                  attachments: [],
+                  inputIntent: "turn_start",
+                  createdBy: "user",
+                  creationSource: "provider",
+                },
+              });
+            }
+
+            if (turn === null || recordString(message, "role") !== "assistant") return;
             yield* reconcileAssistantSnapshot(turn, message);
             // Like CodexAdapterV2, commentary and unknown replies remain
             // assistant_message items; v2 has no persisted phase field. Never
@@ -2719,9 +2893,11 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             resumeDropped = true;
           }
         }
+        const alreadyOpened =
+          opened.shared && !registrationAttempted && resumeId === input.initialNativeThreadId;
         const needsNewSession = resumeId == null && registrationAttempted;
         registrationAttempted = true;
-        if (resumeId != null || needsNewSession) {
+        if ((resumeId != null && !alreadyOpened) || needsNewSession) {
           lastNativeThreadId = resumeId ?? lastNativeThreadId;
           // Even a failed lifecycle operation can change Pi's native session.
           // Never leave the old app binding or model defaults usable afterward.
@@ -2779,6 +2955,14 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         }
         if (!paths.isAbsolute(nativeId))
           return yield* protocolError("Pi returned a non-absolute sessionFile");
+        if (alreadyOpened && resumeId != null && nativeId !== resumeId) {
+          const [actual, expected] = yield* Effect.all([
+            fileSystem.realPath(nativeId),
+            fileSystem.realPath(resumeId),
+          ]);
+          if (actual !== expected)
+            return yield* protocolError("Pi daemon opened a different session file");
+        }
         lastNativeThreadId = nativeId;
         const createdAt = yield* DateTime.now;
         const providerThread: OrchestrationV2ProviderThread =
@@ -2839,6 +3023,33 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             driver: DULLI_PROVIDER,
             providerThread,
           });
+        if (opened.shared && !sharedReady) {
+          yield* sessionEventPermit.withPermits(1)(
+            Effect.gen(function* () {
+              sharedReady = true;
+              if (!opened.started)
+                yield* handleSessionEvent({
+                  type: "pi_sessions_state",
+                  ...(typeof stateData === "object" && stateData !== null ? stateData : {}),
+                });
+              for (const event of startupEvents.splice(0)) yield* handleSessionEvent(event);
+            }),
+          );
+          const catalog = yield* request({ type: "get_commands" }).pipe(
+            Effect.orElseSucceed(() => undefined),
+          );
+          const commands = recordField(catalog, "commands");
+          for (const name of ["background-terminals-rpc"]) {
+            if (
+              Array.isArray(commands) &&
+              commands.some((command) => recordString(command, "name") === name)
+            ) {
+              yield* request({ type: "prompt", message: `/${name} {"action":"replay"}` }).pipe(
+                Effect.ignore,
+              );
+            }
+          }
+        }
         return providerThread;
       });
 
@@ -2974,15 +3185,30 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         events: Stream.fromQueue(events),
         hasPendingBackgroundWork: Effect.sync(
           () =>
-            pendingWake !== null || bridges.some((bridge) => bridge.hasPendingBackgroundWork?.()),
+            (opened.shared && !closed) ||
+            pendingWake !== null ||
+            bridges.some((bridge) => bridge.hasPendingBackgroundWork?.()),
         ),
         hasPendingBackgroundWorkForThread: (providerThread) =>
           Effect.sync(
             () =>
+              (opened.shared && !closed && threadState?.providerThread.id === providerThread.id) ||
               (pendingWake !== null && pendingWake.state.providerThread.id === providerThread.id) ||
               (threadState?.providerThread.id === providerThread.id &&
                 bridges.some((bridge) => bridge.hasPendingBackgroundWork?.())),
           ),
+        stopSubagent: (stopInput) => {
+          const bridge = bridges.find((candidate) => candidate.stopSubagent !== undefined);
+          return (
+            bridge?.stopSubagent?.(stopInput) ??
+            Effect.fail(
+              new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: DULLI_PROVIDER,
+                detail: "The Dulli subagent control extension is not available in this session.",
+              }),
+            )
+          );
+        },
         getModelContextWindow: (selection) => {
           if (selection.instanceId !== options.instanceId) return undefined;
           const slug =

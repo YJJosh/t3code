@@ -757,6 +757,8 @@ export const OrchestrationV2Subagent = Schema.Struct({
   childThreadId: Schema.NullOr(ThreadId),
   nativeTaskRef: Schema.NullOr(OrchestrationV2ProviderRef),
   prompt: Schema.String,
+  /** Small originating-prompt label for inspectors when that turn is paged out. */
+  parentPromptPreview: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   title: Schema.NullOr(Schema.String),
   model: Schema.NullOr(Schema.String),
   modelSelection: Schema.optional(ModelSelection),
@@ -780,6 +782,17 @@ export const OrchestrationV2Subagent = Schema.Struct({
   progress: Schema.optional(Schema.String),
   /** Present only on a workflow coordinator task; absent on ordinary subagents. */
   workflow: Schema.optional(OrchestrationV2SubagentWorkflow),
+  /** Cumulative provider-native child usage, independent of the parent turn. */
+  usage: Schema.optional(
+    Schema.Struct({
+      totalTokens: NonNegativeInt,
+      inputTokens: Schema.optional(NonNegativeInt),
+      cachedInputTokens: Schema.optional(NonNegativeInt),
+      outputTokens: Schema.optional(NonNegativeInt),
+      toolUses: Schema.optional(NonNegativeInt),
+      durationMs: Schema.optional(NonNegativeInt),
+    }),
+  ),
   result: Schema.NullOr(Schema.String),
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
@@ -2761,6 +2774,8 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("thread.settle"),
     commandId: CommandId,
     threadId: ThreadId,
+    /** Server-side compare-and-swap against this thread's event sequence. */
+    expectedSequence: Schema.optional(NonNegativeInt),
     settledAt: Schema.optional(Schema.DateTimeUtc),
   }),
   /**
@@ -2780,6 +2795,8 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("thread.unsettle"),
     commandId: CommandId,
     threadId: ThreadId,
+    /** Server-side compare-and-swap against this thread's event sequence. */
+    expectedSequence: Schema.optional(NonNegativeInt),
     reason: Schema.Literal("user"),
   }),
   Schema.Struct({
@@ -2850,6 +2867,8 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("thread.metadata.update"),
     commandId: CommandId,
     threadId: ThreadId,
+    /** Server-side compare-and-swap against this thread's event sequence. */
+    expectedSequence: Schema.optional(NonNegativeInt),
     title: Schema.optional(TrimmedNonEmptyString),
     /** Kick off (true) or abandon (false) an async title regeneration. */
     regenerateTitle: Schema.optional(Schema.Boolean),
@@ -3279,6 +3298,7 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getWorkflowScript: "orchestration.getWorkflowScript",
   stopWorkflow: "orchestration.stopWorkflow",
   getTurnItem: "orchestration.getTurnItem",
+  getSubagentTranscript: "orchestration.getSubagentTranscript",
   launchThread: "orchestration.launchThread",
   subscribeArchivedShell: "orchestration.subscribeArchivedShell",
   subscribeShell: "orchestration.subscribeShell",
@@ -3661,6 +3681,18 @@ export class OrchestrationWorkflowFileError extends Schema.TaggedError<Orchestra
   }
 }
 
+export const OrchestrationV2GetSubagentTranscriptInput = Schema.Struct({
+  threadId: ThreadId,
+  subagentId: NodeId,
+});
+export const OrchestrationV2GetSubagentTranscriptResult = Schema.Struct({
+  items: Schema.Array(OrchestrationV2TurnItem),
+});
+export type OrchestrationV2GetSubagentTranscriptInput =
+  typeof OrchestrationV2GetSubagentTranscriptInput.Type;
+export type OrchestrationV2GetSubagentTranscriptResult =
+  typeof OrchestrationV2GetSubagentTranscriptResult.Type;
+
 export const OrchestrationV2GetTurnItemInput = Schema.Struct({
   threadId: ThreadId,
   itemId: TurnItemId,
@@ -3796,6 +3828,10 @@ export const OrchestrationV2RpcSchemas = {
   getWorkflowScript: {
     input: OrchestrationV2GetWorkflowScriptInput,
     output: OrchestrationV2GetWorkflowScriptResult,
+  },
+  getSubagentTranscript: {
+    input: OrchestrationV2GetSubagentTranscriptInput,
+    output: OrchestrationV2GetSubagentTranscriptResult,
   },
   getTurnItem: {
     input: OrchestrationV2GetTurnItemInput,

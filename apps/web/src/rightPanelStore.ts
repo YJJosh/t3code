@@ -28,6 +28,8 @@ const RIGHT_PANEL_KINDS = [
   "preview",
   "device",
   "terminal",
+  "terminals",
+  "agents",
   "pull-request",
   "pull-requests",
 ] as const;
@@ -54,6 +56,8 @@ export type RightPanelSurface =
     }
   | { id: "diff"; kind: "diff" }
   | { id: "files"; kind: "files" }
+  | { id: "agents"; kind: "agents" }
+  | { id: "terminals"; kind: "terminals"; terminalId?: string }
   | {
       id: `file:${string}` | `attachment:${string}`;
       kind: "file";
@@ -148,6 +152,7 @@ interface RightPanelStoreState {
     ref: ScopedThreadRef,
     kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
   ) => void;
+  openTerminals: (ref: ScopedThreadRef, terminalId?: string) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
@@ -221,6 +226,10 @@ const singletonSurface = (
       return { id: "diff", kind };
     case "files":
       return { id: "files", kind };
+    case "terminals":
+      return { id: "terminals", kind };
+    case "agents":
+      return { id: "agents", kind };
     case "pull-requests":
       return { id: "pull-requests", kind };
     case "device":
@@ -645,6 +654,25 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               return upsertSurface(current, existing ?? browserSurface(null));
             }
             return upsertSurface(current, singletonSurface(kind));
+          }),
+        ),
+      openTerminals: (ref, terminalId) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            const surface: RightPanelSurface = {
+              id: "terminals",
+              kind: "terminals",
+              ...(terminalId ? { terminalId } : {}),
+            };
+            const next = upsertSurface(current, surface);
+            return terminalId
+              ? {
+                  ...next,
+                  surfaces: next.surfaces.map((entry) =>
+                    entry.id === "terminals" ? surface : entry,
+                  ),
+                }
+              : next;
           }),
         ),
       openDevice: (ref, target, automatic = false) =>

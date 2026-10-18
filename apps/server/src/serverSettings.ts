@@ -287,6 +287,9 @@ export class ServerSettingsService extends Context.Service<
     /** Read the current settings. */
     readonly getSettings: Effect.Effect<ServerSettings, ServerSettingsError>;
 
+    /** Durable fork cutover signal. In-memory settings hosts may omit migration history. */
+    readonly legacyPiProviderMigrated?: Effect.Effect<boolean, ServerSettingsError>;
+
     /** Patch settings and persist. Returns the new full settings object. */
     readonly updateSettings: (
       patch: ServerSettingsPatch,
@@ -351,6 +354,7 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
     return {
       start: Effect.void,
       ready: Effect.void,
+      legacyPiProviderMigrated: Effect.succeed(false),
       getSettings,
       updateSettings: (patch) =>
         updateTestSettings((currentSettings) =>
@@ -870,6 +874,14 @@ const make = Effect.gen(function* () {
                 ),
               );
             }
+            // Record evidence before the renamed file lands, so a crash cannot
+            // leave migrated settings without the client cutover signal.
+            yield* sql`INSERT OR IGNORE INTO dulli_fork_migrations VALUES ('fork-detected')`.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ServerSettingsError({ settingsPath, operation: "write-file", cause }),
+              ),
+            );
             raw = `${yield* encodeRawSettingsJson(migration.settings).pipe(Effect.mapError((cause) => new ServerSettingsError({ settingsPath, operation: "write-file", cause })))}\n`;
             yield* writeFileStringAtomically({ filePath: settingsPath, contents: raw }).pipe(
               Effect.provideService(FileSystem.FileSystem, fs),
@@ -1404,6 +1416,14 @@ const make = Effect.gen(function* () {
   return {
     start,
     ready: Deferred.await(startedDeferred),
+    legacyPiProviderMigrated:
+      sql`SELECT name FROM dulli_fork_migrations WHERE name = 'fork-detected'`.pipe(
+        Effect.map((rows) => rows.length > 0),
+        Effect.mapError(
+          (cause) =>
+            new ServerSettingsError({ settingsPath, operation: "read-provider-history", cause }),
+        ),
+      ),
     getSettings: getSettingsFromCache.pipe(
       Effect.flatMap(materializeSettingsSecrets),
       Effect.map(resolveTextGenerationProvider),

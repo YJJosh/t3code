@@ -1,3 +1,8 @@
+import * as PiSessionsSync from "../project/PiSessionsSync.ts";
+import * as PiSessionTranscript from "../project/PiSessionTranscript.ts";
+import * as PiSessionsSettlement from "../persistence/PiSessionsSettlement.ts";
+import { PiSessionsClient } from "@t3tools/provider-dulli/server";
+import * as Effect from "effect/Effect";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -348,6 +353,23 @@ export const layer = Layer.mergeAll(
   layerLegacyV1ThreadImporterProvided,
 );
 
+const layerPiSessionsSync = PiSessionsSync.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      PiSessionsClient.layer,
+      PiSessionTranscript.layer,
+      PiSessionsSettlement.layer,
+      layerAgentSessionImporterProvided,
+      layerOrchestratorProvided,
+      layerEventSinkProvided,
+      ProjectionStore.layer,
+      layerProviderSessionManagerProvided,
+      layerRuntimePolicyProvided,
+      IdAllocator.layer,
+    ).pipe(Layer.provideMerge(ProjectStore.layer)),
+  ),
+);
+
 export const layerProduction = Layer.mergeAll(
   layer.pipe(Layer.provide(layerProjectService)),
   layerProjectService,
@@ -361,5 +383,10 @@ export const layerProduction = Layer.mergeAll(
   ),
   layerProviderContinuationWorkerProvided,
   layerAgentSessionImporterProvided,
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      yield* (yield* PiSessionsSync.PiSessionsSync).start();
+    }),
+  ).pipe(Layer.provide(layerPiSessionsSync)),
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(Layer.provide(Scheduler.layer), Layer.provideMerge(layerEventInfrastructure));

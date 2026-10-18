@@ -18,6 +18,7 @@ import type * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type {
   ProviderAdapterV2Event,
   ProviderAdapterV2TurnInput,
+  ProviderAdapterV2SessionRuntime,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -36,12 +37,19 @@ export interface DulliBridgeContext {
   readonly emit: (event: ProviderAdapterV2Event) => Effect.Effect<void>;
   readonly ids: IdAllocator.IdAllocatorV2["Service"];
   readonly getProviderThread: () => OrchestrationV2ProviderThread | null;
+  /** Stable position for a bridge-owned card in the active parent turn. */
+  readonly getItemOrdinal?: (nativeItemId: string) => number;
   readonly getActiveTurn: () => {
     readonly input: ProviderAdapterV2TurnInput;
     readonly providerTurn: OrchestrationV2ProviderTurn;
   } | null;
 }
 export interface DulliBridge {
+  /** Native extension events whose server effects do not belong in the provider package. */
+  readonly events?: ReadonlyArray<{
+    readonly type: string;
+    readonly handle: (event: PiRpcRecord) => Effect.Effect<void>;
+  }>;
   readonly notify?: ReadonlyArray<{
     readonly prefix: string;
     readonly handle: (payload: string, event: PiRpcRecord) => Effect.Effect<void>;
@@ -53,6 +61,7 @@ export interface DulliBridge {
   readonly onStart?: () => Effect.Effect<void>;
   readonly onStop?: () => Effect.Effect<void>;
   readonly hasPendingBackgroundWork?: () => boolean;
+  readonly stopSubagent?: NonNullable<ProviderAdapterV2SessionRuntime["stopSubagent"]>;
 }
 export type DulliBridgeFactory = (
   context: DulliBridgeContext,
@@ -60,4 +69,9 @@ export type DulliBridgeFactory = (
 export class DulliBridgeRegistry extends Context.Reference<ReadonlyArray<DulliBridgeFactory>>(
   "@t3tools/provider-dulli/bridges",
   { defaultValue: () => [] },
+) {}
+
+export class DulliSharedEnvironment extends Context.Reference<string | undefined>(
+  "@t3tools/provider-dulli/bridges/DulliSharedEnvironment",
+  { defaultValue: () => undefined },
 ) {}

@@ -675,6 +675,8 @@ export const ServerDirectEndpoint = Schema.Struct({
 export type ServerDirectEndpoint = typeof ServerDirectEndpoint.Type;
 
 export const ServerConfig = Schema.Struct({
+  /** One-time fork identity cutover. False distinguishes a checked upstream install from older servers. */
+  legacyPiProviderMigrated: Schema.optional(Schema.Boolean),
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
   cwd: TrimmedNonEmptyString,

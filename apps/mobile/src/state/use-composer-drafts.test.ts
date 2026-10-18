@@ -175,6 +175,7 @@ import {
   getComposerDraftSnapshot,
   mergeComposerDraftContentState,
   migrateLegacyNewTaskDraft,
+  migrateDulliComposerState,
   modelOptionMemoryAtom,
   releaseUnusedComposerAttachmentFiles,
   removeComposerDraftsForEnvironment,
@@ -1916,6 +1917,62 @@ describe("mobile composer drafts", () => {
     expect(moved.project).toEqual({ ...to, createdAt });
     expect(findNewTaskDraftKeys(appAtomRegistry.get(composerDraftsAtom), from)).toEqual([]);
     expect(findNewTaskDraftKeys(appAtomRegistry.get(composerDraftsAtom), to)).toEqual([key]);
+  });
+
+  it("migrates only fork drafts once, preserving new upstream Pi choices after reload", async () => {
+    const env = EnvironmentId.make("fork-env");
+    const selection = {
+      instanceId: ProviderInstanceId.make("pi"),
+      model: "openai/model",
+      options: [{ id: "profile", value: "coder" }],
+    };
+    composerDraftFileMocks.setDocument({
+      schemaVersion: 1,
+      drafts: {
+        "fork-env:thread": { text: "fork", attachments: [], modelSelection: selection },
+        "upstream-env:thread": { text: "upstream", attachments: [], modelSelection: selection },
+      },
+      stickyModelSelection: selection,
+      modelOptionMemory: { pi: { "openai/model": selection.options } },
+    });
+    const config = {
+      legacyPiProviderMigrated: true,
+      providers: [{ instanceId: "dulli", driver: "dulli" }],
+    };
+    await migrateDulliComposerState(env, config);
+    expect(getComposerDraftSnapshot("fork-env:thread").modelSelection).toEqual({
+      ...selection,
+      instanceId: "dulli",
+    });
+    expect(getComposerDraftSnapshot("upstream-env:thread").modelSelection).toEqual(selection);
+    expect(appAtomRegistry.get(stickyComposerModelSelectionAtom)?.instanceId).toBe("dulli");
+    expect(appAtomRegistry.get(modelOptionMemoryAtom)).toEqual({
+      dulli: { "openai/model": selection.options },
+    });
+    const document = JSON.parse(composerDraftFileMocks.getDocument());
+    document.drafts["fork-env:thread"].modelSelection = selection;
+    composerDraftFileMocks.setDocument(document);
+    appAtomRegistry.set(composerDraftsAtom, {});
+    resetComposerDraftsLoadState();
+    await migrateDulliComposerState(env, config);
+    expect(getComposerDraftSnapshot("fork-env:thread").modelSelection).toEqual(selection);
+  });
+
+  it("leaves upstream Pi untouched when server did not migrate", async () => {
+    const selection = { instanceId: ProviderInstanceId.make("pi"), model: "native-pi/model" };
+    composerDraftFileMocks.setDocument({
+      schemaVersion: 1,
+      drafts: {
+        "upstream-env:thread": { text: "upstream", attachments: [], modelSelection: selection },
+      },
+      stickyModelSelection: selection,
+    });
+    await migrateDulliComposerState(EnvironmentId.make("upstream-env"), {
+      legacyPiProviderMigrated: false,
+      providers: [{ instanceId: "dulli", driver: "dulli" }],
+    });
+    expect(getComposerDraftSnapshot("upstream-env:thread").modelSelection).toEqual(selection);
+    expect(appAtomRegistry.get(stickyComposerModelSelectionAtom)).toEqual(selection);
   });
 
   it("hydrates the global sticky model selection", () => {

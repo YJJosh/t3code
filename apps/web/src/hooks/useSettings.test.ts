@@ -74,6 +74,33 @@ describe("client settings hydration", () => {
     });
   });
 
+  it("imports retired Pi favorites/options as Dulli only for a migrated environment, without rewriting the global legacy blob", async () => {
+    const pi = ProviderInstanceId.make("pi");
+    const dulli = ProviderInstanceId.make("dulli");
+    persistenceMocks.getClientSettings.mockResolvedValue({
+      ...DEFAULT_CLIENT_SETTINGS,
+      favorites: [{ provider: pi, model: "native/model" }],
+      providerModelPreferences: {
+        [pi]: { hiddenModels: ["hidden"], modelOrder: ["native/model"] },
+      },
+    });
+    const migrated = applyServerSettingsPatch(
+      DEFAULT_SERVER_SETTINGS,
+      await prepareModelPreferencesPatch(DEFAULT_SERVER_SETTINGS, {}, true),
+    );
+    expect(migrated.favorites).toEqual([{ provider: dulli, model: "native/model" }]);
+    expect(migrated.providerModelPreferences?.[dulli]).toEqual({
+      hiddenModels: ["hidden"],
+      modelOrder: ["native/model"],
+    });
+    const upstream = applyServerSettingsPatch(
+      DEFAULT_SERVER_SETTINGS,
+      await prepareModelPreferencesPatch(DEFAULT_SERVER_SETTINGS, {}, false),
+    );
+    expect(upstream.favorites).toEqual([{ provider: pi, model: "native/model" }]);
+    expect(getClientSettings().favorites).toEqual([{ provider: pi, model: "native/model" }]);
+  });
+
   it("does not prepare a model preference write after a failed legacy read", async () => {
     const failure = new Error("storage unavailable");
     vi.spyOn(console, "error").mockImplementation(() => undefined);

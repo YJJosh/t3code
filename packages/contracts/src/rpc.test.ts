@@ -3,7 +3,7 @@ import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
 import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
-import { AuthOrchestrationOperateScope } from "./auth.ts";
+import { AuthOrchestrationOperateScope, AuthTerminalOperateScope } from "./auth.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { WS_METHODS, WsRpcGroup, WsSubscribeServerConfigRpc } from "./rpc.ts";
 
@@ -12,16 +12,19 @@ const decodeServerConfigSubscription = Schema.decodeUnknownSync(
 );
 
 describe("multi-repo RPC compatibility", () => {
-  it("registers group operations without the deferred fork Pi RPCs", () => {
+  it("registers group operations and Dulli bridge RPCs", () => {
     expect(WsRpcGroup.requests.has(WS_METHODS.projectsMakeMultiRepo)).toBe(true);
     expect(clientRpcRequiredScopes(WS_METHODS.projectsMakeMultiRepo, {})).toEqual([
       AuthOrchestrationOperateScope,
     ]);
     expect(WsRpcGroup.requests.has(WS_METHODS.projectsInspectMultiRepoFolder)).toBe(true);
     const methods = [...WsRpcGroup.requests.keys()];
-    expect(methods).not.toContain("provider.controlTask");
-    expect(methods).not.toContain("backgroundTerminals.control");
-    expect(methods).not.toContain("subscribeBackgroundTerminalEvents");
+    expect(methods).toContain("provider.controlTask");
+    expect(methods).toContain("backgroundTerminals.control");
+    expect(methods).toContain("subscribeBackgroundTerminalEvents");
+    expect(clientRpcRequiredScopes(WS_METHODS.backgroundTerminalsControl, {})).toEqual([
+      AuthTerminalOperateScope,
+    ]);
   });
 });
 

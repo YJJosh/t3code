@@ -27,6 +27,7 @@ import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dn
 import { CSS } from "@dnd-kit/utilities";
 import {
   Smartphone,
+  Users,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -137,6 +138,10 @@ interface RightPanelTabsProps {
    * accept the MouseEvent as a profile id.
    */
   onAddBrowserInProfile: (profileId: string) => void;
+  onAddAgents?: (() => void) | undefined;
+  agentsAvailable?: boolean | undefined;
+  onAddTerminals?: (() => void) | undefined;
+  terminalsAvailable?: boolean | undefined;
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
@@ -335,6 +340,10 @@ function RightPanelEmptyState(props: {
   onAddBrowser: () => void;
   onAddBrowserInProfile: (profileId: string) => void;
   browserProfiles: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+  onAddAgents?: (() => void) | undefined;
+  agentsAvailable?: boolean | undefined;
+  onAddTerminals?: (() => void) | undefined;
+  terminalsAvailable?: boolean | undefined;
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
@@ -353,6 +362,22 @@ function RightPanelEmptyState(props: {
   const [highlight, setHighlight] = useState(-1);
 
   const actions = [
+    {
+      label: "Agents & workflows",
+      icon: Users,
+      shortcut: "A",
+      available: props.agentsAvailable ?? false,
+      disabledReason: "Available in Dulli threads.",
+      onClick: () => props.onAddAgents?.(),
+    },
+    {
+      label: "Shared terminals",
+      icon: TerminalSquare,
+      shortcut: "S",
+      available: props.terminalsAvailable ?? false,
+      disabledReason: "Available in live Dulli threads.",
+      onClick: () => props.onAddTerminals?.(),
+    },
     {
       label: "Browser",
       icon: Globe2,
@@ -605,6 +630,10 @@ function surfaceTitle(
       return "Diff";
     case "files":
       return "Files";
+    case "terminals":
+      return "Shared terminals";
+    case "agents":
+      return "Agents & workflows";
     case "file":
       return surface.relativePath.slice(
         Math.max(surface.relativePath.lastIndexOf("/"), surface.relativePath.lastIndexOf("\\")) + 1,
@@ -689,6 +718,9 @@ function SurfaceIcon({
           className="size-3"
         />
       );
+    case "agents":
+      return <Users className="size-3 shrink-0" />;
+    case "terminals":
     case "terminal":
       return <TerminalSquare className="size-3 shrink-0" />;
     case "pull-request":
@@ -935,6 +967,22 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
   }, []);
 
   const addSurfaceActions = [
+    {
+      label: "Agents & workflows",
+      icon: Users,
+      shortcut: "A",
+      available: props.agentsAvailable ?? false,
+      disabledReason: "Available in Dulli threads.",
+      onClick: () => props.onAddAgents?.(),
+    },
+    {
+      label: "Shared terminals",
+      icon: TerminalSquare,
+      shortcut: "S",
+      available: props.terminalsAvailable ?? false,
+      disabledReason: "Available in live Dulli threads.",
+      onClick: () => props.onAddTerminals?.(),
+    },
     {
       label: "Browser",
       icon: Globe2,
@@ -1478,6 +1526,10 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddBrowserInProfile={props.onAddBrowserInProfile}
             browserProfiles={browserProfiles}
             onAddTerminal={props.onAddTerminal}
+            onAddTerminals={props.onAddTerminals}
+            terminalsAvailable={props.terminalsAvailable}
+            agentsAvailable={props.agentsAvailable}
+            onAddAgents={props.onAddAgents}
             onAddDiff={props.onAddDiff}
             onAddFiles={props.onAddFiles}
             onAddPullRequest={props.onAddPullRequest}

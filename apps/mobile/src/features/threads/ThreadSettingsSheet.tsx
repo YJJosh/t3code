@@ -1,5 +1,5 @@
 import { createV5StackNavigator as createNativeStackNavigator } from "../../native/createV5StackNavigator";
-import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
 import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
@@ -8,7 +8,6 @@ import type {
   EnvironmentId,
   ModelSelection,
   ProjectId,
-  ProviderInstanceId,
   ProviderOptionDescriptor,
   ProviderOptionSelection,
   RuntimeMode,
@@ -380,9 +379,20 @@ function ThreadSettingsSessionProvider(
       props.projectId,
     ],
   );
-  const legacyFavorites = AsyncResult.isSuccess(preferences)
-    ? (preferences.value.modelFavorites ?? EMPTY_MODEL_FAVORITES)
-    : EMPTY_MODEL_FAVORITES;
+  const legacyFavorites = useMemo(() => {
+    const stored = AsyncResult.isSuccess(preferences)
+      ? (preferences.value.modelFavorites ?? EMPTY_MODEL_FAVORITES)
+      : EMPTY_MODEL_FAVORITES;
+    // This retired device-local list is never written by new Pi selections;
+    // migrate it only when handing it to the environment that cut over.
+    return config?.legacyPiProviderMigrated === true
+      ? stored.map((favorite) =>
+          favorite.provider === "pi"
+            ? { ...favorite, provider: ProviderInstanceId.make("dulli") }
+            : favorite,
+        )
+      : stored;
+  }, [config?.legacyPiProviderMigrated, preferences]);
   const favoritesLoaded =
     settings !== undefined && (settings.favorites !== null || AsyncResult.isSuccess(preferences));
   const modelFavorites = resolveModelPreferences(settings ?? DEFAULT_SERVER_SETTINGS, {

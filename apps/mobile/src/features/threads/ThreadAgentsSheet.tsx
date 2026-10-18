@@ -22,12 +22,17 @@ import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { environmentThreadDetails } from "../../state/threads";
 import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { SubagentRow } from "./SubagentRow";
+import { DulliAgentsInspector } from "./DulliSubagents";
 import { MaterialScreenContent } from "../../components/MaterialScreenContent";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
-type AgentsTarget = { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
+type AgentsTarget = {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly subagentId?: string;
+};
 
 const EMPTY_TURN_SUBAGENTS_ATOM = Atom.make<ThreadTurnSubagents | null>(null).pipe(
   Atom.withLabel("mobile-thread-turn-subagents:empty"),
@@ -48,6 +53,9 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const insets = useSafeAreaInsets();
   const theme = useUniwindTheme();
   const turn = useThreadTurnSubagents(target);
+  const detail = useAtomValue(environmentThreadDetails.threadAtom(target));
+  const hasDulliAgents =
+    detail?.projection.subagents.some((agent) => agent.driver === "dulli") ?? false;
   const subagents = turn?.subagents ?? [];
   const hasLiveAgent = (turn?.liveCount ?? 0) > 0;
 
@@ -63,7 +71,9 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
     );
   };
 
-  const content = (
+  const content = hasDulliAgents ? (
+    <DulliAgentsInspector target={target} initialSubagentId={target.subagentId} />
+  ) : (
     <ScrollView
       nestedScrollEnabled
       className="flex-1"

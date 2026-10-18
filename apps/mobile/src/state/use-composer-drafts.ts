@@ -21,6 +21,12 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { useEffect } from "react";
+import {
+  isDulliCutover,
+  migrateForkPiMap,
+  migrateForkPiSelection,
+} from "@t3tools/client-runtime/dulli-migration";
+import type { DulliMigrationConfig } from "@t3tools/client-runtime/dulli-migration";
 import { Atom } from "effect/reactivity";
 
 import { writeFileAtomically } from "../lib/atomic-file";
@@ -403,6 +409,7 @@ const ComposerDraftSchema = Schema.Struct({
 
 const PersistedComposerDraftsSchema = Schema.Struct({
   schemaVersion: Schema.Literal(COMPOSER_DRAFTS_SCHEMA_VERSION),
+  dulliMigrationChecked: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   drafts: Schema.Record(Schema.String, ComposerDraftSchema),
   stickyModelSelection: Schema.optional(ModelSelectionSchema),
   modelOptionMemory: Schema.optional(
@@ -445,6 +452,8 @@ export const stickyComposerModelSelectionAtom = Atom.make<ModelSelection | null>
 export type ModelOptionMemoryState = Readonly<
   Record<string, Readonly<Record<string, ReadonlyArray<ProviderOptionSelection>>>>
 >;
+
+const dulliMigrationCheckedAtom = Atom.make<Record<string, boolean>>({}).pipe(Atom.keepAlive);
 
 export const modelOptionMemoryAtom = Atom.make<ModelOptionMemoryState>({}).pipe(
   Atom.keepAlive,
@@ -631,10 +640,14 @@ export function decodePersistedComposerState(value: unknown): {
   readonly stickyModelSelection: ModelSelection | null;
   readonly modelOptionMemory: ModelOptionMemoryState;
   readonly cloudDrafts: ComposerCloudDraftState;
+  readonly dulliMigrationChecked?: Record<string, boolean>;
 } {
   const parsed = decodePersistedComposerDraftsDocument(value);
   const now = new Date().toISOString();
   return {
+    ...(parsed.dulliMigrationChecked
+      ? { dulliMigrationChecked: parsed.dulliMigrationChecked }
+      : {}),
     drafts: Object.fromEntries(
       Object.entries(parsed.drafts)
         .map(([key, draft]) =>
@@ -739,6 +752,9 @@ async function writePersistedComposerState(
     );
     const document = {
       schemaVersion: COMPOSER_DRAFTS_SCHEMA_VERSION,
+      ...(Object.keys(appAtomRegistry.get(dulliMigrationCheckedAtom)).length > 0
+        ? { dulliMigrationChecked: appAtomRegistry.get(dulliMigrationCheckedAtom) }
+        : {}),
       drafts: nonEmptyDrafts,
       ...(stickyModelSelection ? { stickyModelSelection } : {}),
       ...(Object.keys(appAtomRegistry.get(modelOptionMemoryAtom)).length > 0
@@ -1032,6 +1048,7 @@ export function ensureComposerDraftsLoaded(): void {
     return;
   }
   const loading = loadPersistedComposerState().then((persisted) => {
+    appAtomRegistry.set(dulliMigrationCheckedAtom, persisted.dulliMigrationChecked ?? {});
     appAtomRegistry.set(composerCloudDraftsAtom, persisted.cloudDrafts);
     if (Object.keys(persisted.drafts).length > 0) {
       const current = appAtomRegistry.get(composerDraftsAtom);
@@ -1076,6 +1093,68 @@ export function ensureComposerDraftsLoaded(): void {
           }),
     );
   });
+}
+
+/** One receipt per environment, atomically persisted with the transformed drafts.
+ * A later upstream Pi selection must never pass through this cutover again. */
+export async function migrateDulliComposerState(
+  environmentId: EnvironmentId,
+  config: DulliMigrationConfig,
+): Promise<void> {
+  await waitForComposerDraftsLoaded();
+  const checked = appAtomRegistry.get(dulliMigrationCheckedAtom);
+  if (config.legacyPiProviderMigrated === undefined || environmentId in checked) return;
+  const migrated = isDulliCutover(config);
+  const global = !("*" in checked);
+  if (migrated) {
+    const transform = (
+      drafts: Record<string, ComposerDraft>,
+      queued: ReadonlyArray<QueuedThreadMessage>,
+    ) =>
+      Object.fromEntries(
+        Object.entries(drafts).map(([key, draft]) => [
+          key,
+          composerDraftEnvironmentId(key, queued, draft) === environmentId && draft.modelSelection
+            ? { ...draft, modelSelection: migrateForkPiSelection(draft.modelSelection) }
+            : draft,
+        ]),
+      );
+    appAtomRegistry.set(composerDraftsAtom, transform(appAtomRegistry.get(composerDraftsAtom), []));
+    const cloud = appAtomRegistry.get(composerCloudDraftsAtom);
+    appAtomRegistry.set(composerCloudDraftsAtom, {
+      ...cloud,
+      signedOut: Object.fromEntries(
+        Object.entries(cloud.signedOut).map(([id, saved]) => [
+          id,
+          {
+            drafts: transform(saved.drafts, saved.queuedMessages),
+            queuedMessages: saved.queuedMessages.map((message) =>
+              message.environmentId === environmentId
+                ? { ...message, modelSelection: migrateForkPiSelection(message.modelSelection) }
+                : message,
+            ),
+          },
+        ]),
+      ),
+    });
+    if (global) {
+      appAtomRegistry.set(
+        stickyComposerModelSelectionAtom,
+        migrateForkPiSelection(appAtomRegistry.get(stickyComposerModelSelectionAtom)),
+      );
+      appAtomRegistry.set(
+        modelOptionMemoryAtom,
+        migrateForkPiMap(appAtomRegistry.get(modelOptionMemoryAtom)) as ModelOptionMemoryState,
+      );
+    }
+  }
+  appAtomRegistry.set(dulliMigrationCheckedAtom, {
+    ...checked,
+    [environmentId]: migrated,
+    ...(global ? { "*": migrated } : {}),
+  });
+  schedulePersistComposerState();
+  await flushComposerDrafts();
 }
 
 /** Wait until persisted drafts have been merged into the in-memory composer state. */

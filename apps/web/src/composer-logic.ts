@@ -298,6 +298,21 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
   };
 }
 
+/** Local Dulli terminal actions, never model prompts. */
+export function parseDulliTerminalCommand(
+  text: string,
+): { kind: "terminals" } | { kind: "terminal-start"; command: string; keepOpen: boolean } | null {
+  if (/^\/ps\s*$/i.test(text.trim())) return { kind: "terminals" };
+  const match = /^\/terminal(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  if (!match) return null;
+  const rest = (match[1] ?? "").trim();
+  const flag = /^(?:-k|--keep-open)(?=\s|$)/.exec(rest);
+  const command = flag ? rest.slice(flag[0].length).trim() : rest;
+  return command
+    ? { kind: "terminal-start", command, keepOpen: flag !== null }
+    : { kind: "terminals" };
+}
+
 /**
  * Length of the leading part of `pasted` that continues an `@` path query
  * typed at the end of `lineBefore`, the line's plain text up to the caret. A
@@ -329,6 +344,10 @@ export function composerStateAtPromptEnd(
       ? null
       : detectComposerTrigger(text, expandCollapsedComposerCursor(text, cursor)),
   };
+}
+
+export function isDulliAgentsPanelCommand(text: string): boolean {
+  return /^\/(subagents|workflows)\s*$/i.test(text.trim());
 }
 
 export function parseStandaloneComposerSlashCommand(

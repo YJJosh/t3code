@@ -30,6 +30,28 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  it("keeps shared terminals singleton, selects a terminal in place and reopens the closed surface", () => {
+    const store = useRightPanelStore.getState();
+    store.openTerminals(refA);
+    store.open(refA, "diff");
+    store.openTerminals(refA, "bt-2");
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.activeSurfaceId).toBe("terminals");
+    expect(state.surfaces).toEqual([
+      { id: "terminals", kind: "terminals", terminalId: "bt-2" },
+      { id: "diff", kind: "diff" },
+    ]);
+    store.closeSurface(refA, "terminals");
+    store.openTerminals(refA, "bt-3");
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      id: "terminals",
+      kind: "terminals",
+      terminalId: "bt-3",
+    });
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toEqual([]);
+  });
   it("records single and bulk tab closes, newest first", () => {
     const store = useRightPanelStore.getState();
     const pr = pullRequestSurface({

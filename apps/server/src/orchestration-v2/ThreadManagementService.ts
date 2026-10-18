@@ -17,6 +17,8 @@ import {
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
   type OrchestrationV2GetTurnItemResult,
+  type OrchestrationV2GetSubagentTranscriptInput,
+  type OrchestrationV2GetSubagentTranscriptResult,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
@@ -340,6 +342,9 @@ export interface ThreadManagementServiceShape {
    * One turn item with the input and output the thread stream withholds,
    * bounded for the wire. Clients fetch it when a tool row is expanded.
    */
+  readonly getSubagentTranscript: (
+    input: OrchestrationV2GetSubagentTranscriptInput,
+  ) => Effect.Effect<OrchestrationV2GetSubagentTranscriptResult, Orchestrator.OrchestratorV2Error>;
   readonly getTurnItem: (input: {
     readonly threadId: ThreadId;
     readonly itemId: TurnItemId;
@@ -1196,6 +1201,20 @@ const make = Effect.gen(function* () {
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getMessageCount(threadId)),
       ),
+    getSubagentTranscript: (input) =>
+      Effect.gen(function* () {
+        const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
+        const agent = subagents.find((entry) => entry.id === input.subagentId);
+        // Dulli owns a bounded node transcript, not a resumable native child
+        // thread. Fetch it on selection; never inflate the parent chat snapshot.
+        if (agent?.driver !== "dulli" || !agent.id.startsWith("dulli:subagent:"))
+          return { items: [] };
+        const { turnItems } = yield* orchestrator.getThreadRecords(input.threadId, ["turnItems"], {
+          turnItemNodeIds: [agent.id],
+          turnItemTypes: ["user_message", "assistant_message", "reasoning", "dynamic_tool"],
+        });
+        return { items: turnItems.slice(-1000).map(projectTurnItemForDetail) };
+      }),
     getTurnItem: (input) =>
       ensureProjectionTranscript(input.threadId).pipe(
         Effect.andThen(orchestrator.getTurnItem(input)),
