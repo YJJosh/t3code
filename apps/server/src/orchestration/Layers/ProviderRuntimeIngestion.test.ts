@@ -5462,6 +5462,93 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(usage?.payload).toMatchObject({ typedUsage: { totalTokens: 200 } });
   });
+  // A replay snapshot repeats every run's start and current state with fresh
+  // event ids. A finished task's repeats are skipped; an active task's are kept
+  // so its current state wins over replayed transcript progress and stays in
+  // the client's recent-activity window.
+  effectIt.effect("skips replayed lifecycle rows of finished subagents only", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const now = "2026-01-01T00:00:00.000Z";
+      const base = (eventId: string, replayed: boolean) => ({
+        eventId: asEventId(eventId),
+        provider: ProviderDriverKind.make("pi"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-replay"),
+        ...(replayed
+          ? { raw: { source: "pi.rpc" as const, messageType: "snapshot", payload: {} } }
+          : {}),
+      });
+      const started = (eventId: string, taskId: string, replayed = false) => ({
+        ...base(eventId, replayed),
+        type: "task.started" as const,
+        payload: { taskId, description: `Task ${taskId}` },
+      });
+      const running = (eventId: string, taskId: string, replayed = false) => ({
+        ...base(eventId, replayed),
+        type: "task.updated" as const,
+        payload: { taskId, status: "running" as const },
+      });
+      const completed = (eventId: string, taskId: string, replayed = false, summary?: string) => ({
+        ...base(eventId, replayed),
+        type: "task.completed" as const,
+        payload: { taskId, status: "completed" as const, ...(summary ? { summary } : {}) },
+      });
+
+      yield* Effect.promise(() =>
+        harness.emitAndDrain([
+          started("live-done-start", "done"),
+          running("live-done-running", "done"),
+          completed("live-done-end", "done"),
+          started("live-redone-start", "redone"),
+          completed("live-redone-end", "redone", false, "First pass"),
+          started("live-busy-start", "busy"),
+          // A live repeat is kept: other providers send a second start with a better name.
+          started("live-busy-start-again", "busy"),
+          running("live-busy-running", "busy"),
+        ]),
+      );
+      yield* Effect.promise(() =>
+        harness.emitAndDrain([
+          started("replay-done-start", "done", true),
+          completed("replay-done-end", "done", true),
+          // Resumed and finished again while T3 was away.
+          started("replay-redone-start", "redone", true),
+          completed("replay-redone-end", "redone", true, "Second pass"),
+          started("replay-busy-start", "busy", true),
+          running("replay-busy-running", "busy", true),
+          // Finished while T3 was away, and a run T3 never saw.
+          completed("replay-busy-end", "busy", true),
+          started("replay-missed-start", "missed", true),
+          completed("replay-missed-end", "missed", true),
+        ]),
+      );
+
+      const events = yield* Stream.runCollect(harness.engine.readEvents(0));
+      expect(
+        events.flatMap((event) =>
+          event.type === "thread.activity-appended" ? [String(event.payload.activity.id)] : [],
+        ),
+      ).toEqual([
+        "live-done-start",
+        "live-done-running",
+        "live-done-end",
+        "live-redone-start",
+        "live-redone-end",
+        "live-busy-start",
+        "live-busy-start-again",
+        "live-busy-running",
+        "replay-redone-end",
+        "replay-busy-start",
+        "replay-busy-running",
+        "replay-busy-end",
+        "replay-missed-start",
+        "replay-missed-end",
+      ]);
+    }),
+  );
+
   // A duplicate inside one provider batch sees the earlier committed projection
   // and is skipped with its usage, while another manager's sequence gets through.
   effectIt.effect("deduplicates within a batch without dropping another manager", () =>

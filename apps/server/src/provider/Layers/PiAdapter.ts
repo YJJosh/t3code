@@ -156,6 +156,18 @@ interface SubagentLiveMessage {
 
 type PiTaskControlResult = NonNullable<PiTaskBridgeEvent["control"]>;
 
+// Bridge kinds projectTaskView turns into task.started/updated/completed.
+const PI_TASK_LIFECYCLE_KINDS: ReadonlySet<string> = new Set([
+  "run_created",
+  "run_running",
+  "resumed",
+  "steered",
+  "needs_input",
+  "terminal",
+  "killed",
+  "interrupted",
+]);
+
 interface PiRpcCommandCatalog {
   readonly allNames: ReadonlySet<string>;
   readonly extensionNames: ReadonlySet<string>;
@@ -743,6 +755,10 @@ export function projectPiTaskBridgeEvent(
             return [];
           }
           const replayEvent = candidate as PiTaskBridgeEvent;
+          // A replay's lifecycle is the starts and current states below.
+          // Ingestion compares them with the latest stored row, so a
+          // historical running row here would reopen a finished run.
+          if (PI_TASK_LIFECYCLE_KINDS.has(replayEvent.kind)) return [];
           return projectTaskView(
             replayEvent.kind,
             replayEvent.view!,

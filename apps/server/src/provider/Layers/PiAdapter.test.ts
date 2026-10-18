@@ -2007,6 +2007,66 @@ describe("Pi adapter", () => {
     }).pipe(Effect.provide(TestEnv)),
   );
 
+  // Ingestion skips replayed lifecycle rows by this marker, so live and replayed
+  // task events must stay distinguishable.
+  it.effect("marks task events projected from a replay snapshot", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi();
+      const adapter = yield* makePiAdapter(settings, { instanceId: INSTANCE }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fake.spawner),
+      );
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) => Queue.offer(events, event)).pipe(
+        Effect.forkScoped,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* Queue.takeAll(events);
+
+      const view = { runId: "run-marked", task: "Marked task", state: "done", activeMs: 1 };
+      const pushBridge = (event: Record<string, unknown>) =>
+        fake.pushFrame({
+          type: "extension_ui_request",
+          id: `request-${String(event.sequence)}`,
+          method: "notify",
+          notifyType: "info",
+          message: `${PI_SUBAGENTS_RPC_EVENT_PREFIX}${JSON.stringify(event)}`,
+        });
+      const common = { contractVersion: 1, managerId: "manager-marked" };
+
+      yield* pushBridge({
+        ...common,
+        sequence: 1,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        kind: "run_created",
+        runId: "run-marked",
+        view,
+      });
+      const live = (yield* takeThroughType(events, "task.started")).at(-1);
+      yield* pushBridge({
+        ...common,
+        sequence: 2,
+        timestamp: "2026-01-01T00:00:01.000Z",
+        kind: "snapshot",
+        snapshot: { runs: [view], events: [], replay: true },
+      });
+      const replayed = yield* takeThroughType(events, "task.completed");
+
+      expect(live?.raw).toMatchObject({ source: "pi.rpc", messageType: "run_created" });
+      expect(
+        replayed
+          .filter((event) => event.type === "task.started" || event.type === "task.completed")
+          .map((event) => event.raw),
+      ).toEqual([
+        expect.objectContaining({ source: "pi.rpc", messageType: "snapshot" }),
+        expect.objectContaining({ source: "pi.rpc", messageType: "snapshot" }),
+      ]);
+    }).pipe(Effect.provide(TestEnv)),
+  );
+
   it.effect("normalizes child deltas into cumulative live transcript events", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi();
@@ -2196,6 +2256,43 @@ describe("Pi adapter", () => {
       }),
     );
     expect(memo.has("run-usage")).toBe(false);
+  });
+
+  // Ingestion dedups a replay against the latest stored lifecycle row, so only
+  // starts and current states may carry lifecycle in a snapshot.
+  it("projects a replay snapshot's lifecycle from its runs, not its history", () => {
+    const view = { runId: "run-history", task: "History", state: "done", activeMs: 1 };
+    const historical = (sequence: number, kind: string) => ({
+      contractVersion: 1,
+      managerId: "manager-history",
+      sequence,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      kind,
+      runId: "run-history",
+      view: { ...view, state: kind === "terminal" ? "done" : "running" },
+      activity: { type: "turn_start", data: {} },
+    });
+    const projected = projectPiTaskBridgeEvent({
+      contractVersion: 1,
+      managerId: "manager-history",
+      sequence: 4,
+      timestamp: "2026-01-01T00:00:01.000Z",
+      kind: "snapshot",
+      snapshot: {
+        runs: [view],
+        events: [
+          historical(1, "run_running"),
+          historical(2, "child_turn"),
+          historical(3, "terminal"),
+        ],
+        replay: true,
+      },
+    } as PiTaskBridgeEvent);
+    expect(projected.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.progress",
+      "task.completed",
+    ]);
   });
 
   it("replays durable child transcript events from Pi snapshots", () => {

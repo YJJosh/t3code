@@ -190,6 +190,32 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const getLatestProjectionThreadTaskLifecycleRow = SqlSchema.findOneOption({
+    Request: GetLatestProjectionThreadTaskActivityInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, taskId }) =>
+      sql`
+        SELECT
+          activity_id AS "activityId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          tone,
+          kind,
+          summary,
+          payload_json AS "payload",
+          sequence,
+          created_at AS "createdAt"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind IN ('task.started', 'task.updated', 'task.completed')
+          AND json_extract(payload_json, '$.taskId') = ${taskId}
+        -- Lifecycle rows have fresh ids and usually no sequence; rows from one
+        -- batch can share a timestamp, so insertion order breaks the tie.
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1
+      `,
+  });
+
   const findProjectionThreadActivityId = SqlSchema.findOneOption({
     Request: ProjectionThreadActivityExistsInput,
     Result: Schema.Struct({ activityId: Schema.String }),
@@ -256,6 +282,18 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       Effect.map(Option.map(toProjectionThreadActivity)),
     );
 
+  const getLatestTaskLifecycleActivity: ProjectionThreadActivityRepositoryShape["getLatestTaskLifecycleActivity"] =
+    (input) =>
+      getLatestProjectionThreadTaskLifecycleRow(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionThreadActivityRepository.getLatestTaskLifecycleActivity:query",
+            "ProjectionThreadActivityRepository.getLatestTaskLifecycleActivity:decodeRow",
+          ),
+        ),
+        Effect.map(Option.map(toProjectionThreadActivity)),
+      );
+
   const exists: ProjectionThreadActivityRepositoryShape["exists"] = (input) =>
     findProjectionThreadActivityId(input).pipe(
       Effect.mapError(
@@ -279,6 +317,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
     listByThreadId,
     listUserInputLifecycleByThreadId,
     getLatestTaskActivity,
+    getLatestTaskLifecycleActivity,
     exists,
     deleteByThreadId,
   } satisfies ProjectionThreadActivityRepositoryShape;
