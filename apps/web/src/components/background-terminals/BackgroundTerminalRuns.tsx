@@ -344,9 +344,7 @@ function BackgroundTerminalRosterGroupSection({
       : 0;
   return (
     <Collapsible>
-      <CollapsibleTrigger
-        className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-2xs text-muted-foreground hover:bg-accent/60 data-panel-open:[&_svg]:rotate-90"
-      >
+      <CollapsibleTrigger className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-2xs text-muted-foreground hover:bg-accent/60 data-panel-open:[&_svg]:rotate-90">
         <ChevronRightIcon className="size-3 shrink-0 transition-transform" aria-hidden="true" />
         {group === "running" && (
           <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info" />
