@@ -10,9 +10,11 @@ import {
   ThreadId,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
+  type ProviderInstanceConfig,
 } from "@t3tools/contracts";
 import { PiSessionsClient, type PiSessionInfo } from "@t3tools/provider-dulli/server";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -151,11 +153,20 @@ const fixture = Effect.gen(function* () {
     yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${threadId}, ${encode(shell)})`;
     yield* sql`INSERT INTO orchestration_v2_projection_provider_threads VALUES (${binding.id}, ${threadId}, 'dulli', ${encode(binding)})`;
   });
+  let providerInstances: Record<string, ProviderInstanceConfig> = {
+    dulli: {
+      driver: ProviderDriverKind.make("dulli"),
+      enabled: true,
+      config: { agentDir },
+    },
+  };
   const layer = PiSessionsSync.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         PiSessionTranscript.layer,
         PiSessionsSettlement.layer,
+        // REVIEW: Default-instance discovery must use only this sandbox home in tests.
+        Layer.succeed(HostProcess.Environment, { PI_CODING_AGENT_DIR: agentDir }),
         IdAllocator.layer,
         Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
           getEnvironmentId: Effect.succeed(EnvironmentId.make("env")),
@@ -163,13 +174,7 @@ const fixture = Effect.gen(function* () {
         Layer.mock(ServerSettings.ServerSettingsService)({
           getSettings: Effect.sync(() => ({
             ...DEFAULT_SERVER_SETTINGS,
-            providerInstances: {
-              dulli: {
-                driver: ProviderDriverKind.make("dulli"),
-                enabled: true,
-                config: { agentDir },
-              },
-            },
+            providerInstances,
           })),
         }),
         Layer.mock(ProjectStore.ProjectStoreV2)({
@@ -263,6 +268,9 @@ const fixture = Effect.gen(function* () {
   const link = { environmentId: EnvironmentId.make("env"), threadId, sessionId: "native" };
   return {
     service,
+    setInstances: (instances: Record<string, ProviderInstanceConfig>) => {
+      providerInstances = instances;
+    },
     opens,
     store,
     link,
@@ -294,6 +302,27 @@ const fixture = Effect.gen(function* () {
 });
 const layer = Layer.mergeAll(NodeServices.layer, NodeSqliteClient.layer({ filename: ":memory:" }));
 it.layer(layer)("PiSessionsSync", (it) => {
+  // REVIEW: A fresh/reset default instance shares terminal chats without an explicit slot.
+  it.effect("imports with an unconfigured default, but respects a disabled or occupied slot", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      f.setInstances({
+        dulli: { driver: ProviderDriverKind.make("dulli"), enabled: false, config: {} },
+      });
+      yield* f.service.refresh;
+      expect(f.imports).toHaveLength(0);
+      f.setInstances({ dulli: { driver: ProviderDriverKind.make("pi"), config: {} } });
+      yield* f.service.refresh;
+      expect(f.imports).toHaveLength(0);
+      f.setInstances({});
+      yield* f.service.refresh;
+      expect(f.imports).toHaveLength(1);
+      expect(f.imports[0]).toMatchObject({
+        _tag: "Importable",
+        thread: { source: "dulli", providerSessionId: "native" },
+      });
+    }).pipe(Effect.scoped),
+  );
   it.effect("relinks migrated import:pi IDs without duplicating imported conversations", () =>
     Effect.gen(function* () {
       const f = yield* fixture;

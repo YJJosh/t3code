@@ -3,6 +3,8 @@ import { recoverDulliUuidCursors } from "../orchestration-v2/legacy/DulliNativeC
 import {
   CommandId,
   ProviderInstanceId,
+  ProviderDriverKind,
+  type ProviderInstanceConfig,
   type ProviderSessionId,
   ThreadId,
   OrchestrationV2ProviderThreadJson,
@@ -101,7 +103,14 @@ const make = Effect.gen(function* () {
   const identity = (value: string) => fs.realPath(value).pipe(Effect.orElseSucceed(() => null));
   const enabledInstances = Effect.gen(function* () {
     const config = yield* settings.getSettings;
-    return Object.entries(config.providerInstances).flatMap(([id, instance]) => {
+    // REVIEW: The registry enables an unconfigured default Dulli instance too.
+    // Keep sharing/import and UUID recovery available without a saved settings slot;
+    // an explicitly occupied or disabled slot still wins, exactly as in the registry.
+    const instances: Record<string, ProviderInstanceConfig> = {
+      dulli: { driver: ProviderDriverKind.make("dulli"), config: {} },
+      ...config.providerInstances,
+    };
+    return Object.entries(instances).flatMap(([id, instance]) => {
       if (instance.driver !== "dulli" || !resolveProviderInstanceEnabled(instance)) return [];
       const parsed = decodeConfig(instance.config ?? {});
       return Option.isSome(parsed) && parsed.value.enabled
