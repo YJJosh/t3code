@@ -29,6 +29,7 @@ import {
   formatBytes,
   groupBackgroundTerminalsForRoster,
   sanitizeTerminalOutputText,
+  type BackgroundTerminalRosterGroup,
 } from "./backgroundTerminalPresentation";
 
 /** Refresh interval for the live elapsed-time readout while a terminal is running. */
@@ -320,6 +321,65 @@ export function BackgroundTerminalDetail({
   );
 }
 
+interface BackgroundTerminalRosterGroupProps {
+  group: BackgroundTerminalRosterGroup;
+  terminals: ReadonlyArray<BackgroundTerminalEntry>;
+  onOpenTerminal: (terminalId: string) => void;
+}
+
+/**
+ * One collapsible strip group: a summary row with the count, rows when expanded.
+ * The settled summary also counts failures, since failed rows hide inside it.
+ * Starts collapsed; key it by environment and thread so switching threads resets it.
+ */
+function BackgroundTerminalRosterGroupSection({
+  group,
+  terminals,
+  onOpenTerminal,
+}: BackgroundTerminalRosterGroupProps) {
+  const label = backgroundTerminalRosterSummaryLabel(group, terminals.length);
+  const failedCount =
+    group === "settled"
+      ? terminals.filter((terminal) => terminal.view.status === "failed").length
+      : 0;
+  return (
+    <Collapsible>
+      <CollapsibleTrigger className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-2xs text-muted-foreground hover:bg-accent/60 data-panel-open:[&_svg]:rotate-90">
+        <ChevronRightIcon className="size-3 shrink-0 transition-transform" aria-hidden="true" />
+        {group === "running" && (
+          <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info" />
+        )}
+        {label}
+        {failedCount > 0 && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-destructive" />
+            <span className="sr-only">,</span>
+            {failedCount} failed
+          </>
+        )}
+      </CollapsibleTrigger>
+      <CollapsiblePanel>
+        <div
+          role="list"
+          aria-label={`${group === "running" ? "Running" : "Settled"} background terminals`}
+        >
+          {terminals.map((terminal) => (
+            <div role="listitem" key={terminal.view.id}>
+              <BackgroundTerminalRow
+                terminal={terminal}
+                selected={false}
+                quiet={group === "settled"}
+                onSelect={onOpenTerminal}
+              />
+            </div>
+          ))}
+        </div>
+      </CollapsiblePanel>
+    </Collapsible>
+  );
+}
+
 export interface BackgroundTerminalRunsProps {
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
@@ -331,11 +391,11 @@ export interface BackgroundTerminalRunsProps {
 
 /**
  * Compact roster strip for a thread's Pi background terminals, rendered
- * directly above the composer: running/failed terminals stay always visible,
- * and settled (done/killed) terminals collapse behind a summary toggle so
- * they don't permanently eat composer space. Selecting a row opens the
- * Shared terminals surface in the right panel with that terminal selected;
- * the surface owns details, controls and starting new terminals.
+ * directly above the composer: running and settled (done, failed, killed)
+ * terminals each collapse behind a summary row with their count so they
+ * don't permanently eat composer space. Selecting a row opens the Shared
+ * terminals surface in the right panel with that terminal selected; the
+ * surface owns details, controls and starting new terminals.
  *
  * Renders nothing when there are no terminals so an idle/empty stream is
  * invisible.
@@ -348,16 +408,10 @@ export function BackgroundTerminalRuns({
 }: BackgroundTerminalRunsProps) {
   const { state } = useBackgroundTerminalRuntime({ environmentId, threadId, enabled });
   const terminals = useMemo(() => selectBackgroundTerminals(state), [state]);
-  const { attention, quiet } = useMemo(
+  const { running, settled } = useMemo(
     () => groupBackgroundTerminalsForRoster(terminals),
     [terminals],
   );
-  const [quietExpanded, setQuietExpanded] = useState(false);
-
-  useEffect(() => {
-    setQuietExpanded(false);
-  }, [environmentId, threadId]);
-
   if (
     !enabled ||
     environmentId === null ||
@@ -370,45 +424,21 @@ export function BackgroundTerminalRuns({
 
   return (
     <div className="pointer-events-auto mx-auto mb-1.5 max-h-48 w-full max-w-3xl overflow-y-auto rounded-lg border border-border/70 bg-card/85 p-1 shadow-sm backdrop-blur-sm sm:max-h-56">
-      {attention.length > 0 && (
-        <div role="list" aria-label="Background terminals needing attention">
-          {attention.map((terminal) => (
-            <div role="listitem" key={terminal.view.id}>
-              <BackgroundTerminalRow
-                terminal={terminal}
-                selected={false}
-                quiet={false}
-                onSelect={onOpenTerminal}
-              />
-            </div>
-          ))}
-        </div>
+      {running.length > 0 && (
+        <BackgroundTerminalRosterGroupSection
+          key={`${environmentId}:${threadId}:running`}
+          group="running"
+          terminals={running}
+          onOpenTerminal={onOpenTerminal}
+        />
       )}
-
-      {quiet.length > 0 && (
-        <Collapsible open={quietExpanded} onOpenChange={setQuietExpanded}>
-          <CollapsibleTrigger
-            className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-2xs text-muted-foreground hover:bg-accent/60 data-panel-open:[&_svg]:rotate-90"
-            aria-label={`${backgroundTerminalRosterSummaryLabel(quiet.length)}, ${quietExpanded ? "expanded" : "collapsed"}`}
-          >
-            <ChevronRightIcon className="size-3 shrink-0 transition-transform" aria-hidden="true" />
-            {backgroundTerminalRosterSummaryLabel(quiet.length)}
-          </CollapsibleTrigger>
-          <CollapsiblePanel>
-            <div role="list" aria-label="Settled background terminals">
-              {quiet.map((terminal) => (
-                <div role="listitem" key={terminal.view.id}>
-                  <BackgroundTerminalRow
-                    terminal={terminal}
-                    selected={false}
-                    quiet
-                    onSelect={onOpenTerminal}
-                  />
-                </div>
-              ))}
-            </div>
-          </CollapsiblePanel>
-        </Collapsible>
+      {settled.length > 0 && (
+        <BackgroundTerminalRosterGroupSection
+          key={`${environmentId}:${threadId}:settled`}
+          group="settled"
+          terminals={settled}
+          onOpenTerminal={onOpenTerminal}
+        />
       )}
     </div>
   );

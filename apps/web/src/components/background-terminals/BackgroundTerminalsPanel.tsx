@@ -1,5 +1,4 @@
 import {
-  isBackgroundTerminalActive,
   selectBackgroundTerminalControlResult,
   selectBackgroundTerminals,
 } from "@t3tools/client-runtime/state/background-terminals";
@@ -144,14 +143,11 @@ export function BackgroundTerminalsPanel({
   const splitLayout = useSplitInspectorLayout(rootRef);
   const { state } = useBackgroundTerminalRuntime({ environmentId, threadId, enabled });
   const terminals = useMemo(() => selectBackgroundTerminals(state), [state]);
-  const { attention, quiet } = useMemo(
+  const { running, settled } = useMemo(
     () => groupBackgroundTerminalsForRoster(terminals),
     [terminals],
   );
-  const runningCount = useMemo(
-    () => terminals.filter((entry) => isBackgroundTerminalActive(entry.view.status)).length,
-    [terminals],
-  );
+  const runningCount = running.length;
   const [selectedId, setSelectedId] = useState<string | null>(selectedTerminalId);
   const [formOpen, setFormOpen] = useState(false);
   const [startPending, setStartPending] = useState(false);
@@ -237,18 +233,18 @@ export function BackgroundTerminalsPanel({
         </div>
       ) : (
         <div className="flex flex-col gap-1 p-2">
-          {attention.length > 0 && (
+          {running.length > 0 && (
             <div role="list" aria-label="Running terminals">
-              {rows(attention, false)}
+              {rows(running, false)}
             </div>
           )}
-          {quiet.length > 0 && (
+          {settled.length > 0 && (
             <>
               <p className="px-2 pt-2 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
-                {backgroundTerminalRosterSummaryLabel(quiet.length)}
+                {backgroundTerminalRosterSummaryLabel("settled", settled.length)}
               </p>
               <div role="list" aria-label="Settled terminals">
-                {rows(quiet, true)}
+                {rows(settled, true)}
               </div>
             </>
           )}
@@ -307,7 +303,7 @@ export function BackgroundTerminalsPanel({
           </div>
           <p className="mt-0.5 text-2xs text-muted-foreground">
             {runningCount > 0 ? `${runningCount} running` : "No running terminals"}
-            {quiet.length > 0 ? ` · ${quiet.length} settled` : ""}
+            {settled.length > 0 ? ` · ${settled.length} settled` : ""}
           </p>
         </div>
         <Button
@@ -355,7 +351,7 @@ export function BackgroundTerminalsPanel({
       )}
 
       <footer className="flex shrink-0 items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-2xs text-muted-foreground">
-        <span>{runningCount > 0 ? `● ${runningCount} running` : `${quiet.length} settled`}</span>
+        <span>{runningCount > 0 ? `● ${runningCount} running` : `${settled.length} settled`}</span>
         <span>{state.managerId === null ? "Pi not running" : "Pi session live"}</span>
       </footer>
     </div>
