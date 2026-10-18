@@ -180,21 +180,36 @@ function isPiReplaySnapshotEvent(event: ProviderRuntimeEvent): boolean {
   return event.raw?.source === "pi.rpc" && event.raw.messageType === "snapshot";
 }
 
-// A task starts once, so any stored lifecycle row covers a replayed start. A
-// replayed state repeats the stored one when kind and status match.
+// Key-order independent JSON form, so a payload read back from the projection
+// compares equal to the same payload built again from a replay.
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner: unknown) =>
+    Predicate.isObject(inner) && !Array.isArray(inner)
+      ? Object.fromEntries(
+          Object.entries(inner as Record<string, unknown>).sort(([a], [b]) =>
+            a < b ? -1 : a > b ? 1 : 0,
+          ),
+        )
+      : inner,
+  );
+}
+
+// Only a finished task is deduplicated. Its start is already stored, and its
+// completion repeats when the stored one has the same payload (a run resumed
+// and finished again carries a new end time, summary or usage). Active tasks
+// keep appending their start and current state: that row restores a waiting
+// state after replayed transcript progress, and keeps a long-running task in
+// the client's recent-activity window.
 function replayRepeatsLifecycle(
-  event: Extract<
-    ProviderRuntimeEvent,
-    { type: "task.started" | "task.updated" | "task.completed" }
-  >,
+  activity: OrchestrationThreadActivity,
   latest: ProjectionThreadActivity,
 ): boolean {
-  if (event.type === "task.started") return true;
-  if (latest.kind !== event.type) return false;
-  const storedStatus = Predicate.isObject(latest.payload)
-    ? (latest.payload as { status?: unknown }).status
-    : undefined;
-  return storedStatus === event.payload.status;
+  if (latest.kind !== "task.completed") return false;
+  if (activity.kind === "task.started") return true;
+  return (
+    activity.kind === "task.completed" &&
+    canonicalJson(activity.payload) === canonicalJson(latest.payload)
+  );
 }
 
 function hasCheckpointForTurn(
@@ -2879,8 +2894,8 @@ const make = Effect.gen(function* () {
       // The same replay also repeats every run's lifecycle (started, then its
       // current state), each with a fresh event id. Only Pi's replay snapshot is
       // checked: live events, and other providers that send task.started twice
-      // to improve the name, keep appending. A replayed row is skipped when the
-      // task's stored lifecycle already says the same thing.
+      // to improve the name, keep appending. See replayRepeatsLifecycle for
+      // which replayed rows are skipped.
       if (
         isPiReplaySnapshotEvent(activityEvent) &&
         (activityEvent.type === "task.started" ||
@@ -2898,7 +2913,11 @@ const make = Effect.gen(function* () {
               }).pipe(Effect.as(Option.none())),
             ),
           );
-        if (Option.isSome(latest) && replayRepeatsLifecycle(replayed, latest.value)) {
+        if (
+          Option.isSome(latest) &&
+          activities.length > 0 &&
+          activities.every((activity) => replayRepeatsLifecycle(activity, latest.value))
+        ) {
           return;
         }
       }

@@ -2258,6 +2258,43 @@ describe("Pi adapter", () => {
     expect(memo.has("run-usage")).toBe(false);
   });
 
+  // Ingestion dedups a replay against the latest stored lifecycle row, so only
+  // starts and current states may carry lifecycle in a snapshot.
+  it("projects a replay snapshot's lifecycle from its runs, not its history", () => {
+    const view = { runId: "run-history", task: "History", state: "done", activeMs: 1 };
+    const historical = (sequence: number, kind: string) => ({
+      contractVersion: 1,
+      managerId: "manager-history",
+      sequence,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      kind,
+      runId: "run-history",
+      view: { ...view, state: kind === "terminal" ? "done" : "running" },
+      activity: { type: "turn_start", data: {} },
+    });
+    const projected = projectPiTaskBridgeEvent({
+      contractVersion: 1,
+      managerId: "manager-history",
+      sequence: 4,
+      timestamp: "2026-01-01T00:00:01.000Z",
+      kind: "snapshot",
+      snapshot: {
+        runs: [view],
+        events: [
+          historical(1, "run_running"),
+          historical(2, "child_turn"),
+          historical(3, "terminal"),
+        ],
+        replay: true,
+      },
+    } as PiTaskBridgeEvent);
+    expect(projected.map((event) => event.type)).toEqual([
+      "task.started",
+      "task.progress",
+      "task.completed",
+    ]);
+  });
+
   it("replays durable child transcript events from Pi snapshots", () => {
     const view = {
       runId: "run-replay",
