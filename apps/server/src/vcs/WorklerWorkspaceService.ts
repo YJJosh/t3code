@@ -27,7 +27,7 @@ class WorklerCallFailure extends Data.TaggedError("WorklerCallFailure")<{
 }> {}
 
 /** Runs one Workler library call. */
-type WorklerRunner = <M extends WorklerMethod>(
+export type WorklerRunner = <M extends WorklerMethod>(
   method: M,
   args: Parameters<WorklerLibrary[M]>,
 ) => Effect.Effect<ReturnType<WorklerLibrary[M]>, WorklerCallFailure>;
@@ -106,7 +106,23 @@ function toCallFailure(cause: unknown): WorklerCallFailure {
     : new WorklerCallFailure({ code: "UNEXPECTED", detail: UNEXPECTED_DETAIL, cause });
 }
 
-const makeFromRunner = (run: WorklerRunner): WorklerWorkspaceService["Service"] => {
+// Workler fails fast with LOCKED instead of waiting for another write to the
+// same project. In-process calls used to serialize writes; on workers they
+// must queue. The lock files name this process, so the queue is per process too.
+const worklerWrites = Semaphore.makeUnsafe(1);
+// Reads hold no lock, but each one starts a thread and several git processes,
+// so only a few run at once and rapid branch-picker refreshes wait their turn.
+const worklerReads = Semaphore.makeUnsafe(4);
+
+// Waiting for the queue stays interruptible. Once a write starts it always
+// finishes, cleanup included: stopping it would leave Workler's project lock
+// behind, owned by this still-running process.
+const write = <A, E>(effect: Effect.Effect<A, E>) =>
+  worklerWrites.withPermits(1)(Effect.uninterruptible(effect));
+const read = <A, E>(effect: Effect.Effect<A, E>) => worklerReads.withPermits(1)(effect);
+
+/** Builds the service over a runner; tests use it to control when calls finish. */
+export const makeFromRunner = (run: WorklerRunner): WorklerWorkspaceService["Service"] => {
   const call = <M extends WorklerMethod>(
     operation: string,
     root: string,
@@ -128,76 +144,81 @@ const makeFromRunner = (run: WorklerRunner): WorklerWorkspaceService["Service"] 
 
   return WorklerWorkspaceService.of({
     createWorkspace: (input) =>
-      call("WorklerWorkspaceService.createWorkspace", input.root, "createWorkspace", [
-        input.root,
-        {
-          name: input.name,
-          ...(input.base === undefined ? {} : { base: input.base }),
-          ...(input.branch === undefined ? {} : { branch: input.branch }),
-          ...(input.checkout === undefined ? {} : { checkout: input.checkout }),
-          // T3 runs the project's own setup script for new worktrees.
-          setup: false,
-        },
-      ]).pipe(
-        Effect.map((created) => ({
-          name: created.name,
-          path: created.path,
-          branch: created.branch ?? null,
-          head: created.head ?? null,
-          detached: created.detached,
-        })),
-        // SETUP_FAILED means cloning had begun: Workler's plan already saw the
-        // folder was new, and it leaves the partial workspace for inspection.
-        // T3 users never see that folder, so remove it.
-        Effect.catchIf(
-          (error) => error.code === "SETUP_FAILED",
-          (error) =>
-            call("WorklerWorkspaceService.createWorkspace", input.root, "removeWorkspace", [
-              input.root,
-              input.name,
-              { force: true },
-            ]).pipe(
-              Effect.matchEffect({
-                onFailure: (cleanup) =>
-                  Effect.logWarning("Could not remove a partially created Workler workspace", {
-                    root: input.root,
-                    name: input.name,
-                    detail: cleanup.detail,
-                  }).pipe(Effect.andThen(Effect.fail(error))),
-                onSuccess: () =>
-                  Effect.fail(
-                    new WorklerWorkspaceError({
-                      operation: error.operation,
-                      root: error.root,
-                      code: error.code,
-                      detail: withoutLeftInPlaceHint(error.detail),
-                      cause: error.cause,
-                    }),
-                  ),
-              }),
-            ),
+      write(
+        call("WorklerWorkspaceService.createWorkspace", input.root, "createWorkspace", [
+          input.root,
+          {
+            name: input.name,
+            ...(input.base === undefined ? {} : { base: input.base }),
+            ...(input.branch === undefined ? {} : { branch: input.branch }),
+            ...(input.checkout === undefined ? {} : { checkout: input.checkout }),
+            // T3 runs the project's own setup script for new worktrees.
+            setup: false,
+          },
+        ]).pipe(
+          Effect.map((created) => ({
+            name: created.name,
+            path: created.path,
+            branch: created.branch ?? null,
+            head: created.head ?? null,
+            detached: created.detached,
+          })),
+          // SETUP_FAILED means cloning had begun: Workler's plan already saw the
+          // folder was new, and it leaves the partial workspace for inspection.
+          // T3 users never see that folder, so remove it.
+          Effect.catchIf(
+            (error) => error.code === "SETUP_FAILED",
+            (error) =>
+              call("WorklerWorkspaceService.createWorkspace", input.root, "removeWorkspace", [
+                input.root,
+                input.name,
+                { force: true },
+              ]).pipe(
+                Effect.matchEffect({
+                  onFailure: (cleanup) =>
+                    Effect.logWarning("Could not remove a partially created Workler workspace", {
+                      root: input.root,
+                      name: input.name,
+                      detail: cleanup.detail,
+                    }).pipe(Effect.andThen(Effect.fail(error))),
+                  onSuccess: () =>
+                    Effect.fail(
+                      new WorklerWorkspaceError({
+                        operation: error.operation,
+                        root: error.root,
+                        code: error.code,
+                        detail: withoutLeftInPlaceHint(error.detail),
+                        cause: error.cause,
+                      }),
+                    ),
+                }),
+              ),
+          ),
         ),
-        Effect.uninterruptible,
       ),
     listWorkspaces: (root) =>
-      call("WorklerWorkspaceService.listWorkspaces", root, "listWorkspaces", [root]).pipe(
-        Effect.map((workspaces) =>
-          workspaces.map((workspace) => ({
-            name: workspace.name,
-            path: workspace.path,
-            isMain: workspace.isMain,
-            isClone: workspace.isClone,
-            broken: workspace.broken ?? null,
-            branch: workspace.branch ?? null,
-          })),
+      read(
+        call("WorklerWorkspaceService.listWorkspaces", root, "listWorkspaces", [root]).pipe(
+          Effect.map((workspaces) =>
+            workspaces.map((workspace) => ({
+              name: workspace.name,
+              path: workspace.path,
+              isMain: workspace.isMain,
+              isClone: workspace.isClone,
+              broken: workspace.broken ?? null,
+              branch: workspace.branch ?? null,
+            })),
+          ),
         ),
       ),
     removeWorkspace: (input) =>
-      call("WorklerWorkspaceService.removeWorkspace", input.root, "removeWorkspace", [
-        input.root,
-        input.name,
-        input.force === undefined ? {} : { force: input.force },
-      ]).pipe(Effect.map((removed) => ({ name: removed.name, path: removed.path }))),
+      write(
+        call("WorklerWorkspaceService.removeWorkspace", input.root, "removeWorkspace", [
+          input.root,
+          input.name,
+          input.force === undefined ? {} : { force: input.force },
+        ]).pipe(Effect.map((removed) => ({ name: removed.name, path: removed.path }))),
+      ),
   });
 };
 
@@ -285,12 +306,16 @@ const runInWorker = (
       return;
     }
     let settled = false;
+    const stop = () => {
+      if (settled) return;
+      settled = true;
+      void worker.terminate();
+    };
     const settle = (
       result: Effect.Effect<unknown, WorklerCallFailure | WorklerWorkerUnavailable>,
     ) => {
       if (settled) return;
-      settled = true;
-      void worker.terminate();
+      stop();
       resume(result);
     };
     worker.once("message", (message: WorklerWorkerMessage) => {
@@ -333,13 +358,10 @@ const runInWorker = (
         ),
       ),
     );
+    // Only reads can be interrupted (writes run uninterruptibly), and a read
+    // holds no lock, so stopping its worker is safe.
+    return Effect.sync(stop);
   });
-
-// Workler fails fast with LOCKED instead of waiting for another mutation of
-// the same project. In-process calls used to serialize mutations; on workers
-// they must queue.
-// The lock files name this process, so the queue is per process too.
-const worklerMutations = Semaphore.makeUnsafe(1);
 
 // Workler stays external to the CLI bundle because it reads its own
 // package.json at load. Inside the Node single-executable (the Windows WSL
@@ -369,18 +391,11 @@ export const make = Effect.gen(function* () {
       catch: (cause) => new WorklerWorkerUnavailable({ cause }),
     }),
   );
-  const run: WorklerRunner = (method, args) => {
-    const call = libraryPath.pipe(
+  const run: WorklerRunner = (method, args) =>
+    libraryPath.pipe(
       Effect.flatMap((path) => runInWorker(path, method, args)),
       Effect.catchTag("WorklerWorkerUnavailable", () => inProcess(method, args)),
-      // Stopping a worker mid-call would leave Workler's project lock behind,
-      // owned by this still-running process, so a call always finishes.
-      Effect.uninterruptible,
     ) as Effect.Effect<ReturnType<WorklerLibrary[typeof method]>, WorklerCallFailure>;
-    return method === "createWorkspace" || method === "removeWorkspace"
-      ? worklerMutations.withPermits(1)(call)
-      : call;
-  };
   return makeFromRunner(run);
 });
 

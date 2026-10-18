@@ -1,5 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 
 import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
 
@@ -171,6 +173,70 @@ describe("WorklerWorkspaceService", () => {
       code = "WORKSPACE_EXISTS";
       yield* service.createWorkspace({ root: "/group", name: "feat" }).pipe(Effect.flip);
       assert.deepEqual(stub.calls, []);
+    }),
+  );
+
+  it.effect("lets a write that is still waiting for the queue be cancelled", () =>
+    Effect.gen(function* () {
+      const started: Array<string> = [];
+      const firstStarted = yield* Deferred.make<void>();
+      const releaseFirst = yield* Deferred.make<void>();
+      const service = WorklerWorkspaceService.makeFromRunner(((_method, args) =>
+        Effect.gen(function* () {
+          const name = (args[1] as { readonly name: string }).name;
+          started.push(name);
+          if (name === "first") {
+            yield* Deferred.succeed(firstStarted, undefined);
+            yield* Deferred.await(releaseFirst);
+          }
+          return {
+            name,
+            path: `/repo/.worktrees/${name}`,
+            root: "/repo",
+            head: "deadbeef",
+            detached: false,
+            rules: { results: [] },
+          };
+        })) as WorklerWorkspaceService.WorklerRunner);
+
+      const first = yield* Effect.forkChild(
+        service.createWorkspace({ root: "/repo", name: "first" }),
+        { startImmediately: true },
+      );
+      yield* Deferred.await(firstStarted);
+      const second = yield* Effect.forkChild(
+        service.createWorkspace({ root: "/repo", name: "second" }),
+        { startImmediately: true },
+      );
+      const cancelling = yield* Effect.forkChild(Fiber.interrupt(second), {
+        startImmediately: true,
+      });
+      yield* Deferred.succeed(releaseFirst, undefined);
+      yield* Fiber.join(first);
+      yield* Fiber.join(cancelling);
+
+      assert.deepEqual(started, ["first"]);
+    }),
+  );
+
+  it.effect("runs at most four reads at once", () =>
+    Effect.gen(function* () {
+      let running = 0;
+      const release = yield* Deferred.make<void>();
+      const service = WorklerWorkspaceService.makeFromRunner((() =>
+        Effect.gen(function* () {
+          running += 1;
+          yield* Deferred.await(release);
+          return [];
+        })) as unknown as WorklerWorkspaceService.WorklerRunner);
+
+      const reads = yield* Effect.forEach([1, 2, 3, 4, 5], () =>
+        Effect.forkChild(service.listWorkspaces("/repo"), { startImmediately: true }),
+      );
+      assert.equal(running, 4);
+      yield* Deferred.succeed(release, undefined);
+      yield* Effect.forEach(reads, Fiber.join);
+      assert.equal(running, 5);
     }),
   );
 });
