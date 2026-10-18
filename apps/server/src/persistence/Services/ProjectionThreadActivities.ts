@@ -99,6 +99,13 @@ export interface ProjectionThreadActivityRepositoryShape {
   ) => Effect.Effect<Option.Option<ProjectionThreadActivity>, ProjectionRepositoryError>;
 
   /**
+   * Read the latest task-started, task-updated or task-completed activity.
+   */
+  readonly getLatestTaskLifecycleActivity: (
+    input: GetLatestProjectionThreadTaskActivityInput,
+  ) => Effect.Effect<Option.Option<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  /**
    * Whether a row with this activity id is already projected.
    */
   readonly exists: (

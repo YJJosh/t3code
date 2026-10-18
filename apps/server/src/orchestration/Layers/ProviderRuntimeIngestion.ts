@@ -37,7 +37,10 @@ import { formatTokens } from "@t3tools/shared/usageFormat";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
-import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
+import {
+  type ProjectionThreadActivity,
+  ProjectionThreadActivityRepository,
+} from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import { ProjectionThreadMessageRepository } from "../../persistence/Services/ProjectionThreadMessages.ts";
@@ -169,6 +172,29 @@ function sameId(left: string | null | undefined, right: string | null | undefine
     return false;
   }
   return left === right;
+}
+
+// The Pi adapter projects a subagents replay snapshot into task events whose
+// raw message type is "snapshot"; live bridge events carry their own kind.
+function isPiReplaySnapshotEvent(event: ProviderRuntimeEvent): boolean {
+  return event.raw?.source === "pi.rpc" && event.raw.messageType === "snapshot";
+}
+
+// A task starts once, so any stored lifecycle row covers a replayed start. A
+// replayed state repeats the stored one when kind and status match.
+function replayRepeatsLifecycle(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { type: "task.started" | "task.updated" | "task.completed" }
+  >,
+  latest: ProjectionThreadActivity,
+): boolean {
+  if (event.type === "task.started") return true;
+  if (latest.kind !== event.type) return false;
+  const storedStatus = Predicate.isObject(latest.payload)
+    ? (latest.payload as { status?: unknown }).status
+    : undefined;
+  return storedStatus === event.payload.status;
 }
 
 function hasCheckpointForTurn(
@@ -2849,6 +2875,32 @@ const make = Effect.gen(function* () {
           ))
       ) {
         return;
+      }
+      // The same replay also repeats every run's lifecycle (started, then its
+      // current state), each with a fresh event id. Only Pi's replay snapshot is
+      // checked: live events, and other providers that send task.started twice
+      // to improve the name, keep appending. A replayed row is skipped when the
+      // task's stored lifecycle already says the same thing.
+      if (
+        isPiReplaySnapshotEvent(activityEvent) &&
+        (activityEvent.type === "task.started" ||
+          activityEvent.type === "task.updated" ||
+          activityEvent.type === "task.completed")
+      ) {
+        const replayed = activityEvent;
+        const latest = yield* projectionThreadActivityRepository
+          .getLatestTaskLifecycleActivity({ threadId: thread.id, taskId: replayed.payload.taskId })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("subagent lifecycle dedup lookup failed; appending", {
+                taskId: replayed.payload.taskId,
+                error,
+              }).pipe(Effect.as(Option.none())),
+            ),
+          );
+        if (Option.isSome(latest) && replayRepeatsLifecycle(replayed, latest.value)) {
+          return;
+        }
       }
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
