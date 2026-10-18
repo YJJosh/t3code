@@ -413,5 +413,15 @@ export function resolveLiveThreadBranchUpdate(input: {
   };
 }
 
+/** Names a few repositories for a hint or toast, e.g. "api, web and 3 more". */
+export function summarizeRepositories(repositories: ReadonlyArray<string>, shown = 3): string {
+  if (repositories.length <= shown + 1) {
+    return repositories.length <= 1
+      ? (repositories[0] ?? "")
+      : `${repositories.slice(0, -1).join(", ")} and ${repositories.at(-1)}`;
+  }
+  return `${repositories.slice(0, shown).join(", ")} and ${repositories.length - shown} more`;
+}
+
 // Re-export from shared for backwards compatibility in this module's exports
 export { resolveAutoFeatureBranchName } from "@t3tools/shared/git";

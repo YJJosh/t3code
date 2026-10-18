@@ -185,6 +185,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       desktop servers whose app predates the remote trigger, where clients
       must keep telling the user to update the app on that machine. */
   desktopAppUpdate: Schema.optionalKey(Schema.Boolean),
+  /** Server creates workspaces for multi-repo projects and clones the `members`
+      of `projectClone.start`. Absent on older servers, which ignore `members`. */
+  multiRepoProjects: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
@@ -218,6 +221,24 @@ export const RepositoryIdentity = Schema.Struct({
   name: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type RepositoryIdentity = typeof RepositoryIdentity.Type;
+
+/** One repository of a multi-repo project. */
+export const ProjectMultiRepoMember = Schema.Struct({
+  /** Folder of the repository inside the project, `/`-separated, as listed in `.workler`. */
+  path: TrimmedNonEmptyString,
+  /** The repository's `origin` fetch URL without credentials; null when it has none. */
+  remoteUrl: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type ProjectMultiRepoMember = typeof ProjectMultiRepoMember.Type;
+
+/**
+ * A project folder that is not a repository itself but groups several (a
+ * Workler project group: a `.workler` file listing the member folders).
+ */
+export const ProjectMultiRepo = Schema.Struct({
+  members: Schema.Array(ProjectMultiRepoMember),
+});
+export type ProjectMultiRepo = typeof ProjectMultiRepo.Type;
 
 export const ScopedProjectRef = Schema.Struct({
   environmentId: EnvironmentId,

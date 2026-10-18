@@ -3747,19 +3747,27 @@ export default function ChatView(props: ChatViewProps) {
       rememberCheckoutIsRepo(environmentId, gitStatusCwd, liveIsGitRepo);
     }
   }, [environmentId, gitStatusCwd, liveIsGitRepo]);
-  const isGitRepo = liveIsGitRepo ?? recallCheckoutIsRepo(environmentId, gitStatusCwd) ?? true;
+  // A multi-repo project is a plain folder of repositories: it has no Git
+  // status or branches of its own, but "New worktree" still works for it.
+  // Status would call it a repository while loading, or when the folder sits
+  // inside an unrelated repository, so it never counts as one here.
+  const isMultiRepoProject = Boolean(activeProject?.multiRepo);
+  const isGitRepo =
+    !isMultiRepoProject &&
+    (liveIsGitRepo ?? recallCheckoutIsRepo(environmentId, gitStatusCwd) ?? true);
+  const hasWorkspaceControls = isGitRepo || isMultiRepoProject;
   // Keep a hidden, off-flow strip mounted for existing threads so the composer
   // can measure whether its relocated controls fit. The visible chrome remains
   // content-driven: Git/environment context or controls that actually fit.
   const mountComposerContextStrip = shouldShowComposerContextStrip({
     hasActiveProject: activeProject !== null,
-    isGitRepo,
+    hasWorkspaceControls,
     showEnvironmentIndicator: showComposerEnvironmentIndicator,
     hostsRestingComposerControls: routeKind === "server",
   });
   const showComposerContextStrip = shouldShowComposerContextStrip({
     hasActiveProject: activeProject !== null,
-    isGitRepo,
+    hasWorkspaceControls,
     showEnvironmentIndicator: showComposerEnvironmentIndicator,
     hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
   });
@@ -3790,7 +3798,9 @@ export default function ChatView(props: ChatViewProps) {
     [keybindings, terminalShortcutLabelOptions],
   );
   const onToggleDiff = useCallback(() => {
-    if (!isServerThread) {
+    // The shortcut must honor the same availability as the visible
+    // diff action; multi-repo threads have no single repository to diff.
+    if (!isServerThread || !isGitRepo) {
       return;
     }
     if (!diffOpen) {
@@ -3799,7 +3809,7 @@ export default function ChatView(props: ChatViewProps) {
     if (activeThreadRef) {
       useRightPanelStore.getState().toggle(activeThreadRef, "diff");
     }
-  }, [activeThreadRef, diffOpen, isServerThread, onDiffPanelOpen]);
+  }, [activeThreadRef, diffOpen, isGitRepo, isServerThread, onDiffPanelOpen]);
 
   const needsLoadBalancing = automaticEnvironment && !draftThread?.loadBalancedEnvironmentId;
   const loadBalancingCandidates = useMemo(
@@ -5935,7 +5945,7 @@ export default function ChatView(props: ChatViewProps) {
       : false;
   const sendEnvMode = resolveSendEnvMode({
     requestedEnvMode: envMode,
-    isGitRepo,
+    supportsWorktrees: hasWorkspaceControls,
   });
   const localCheckoutBranchMismatch = useMemo(
     () =>
@@ -7801,16 +7811,19 @@ export default function ChatView(props: ChatViewProps) {
     }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
-    const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
-        ? activeThreadBranch
-        : null;
+    const shouldCreateWorktree =
+      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
+    // A multi-repo workspace starts each repository from its own default branch,
+    // so there is no base branch to pick.
+    const baseBranchForWorktree = shouldCreateWorktree
+      ? isMultiRepoProject
+        ? "HEAD"
+        : activeThreadBranch
+      : null;
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
-    const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
-    if (shouldCreateWorktree && !activeThreadBranch) {
+    if (shouldCreateWorktree && !baseBranchForWorktree) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
     }
@@ -10227,7 +10240,7 @@ export default function ChatView(props: ChatViewProps) {
                             }
                             restingControlsHost={restingComposerControlsHost}
                             restingControlsHaveLeadingContext={
-                              isGitRepo || showComposerEnvironmentIndicator
+                              hasWorkspaceControls || showComposerEnvironmentIndicator
                             }
                             onRestingControlsVisibilityChange={setRestingComposerControlsVisible}
                             getTimelineScrollableNode={getTimelineScrollableNode}
@@ -10285,6 +10298,7 @@ export default function ChatView(props: ChatViewProps) {
                                 environmentId={activeThread.environmentId}
                                 threadId={activeThread.id}
                                 showGitControls={isGitRepo}
+                                showWorkspaceControls={hasWorkspaceControls}
                                 {...(routeKind === "draft" && draftId ? { draftId } : {})}
                                 onEnvModeChange={onEnvModeChange}
                                 startFromOrigin={startFromOrigin}

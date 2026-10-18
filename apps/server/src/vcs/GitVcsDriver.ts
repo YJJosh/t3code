@@ -188,6 +188,8 @@ export interface GitRenameBranchInput {
   cwd: string;
   oldBranch: string;
   newBranch: string;
+  /** Rename to exactly `newBranch` instead of picking a free `-N` name; a taken name fails. */
+  exactName?: boolean;
 }
 
 export interface GitRenameBranchResult {
@@ -559,6 +561,21 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       "rev-parse",
       "--show-toplevel",
     ]);
+    // A multi-repo group (or one of its workspaces) inside an unrelated checkout
+    // is a plain folder, not part of that repository: status, Git actions and
+    // checkpoints must not run against the outer checkout. A group's `.workler`
+    // lists its members on `project` lines; reading that is enough here.
+    if (
+      path.resolve(root.stdout.trim()) !== path.resolve(cwd) &&
+      !(yield* fileSystem.exists(path.join(cwd, ".git")).pipe(Effect.orElseSucceed(() => false)))
+    ) {
+      const config = yield* fileSystem
+        .readFileString(path.join(cwd, ".workler"))
+        .pipe(Effect.orElseSucceed(() => ""));
+      // Match Workler's trimStart/whitespace rules, including a BOM
+      // from Windows editors, or a valid group can expose the enclosing repo.
+      if (/^\s*project\s/m.test(config)) return null;
+    }
     const gitCommonDir = yield* gitCommand(
       vcsProcess,
       "GitVcsDriver.detectRepository.commonDir",

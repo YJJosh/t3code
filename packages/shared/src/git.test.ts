@@ -5,10 +5,12 @@ import {
   applyGitStatusStreamEvent,
   buildGeneratedWorktreeBranchName,
   buildTemporaryWorktreeBranchName,
+  isNetworkGitRemoteUrl,
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
   parseOriginUrlFromGitConfig,
+  redactGitRemoteUrl,
   WORKTREE_BRANCH_PREFIX,
 } from "./git.ts";
 
@@ -81,6 +83,86 @@ describe("normalizeGitRemoteUrl", () => {
     );
     expect(normalizeGitRemoteUrl("git@ssh.dev.azure.com:v3/T3Tools/T3Code")).toBe(
       "ssh.dev.azure.com/v3/t3tools/t3code",
+    );
+  });
+});
+
+describe("isNetworkGitRemoteUrl", () => {
+  it("accepts remotes another machine can clone", () => {
+    for (const url of [
+      "https://github.com/acme/api.git",
+      "ssh://git@gitlab.example.com:2222/acme/api.git",
+      "git@github.com:acme/api.git",
+      "github.com:acme/api.git",
+      "git://example.com/api.git",
+    ]) {
+      expect(isNetworkGitRemoteUrl(url)).toBe(true);
+    }
+  });
+
+  it("rejects local paths and file URLs", () => {
+    for (const url of [
+      "/srv/git/api.git",
+      "../api",
+      "./api",
+      "file:///srv/git/api.git",
+      "C:/repos/api",
+      "C:\\repos\\api",
+      "\\\\server\\share\\api",
+      "ext::ssh example.com",
+    ]) {
+      expect(isNetworkGitRemoteUrl(url)).toBe(false);
+    }
+  });
+});
+
+describe("redactGitRemoteUrl", () => {
+  it("drops credentials and tokens from HTTP remotes", () => {
+    expect(redactGitRemoteUrl("https://user:secret@github.com/acme/api.git")).toBe(
+      "https://github.com/acme/api.git",
+    );
+    expect(redactGitRemoteUrl("https://ghp_token@github.com/acme/api.git")).toBe(
+      "https://github.com/acme/api.git",
+    );
+    expect(redactGitRemoteUrl("https://github.com/acme/api.git?token=x")).toBe(
+      "https://github.com/acme/api.git",
+    );
+    expect(redactGitRemoteUrl("https://github.com/acme/api.git#token=x")).toBe(
+      "https://github.com/acme/api.git",
+    );
+  });
+
+  it("drops token-like usernames from non-SSH protocols", () => {
+    expect(redactGitRemoteUrl("ftp://access_token@example.com/acme/api.git")).toBe(
+      "ftp://example.com/acme/api.git",
+    );
+    expect(redactGitRemoteUrl("ftps://access_token@example.com/acme/api.git")).toBe(
+      "ftps://example.com/acme/api.git",
+    );
+  });
+
+  it("redacts credentials even when URL parsing fails", () => {
+    expect(redactGitRemoteUrl("https://user:secret@github.com:bad/acme/api.git?token=x")).toBe(
+      "https://github.com:bad/acme/api.git",
+    );
+    expect(redactGitRemoteUrl("https://user:sec@ret@github.com:bad/acme/api.git?token=x")).toBe(
+      "https://github.com:bad/acme/api.git",
+    );
+  });
+
+  it("keeps remotes that still need to clone as they are", () => {
+    expect(redactGitRemoteUrl("ssh://git@gitlab.example.com:2222/acme/api.git")).toBe(
+      "ssh://git@gitlab.example.com:2222/acme/api.git",
+    );
+    expect(redactGitRemoteUrl("git+ssh://git@gitlab.example.com/acme/api.git")).toBe(
+      "git+ssh://git@gitlab.example.com/acme/api.git",
+    );
+    expect(redactGitRemoteUrl("ssh+git://git@gitlab.example.com/acme/api.git")).toBe(
+      "ssh+git://git@gitlab.example.com/acme/api.git",
+    );
+    expect(redactGitRemoteUrl("git@github.com:acme/api.git")).toBe("git@github.com:acme/api.git");
+    expect(redactGitRemoteUrl("https://github.com/acme/api.git")).toBe(
+      "https://github.com/acme/api.git",
     );
   });
 });

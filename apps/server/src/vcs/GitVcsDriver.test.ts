@@ -22,6 +22,7 @@ import * as GitVcsDriver from "./GitVcsDriver.ts";
 import type * as VcsDriver from "./VcsDriver.ts";
 import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
 import * as VcsProcess from "./VcsProcess.ts";
+import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
 import { runVcsDriverContractSuite } from "./testing/VcsDriverContractHarness.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
@@ -1116,3 +1117,85 @@ it.effect("GitVcsDriver flushes checkpoint objects and refs to disk before publi
     ),
   );
 });
+
+it.effect("does not detect an enclosing repository through a group root or workspace", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const driver = yield* GitVcsDriver.makeVcsDriver;
+    const workler = yield* WorklerWorkspaceService.make;
+    const outer = yield* fs.makeTempDirectoryScoped({ prefix: "t3-outer-group-" });
+    yield* runGit(outer, ["init", "--initial-branch=main"]);
+    const group = path.join(outer, "product");
+    for (const member of ["api", "web"]) {
+      const cwd = path.join(group, member);
+      yield* fs.makeDirectory(cwd, { recursive: true });
+      yield* runGit(cwd, ["init", "--initial-branch=main"]);
+      yield* fs.writeFileString(path.join(cwd, "README.md"), member);
+      yield* runGit(cwd, ["add", "."]);
+      yield* runGit(cwd, [
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "init",
+      ]);
+    }
+    // Workler accepts a UTF-8 BOM and JavaScript whitespace. Neither
+    // may let checkpoint detection escape from the group into its outer repo.
+    for (const config of ["\uFEFFproject api\n", "\u00A0project\u00A0api\nproject\u00A0web\n"]) {
+      yield* fs.writeFileString(path.join(group, ".workler"), config);
+      assert.isNotNull(yield* workler.inspectGroup(group));
+      assert.isNull(yield* driver.detectRepository(group));
+    }
+    yield* fs.writeFileString(path.join(group, ".workler"), "project api\nproject web\n");
+    assert.isNull(yield* driver.detectRepository(group));
+    assert.isNotNull(yield* driver.detectRepository(path.join(group, "api")));
+    const workspace = yield* workler.createWorkspace({ root: group, name: "feat", branch: "feat" });
+    assert.isNull(yield* driver.detectRepository(workspace.path));
+    assert.isNotNull(yield* driver.detectRepository(path.join(workspace.path, "api")));
+    // Ordinary subdirectories of repositories must retain their existing behavior.
+    const ordinary = path.join(outer, "ordinary");
+    yield* fs.makeDirectory(ordinary);
+    yield* fs.writeFileString(path.join(ordinary, ".workler"), "copy .env\n");
+    assert.isNotNull(yield* driver.detectRepository(ordinary));
+  }).pipe(Effect.scoped, Effect.provide(GitContractLayer)),
+);
+
+it.effect("removing a Workler clone keeps its branch and tags in the project", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const workler = yield* WorklerWorkspaceService.make;
+    const repo = yield* fs.makeTempDirectoryScoped({ prefix: "t3-clone-remove-" });
+    const commit = (cwd: string, message: string) =>
+      runGit(cwd, [
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        message,
+      ]);
+    const revParse = (cwd: string, ref: string) =>
+      driver
+        .execute({ operation: "GitVcsDriver.test", cwd, args: ["rev-parse", ref] })
+        .pipe(Effect.map((result) => result.stdout.trim()));
+    yield* runGit(repo, ["init", "--initial-branch=main"]);
+    yield* commit(repo, "init");
+    const clone = yield* workler.createWorkspace({ root: repo, name: "feat", branch: "feat" });
+    yield* commit(clone.path, "work");
+    yield* runGit(clone.path, ["tag", "v1"]);
+    const work = yield* revParse(clone.path, "HEAD");
+
+    yield* driver.removeWorktree({ cwd: repo, path: clone.path, force: true });
+    assert.isFalse(yield* fs.exists(clone.path));
+    assert.equal(yield* revParse(repo, "refs/heads/feat"), work);
+    assert.equal(yield* revParse(repo, "refs/tags/v1^{commit}"), work);
+  }).pipe(Effect.scoped, Effect.provide(GitContractLayer)),
+);

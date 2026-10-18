@@ -381,7 +381,9 @@ export const ChatHeader = memo(function ChatHeader({
           />
         </>
       )}
-      {activeProjectName && gitCwd && (
+      {/* A multi-repo project has no repository of its own, and "Initialize Git"
+          at its folder would stop Workler treating it as a group. */}
+      {activeProjectName && gitCwd && !activeProject?.multiRepo && (
         <>
           {actionsCollapsed && (activeProjectScripts || showOpenInPicker) && <MenuSeparator />}
           <GitActionsControl
@@ -390,6 +392,14 @@ export const ChatHeader = memo(function ChatHeader({
             activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
             onOpenPullRequest={onOpenPullRequest}
             {...(draftId ? { draftId } : {})}
+            {...(activeProject?.nestedRepositories?.length
+              ? {
+                  multiRepoCandidate: {
+                    projectId: activeProject.id,
+                    repositories: activeProject.nestedRepositories,
+                  },
+                }
+              : {})}
           />
         </>
       )}

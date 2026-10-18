@@ -154,6 +154,9 @@ export const make = Effect.gen(function* () {
       },
     ))
       .filter((thread) => thread !== null)
+      // A multi-repo thread's branch lives in its member repositories, so it has
+      // no single pull request to look up. Inactivity settlement above still applies.
+      .filter((thread) => !projects.get(thread.projectId)?.multiRepo)
       .filter((thread) => !thread.pullRequests.some((link) => link.source !== "stack-dismissed"));
 
     // Use the same cwd as PR discovery so both paths share GitManager's cache.

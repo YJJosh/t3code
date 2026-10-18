@@ -9,7 +9,13 @@ import * as Semaphore from "effect/Semaphore";
 
 import { workerThreadEnvironment } from "../process/workerThreadEnvironment.ts";
 
-type WorklerMethod = "createWorkspace" | "listWorkspaces" | "removeWorkspace";
+type WorklerMethod =
+  | "createWorkspace"
+  | "discoverProjects"
+  | "initProject"
+  | "inspectProject"
+  | "listWorkspaces"
+  | "removeWorkspace";
 
 /** A lazy, server-local adapter for Workler's workspace library. */
 export type WorklerLibrary = Pick<typeof import("workler"), WorklerMethod>;
@@ -17,6 +23,8 @@ export type WorklerLibrary = Pick<typeof import("workler"), WorklerMethod>;
 export type WorklerWorkspaceErrorCode =
   | import("workler").WorklerErrorCode
   | "LIBRARY_UNAVAILABLE"
+  | "NOT_A_PLAIN_FOLDER"
+  | "NO_REPOSITORIES"
   | "UNEXPECTED";
 
 /** What one Workler library call threw, in a form that survives a worker thread. */
@@ -69,6 +77,12 @@ export interface WorklerCreatedWorkspace {
   readonly detached: boolean;
 }
 
+/** A plain folder whose `.workler` lists member repositories (a Workler project group). */
+export interface WorklerGroup {
+  /** Member paths relative to the group root, as written in `.workler`. */
+  readonly projects: ReadonlyArray<string>;
+}
+
 export class WorklerWorkspaceService extends Context.Service<
   WorklerWorkspaceService,
   {
@@ -83,8 +97,26 @@ export class WorklerWorkspaceService extends Context.Service<
       readonly name: string;
       readonly force?: boolean | undefined;
     }) => Effect.Effect<{ readonly name: string; readonly path: string }, WorklerWorkspaceError>;
+    /** The group at `root`, or null when `root` is a repository or a plain folder. */
+    readonly inspectGroup: (
+      root: string,
+    ) => Effect.Effect<WorklerGroup | null, WorklerWorkspaceError>;
+    /**
+     * Makes the plain folder at `root` a group of the repositories inside it,
+     * as `workler init` does. Returns an existing group unchanged.
+     */
+    readonly initGroup: (root: string) => Effect.Effect<WorklerGroup, WorklerWorkspaceError>;
   }
 >()("t3/vcs/WorklerWorkspaceService") {}
+
+/**
+ * Workler's `canWriteConfigPath`: a member path a `.workler` line can hold.
+ * Its `init` skips other repositories, and with none left writes a
+ * single-repository template instead of a group.
+ */
+export function canWriteProjectPath(value: string): boolean {
+  return !/[\r\n\\]/.test(value) && !(value.includes('"') && value.includes("'"));
+}
 
 const UNEXPECTED_DETAIL = "Workler workspace operation failed unexpectedly.";
 
@@ -107,8 +139,9 @@ function toCallFailure(cause: unknown): WorklerCallFailure {
 }
 
 // Workler fails fast with LOCKED instead of waiting for another write to the
-// same project. In-process calls used to serialize writes; on workers they
-// must queue. The lock files name this process, so the queue is per process too.
+// same project, and a group write also locks its member repositories.
+// In-process calls used to serialize writes; on workers they must queue.
+// The lock files name this process, so the queue is per process too.
 const worklerWrites = Semaphore.makeUnsafe(1);
 // Reads hold no lock, but each one starts a thread and several git processes,
 // so only a few run at once and rapid branch-picker refreshes wait their turn.
@@ -219,6 +252,38 @@ export const makeFromRunner = (run: WorklerRunner): WorklerWorkspaceService["Ser
           input.force === undefined ? {} : { force: input.force },
         ]).pipe(Effect.map((removed) => ({ name: removed.name, path: removed.path }))),
       ),
+    inspectGroup: (root) =>
+      read(
+        call("WorklerWorkspaceService.inspectGroup", root, "inspectProject", [root]).pipe(
+          Effect.map((info) => (info.isGroup ? { projects: info.projects } : null)),
+        ),
+      ),
+    initGroup: (root) =>
+      Effect.gen(function* () {
+        const operation = "WorklerWorkspaceService.initGroup";
+        const refuse = (code: WorklerWorkspaceErrorCode, detail: string) =>
+          new WorklerWorkspaceError({ operation, root, code, detail });
+        const info = yield* read(call(operation, root, "inspectProject", [root]));
+        if (info.isGroup) return { projects: info.projects };
+        if (!info.exists) return yield* refuse("ROOT_NOT_FOUND", `${root} does not exist.`);
+        // `init` writes Workler's single-repository template when it finds
+        // nothing to group, so only a plain folder holding repositories gets here.
+        if (info.gitRepo) {
+          return yield* refuse("NOT_A_PLAIN_FOLDER", `${root} is a Git repository.`);
+        }
+        if (info.configFileExists) {
+          return yield* refuse(
+            "NOT_A_PLAIN_FOLDER",
+            info.configError ?? `${root} already has a .workler file that lists no repositories.`,
+          );
+        }
+        const found = yield* read(call(operation, root, "discoverProjects", [root]));
+        if (!found.some(canWriteProjectPath)) {
+          return yield* refuse("NO_REPOSITORIES", `No Git repositories were found in ${root}.`);
+        }
+        const result = yield* write(call(operation, root, "initProject", [root]));
+        return { projects: result.projects };
+      }),
   });
 };
 
@@ -252,8 +317,8 @@ class WorklerWorkerUnavailable extends Data.TaggedError("WorklerWorkerUnavailabl
 }> {}
 
 // Workler shells out to git synchronously. One call can take seconds (cloning
-// a repository) and even a listing runs several git commands per workspace,
-// so each call runs on its own worker thread.
+// every member of a group) and even a listing runs several git commands per
+// workspace, so each call runs on its own worker thread.
 const WORKLER_WORKER_SOURCE = String.raw`
 "use strict";
 const { parentPort, workerData } = require("node:worker_threads");

@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { type ScopedThreadRef } from "@t3tools/contracts";
+import { type ProjectId, type ScopedThreadRef } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -32,6 +32,7 @@ import {
   ChevronDownIcon,
   CloudDownloadIcon,
   CloudUploadIcon,
+  FoldersIcon,
   GitBranchPlusIcon,
   GitCommitIcon,
   InfoIcon,
@@ -63,6 +64,7 @@ import {
   resolveThreadBranchMetadataPatch,
   resolveQuickAction,
   resolveThreadBranchUpdate,
+  summarizeRepositories,
 } from "./GitActionsControl.logic";
 import { WizardPopup, WizardHeader, WizardSteps, WizardPanel, WizardFooter } from "./ui/wizard";
 import { StartTruncatedPath } from "./StartTruncatedPath";
@@ -103,6 +105,7 @@ import {
   useVcsPullAction,
 } from "~/lib/sourceControlActions";
 import { useThreadShell } from "~/state/entities";
+import { projectEnvironment } from "~/state/projects";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
 import { sourceControlEnvironment } from "~/state/sourceControl";
@@ -126,6 +129,13 @@ interface GitActionsControlProps {
    * place it against, in which case it still opens in the browser.
    */
   onOpenPullRequest?: ((number: number) => void) | undefined;
+  /**
+   * The repositories inside this plain project folder. The folder is then
+   * offered as a multi-repo project instead of a new repository.
+   */
+  multiRepoCandidate?:
+    | { readonly projectId: ProjectId; readonly repositories: ReadonlyArray<string> }
+    | undefined;
 }
 
 interface PendingDefaultBranchAction {
@@ -948,6 +958,7 @@ export default function GitActionsControl({
   activeThreadRef,
   draftId,
   onOpenPullRequest,
+  multiRepoCandidate,
 }: GitActionsControlProps) {
   const updateThreadMetadata = useAtomCommand(
     threadEnvironment.updateMetadata,
@@ -981,6 +992,10 @@ export default function GitActionsControl({
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
     useState<PendingDefaultBranchAction | null>(null);
+  const makeMultiRepo = useAtomCommand(projectEnvironment.makeMultiRepo, {
+    reportFailure: false,
+  });
+  const [isMakingMultiRepo, setIsMakingMultiRepo] = useState(false);
   const activeGitActionProgressRef = useRef<ActiveGitActionProgress | null>(null);
   const sourceControlScope = useMemo(
     () => ({ environmentId: activeEnvironmentId, cwd: gitCwd }),
@@ -1649,6 +1664,47 @@ export default function GitActionsControl({
       );
     })();
   };
+  // The server re-sends the project once it groups the repositories, which
+  // replaces this control with the multi-repo composer.
+  const makeMultiRepoProject = () => {
+    if (!multiRepoCandidate || activeEnvironmentId === null) return;
+    setIsMakingMultiRepo(true);
+    void (async () => {
+      const result = await makeMultiRepo({
+        environmentId: activeEnvironmentId,
+        input: { projectId: multiRepoCandidate.projectId },
+      });
+      setIsMakingMultiRepo(false);
+      if (result._tag === "Success") {
+        toastManager.add(
+          stackedThreadToast({
+            type: "success",
+            title: "Made a multi-repo project",
+            description: `New worktrees now branch ${summarizeRepositories(result.value.members)} together. Edit .workler in the project folder to change the list.`,
+            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+          }),
+        );
+        return;
+      }
+      if (isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not make a multi-repo project",
+          description: error instanceof Error ? error.message : "An error occurred.",
+          ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+        }),
+      );
+    })();
+  };
+  const multiRepoLabel = isMakingMultiRepo
+    ? "Making multi-repo project..."
+    : "Make multi-repo project";
+  const multiRepoHint = multiRepoCandidate
+    ? `Groups ${summarizeRepositories(multiRepoCandidate.repositories)}, so a new worktree branches them all together.`
+    : "";
+
   const gitItems = (
     <>
       {gitActionMenuItems.map((item) => {
@@ -1740,7 +1796,21 @@ export default function GitActionsControl({
   return (
     <>
       {presentation === "menu" ? (
-        !isRepo ? (
+        !isRepo && multiRepoCandidate ? (
+          <>
+            <MenuItem density="touch" disabled={isMakingMultiRepo} onClick={makeMultiRepoProject}>
+              <FoldersIcon className="size-4" />
+              <MenuItemLabel>{multiRepoLabel}</MenuItemLabel>
+            </MenuItem>
+            {/* The folder can still become one repository of its own. */}
+            <MenuItem density="touch" disabled={initAction.isPending} onClick={initializeGit}>
+              <GitBranchPlusIcon className="size-4" />
+              <MenuItemLabel>
+                {initAction.isPending ? "Initializing..." : "Initialize Git"}
+              </MenuItemLabel>
+            </MenuItem>
+          </>
+        ) : !isRepo ? (
           <MenuItem
             density={presentation === "menu" ? "touch" : "default"}
 
@@ -1785,6 +1855,46 @@ export default function GitActionsControl({
             </MenuSub>
           </>
         )
+      ) : !isRepo && multiRepoCandidate ? (
+        <Group aria-label="Project setup" className="shrink-0">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={isMakingMultiRepo}
+                  onClick={makeMultiRepoProject}
+                />
+              }
+            >
+              <FoldersIcon className="size-3.5" aria-hidden />
+              <span className="ml-0.5">{multiRepoLabel}</span>
+            </TooltipTrigger>
+            <TooltipPopup side="bottom" align="end">
+              {multiRepoHint}
+            </TooltipPopup>
+          </Tooltip>
+          <GroupSeparator />
+          {/* The folder can still become one repository of its own. */}
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button aria-label="More project setup options" size="icon-xs" variant="outline" />
+              }
+            >
+              <ChevronDownIcon aria-hidden="true" className="size-4" />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              <MenuItem disabled={initAction.isPending} onClick={initializeGit}>
+                <GitBranchPlusIcon className="size-4" />
+                <MenuItemLabel>
+                  {initAction.isPending ? "Initializing..." : "Initialize Git"}
+                </MenuItemLabel>
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+        </Group>
       ) : !isRepo ? (
         <Button variant="outline" size="xs" disabled={initAction.isPending} onClick={initializeGit}>
           <GitBranchPlusIcon className="size-3.5" aria-hidden />

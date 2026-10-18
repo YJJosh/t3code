@@ -680,11 +680,17 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const branchTarget = useMemo(
     () => ({
       environmentId: selectedProject?.environmentId ?? null,
-      // `|| null` also skips the stand-in project's empty workspaceRoot.
-      cwd: selectedProject?.workspaceRoot || null,
+      // `|| null` also skips the stand-in project's empty workspaceRoot. A
+      // multi-repo project's folder is not a repository, so it has no branches.
+      cwd: selectedProject?.multiRepo ? null : selectedProject?.workspaceRoot || null,
       query: debouncedBranchQuery,
     }),
-    [debouncedBranchQuery, selectedProject?.environmentId, selectedProject?.workspaceRoot],
+    [
+      debouncedBranchQuery,
+      selectedProject?.environmentId,
+      selectedProject?.multiRepo,
+      selectedProject?.workspaceRoot,
+    ],
   );
   const branchState = usePaginatedBranches(branchTarget);
   const branchSearchIsDebouncing = branchSearchQuery !== debouncedBranchQuery;
@@ -923,6 +929,14 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     if (live && (live.mode !== "worktree" || live.branch !== null)) {
       return;
     }
+    // A multi-repo project has no branches of its own: its workspace starts
+    // each repository from that repository's own default branch.
+    if (selectedProject?.multiRepo) {
+      updateComposerDraftSettings(selectedProjectDraftKey, {
+        workspaceSelection: { ...live, mode: "worktree", branch: "HEAD", worktreePath: null },
+      });
+      return;
+    }
     // The default may only exist as origin/<default> (isRemote), which
     // availableBranches filters out — search the unfiltered refs for it.
     const preferredBranch =
@@ -938,6 +952,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     defaultWorkspaceModeSettled,
     selectBranch,
     selectedBranchName,
+    selectedProject?.multiRepo,
     selectedProjectDraftKey,
     workspaceMode,
   ]);

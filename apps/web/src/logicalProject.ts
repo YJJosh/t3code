@@ -6,10 +6,12 @@ export {
   derivePhysicalProjectKeyFromPath,
   deriveProjectGroupingOverrideKey,
   getProjectOrderKey,
+  listMultiRepoProjectsToSetUp,
   resolveProjectGroupingMode,
   selectProjectGroupingSettings,
   type ProjectGroupingMode,
   type ProjectGroupingSettings,
   type ProjectGroup,
   type ProjectGroupMember,
+  type MultiRepoProjectSetup,
 } from "@t3tools/client-runtime/state/project-grouping";

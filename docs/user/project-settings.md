@@ -84,6 +84,9 @@ Enable **Delete worktrees with deleted threads** to remove safe worktrees after 
 thread is deleted, including archived threads and worktrees left by earlier deletions. The
 server waits for sessions and terminals to stop and retries skipped worktrees after restart.
 Existing prompts for deleting a worktree manually remain available when this policy is off.
+Deleting a Workler workspace manually also copies its branches and tags into the project first. It
+keeps the workspace instead when that would overwrite work in the project, or when the workspace
+has a stash or commits on no branch, for example from a rebase that stopped halfway.
 
 Browser captures and rotated logs have separate retention periods. Expired capture links stop
 working. Current logs, message attachments, and browser profiles are kept.

@@ -85,6 +85,29 @@ export { runPromise } from "effect/Effect";`,
     await execFile("git", ["push", "-u", "origin", "main"], { cwd: repo });
     await NodeFSP.writeFile(NodePath.join(repo, "local.txt"), "copied by Workler\n");
 
+    // A project group: a plain folder whose .workler lists two member repositories.
+    const group = NodePath.join(root, "group");
+    for (const member of ["api", "web"]) {
+      const memberRepo = NodePath.join(group, member);
+      await execFile("git", ["init", "--initial-branch=main", memberRepo]);
+      await NodeFSP.writeFile(NodePath.join(memberRepo, "member.txt"), `${member}\n`);
+      await execFile("git", ["add", "."], { cwd: memberRepo });
+      await execFile(
+        "git",
+        [
+          "-c",
+          "user.name=T3 Test",
+          "-c",
+          "user.email=test@example.invalid",
+          "commit",
+          "-m",
+          member,
+        ],
+        { cwd: memberRepo },
+      );
+    }
+    await NodeFSP.writeFile(NodePath.join(group, ".workler"), "project api\nproject web\n");
+
     const runner = NodePath.join(dist, "check.mjs");
     await NodeFSP.writeFile(
       runner,
@@ -110,15 +133,29 @@ const removed = await runPromise(service.removeWorkspace({ root, name: "bundle-c
 assert.equal(removed.path, created.path);
 await assert.rejects(stat(created.path), { code: "ENOENT" });
 assert.ok(!(await runPromise(service.listWorkspaces(root))).some((workspace) => workspace.name === "bundle-check"));
+const group = process.argv[3];
+assert.equal(await runPromise(service.inspectGroup(root)), null);
+assert.deepEqual(await runPromise(service.inspectGroup(group)), { projects: ["api", "web"] });
+const groupWorkspace = await runPromise(service.createWorkspace({ root: group, name: "group-check", branch: "feature/group-check" }));
+assert.equal(groupWorkspace.path, path.join(group, ".worktrees/group-check"));
+assert.equal(groupWorkspace.branch, "feature/group-check");
+assert.equal(await readFile(path.join(groupWorkspace.path, "web/member.txt"), "utf8"), "web\\n");
+assert.deepEqual(await runPromise(service.inspectGroup(groupWorkspace.path)), { projects: ["api", "web"] });
+await runPromise(service.removeWorkspace({ root: group, name: "group-check", force: true }));
+await assert.rejects(stat(groupWorkspace.path), { code: "ENOENT" });
 // Workler blocks on git, so the server must only ever load it on worker threads.
 assert.ok(!Object.keys(createRequire(import.meta.url).cache).some((file) => file.includes(path.join("workler", "dist"))));
 console.log("Packaged Workler clone lifecycle passed.");`,
     );
-    const result = await execFile(process.execPath, ["--no-global-search-paths", runner, repo], {
-      cwd: app,
-      env: { ...process.env, NODE_PATH: "" },
-      timeout: 30_000,
-    });
+    const result = await execFile(
+      process.execPath,
+      ["--no-global-search-paths", runner, repo, group],
+      {
+        cwd: app,
+        env: { ...process.env, NODE_PATH: "" },
+        timeout: 30_000,
+      },
+    );
     expect(result.stdout).toContain("Packaged Workler clone lifecycle passed.");
   } finally {
     await NodeFSP.rm(entryRoot, { recursive: true, force: true });

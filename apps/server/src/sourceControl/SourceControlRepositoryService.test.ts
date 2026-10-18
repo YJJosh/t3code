@@ -12,6 +12,8 @@ import { GitCommandError, SourceControlProviderError } from "@t3tools/contracts"
 
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as WorklerWorkspaceService from "../vcs/WorklerWorkspaceService.ts";
 import type * as SourceControlProvider from "./SourceControlProvider.ts";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
 import * as SourceControlRepositoryService from "./SourceControlRepositoryService.ts";
@@ -179,7 +181,7 @@ it.effect("clones a looked-up repository into the requested destination", () =>
       assert.deepStrictEqual(cloneCalls, [
         {
           cwd: parent,
-          args: ["clone", "--progress", CLONE_URLS.url, "t3code"],
+          args: ["clone", "--progress", "--", CLONE_URLS.url, "t3code"],
         },
       ]);
     }).pipe(
@@ -322,6 +324,89 @@ it.effect("discards only a directory git wrote to", () =>
     assert.deepStrictEqual(yield* fs.readDirectory(partial), []);
     assert.deepStrictEqual(yield* fs.readDirectory(foreign), ["notes.txt"]);
     assert.strictEqual(yield* fs.readFileString(replaced), "not a directory");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("clones every member of a multi-repo project, then lists them in .workler", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-source-control-multi-" });
+    const destinationPath = path.join(parent, "product");
+    const clones: Array<string> = [];
+    // Stands in for git: a clone leaves a folder with a .git inside.
+    const fakeClone = (input: GitVcsDriver.ExecuteGitInput) =>
+      Effect.gen(function* () {
+        const [, , , url, folder] = input.args;
+        clones.push(`${url} -> ${path.relative(destinationPath, path.join(input.cwd, folder!))}`);
+        yield* fs.makeDirectory(path.join(input.cwd, folder!, ".git"), { recursive: true });
+        return processOutput();
+      }).pipe(Effect.orDie);
+
+    yield* Effect.gen(function* () {
+      const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+      for (const [members, message] of [
+        // A `project` line in .workler cannot hold control characters.
+        [[{ path: "api\nproject other", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: "api\rweb", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: "api\tweb", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: "../outside", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: "/abs", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: ".worktrees/a", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: "api/.GIT/web", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [
+          [
+            { path: "api", remoteUrl: "git@x:a/api.git" },
+            { path: "api/v2", remoteUrl: "git@x:a/v2.git" },
+          ],
+          "would share a folder",
+        ],
+      ] as const) {
+        const error = yield* Effect.flip(
+          service.prepareMultiRepoClone({ destinationPath, members }),
+        );
+        assert.include(error.detail, message);
+      }
+
+      const prepared = yield* service.prepareMultiRepoClone({
+        destinationPath,
+        members: [
+          { path: "api", remoteUrl: "https://user:token@github.com/acme/api.git" },
+          { path: "./projects\\web app", remoteUrl: "git@github.com:acme/web.git" },
+        ],
+      });
+      assert.deepStrictEqual(
+        prepared.members.map((member) => [member.path, member.remoteUrl]),
+        [
+          ["api", "https://github.com/acme/api.git"],
+          ["projects/web app", "git@github.com:acme/web.git"],
+        ],
+      );
+      yield* service.cloneMultiRepo(prepared);
+      // Git gets the URL the user gave, credentials included.
+      assert.deepStrictEqual(clones, [
+        "https://user:token@github.com/acme/api.git -> api",
+        `git@github.com:acme/web.git -> ${path.join("projects", "web app")}`,
+      ]);
+      assert.strictEqual(
+        yield* fs.readFileString(path.join(destinationPath, ".workler")),
+        'project api\nproject "projects/web app"\n',
+      );
+
+      // A cancelled or failed setup leaves the destination as empty as it was.
+      yield* service.discardMultiRepoClone(prepared);
+      assert.deepStrictEqual(yield* fs.readDirectory(destinationPath), []);
+
+      // Finder's .DS_Store doesn't make the folder "not empty"; any other file does.
+      const members = [{ path: "api", remoteUrl: "git@x:a/api.git" }];
+      yield* fs.writeFileString(path.join(destinationPath, ".DS_Store"), "");
+      yield* service.prepareMultiRepoClone({ destinationPath, members });
+      yield* fs.writeFileString(path.join(destinationPath, "notes.md"), "");
+      const notEmpty = yield* Effect.flip(
+        service.prepareMultiRepoClone({ destinationPath, members }),
+      );
+      assert.include(notEmpty.detail, "not empty");
+    }).pipe(Effect.provide(makeLayer({ git: { execute: fakeClone } })));
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
@@ -547,4 +632,68 @@ it.effect("publish succeeds with status remote_added when the local repo has no 
       }),
     ),
   );
+});
+
+it.effect("clones real repositories into a usable group and discards it safely", () => {
+  const layer = SourceControlRepositoryService.layer.pipe(
+    Layer.provide(
+      Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+        resolveLink: () => undefined,
+      }),
+    ),
+    Layer.provideMerge(GitVcsDriver.layer),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-real-group-clone-" })),
+    Layer.provide(VcsProcess.layer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+    const workler = yield* WorklerWorkspaceService.make;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-real-group-sources-" });
+    const members = [];
+    for (const member of ["api", "projects/web app"]) {
+      const source = path.join(root, "sources", member);
+      yield* fs.makeDirectory(source, { recursive: true });
+      const run = (args: ReadonlyArray<string>) =>
+        git.execute({ operation: "test.git", cwd: source, args });
+      yield* run(["init", "--initial-branch=main"]);
+      yield* fs.writeFileString(path.join(source, "README.md"), member);
+      yield* run(["add", "."]);
+      yield* run([
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "init",
+      ]);
+      members.push({ path: member, remoteUrl: source });
+    }
+    const prepared = yield* service.prepareMultiRepoClone({
+      destinationPath: path.join(root, "destination"),
+      members,
+    });
+    yield* service.cloneMultiRepo(prepared);
+    assert.deepEqual(yield* workler.inspectGroup(prepared.destinationPath), {
+      projects: ["api", "projects/web app"],
+    });
+    const workspace = yield* workler.createWorkspace({
+      root: prepared.destinationPath,
+      name: "test",
+      branch: "test",
+    });
+    assert.equal(
+      yield* fs.readFileString(path.join(workspace.path, "projects/web app/README.md")),
+      "projects/web app",
+    );
+    yield* workler.removeWorkspace({ root: prepared.destinationPath, name: "test", force: true });
+    yield* service.discardMultiRepoClone(prepared);
+    assert.isFalse(yield* fs.exists(path.join(prepared.destinationPath, "api")));
+    assert.isFalse(yield* fs.exists(path.join(prepared.destinationPath, "projects")));
+    assert.isFalse(yield* fs.exists(path.join(prepared.destinationPath, ".workler")));
+  }).pipe(Effect.scoped, Effect.provide(layer));
 });

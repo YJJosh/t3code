@@ -2036,3 +2036,39 @@ describe("storage cleanup", () => {
     );
   }
 });
+
+it.effect("settles inactive group threads without looking up a group pull request", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(NOW));
+      const fixture = yield* makeHarness({
+        snapshot: makeSnapshot(
+          [
+            makeThread("inactive-group", { branch: "feature/old" }),
+            makeThread("recent-group", { branch: "feature/new", latestUserMessageAt: NOW }),
+          ],
+          [
+            {
+              ...makeProject(),
+              multiRepo: { members: [{ path: "api", remoteUrl: "git@example.test:acme/api.git" }] },
+            },
+          ],
+        ),
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          sidebarAutoSettleAfterDays: 7,
+          sidebarAutoSettleOnMerge: true,
+        },
+      });
+      yield* Effect.gen(function* () {
+        const reactor = yield* ThreadSettlementReactor.ThreadSettlementReactor;
+        yield* startHarness(reactor, fixture.activation, fixture.snapshotReads);
+        assert.deepEqual(
+          (yield* Ref.get(fixture.commands)).map((command) => command.threadId),
+          [ThreadId.make("inactive-group")],
+        );
+        assert.deepEqual(yield* Ref.get(fixture.branchCalls), []);
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+  ),
+);

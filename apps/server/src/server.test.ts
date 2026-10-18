@@ -165,12 +165,14 @@ import * as NativeAppIconResolver from "./assets/NativeAppIconResolver.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
+import * as ProjectMultiRepoResolver from "./project/ProjectMultiRepoResolver.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as MultiRepoWorkspaces from "./vcs/MultiRepoWorkspaces.ts";
 import * as VcsDriver from "./vcs/VcsDriver.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
@@ -736,6 +738,7 @@ const buildAppUnderTest = (options?: {
     );
     const gitWorkflowLayer = GitWorkflowService.layer.pipe(
       Layer.provideMerge(vcsDriverRegistryLayer),
+      Layer.provideMerge(MultiRepoWorkspaces.layer.pipe(Layer.provide(gitVcsDriverLayer))),
       Layer.provideMerge(gitVcsDriverLayer),
       Layer.provideMerge(gitManagerLayer),
     );
@@ -1179,10 +1182,15 @@ const buildAppUnderTest = (options?: {
         }),
       ),
       Layer.provide(
-        Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-          resolve: () => Effect.succeed(null),
-          ...options?.layers?.repositoryIdentityResolver,
-        }),
+        Layer.mergeAll(
+          Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+            resolve: () => Effect.succeed(null),
+            ...options?.layers?.repositoryIdentityResolver,
+          }),
+          Layer.mock(ProjectMultiRepoResolver.ProjectMultiRepoResolver)({
+            resolve: () => Effect.succeed({ multiRepo: null, nestedRepositories: [] }),
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mergeAll(
@@ -5610,6 +5618,78 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             assert.isTrue(
               yield* fileSystem.exists(path.join(result.workspaceRoot, "assets", "icon.svg")),
             );
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("makes a plain project folder of repositories a multi-repo project", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const plainId = ProjectId.make("project-plain");
+      const emptyId = ProjectId.make("project-empty");
+      const plainRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-make-group-" });
+      const emptyRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-make-group-" });
+      // Workler counts a folder with its own `.git` folder as a repository.
+      for (const member of ["api", "web"]) {
+        yield* fileSystem.makeDirectory(path.join(plainRoot, member, ".git"), { recursive: true });
+      }
+      const touched: Array<string> = [];
+      const shell = (id: ProjectId, workspaceRoot: string) =>
+        Option.some({
+          id,
+          title: "Plain",
+          workspaceRoot,
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-10-17T00:00:00.000Z",
+          updatedAt: "2026-10-17T00:00:00.000Z",
+        });
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                if (command.type === "project.meta.update") touched.push(command.projectId);
+                return { sequence: touched.length };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getProjectShellById: (projectId) =>
+              Effect.succeed(
+                projectId === plainId
+                  ? shell(plainId, plainRoot)
+                  : projectId === emptyId
+                    ? shell(emptyId, emptyRoot)
+                    : Option.none(),
+              ),
+          },
+        },
+      });
+
+      yield* Effect.scoped(
+        withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const made = yield* client[WS_METHODS.projectsMakeMultiRepo]({ projectId: plainId });
+            assert.deepEqual(made.members, ["api", "web"]);
+            assert.include(
+              yield* fileSystem.readFileString(path.join(plainRoot, ".workler")),
+              "project api\nproject web\n",
+            );
+            // The project is re-sent so every client sees it as a multi-repo project.
+            assert.deepEqual(touched, [plainId]);
+
+            const empty = yield* Effect.flip(
+              client[WS_METHODS.projectsMakeMultiRepo]({ projectId: emptyId }),
+            );
+            assert.include(String(empty.message), "No Git repositories");
+            const missing = yield* Effect.flip(
+              client[WS_METHODS.projectsMakeMultiRepo]({ projectId: ProjectId.make("gone") }),
+            );
+            assert.include(String(missing.message), "no longer exists");
+            assert.deepEqual(touched, [plainId]);
           }),
         ),
       );
@@ -12291,6 +12371,117 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       if (finalCommand?.type === "thread.turn.start") {
         assert.equal(finalCommand.bootstrap, undefined);
       }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("creates one workspace across every repository of a multi-repo project", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const realGit = (cwd: string, args: ReadonlyArray<string>) =>
+        VcsProcess.VcsProcess.pipe(
+          Effect.flatMap((process) =>
+            process.run({
+              operation: "server.test.git",
+              command: "git",
+              cwd,
+              args,
+              timeoutMs: 10_000,
+            }),
+          ),
+          Effect.provide(VcsProcess.layer),
+        );
+      const group = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-bootstrap-group-" });
+      for (const member of ["api", "web"]) {
+        const repo = path.join(group, member);
+        yield* fileSystem.makeDirectory(repo);
+        yield* realGit(repo, ["init", "--initial-branch=main"]);
+        yield* fileSystem.writeFileString(path.join(repo, "README.md"), `${member}\n`);
+        yield* realGit(repo, ["add", "."]);
+        yield* realGit(repo, [
+          "-c",
+          "user.name=T3 Test",
+          "-c",
+          "user.email=test@example.invalid",
+          "commit",
+          "-m",
+          member,
+        ]);
+      }
+      yield* fileSystem.writeFileString(path.join(group, ".workler"), "project api\nproject web\n");
+
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      yield* buildAppUnderTest({
+        layers: {
+          gitVcsDriver: {
+            createWorktree: () => Effect.die(new Error("a group folder is not a Git worktree")),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+            readEvents: () => Stream.empty,
+          },
+        },
+      });
+
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-bootstrap-multi-repo"),
+            threadId: ThreadId.make("thread-bootstrap-multi-repo"),
+            message: {
+              messageId: MessageId.make("msg-bootstrap-multi-repo"),
+              role: "user",
+              text: "hello",
+              attachments: [],
+            },
+            modelSelection: defaultModelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            bootstrap: {
+              createThread: {
+                projectId: defaultProjectId,
+                title: "Bootstrap Thread",
+                modelSelection: defaultModelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                createdAt,
+              },
+              prepareWorktree: {
+                projectCwd: group,
+                baseBranch: "HEAD",
+                branch: "t3code/multi-repo",
+                requireWorktree: true,
+              },
+              runSetupScript: false,
+            },
+            createdAt,
+          }),
+        ),
+      );
+
+      const workspace = path.join(group, ".worktrees", "t3code-multi-repo");
+      const metaUpdate = dispatchedCommands.find(
+        (command) => command.type === "thread.meta.update",
+      );
+      assert.deepInclude(metaUpdate, { branch: "t3code/multi-repo", worktreePath: workspace });
+      for (const member of ["api", "web"]) {
+        const branch = yield* realGit(path.join(workspace, member), [
+          "rev-parse",
+          "--abbrev-ref",
+          "HEAD",
+        ]);
+        assert.equal(branch.stdout.trim(), "t3code/multi-repo");
+      }
+      assert.isTrue(dispatchedCommands.some((command) => command.type === "thread.turn.start"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

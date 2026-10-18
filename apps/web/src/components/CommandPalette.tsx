@@ -14,6 +14,7 @@ import {
   getNewProjectGitHubTarget,
   getNewProjectPathPreview,
   normalizePastedCloneUrl,
+  parseMultiRepoCloneInput,
 } from "@t3tools/client-runtime/operations/projects";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
@@ -35,6 +36,7 @@ import {
   type EnvironmentMachineKind,
   type FilesystemBrowseResult,
   type ProjectId,
+  type ScopedProjectRef,
   type SourceControlDiscoveryResult,
   type SourceControlProviderKind,
   type SourceControlRepositoryInfo,
@@ -48,11 +50,13 @@ import {
   ChartNoAxesColumnIcon,
   CheckIcon,
   ChevronRightIcon,
+  CircleAlertIcon,
   CornerLeftUpIcon,
   FileSearchIcon,
   FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
+  FoldersIcon,
   MessageSquareDashedIcon,
   LinkIcon,
   MessageSquareIcon,
@@ -99,6 +103,7 @@ import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
+import { summarizeRepositories } from "./GitActionsControl.logic";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
 import { threadEnvironment } from "../state/threads";
@@ -200,7 +205,12 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
-import { getProjectOrderKey, selectProjectGroupingSettings } from "../logicalProject";
+import {
+  getProjectOrderKey,
+  listMultiRepoProjectsToSetUp,
+  type MultiRepoProjectSetup,
+  selectProjectGroupingSettings,
+} from "../logicalProject";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import {
   buildSidebarProjectPickerEntries,
@@ -305,6 +315,23 @@ type AddProjectCloneFlow =
       readonly repositoryInput: string;
       readonly repository: SourceControlRepositoryInfo | null;
       readonly remoteUrl: string;
+      /** Set when this clones a multi-repo project another machine has. */
+      readonly multiRepo?: {
+        readonly setup: MultiRepoProjectSetup;
+        readonly sourceLabel: string;
+      };
+    };
+
+/**
+ * Add project → Multi-repo project: pick a folder, then group the repositories
+ * in it, or name repositories to clone into it when it's new or empty.
+ */
+type MultiRepoProjectFlow =
+  | { readonly step: "folder"; readonly environmentId: EnvironmentId }
+  | {
+      readonly step: "repositories";
+      readonly environmentId: EnvironmentId;
+      readonly folder: string;
     };
 
 const REMOTE_PROJECT_SOURCES: ReadonlyArray<AddProjectRemoteSource> = [
@@ -610,7 +637,9 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   useEffect(
     () =>
       onOpenCommandPalette((detail) => {
-        if (detail.open === "new-thread-in") {
+        if (detail.multiRepoSetup) {
+          dispatch({ _tag: "OpenMultiRepoSetup", ...detail.multiRepoSetup });
+        } else if (detail.open === "new-thread-in") {
           openNewThreadIn();
         } else if (detail.open === "add-project") {
           openAddProject();
@@ -734,6 +763,12 @@ function OpenCommandPaletteDialog(props: {
     reportFailure: false,
   });
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
+    reportFailure: false,
+  });
+  const inspectMultiRepoFolder = useAtomCommand(projectEnvironment.inspectMultiRepoFolder, {
+    reportFailure: false,
+  });
+  const makeMultiRepo = useAtomCommand(projectEnvironment.makeMultiRepo, {
     reportFailure: false,
   });
   const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
@@ -870,6 +905,8 @@ function OpenCommandPaletteDialog(props: {
   );
   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
+  const [multiRepoFlow, setMultiRepoFlow] = useState<MultiRepoProjectFlow | null>(null);
+  const [isMultiRepoPending, setIsMultiRepoPending] = useState(false);
   // The name step of New project: while set, the palette input is the name.
   const [newProjectFlow, setNewProjectFlow] = useState<{
     readonly environmentId: EnvironmentId;
@@ -1077,26 +1114,33 @@ function OpenCommandPaletteDialog(props: {
   );
   const isRemoteProjectCloneFlow = addProjectCloneFlow !== null;
   const isRemoteProjectRepositoryStep = addProjectCloneFlow?.step === "repository";
+  const isMultiRepoRepositoriesStep = multiRepoFlow?.step === "repositories";
   // The destination step pins the repository folder onto the browsed path, so
   // the proposed clone target is "<chosen folder>/<repo>" instead of the bare
   // folder. A lookup reports "owner/repo"; a pasted clone URL falls back to its
   // own last segment, minus ".git".
   const pinnedCloneDirectoryName =
     addProjectCloneFlow?.step === "confirm"
-      ? getCloneDirectoryName(
-          addProjectCloneFlow.repository?.nameWithOwner ?? addProjectCloneFlow.remoteUrl,
-        )
+      ? addProjectCloneFlow.multiRepo
+        ? inferProjectTitleFromPath(addProjectCloneFlow.multiRepo.setup.source.workspaceRoot)
+        : getCloneDirectoryName(
+            addProjectCloneFlow.repository?.nameWithOwner ?? addProjectCloneFlow.remoteUrl,
+          )
       : "";
   const browsePath = useMemo(
     () =>
       getFilesystemBrowsePath(
         query,
         browseEnvironmentPlatform,
-        browseEnvironmentId !== null && !isRemoteProjectRepositoryStep && newProjectFlow === null,
+        browseEnvironmentId !== null &&
+          !isRemoteProjectRepositoryStep &&
+          newProjectFlow === null &&
+          !isMultiRepoRepositoriesStep,
       ),
     [
       browseEnvironmentId,
       browseEnvironmentPlatform,
+      isMultiRepoRepositoriesStep,
       isRemoteProjectRepositoryStep,
       newProjectFlow,
       query,
@@ -1495,6 +1539,15 @@ function OpenCommandPaletteDialog(props: {
     browseNavigation.invalidate();
     setAddProjectCloneFlow(null);
     setNewProjectFlow(null);
+    if (multiRepoFlow?.step === "repositories") {
+      // Back to the folder step, on the folder that was picked.
+      setMultiRepoFlow({ step: "folder", environmentId: multiRepoFlow.environmentId });
+      setViewStack((previousViews) => previousViews.slice(0, -1));
+      setHighlightedItemValue(null);
+      setQuery(multiRepoFlow.folder);
+      return;
+    }
+    setMultiRepoFlow(null);
     if (viewStack.length <= 1) {
       setAddProjectEnvironmentId(null);
     } else if (newProjectFlow?.sourcesEnvironmentId) {
@@ -1516,12 +1569,19 @@ function OpenCommandPaletteDialog(props: {
   }
 
   const startAddProjectBrowse = useCallback(
-    async (environmentId: EnvironmentId): Promise<void> => {
+    async (
+      environmentId: EnvironmentId,
+      options?: { readonly multiRepo?: boolean },
+    ): Promise<void> => {
       const initialQuery = getAddProjectInitialQueryForEnvironment(environmentId);
       const initialBrowsePath = getBrowseDirectoryPath(initialQuery);
       const browseCwd = getBrowseCwdForEnvironment(environmentId);
       const view: CommandPaletteView = {
-        addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
+        addonIcon: options?.multiRepo ? (
+          <FoldersIcon className={ADDON_ICON_CLASS} />
+        ) : (
+          <FolderPlusIcon className={ADDON_ICON_CLASS} />
+        ),
         groups: [],
         initialQuery,
       };
@@ -1534,6 +1594,7 @@ function OpenCommandPaletteDialog(props: {
         () => {
           setAddProjectEnvironmentId(environmentId);
           setAddProjectCloneFlow(null);
+          setMultiRepoFlow(options?.multiRepo ? { step: "folder", environmentId } : null);
           pushPaletteView(view);
         },
       );
@@ -1550,6 +1611,7 @@ function OpenCommandPaletteDialog(props: {
   const startAddProjectClone = useCallback(
     (environmentId: EnvironmentId, source: AddProjectRemoteSource): void => {
       setAddProjectEnvironmentId(environmentId);
+      setMultiRepoFlow(null);
       setAddProjectCloneFlow({ step: "repository", environmentId, source });
       pushPaletteView({
         addonIcon: remoteProjectSourceIcon(source, ADDON_ICON_CLASS),
@@ -1558,6 +1620,38 @@ function OpenCommandPaletteDialog(props: {
       });
     },
     [pushPaletteView],
+  );
+
+  // Setting up a multi-repo project skips the repository step: the other
+  // machine already lists the repositories, so only the destination is asked.
+  const startMultiRepoProjectSetup = useCallback(
+    (environmentId: EnvironmentId, setup: MultiRepoProjectSetup): void => {
+      const firstMember = setup.members[0];
+      if (!firstMember) return;
+      const sourceLabel =
+        environments.find((environment) => environment.environmentId === setup.source.environmentId)
+          ?.label ?? "another machine";
+      setAddProjectEnvironmentId(environmentId);
+      setMultiRepoFlow(null);
+      setAddProjectCloneFlow({
+        step: "confirm",
+        environmentId,
+        source: "url",
+        repositoryInput: setup.source.title,
+        repository: null,
+        remoteUrl: firstMember.remoteUrl,
+        multiRepo: { setup, sourceLabel },
+      });
+      pushPaletteView({
+        addonIcon: <FoldersIcon className={ADDON_ICON_CLASS} />,
+        groups: [],
+        initialQuery: getCloneDestinationPath(
+          getAddProjectInitialQueryForEnvironment(environmentId),
+          inferProjectTitleFromPath(setup.source.workspaceRoot),
+        ),
+      });
+    },
+    [environments, getAddProjectInitialQueryForEnvironment, pushPaletteView],
   );
 
   /** Folder that holds an environment's name-only projects, or null when it has none. */
@@ -1572,6 +1666,7 @@ function OpenCommandPaletteDialog(props: {
     (environmentId: EnvironmentId, sourcesEnvironmentId: EnvironmentId | null): void => {
       setAddProjectEnvironmentId(environmentId);
       setAddProjectCloneFlow(null);
+      setMultiRepoFlow(null);
       setNewProjectFlow({ environmentId, sourcesEnvironmentId });
       setNewProjectPublishesToGitHub(false);
       pushPaletteView({
@@ -1606,6 +1701,26 @@ function OpenCommandPaletteDialog(props: {
           },
         },
       ];
+
+      const capabilities = environments.find(
+        (environment) => environment.environmentId === environmentId,
+      )?.serverConfig?.environment.capabilities;
+      const canSetUpMultiRepo =
+        capabilities?.multiRepoProjects === true && capabilities.projectCloneTracking === true;
+      if (canSetUpMultiRepo) {
+        sourceItems.push({
+          kind: "action",
+          value: `action:add-project:${environmentId}:multi-repo`,
+          searchTerms: ["multi-repo", "multi repo", "polyrepo", "group", "repositories", "workler"],
+          title: "Multi-repo project",
+          description: "Group several repositories in one folder",
+          icon: <FoldersIcon className={ITEM_ICON_CLASS} />,
+          keepOpen: true,
+          run: async () => {
+            await startAddProjectBrowse(environmentId, { multiRepo: true });
+          },
+        });
+      }
 
       if (newProjectsRootFor(environmentId) !== null) {
         sourceItems.unshift({
@@ -1690,13 +1805,54 @@ function OpenCommandPaletteDialog(props: {
         });
       }
 
-      return [{ value: `sources:${environmentId}`, label: "Sources", items: sourceItems }];
+      const sourceGroups: Array<CommandPaletteView["groups"][number]> = [
+        { value: `sources:${environmentId}`, label: "Sources", items: sourceItems },
+      ];
+      if (canSetUpMultiRepo) {
+        const setupItems = listMultiRepoProjectsToSetUp(projects, environmentId).map(
+          (setup): CommandPaletteActionItem => {
+            const sourceLabel =
+              environments.find(
+                (environment) => environment.environmentId === setup.source.environmentId,
+              )?.label ?? "another machine";
+            return {
+              kind: "action",
+              value: `action:add-project:${environmentId}:multi-repo:${setup.key}`,
+              searchTerms: [
+                "multi-repo",
+                "repositories",
+                "set up",
+                setup.source.title,
+                sourceLabel,
+              ],
+              title: setup.source.title,
+              description: `${setup.members.length} repositories, from ${sourceLabel}`,
+              icon: <FoldersIcon className={ITEM_ICON_CLASS} />,
+              keepOpen: true,
+              run: async () => {
+                startMultiRepoProjectSetup(environmentId, setup);
+              },
+            };
+          },
+        );
+        if (setupItems.length > 0) {
+          sourceGroups.push({
+            value: `multi-repo-setups:${environmentId}`,
+            label: "Set up from another machine",
+            items: setupItems,
+          });
+        }
+      }
+      return sourceGroups;
     },
     [
+      environments,
       newProjectsRootFor,
       openSourceControlSettings,
+      projects,
       startAddProjectBrowse,
       startAddProjectClone,
+      startMultiRepoProjectSetup,
       startNewProject,
     ],
   );
@@ -1718,6 +1874,7 @@ function OpenCommandPaletteDialog(props: {
       }
       setAddProjectEnvironmentId(environmentId);
       setAddProjectCloneFlow(null);
+      setMultiRepoFlow(null);
       pushPaletteView({
         addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
         groups: buildAddProjectSourceGroups(
@@ -1821,6 +1978,7 @@ function OpenCommandPaletteDialog(props: {
     cloneLookupGeneration.current += 1;
     setIsRemoteProjectLookingUp(false);
     setAddProjectCloneFlow(null);
+    setMultiRepoFlow(null);
     setNewProjectFlow(null);
     setViewStack([]);
     setLinkedThreadSearch(openIntent);
@@ -1829,12 +1987,26 @@ function OpenCommandPaletteDialog(props: {
   }, [browseNavigation, clearOpenIntent, openIntent]);
 
   useLayoutEffect(() => {
-    if (openIntent?.kind !== "add-project") {
-      return;
+    if (openIntent?.kind === "multi-repo-setup") {
+      clearOpenIntent();
+      browseNavigation.invalidate();
+      cloneLookupGeneration.current += 1;
+      setIsRemoteProjectLookingUp(false);
+      setNewProjectFlow(null);
+      setLinkedThreadSearch(null);
+      setViewStack([]);
+      startMultiRepoProjectSetup(openIntent.environmentId, openIntent.setup);
+    } else if (openIntent?.kind === "add-project") {
+      clearOpenIntent();
+      openAddProjectFlow();
     }
-    clearOpenIntent();
-    openAddProjectFlow();
-  }, [clearOpenIntent, openAddProjectFlow, openIntent]);
+  }, [
+    browseNavigation,
+    clearOpenIntent,
+    openAddProjectFlow,
+    openIntent,
+    startMultiRepoProjectSetup,
+  ]);
 
   useLayoutEffect(() => {
     if (openIntent?.kind !== "new-thread-in" || projectThreadItems.length === 0) {
@@ -1843,6 +2015,7 @@ function OpenCommandPaletteDialog(props: {
     clearOpenIntent();
     browseNavigation.invalidate();
     setAddProjectCloneFlow(null);
+    setMultiRepoFlow(null);
     setNewProjectFlow(null);
     setViewStack([]);
     setQuery("");
@@ -2188,6 +2361,7 @@ function OpenCommandPaletteDialog(props: {
     cloneLookupGeneration.current += 1;
     setIsRemoteProjectLookingUp(false);
     setAddProjectCloneFlow(null);
+    setMultiRepoFlow(null);
     setNewProjectFlow(null);
     setViewStack([]);
     pushPaletteView({
@@ -2355,6 +2529,8 @@ function OpenCommandPaletteDialog(props: {
       readonly rawCwd: string;
       readonly platform: string;
       readonly currentProjectCwd: string | null;
+      /** Runs once the project exists, before the palette opens it. */
+      readonly prepareProject?: (projectRef: ScopedProjectRef) => Promise<void>;
     }) => {
       const environment = environments.find(
         (candidate) => candidate.environmentId === input.environmentId,
@@ -2401,6 +2577,7 @@ function OpenCommandPaletteDialog(props: {
         cwd,
       );
       if (existing) {
+        await input.prepareProject?.(scopeProjectRef(existing.environmentId, existing.id));
         const latestThread = getLatestThreadForProject(
           threads.filter((thread) => thread.environmentId === existing.environmentId),
           existing.id,
@@ -2458,6 +2635,7 @@ function OpenCommandPaletteDialog(props: {
         return;
       }
 
+      await input.prepareProject?.(scopeProjectRef(input.environmentId, projectId));
       const navigationResult = await settlePromise(() =>
         handleNewThread(scopeProjectRef(input.environmentId, projectId)),
       );
@@ -2657,8 +2835,12 @@ function OpenCommandPaletteDialog(props: {
     }
 
     // Older servers only offer the blocking clone: the palette has to wait
-    // for git so it can add the project afterwards.
-    if (browseEnvironment?.serverConfig?.environment.capabilities.projectCloneTracking !== true) {
+    // for git so it can add the project afterwards. Multi-repo setups are only
+    // offered by servers that track clones.
+    if (
+      browseEnvironment?.serverConfig?.environment.capabilities.projectCloneTracking !== true &&
+      !addProjectCloneFlow.multiRepo
+    ) {
       setIsRemoteProjectCloning(true);
       const cloneResult = await cloneRepository({
         environmentId: addProjectCloneFlow.environmentId,
@@ -2698,6 +2880,9 @@ function OpenCommandPaletteDialog(props: {
         createdAt: new Date().toISOString(),
         remoteUrl: addProjectCloneFlow.remoteUrl,
         destinationPath,
+        ...(addProjectCloneFlow.multiRepo
+          ? { members: addProjectCloneFlow.multiRepo.setup.members }
+          : {}),
       },
     });
     setIsRemoteProjectCloning(false);
@@ -2713,8 +2898,13 @@ function OpenCommandPaletteDialog(props: {
       }
       return;
     }
+    await openStartedClone(addProjectCloneFlow.environmentId, projectId);
+  }
+
+  // Opens a draft in a project whose clone the server just started.
+  async function openStartedClone(environmentId: EnvironmentId, projectId: ProjectId) {
     setOpen(false);
-    const projectRef = scopeProjectRef(addProjectCloneFlow.environmentId, projectId);
+    const projectRef = scopeProjectRef(environmentId, projectId);
     // The create event usually lands before this call returns; give the shell
     // stream a moment so the draft opens with its project resolved instead of
     // flashing the project picker.
@@ -2730,6 +2920,143 @@ function OpenCommandPaletteDialog(props: {
         }),
       );
     }
+  }
+
+  // Multi-repo project, folder step: a folder of repositories becomes the
+  // group, a group is just added, and a new or empty folder moves on to
+  // naming the repositories to clone into it.
+  async function submitMultiRepoFolder(rawFolder: string): Promise<void> {
+    if (multiRepoFlow?.step !== "folder" || isMultiRepoPending) return;
+    const { environmentId } = multiRepoFlow;
+    if (isUnsupportedWindowsProjectPath(rawFolder.trim(), browseEnvironmentPlatform)) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Can't use this folder",
+          description: "Windows-style paths are only supported on Windows.",
+        }),
+      );
+      return;
+    }
+    const folderInput = resolveProjectPathForDispatch(rawFolder, currentProjectCwdForBrowse);
+    if (folderInput.length === 0) return;
+
+    setIsMultiRepoPending(true);
+    const inspected = await inspectMultiRepoFolder({
+      environmentId,
+      input: { path: folderInput },
+    });
+    setIsMultiRepoPending(false);
+    if (inspected._tag === "Failure") {
+      if (!isAtomCommandInterrupted(inspected)) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Couldn't check the folder",
+            description: errorMessage(squashAtomCommandFailure(inspected)),
+          }),
+        );
+      }
+      return;
+    }
+    const folder = inspected.value;
+    switch (folder.kind) {
+      case "missing":
+      case "empty":
+        setMultiRepoFlow({ step: "repositories", environmentId, folder: folder.path });
+        pushPaletteView({ addonIcon: <FoldersIcon className={ADDON_ICON_CLASS} />, groups: [] });
+        return;
+      case "group":
+        await handleAddProjectForEnvironment({
+          environmentId,
+          rawCwd: folder.path,
+          platform: browseEnvironmentPlatform,
+          currentProjectCwd: null,
+        });
+        return;
+      case "repositories":
+        await handleAddProjectForEnvironment({
+          environmentId,
+          rawCwd: folder.path,
+          platform: browseEnvironmentPlatform,
+          currentProjectCwd: null,
+          prepareProject: async (projectRef) => {
+            const made = await makeMultiRepo({
+              environmentId,
+              input: { projectId: projectRef.projectId },
+            });
+            if (made._tag === "Failure") {
+              // The project stays a plain folder, whose header offers this again.
+              if (!isAtomCommandInterrupted(made)) {
+                toastManager.add(
+                  stackedThreadToast({
+                    type: "error",
+                    title: "Couldn't make a multi-repo project",
+                    description: errorMessage(squashAtomCommandFailure(made)),
+                  }),
+                );
+              }
+              return;
+            }
+            toastManager.add(
+              stackedThreadToast({
+                type: "success",
+                title: "Made a multi-repo project",
+                description: `New worktrees now branch ${summarizeRepositories(made.value.members)} together. Edit .workler in the project folder to change the list.`,
+              }),
+            );
+          },
+        });
+        return;
+      case "unavailable":
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Can't use this folder",
+            description: folder.reason ?? `${folder.path} can't hold a multi-repo project.`,
+          }),
+        );
+        return;
+    }
+  }
+
+  // Multi-repo project, repositories step: clones every typed repository into
+  // the folder picked before, through the same tracked clone as setting one
+  // up from another machine.
+  async function submitMultiRepoClone(): Promise<void> {
+    if (multiRepoFlow?.step !== "repositories" || isMultiRepoPending) return;
+    const { members, invalid } = parseMultiRepoCloneInput(query);
+    const firstMember = members[0];
+    if (!firstMember || invalid.length > 0) return;
+    if (!canCreateProjectInEnvironment(browseEnvironment?.connection.phase)) return;
+    const { environmentId, folder } = multiRepoFlow;
+    const projectId = newProjectId();
+    setIsMultiRepoPending(true);
+    const startResult = await startProjectClone({
+      environmentId,
+      input: {
+        projectId,
+        title: inferProjectTitleFromPath(folder),
+        createdAt: new Date().toISOString(),
+        remoteUrl: firstMember.remoteUrl,
+        destinationPath: folder,
+        members,
+      },
+    });
+    setIsMultiRepoPending(false);
+    if (startResult._tag === "Failure") {
+      if (!isAtomCommandInterrupted(startResult)) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Clone failed",
+            description: errorMessage(squashAtomCommandFailure(startResult)),
+          }),
+        );
+      }
+      return;
+    }
+    await openStartedClone(environmentId, projectId);
   }
 
   const browseTo = useCallback(
@@ -2810,6 +3137,14 @@ function OpenCommandPaletteDialog(props: {
       return null;
     }
 
+    if (addProjectCloneFlow.multiRepo) {
+      const { setup, sourceLabel } = addProjectCloneFlow.multiRepo;
+      return {
+        title: setup.source.title,
+        description: `${setup.members.map((member) => member.path).join(", ")}, from ${sourceLabel}`,
+        icon: <FoldersIcon className={ITEM_ICON_CLASS} />,
+      };
+    }
     return {
       title: addProjectCloneFlow.repository?.nameWithOwner ?? addProjectCloneFlow.repositoryInput,
       description: addProjectCloneFlow.repository?.url ?? addProjectCloneFlow.remoteUrl,
@@ -2938,6 +3273,46 @@ function OpenCommandPaletteDialog(props: {
           },
         ];
 
+  const multiRepoClonePlan =
+    multiRepoFlow?.step === "repositories" ? parseMultiRepoCloneInput(query) : null;
+  const canSubmitMultiRepoClone =
+    multiRepoClonePlan !== null &&
+    multiRepoClonePlan.members.length > 0 &&
+    multiRepoClonePlan.invalid.length === 0 &&
+    !isMultiRepoPending &&
+    canCreateProjectInEnvironment(browseEnvironment?.connection.phase);
+  const multiRepoCloneGroups: CommandPaletteView["groups"] =
+    multiRepoFlow?.step !== "repositories" || multiRepoClonePlan === null
+      ? []
+      : [
+          {
+            value: "multi-repo-clone",
+            label: `Clone into ${multiRepoFlow.folder}`,
+            items: [
+              ...multiRepoClonePlan.members.map((member): CommandPaletteActionItem => ({
+                kind: "action",
+                value: `multi-repo-clone:${member.path}`,
+                searchTerms: [],
+                title: member.path,
+                description: member.remoteUrl,
+                icon: <FolderGit2Icon className={ITEM_ICON_CLASS} />,
+                keepOpen: true,
+                run: async () => {},
+              })),
+              ...multiRepoClonePlan.invalid.map((token): CommandPaletteActionItem => ({
+                kind: "action",
+                value: `multi-repo-clone-invalid:${token}`,
+                searchTerms: [],
+                title: token,
+                description: "Not a Git URL or GitHub owner/repo",
+                icon: <CircleAlertIcon className={ITEM_ICON_CLASS} />,
+                disabled: true,
+                run: async () => {},
+              })),
+            ],
+          },
+        ];
+
   let displayedGroups: CommandPaletteView["groups"] = filteredGroups;
   if (newProjectFlow !== null) {
     displayedGroups = [
@@ -2947,6 +3322,8 @@ function OpenCommandPaletteDialog(props: {
     ];
   } else if (addProjectCloneFlow?.step === "repository") {
     displayedGroups = [];
+  } else if (multiRepoFlow?.step === "repositories") {
+    displayedGroups = multiRepoCloneGroups;
   } else if (addProjectCloneFlow?.step === "confirm") {
     displayedGroups = relativePathNeedsActiveProject ? [] : cloneDestinationBrowseGroups;
   } else if (isBrowsing) {
@@ -2956,8 +3333,10 @@ function OpenCommandPaletteDialog(props: {
   const inputPlaceholder =
     newProjectFlow !== null
       ? "Project name"
-      : (remoteProjectInputPlaceholder(addProjectCloneFlow) ??
-        getCommandPaletteInputPlaceholder(paletteMode));
+      : multiRepoFlow?.step === "repositories"
+        ? "Git URLs or GitHub owner/repo, separated by spaces"
+        : (remoteProjectInputPlaceholder(addProjectCloneFlow) ??
+          getCommandPaletteInputPlaceholder(paletteMode));
   const isSubmenu = paletteMode === "submenu" || paletteMode === "submenu-browse";
   const hasHighlightedBrowseItem = highlightedItemValue?.startsWith("browse:") ?? false;
   const canSubmitBrowsePath =
@@ -2973,13 +3352,16 @@ function OpenCommandPaletteDialog(props: {
   const useMetaForMod = isMacPlatform(navigator.platform);
   const submitModifierLabel = useMetaForMod ? "\u2318" : "Ctrl";
   const isCloneDestinationStep = addProjectCloneFlow?.step === "confirm";
-  const submitActionLabel = isCloneDestinationStep
-    ? willCreateProjectPath
-      ? "Create & Clone"
-      : "Clone"
-    : willCreateProjectPath
-      ? "Create & Add"
-      : "Add";
+  const submitActionLabel =
+    multiRepoFlow?.step === "folder"
+      ? "Continue"
+      : isCloneDestinationStep
+        ? willCreateProjectPath
+          ? "Create & Clone"
+          : "Clone"
+        : willCreateProjectPath
+          ? "Create & Add"
+          : "Add";
   const addShortcutLabel = hasHighlightedBrowseItem ? `${submitModifierLabel} Enter` : "Enter";
   const remoteProjectButtonLabel = addProjectCloneFlow
     ? addProjectCloneFlow.source === "url"
@@ -3064,6 +3446,12 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
 
+    if (multiRepoFlow?.step === "repositories" && event.key === "Enter") {
+      event.preventDefault();
+      void submitMultiRepoClone();
+      return;
+    }
+
     // Enter creates the project unless an item below the name is
     // highlighted, in which case it runs that item.
     if (
@@ -3086,7 +3474,9 @@ function OpenCommandPaletteDialog(props: {
 
     if (shouldSubmitBrowsePath) {
       event.preventDefault();
-      if (isCloneDestinationStep) {
+      if (multiRepoFlow?.step === "folder") {
+        void submitMultiRepoFolder(resolvedAddProjectPath);
+      } else if (isCloneDestinationStep) {
         void submitAddProjectCloneFlow(resolvedAddProjectPath);
       } else {
         void handleAddProject(resolvedAddProjectPath);
@@ -3264,6 +3654,33 @@ function OpenCommandPaletteDialog(props: {
         </TooltipTrigger>
         <TooltipPopup side="top">Create (Enter)</TooltipPopup>
       </Tooltip>
+    ) : multiRepoFlow?.step === "repositories" ? (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="outline"
+              size="xs"
+              tabIndex={-1}
+              className="absolute inset-e-2.5 top-1/2 -translate-y-1/2"
+              aria-label="Clone (Enter)"
+              disabled={!canSubmitMultiRepoClone}
+              onMouseDown={(event) => {
+                event.preventDefault();
+              }}
+              onClick={() => {
+                void submitMultiRepoClone();
+              }}
+            />
+          }
+        >
+          <span>{isMultiRepoPending ? "Cloning" : "Clone"}</span>
+          <KbdGroup className="pointer-events-none -me-0.5">
+            <Kbd>Enter</Kbd>
+          </KbdGroup>
+        </TooltipTrigger>
+        <TooltipPopup side="top">Clone (Enter)</TooltipPopup>
+      </Tooltip>
     ) : addProjectCloneFlow?.step === "repository" ? (
       <Tooltip>
         <TooltipTrigger
@@ -3304,7 +3721,8 @@ function OpenCommandPaletteDialog(props: {
               disabled={
                 !canCreateProjectInEnvironment(browseEnvironment?.connection.phase) ||
                 relativePathNeedsActiveProject ||
-                (isCloneDestinationStep && isRemoteProjectPending)
+                (isCloneDestinationStep && isRemoteProjectPending) ||
+                isMultiRepoPending
               }
               onMouseDown={(event) => {
                 event.preventDefault();
@@ -3313,7 +3731,9 @@ function OpenCommandPaletteDialog(props: {
                 if (relativePathNeedsActiveProject) {
                   return;
                 }
-                if (isCloneDestinationStep) {
+                if (multiRepoFlow?.step === "folder") {
+                  void submitMultiRepoFolder(resolvedAddProjectPath);
+                } else if (isCloneDestinationStep) {
                   void submitAddProjectCloneFlow(resolvedAddProjectPath);
                 } else {
                   void handleAddProject(resolvedAddProjectPath);
@@ -3323,7 +3743,11 @@ function OpenCommandPaletteDialog(props: {
           }
         >
           <span>
-            {isCloneDestinationStep && isRemoteProjectPending ? "Cloning" : submitActionLabel}
+            {isCloneDestinationStep && isRemoteProjectPending
+              ? "Cloning"
+              : isMultiRepoPending
+                ? "Checking"
+                : submitActionLabel}
           </span>
           <KbdGroup className="pointer-events-none -me-0.5">
             <Kbd>{hasHighlightedBrowseItem ? `${submitModifierLabel} Enter` : "Enter"}</Kbd>
@@ -3344,9 +3768,11 @@ function OpenCommandPaletteDialog(props: {
           : "Select"
       : addProjectCloneFlow?.step === "repository"
         ? (remoteProjectButtonLabel ?? "Continue")
-        : !canSubmitBrowsePath || hasHighlightedBrowseItem
-          ? "Select"
-          : undefined;
+        : multiRepoFlow?.step === "repositories"
+          ? "Clone"
+          : !canSubmitBrowsePath || hasHighlightedBrowseItem
+            ? "Select"
+            : undefined;
 
   const footerTrailing = canOpenProjectFromFileManager ? (
     <CommandFooterAction
@@ -3361,10 +3787,15 @@ function OpenCommandPaletteDialog(props: {
 
   return (
     <CommandPaletteContent
-      key={`${viewStack.length}-${browseGeneration}-${isBrowsing}-${newProjectFlow ? "new-project" : (addProjectCloneFlow?.step ?? "none")}`}
+      key={`${viewStack.length}-${browseGeneration}-${isBrowsing}-${newProjectFlow ? "new-project" : (addProjectCloneFlow?.step ?? multiRepoFlow?.step ?? "none")}`}
       aria-label="Command palette"
       autoHighlight={
-        isBrowsing || isRemoteProjectCloneFlow || newProjectFlow !== null ? false : "always"
+        isBrowsing ||
+        isRemoteProjectCloneFlow ||
+        newProjectFlow !== null ||
+        multiRepoFlow?.step === "repositories"
+          ? false
+          : "always"
       }
       footerActionLabel={footerActionLabel}
       footerTrailing={footerTrailing}
@@ -3373,7 +3804,9 @@ function OpenCommandPaletteDialog(props: {
         // The submit button is absolutely positioned over the field, so the
         // inner input must reserve enough room for the full action label.
         className:
-          addProjectCloneFlow?.step === "repository" || newProjectFlow !== null
+          addProjectCloneFlow?.step === "repository" ||
+          newProjectFlow !== null ||
+          multiRepoFlow?.step === "repositories"
             ? "*:data-[slot=autocomplete-input]:pe-32!"
             : isBrowsing
               ? browseInputEndPaddingClass({

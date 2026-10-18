@@ -1,4 +1,10 @@
 import type { EnvironmentId, PullRequestLinkedThreadsResult } from "@t3tools/contracts";
+import type { MultiRepoProjectSetup } from "./logicalProject";
+
+export interface CommandPaletteMultiRepoSetup {
+  readonly environmentId: EnvironmentId;
+  readonly setup: MultiRepoProjectSetup;
+}
 
 export interface CommandPaletteLinkedThreads {
   readonly environmentId: EnvironmentId;
@@ -13,6 +19,7 @@ export interface CommandPaletteOpenDetail {
   readonly open?: "add-project" | "new-thread-in";
   readonly query?: string;
   readonly linkedThreads?: CommandPaletteLinkedThreads;
+  readonly multiRepoSetup?: CommandPaletteMultiRepoSetup;
 }
 
 export function openCommandPalette(detail?: CommandPaletteOpenDetail): void {

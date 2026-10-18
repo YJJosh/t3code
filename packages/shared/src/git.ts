@@ -208,6 +208,53 @@ export function normalizeGitRemoteUrl(value: string): string {
 }
 
 /**
+ * A remote URL that is safe to send to clients and still clones. A pasted
+ * `https://user:token@host/…` loses its credentials; the user of an SSH URL
+ * (`ssh://git@host/…`) is not a secret and is needed to clone, so it stays.
+ */
+export function redactGitRemoteUrl(remoteUrl: string): string {
+  try {
+    const url = new URL(remoteUrl);
+    // Only SSH needs its login name; in any other scheme a username may be a token.
+    const dropUsername = !["ssh:", "git+ssh:", "ssh+git:"].includes(url.protocol);
+    // Clone URLs have no legitimate query or fragment; when one is present it
+    // may hold a token.
+    if (
+      (!dropUsername || url.username.length === 0) &&
+      url.password.length === 0 &&
+      url.search.length === 0 &&
+      url.hash.length === 0
+    ) {
+      return remoteUrl;
+    }
+    if (dropUsername) url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    // A malformed URL (an invalid port, say) can still carry credentials. Keep
+    // the scp-like spelling but drop URL userinfo and query data.
+    return remoteUrl.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#]*@/i, "$1").replace(/[?#].*$/s, "");
+  }
+}
+
+/**
+ * Whether a remote names a network host, so another machine can clone it.
+ * Local paths and `file://` URLs only mean something on their own machine.
+ */
+export function isNetworkGitRemoteUrl(remoteUrl: string): boolean {
+  const value = remoteUrl.trim();
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value)?.[1]?.toLowerCase();
+  if (scheme !== undefined) {
+    return ["ssh", "git", "http", "https", "git+ssh", "ssh+git"].includes(scheme);
+  }
+  // scp-like `[user@]host:path`. Git reads a one-letter host as a Windows
+  // drive, and `::` as a remote helper.
+  return /^(?:[^@/\\\s]+@)?[^:/\\\s]{2,}:(?!:)/.test(value);
+}
+
+/**
  * Unquote a git config value: strip an inline `#` or `;` comment outside
  * quotes, then drop surrounding quotes and backslash escapes.
  */

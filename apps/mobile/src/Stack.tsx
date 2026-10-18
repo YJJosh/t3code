@@ -54,6 +54,10 @@ import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewR
 import { HomeRouteScreen } from "./features/home/HomeRouteScreen";
 import { AddProjectDestinationRoute } from "./features/projects/AddProjectDestinationRoute";
 import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
+import {
+  AddProjectMultiRepoCloneRoute,
+  AddProjectMultiRepoRoute,
+} from "./features/projects/AddProjectMultiRepoRoute";
 import { AddProjectNewRoute } from "./features/projects/AddProjectNewRoute";
 import { AddProjectRepositoryRoute } from "./features/projects/AddProjectRepositoryRoute";
 import { AddProjectSourceRoute } from "./features/projects/AddProjectSourceRoute";
@@ -464,6 +468,14 @@ const NewTaskSheetStack = createNativeStackNavigator({
     AddProjectNew: createNativeStackScreen({
       screen: AddProjectNewRoute,
       linking: "add-project/new",
+    }),
+    AddProjectMultiRepo: createNativeStackScreen({
+      screen: AddProjectMultiRepoRoute,
+      linking: "add-project/multi-repo",
+    }),
+    AddProjectMultiRepoClone: createNativeStackScreen({
+      screen: AddProjectMultiRepoCloneRoute,
+      linking: "add-project/multi-repo/clone",
     }),
   },
 });

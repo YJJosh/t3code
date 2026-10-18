@@ -85,6 +85,7 @@ import { isMacPlatform } from "../lib/utils";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
 import {
+  readProjects,
   readThreadShell,
   useProjects,
   useThreadShells,
@@ -117,6 +118,8 @@ import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useDesktopUpdateState } from "../state/desktopUpdate";
 
 import { useThreadActions } from "../hooks/useThreadActions";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { environmentPresentations } from "../state/presentation";
 import { projectEnvironment } from "../state/projects";
 import { threadEnvironment, useEnvironmentThread } from "../state/threads";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
@@ -176,6 +179,7 @@ import {
   useThreadSelectionStore,
 } from "../threadSelectionStore";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
+import { buildMultiRepoProjectSetupMenu } from "../multiRepoSetupMenu";
 import {
   archiveSelectedThreadEntries,
   buildMultiSelectThreadContextMenuItems,
@@ -1759,12 +1763,24 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           });
         });
 
+        const setupMenu = buildMultiRepoProjectSetupMenu({
+          projects: readProjects(),
+          projectRefs: project.memberProjectRefs,
+          environments: [...appAtomRegistry.get(environmentPresentations.presentationsAtom)].map(
+            ([environmentId, presentation]) => ({
+              ...presentation,
+              environmentId,
+              label: presentation.entry.target.label,
+            }),
+          ),
+        });
         const clicked = await api.contextMenu.show(
           [
             buildTargetedItem("rename", "Rename"),
             buildTargetedItem("grouping", "Group into..."),
             buildTargetedItem("copy-path", "Copy Path"),
             { id: "project-settings", label: "Project settings", icon: "settings" },
+            ...setupMenu.items,
             buildTargetedItem("delete", "Remove", {
               destructive: true,
             }),
@@ -1779,7 +1795,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           return;
         }
 
-        await actionHandlers.get(clicked)?.();
+        const multiRepoSetup = setupMenu.setupsByAction.get(clicked);
+        if (multiRepoSetup) openCommandPalette({ multiRepoSetup });
+        else await actionHandlers.get(clicked)?.();
       })();
     },
     [
@@ -1790,6 +1808,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       openProjectRenameDialog,
       project.groupedProjectCount,
       project.memberProjects,
+      project.memberProjectRefs,
       project.projectKey,
       router,
       setOpenMobile,
@@ -2246,6 +2265,18 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       );
       const threadWorkspacePath =
         thread.worktreePath ?? threadProject?.workspaceRoot ?? project.workspaceRoot ?? null;
+      // Same cross-machine setup entry as the project header and the new sidebar.
+      const setupMenu = buildMultiRepoProjectSetupMenu({
+        projects: readProjects(),
+        projectRefs: project.memberProjectRefs,
+        environments: [...appAtomRegistry.get(environmentPresentations.presentationsAtom)].map(
+          ([environmentId, presentation]) => ({
+            ...presentation,
+            environmentId,
+            label: presentation.entry.target.label,
+          }),
+        ),
+      });
       const clicked = await api.contextMenu.show(
         [
           ...(thread.branch
@@ -2256,11 +2287,17 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           { id: "copy-path", label: "Copy Path" },
           { id: "copy-thread-id", label: "Copy Thread ID" },
           { id: "project-settings", label: "Project settings" },
+          ...setupMenu.items,
           { id: "delete", label: "Delete", destructive: true, icon: "trash" },
         ],
         position,
       );
 
+      const multiRepoSetup = clicked ? setupMenu.setupsByAction.get(clicked) : undefined;
+      if (multiRepoSetup) {
+        openCommandPalette({ multiRepoSetup });
+        return;
+      }
       if (clicked === "project-settings") {
         if (isMobile) setOpenMobile(false);
         void router.navigate({
@@ -2355,6 +2392,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       isMobile,
       markThreadUnread,
       memberProjectByScopedKey,
+      project.memberProjectRefs,
       project.projectKey,
       project.workspaceRoot,
       router,

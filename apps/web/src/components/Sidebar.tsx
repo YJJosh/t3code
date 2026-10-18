@@ -125,6 +125,7 @@ import {
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
+import { buildMultiRepoProjectSetupMenu } from "../multiRepoSetupMenu";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
@@ -134,6 +135,7 @@ import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments"
 import {
   readThreadShell,
   useAllEnvironmentProjectSnapshotsReady,
+  readProjects,
   useProjects,
   useThreadShells,
 } from "../state/entities";
@@ -2581,6 +2583,46 @@ export default function Sidebar() {
     [openProjectSettings],
   );
 
+  const handleProjectContextMenu = useCallback(
+    (
+      event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLInputElement>,
+      projectGroup: SidebarProjectSnapshot,
+    ) => {
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNextScopeChangeRef.current = true;
+      dispatchProjectScopeMenu({ type: "project-settings-opened" });
+      const setupMenu = buildMultiRepoProjectSetupMenu({
+        projects: readProjects(),
+        projectRefs: projectGroup.memberProjectRefs,
+        environments,
+      });
+      const api = readLocalApi();
+      if (setupMenu.items.length === 0 || !api) {
+        openProjectSettings(projectGroup);
+        return;
+      }
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const position =
+        "clientX" in event
+          ? { x: event.clientX, y: event.clientY }
+          : { x: bounds.left, y: bounds.bottom };
+      void (async () => {
+        const clicked = await api.contextMenu.show(
+          [
+            { id: "project-settings", label: "Project settings", icon: "settings" },
+            ...setupMenu.items,
+          ],
+          position,
+        );
+        const multiRepoSetup = clicked ? setupMenu.setupsByAction.get(clicked) : undefined;
+        if (multiRepoSetup) openCommandPalette({ multiRepoSetup });
+        else if (clicked === "project-settings") openProjectSettings(projectGroup);
+      })();
+    },
+    [environments, openProjectSettings],
+  );
+
   // Keep a dropped row at its destination while its server applies the
   // lifecycle command and any order-key writes. The next pickup waits for
   // this hold so a second drop cannot replace an unconfirmed placement.
@@ -4216,37 +4258,56 @@ export default function Sidebar() {
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        const setupMenu = buildMultiRepoProjectSetupMenu({
+          projects: readProjects(),
+          projectRefs: threadProjectGroup?.memberProjectRefs ?? [],
+          environments,
+        });
+        const threadMenuItems = buildThreadActionMenuItems({
+          branch: thread.branch ?? null,
+          projectFilter: threadProjectGroup
+            ? {
+                label: threadProjectGroup.displayName,
+                isActive: projectScopeKey === threadProjectGroup.projectKey,
+              }
+            : null,
+          isPinned,
+          isSettled,
+          autoSettleEnabled: thread.autoSettleDisabledAt == null,
+          isSnoozed,
+          canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
+          isRegeneratingTitle,
+          isRunning: thread.session?.status === "running" && thread.session.activeTurnId != null,
+          supports: {
+            settlement: supportsSettlement,
+            autoSettleOptOut: supportsAutoSettleOptOut,
+            snooze: supportsSnooze,
+            pinning: supportsPinning,
+            titleRegeneration: supportsTitleRegeneration,
+          },
+          snoozePresets,
+        });
+        // Setup is a project action, so it sits with Project settings, above Archive and Delete.
+        const projectSettingsIndex =
+          threadMenuItems.findIndex((item) => item.id === "project-settings") + 1;
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
-            buildThreadActionMenuItems({
-              branch: thread.branch ?? null,
-              projectFilter: threadProjectGroup
-                ? {
-                    label: threadProjectGroup.displayName,
-                    isActive: projectScopeKey === threadProjectGroup.projectKey,
-                  }
-                : null,
-              isPinned,
-              isSettled,
-              autoSettleEnabled: thread.autoSettleDisabledAt == null,
-              isSnoozed,
-              canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
-              isRegeneratingTitle,
-              isRunning:
-                thread.session?.status === "running" && thread.session.activeTurnId != null,
-              supports: {
-                settlement: supportsSettlement,
-                autoSettleOptOut: supportsAutoSettleOptOut,
-                snooze: supportsSnooze,
-                pinning: supportsPinning,
-                titleRegeneration: supportsTitleRegeneration,
-              },
-              snoozePresets,
-            }),
+            [
+              ...threadMenuItems.slice(0, projectSettingsIndex),
+              ...setupMenu.items,
+              ...threadMenuItems.slice(projectSettingsIndex),
+            ],
             position,
           ),
         );
         if (clicked._tag === "Failure") return;
+        const multiRepoSetup = clicked.value
+          ? setupMenu.setupsByAction.get(clicked.value)
+          : undefined;
+        if (multiRepoSetup) {
+          openCommandPalette({ multiRepoSetup });
+          return;
+        }
         if (clicked.value?.startsWith("snooze:")) {
           const preset =
             clicked.value === "snooze:custom"
@@ -4446,6 +4507,7 @@ export default function Sidebar() {
       copyThreadIdToClipboard,
       deleteThread,
       handleMultiSelectContextMenu,
+      environments,
       markThreadUnread,
       openProjectSettings,
       projectScopeKey,
@@ -4658,7 +4720,7 @@ export default function Sidebar() {
                         // stay on this input, not on the highlighted option.
                         const scopeKey = highlightedProjectScopeKeyRef.current;
                         const project = scopeKey ? projectGroupByScopeKey.get(scopeKey) : null;
-                        if (project) handleProjectSettings(event, project);
+                        if (project) handleProjectContextMenu(event, project);
                       }}
                       onChange={(event) =>
                         dispatchProjectScopeMenu({
@@ -4677,7 +4739,7 @@ export default function Sidebar() {
                             hideIndicator
                             value={item}
                             onContextMenu={(event) => {
-                              if (project) handleProjectSettings(event, project);
+                              if (project) handleProjectContextMenu(event, project);
                             }}
                           >
                             {project ? (

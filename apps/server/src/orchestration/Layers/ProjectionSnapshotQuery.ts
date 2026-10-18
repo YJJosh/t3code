@@ -69,6 +69,7 @@ import {
   encodeThreadDetailPageCursor,
 } from "../threadDetailCursor.ts";
 import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
+import * as ProjectMultiRepoResolver from "../../project/ProjectMultiRepoResolver.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
@@ -394,15 +395,24 @@ function mapSessionRow(
   };
 }
 
+/** Where a project's code comes from, resolved from its folder at read time. */
+interface ProjectSources {
+  readonly repositoryIdentity: OrchestrationProject["repositoryIdentity"];
+  readonly multiRepo: OrchestrationProject["multiRepo"];
+  readonly nestedRepositories?: OrchestrationProject["nestedRepositories"];
+}
+
+const NO_PROJECT_SOURCES: ProjectSources = { repositoryIdentity: null, multiRepo: null };
+
 function mapProjectShellRow(
   row: Schema.Schema.Type<typeof ProjectionProjectDbRowSchema>,
-  repositoryIdentity: OrchestrationProject["repositoryIdentity"],
+  sources: ProjectSources,
 ): OrchestrationProjectShell {
   return {
     id: row.projectId,
     title: row.title,
     workspaceRoot: row.workspaceRoot,
-    repositoryIdentity,
+    ...sources,
     defaultModelSelection: row.defaultModelSelection,
     defaultThreadEnvMode: row.defaultThreadEnvMode,
     autoPull: row.autoPull === 1,
@@ -498,9 +508,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const threadPlanProgress = yield* ThreadPlanProgressService;
   const sql = yield* SqlClient.SqlClient;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+  // Optional so focused projection tests need no project folders on disk; the
+  // server always provides it.
+  const projectMultiRepoResolver = yield* Effect.serviceOption(
+    ProjectMultiRepoResolver.ProjectMultiRepoResolver,
+  );
+  const resolveProjectSources = (workspaceRoot: string): Effect.Effect<ProjectSources> =>
+    Effect.gen(function* () {
+      const { multiRepo, nestedRepositories } = Option.isSome(projectMultiRepoResolver)
+        ? yield* projectMultiRepoResolver.value.resolve(workspaceRoot)
+        : { multiRepo: null, nestedRepositories: [] };
+      // A multi-repo folder may sit inside some unrelated repository, which
+      // is not where the project's code comes from.
+      const repositoryIdentity =
+        multiRepo === null ? yield* repositoryIdentityResolver.resolve(workspaceRoot) : null;
+      return {
+        repositoryIdentity,
+        multiRepo,
+        ...(nestedRepositories.length === 0 ? {} : { nestedRepositories }),
+      };
+    });
   const repositoryIdentityResolutionConcurrency = 4;
-  const resolveRepositoryIdentitiesForProjects = Effect.fn(
-    "ProjectionSnapshotQuery.resolveRepositoryIdentitiesForProjects",
+  const resolveProjectSourcesForProjects = Effect.fn(
+    "ProjectionSnapshotQuery.resolveProjectSourcesForProjects",
   )(function* (
     projectRows: ReadonlyArray<Schema.Schema.Type<typeof ProjectionProjectDbRowSchema>>,
     options?: {
@@ -512,13 +542,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ? projectRows
         : projectRows.filter((row) => row.deletedAt === null);
     const uniqueWorkspaceRoots = [...new Set(filteredProjectRows.map((row) => row.workspaceRoot))];
-    const repositoryIdentityByWorkspaceRoot = new Map(
+    const sourcesByWorkspaceRoot = new Map(
       yield* Effect.forEach(
         uniqueWorkspaceRoots,
         (workspaceRoot) =>
-          repositoryIdentityResolver
-            .resolve(workspaceRoot)
-            .pipe(Effect.map((identity) => [workspaceRoot, identity] as const)),
+          resolveProjectSources(workspaceRoot).pipe(
+            Effect.map((sources) => [workspaceRoot, sources] as const),
+          ),
         { concurrency: repositoryIdentityResolutionConcurrency },
       ),
     );
@@ -526,7 +556,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     return new Map(
       filteredProjectRows.map((row) => [
         row.projectId,
-        repositoryIdentityByWorkspaceRoot.get(row.workspaceRoot) ?? null,
+        sourcesByWorkspaceRoot.get(row.workspaceRoot) ?? NO_PROJECT_SOURCES,
       ]),
     );
   });
@@ -2350,16 +2380,15 @@ pending_approval_requests AS (
                 });
               }
 
-              const repositoryIdentities = yield* resolveRepositoryIdentitiesForProjects(
-                projectRows,
-                { includeDeleted: true },
-              );
+              const projectSources = yield* resolveProjectSourcesForProjects(projectRows, {
+                includeDeleted: true,
+              });
 
               const projects: ReadonlyArray<OrchestrationProject> = projectRows.map((row) => ({
                 id: row.projectId,
                 title: row.title,
                 workspaceRoot: row.workspaceRoot,
-                repositoryIdentity: repositoryIdentities.get(row.projectId) ?? null,
+                ...(projectSources.get(row.projectId) ?? NO_PROJECT_SOURCES),
                 defaultModelSelection: row.defaultModelSelection,
                 defaultThreadEnvMode: row.defaultThreadEnvMode,
                 autoPull: row.autoPull === 1,
@@ -2383,7 +2412,7 @@ pending_approval_requests AS (
                 ...mapThreadPullRequests(
                   pullRequestsByThread.get(row.threadId) ?? [],
                   row.projectId,
-                  repositoryIdentities.get(row.projectId),
+                  projectSources.get(row.projectId)?.repositoryIdentity,
                 ),
                 branchPullRequest: row.branchPullRequest,
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
@@ -2511,7 +2540,7 @@ pending_approval_requests AS (
                   .filter((row) => linkedThreadIds.has(row.threadId))
                   .map((row) => row.projectId),
               );
-              const repositoryIdentities = yield* resolveRepositoryIdentitiesForProjects(
+              const projectSources = yield* resolveProjectSourcesForProjects(
                 projectRows.filter((row) => linkedProjectIds.has(row.projectId)),
               );
               let updatedAt: string | null = null;
@@ -2528,7 +2557,7 @@ pending_approval_requests AS (
                   id: row.projectId,
                   title: row.title,
                   workspaceRoot: row.workspaceRoot,
-                  repositoryIdentity: repositoryIdentities.get(row.projectId) ?? null,
+                  ...(projectSources.get(row.projectId) ?? NO_PROJECT_SOURCES),
                   defaultModelSelection: row.defaultModelSelection,
                   defaultThreadEnvMode: row.defaultThreadEnvMode,
                   autoPull: row.autoPull === 1,
@@ -2629,7 +2658,7 @@ pending_approval_requests AS (
                   ...mapThreadPullRequests(
                     pullRequestsByThread.get(row.threadId) ?? [],
                     row.projectId,
-                    repositoryIdentities.get(row.projectId),
+                    projectSources.get(row.projectId)?.repositoryIdentity,
                   ),
                   branchPullRequest: row.branchPullRequest,
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
@@ -2754,8 +2783,7 @@ pending_approval_requests AS (
                 updatedAt = maxIso(updatedAt, row.updatedAt);
               }
 
-              const repositoryIdentities =
-                yield* resolveRepositoryIdentitiesForProjects(projectRows);
+              const projectSources = yield* resolveProjectSourcesForProjects(projectRows);
               const latestTurnByThread = new Map(
                 latestTurnRows.map((row) => [row.threadId, mapLatestTurn(row)] as const),
               );
@@ -2772,7 +2800,10 @@ pending_approval_requests AS (
                 projects: Arr.filterMap(projectRows, (row) =>
                   row.deletedAt === null
                     ? Result.succeed(
-                        mapProjectShellRow(row, repositoryIdentities.get(row.projectId) ?? null),
+                        mapProjectShellRow(
+                          row,
+                          projectSources.get(row.projectId) ?? NO_PROJECT_SOURCES,
+                        ),
                       )
                     : Result.failVoid,
                 ),
@@ -2791,7 +2822,7 @@ pending_approval_requests AS (
                         ...mapThreadPullRequests(
                           pullRequestsByThread.get(row.threadId) ?? [],
                           row.projectId,
-                          repositoryIdentities.get(row.projectId),
+                          projectSources.get(row.projectId)?.repositoryIdentity,
                         ),
                         latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                         createdAt: row.createdAt,
@@ -2945,7 +2976,7 @@ pending_approval_requests AS (
 
               const pullRequestsByThread = groupPullRequestRowsByThread(pullRequestRows);
               const activeProjectIds = new Set(threadRows.map((row) => row.projectId));
-              const repositoryIdentities = yield* resolveRepositoryIdentitiesForProjects(
+              const projectSources = yield* resolveProjectSourcesForProjects(
                 projectRows.filter((row) => activeProjectIds.has(row.projectId)),
               );
               const latestTurnByThread = new Map(
@@ -2960,7 +2991,10 @@ pending_approval_requests AS (
                 projects: Arr.filterMap(projectRows, (row) =>
                   row.deletedAt === null && activeProjectIds.has(row.projectId)
                     ? Result.succeed(
-                        mapProjectShellRow(row, repositoryIdentities.get(row.projectId) ?? null),
+                        mapProjectShellRow(
+                          row,
+                          projectSources.get(row.projectId) ?? NO_PROJECT_SOURCES,
+                        ),
                       )
                     : Result.failVoid,
                 ),
@@ -2977,7 +3011,7 @@ pending_approval_requests AS (
                   ...mapThreadPullRequests(
                     pullRequestsByThread.get(row.threadId) ?? [],
                     row.projectId,
-                    repositoryIdentities.get(row.projectId),
+                    projectSources.get(row.projectId)?.repositoryIdentity,
                   ),
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
@@ -3097,13 +3131,13 @@ pending_approval_requests AS (
         Effect.flatMap((option) =>
           Option.isNone(option)
             ? Effect.succeed(Option.none<OrchestrationProject>())
-            : repositoryIdentityResolver.resolve(option.value.workspaceRoot).pipe(
-                Effect.map((repositoryIdentity) =>
+            : resolveProjectSources(option.value.workspaceRoot).pipe(
+                Effect.map((sources) =>
                   Option.some({
                     id: option.value.projectId,
                     title: option.value.title,
                     workspaceRoot: option.value.workspaceRoot,
-                    repositoryIdentity,
+                    ...sources,
                     defaultModelSelection: option.value.defaultModelSelection,
                     defaultThreadEnvMode: option.value.defaultThreadEnvMode,
                     autoPull: option.value.autoPull === 1,
@@ -3129,9 +3163,11 @@ pending_approval_requests AS (
         ),
       ),
       Effect.flatMap((projects) =>
-        resolveRepositoryIdentitiesForProjects(projects).pipe(
-          Effect.map((identities) =>
-            projects.map((row) => mapProjectShellRow(row, identities.get(row.projectId) ?? null)),
+        resolveProjectSourcesForProjects(projects).pipe(
+          Effect.map((sources) =>
+            projects.map((row) =>
+              mapProjectShellRow(row, sources.get(row.projectId) ?? NO_PROJECT_SOURCES),
+            ),
           ),
         ),
       ),
@@ -3149,13 +3185,9 @@ pending_approval_requests AS (
       Effect.flatMap((option) =>
         Option.isNone(option)
           ? Effect.succeed(Option.none<OrchestrationProjectShell>())
-          : repositoryIdentityResolver
-              .resolve(option.value.workspaceRoot)
-              .pipe(
-                Effect.map((repositoryIdentity) =>
-                  Option.some(mapProjectShellRow(option.value, repositoryIdentity)),
-                ),
-              ),
+          : resolveProjectSources(option.value.workspaceRoot).pipe(
+              Effect.map((sources) => Option.some(mapProjectShellRow(option.value, sources))),
+            ),
       ),
     );
 

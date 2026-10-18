@@ -106,6 +106,22 @@ export function createProjectEnvironmentAtoms<R, E>(
       scheduler: projectScheduler,
       concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
     }),
+    // Lists the repositories in a plain project folder in a `.workler`, making
+    // it a multi-repo project.
+    makeMultiRepo: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:make-multi-repo",
+      tag: WS_METHODS.projectsMakeMultiRepo,
+      scheduler: projectScheduler,
+      concurrency: projectConcurrency,
+    }),
+    // Says whether a folder picked for a new multi-repo project holds
+    // repositories to group or is empty enough to clone into.
+    inspectMultiRepoFolder: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:inspect-multi-repo-folder",
+      tag: WS_METHODS.projectsInspectMultiRepoFolder,
+      scheduler: projectScheduler,
+      concurrency: { mode: "latest", key: ({ environmentId }) => environmentId },
+    }),
     writeFile: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:projects:write-file",
       tag: WS_METHODS.projectsWriteFile,
