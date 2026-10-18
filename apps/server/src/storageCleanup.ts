@@ -34,6 +34,7 @@ import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as MultiRepoWorkspaces from "./vcs/MultiRepoWorkspaces.ts";
 import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
 
 export class StorageCleanup extends Context.Service<
@@ -113,6 +114,7 @@ export const make = Effect.gen(function* () {
   const threadDeletion = yield* ThreadDeletionReactor.ThreadDeletionReactor;
   const providers = yield* ProviderService.ProviderService;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const multiRepo = yield* MultiRepoWorkspaces.MultiRepoWorkspaces;
   const gitManager = yield* GitManager.GitManager;
   const terminals = yield* TerminalManager.TerminalManager;
   const fs = yield* FileSystem.FileSystem;
@@ -170,12 +172,213 @@ export const make = Effect.gen(function* () {
     return false;
   });
 
+  // The repositories of the checkout at worktreePath. T3's linked worktrees (in
+  // worktreesDir) keep their branch in the project repository. Workler
+  // workspaces (in <project>/.worktrees) are whole clones, one or one per
+  // member of a multi-repo group, so removing one also deletes its branches.
+  const resolveCheckout = Effect.fn("StorageCleanup.resolveCheckout")(function* (
+    worktreePath: string,
+    workspaceRoot: string,
+    worktreesRoot: string | null,
+  ) {
+    const gitEntry = yield* fs.stat(path.join(worktreePath, ".git")).pipe(
+      Effect.map((stat) => stat.type),
+      Effect.orElseSucceed(() => null),
+    );
+    if (worktreesRoot !== null && inside(worktreesRoot, worktreePath)) {
+      // A linked worktree has a .git file. Never remove a main checkout.
+      return gitEntry === "File"
+        ? {
+            kind: "linked" as const,
+            root: workspaceRoot,
+            repos: [worktreePath],
+            sources: [path.resolve(workspaceRoot)],
+            members: [],
+          }
+        : null;
+    }
+    const projectRoot = yield* fs
+      .realPath(path.resolve(workspaceRoot))
+      .pipe(Effect.orElseSucceed(() => null));
+    if (
+      projectRoot === null ||
+      path.dirname(worktreePath) !== path.join(projectRoot, MultiRepoWorkspaces.WORKSPACES_DIR)
+    )
+      return null;
+    if (gitEntry === "Directory")
+      return {
+        kind: "clone" as const,
+        root: projectRoot,
+        repos: [worktreePath],
+        sources: [projectRoot],
+        members: [],
+      };
+    if (gitEntry !== null) return null;
+    const members = yield* multiRepo.members(worktreePath);
+    if (members === null || (yield* multiRepo.members(projectRoot)) === null) return null;
+    for (const member of members) {
+      const repo = path.join(worktreePath, member);
+      // Members are clones, not links or linked worktrees.
+      if ((yield* fs.realPath(repo)) !== repo) return null;
+      if ((yield* fs.stat(path.join(repo, ".git"))).type !== "Directory") return null;
+    }
+    return {
+      kind: "group" as const,
+      root: projectRoot,
+      repos: members.map((member) => path.join(worktreePath, member)),
+      sources: members.map((member) => path.join(projectRoot, member)),
+      members,
+    };
+  });
+
+  // The HEAD commit when a repository holds nothing worth keeping: it is on the
+  // thread's branch with no changes and no ignored files but dependency
+  // installs. A clone (with the repository it came from as source) must also
+  // hold no commit that only it has: none that a remote-tracking ref or a
+  // branch of the source doesn't reach, from any ref but T3's own checkpoints
+  // (copied to the project before removal). That covers tags and stashes too.
+  const removableHead = Effect.fn("StorageCleanup.removableHead")(function* (
+    repo: string,
+    branch: string | null,
+    source: string | null,
+  ) {
+    const status = yield* git.statusDetailsLocal(repo);
+    if (!status.isRepo || status.branch !== branch || status.hasWorkingTreeChanges) return null;
+    const head = yield* git.resolveCommit({ cwd: repo, revision: "HEAD" });
+    const ignored = yield* git.execute({
+      operation: "StorageCleanup.ignoredFiles",
+      cwd: repo,
+      args: ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+      maxOutputBytes: 64 * 1024,
+    });
+    // Ignored files can contain secrets or local datasets. Dependency installs
+    // are reproducible and Finder's .DS_Store holds only view settings; every
+    // other ignored path prevents automatic removal.
+    if (ignored.stdoutTruncated) return null;
+    for (const entry of ignored.stdout.split("\0")) {
+      if (entry === "" || /(^|\/)(node_modules\/|\.DS_Store)$/.test(entry)) continue;
+      // Git omits the trailing slash for Workler's linked node_modules.
+      // Follow it only to verify a dependency directory; deleting the checkout
+      // unlinks it, not its target. A file named node_modules still protects it.
+      if (
+        /(^|\/)node_modules$/.test(entry) &&
+        (yield* fs.stat(path.join(repo, entry)).pipe(
+          Effect.map((info) => info.type === "Directory"),
+          Effect.orElseSucceed(() => false),
+        ))
+      )
+        continue;
+      return null;
+    }
+    if (source !== null) {
+      const unpushed = (safe: ReadonlyArray<string>) =>
+        git
+          .execute({
+            operation: "StorageCleanup.unpushedCommits",
+            cwd: repo,
+            args: [
+              "rev-list",
+              "--max-count=1",
+              "HEAD",
+              // Only checkpoints are copied below. Other refs/t3 refs may
+              // hold unique work and must prevent deletion just like any other ref.
+              "--exclude=refs/t3/checkpoints/*",
+              "--all",
+              "--not",
+              ...safe,
+            ],
+          })
+          .pipe(Effect.map((result) => result.stdout.trim() !== ""));
+      // A clone starts with the source's local branches, so a source with no
+      // origin, or a main ahead of it, looks unpushed. Commits a source branch
+      // reaches survive removal too: mirror the source's branches the way
+      // `workler branch-sync` does, only when needed, then check again. Older
+      // mirrored refs may be stale, so they only count after this --prune copy.
+      if (yield* unpushed(["--exclude=workler-root/*", "--remotes"])) {
+        yield* git.execute({
+          operation: "StorageCleanup.sourceBranches",
+          cwd: repo,
+          args: [
+            "fetch",
+            "--no-recurse-submodules",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--prune",
+            source,
+            "+refs/heads/*:refs/remotes/workler-root/*",
+          ],
+        });
+        if (yield* unpushed(["--remotes"])) return null;
+      }
+    }
+    return head.commitSha;
+  });
+
+  // A group workspace folder holds its members, the folders leading to them,
+  // Workler's unchanged copy of .workler and Finder's .DS_Store files. Anything
+  // else there is in no repository.
+  const groupFolderHoldsOnlyMembers = Effect.fn("StorageCleanup.groupFolderHoldsOnlyMembers")(
+    function* (worktreePath: string, members: ReadonlyArray<string>) {
+      // The copy is outside Git, so an edited one (or a link in its place) stays.
+      const configPath = path.join(worktreePath, MultiRepoWorkspaces.WORKLER_CONFIG_FILE);
+      if ((yield* fs.realPath(configPath)) !== configPath) return false;
+      if ((yield* fs.stat(configPath)).type !== "File") return false;
+      const originalConfig = path.join(
+        path.dirname(path.dirname(worktreePath)),
+        MultiRepoWorkspaces.WORKLER_CONFIG_FILE,
+      );
+      if ((yield* fs.readFileString(configPath)) !== (yield* fs.readFileString(originalConfig)))
+        return false;
+      const memberSegments = members.map((member) => member.split(/[\\/]/));
+      const startsWith = (member: ReadonlyArray<string>, prefix: ReadonlyArray<string>) =>
+        prefix.every((segment, index) => member[index] === segment);
+      const visit = Effect.fn("StorageCleanup.visitGroupFolder")(function* (
+        prefix: ReadonlyArray<string>,
+      ): Effect.fn.Return<boolean, PlatformError> {
+        const directory = path.join(worktreePath, ...prefix);
+        for (const name of yield* fs.readDirectory(directory)) {
+          if (prefix.length === 0 && name === MultiRepoWorkspaces.WORKLER_CONFIG_FILE) continue;
+          if (name === ".DS_Store" && (yield* fs.stat(path.join(directory, name))).type === "File")
+            continue;
+          // Only dependency directories (or links to them) are disposable; a regular file
+          // named node_modules is group-level data.
+          if (
+            prefix.length === 0 &&
+            name === "node_modules" &&
+            (yield* fs.stat(path.join(directory, name)).pipe(
+              Effect.map((info) => info.type === "Directory"),
+              Effect.orElseSucceed(() => false),
+            ))
+          )
+            continue;
+          const next = [...prefix, name];
+          if (
+            memberSegments.some(
+              (member) => member.length === next.length && startsWith(member, next),
+            )
+          )
+            continue;
+          if (
+            !memberSegments.some(
+              (member) => member.length > next.length && startsWith(member, next),
+            )
+          )
+            return false;
+          const target = path.join(directory, name);
+          if ((yield* fs.realPath(target)) !== target) return false;
+          if (!(yield* visit(next))) return false;
+        }
+        return true;
+      });
+      return yield* visit([]);
+    },
+  );
+
   const cleanWorktrees = Effect.fn("StorageCleanup.cleanWorktrees")(function* (
     serverSettings: ServerSettings,
     now: number,
   ) {
     if (!anyWorktreePolicy(serverSettings, worktreeCleanupEnabled)) return;
-    if (!(yield* fs.exists(config.worktreesDir))) return;
     const hasDeleteRule = anyWorktreePolicy(serverSettings, (rules) => rules.worktreeOnDelete);
     const deletedThreads = hasDeleteRule
       ? (yield* snapshots.getDeletedWorktreeThreads()).filter(
@@ -189,7 +392,9 @@ export const make = Effect.gen(function* () {
       yield* threadDeletion.drainThrough(snapshotSequence);
     }
     const snapshot = yield* readThreads();
-    const root = yield* fs.realPath(config.worktreesDir);
+    const root = (yield* fs.exists(config.worktreesDir))
+      ? yield* fs.realPath(config.worktreesDir)
+      : null;
     const refreshedDefaultRefs = new Map<string, Set<string>>();
     const groups = Map.groupBy(
       snapshot.threads.filter((thread) => thread.worktreePath !== null),
@@ -214,28 +419,24 @@ export const make = Effect.gen(function* () {
       )
         continue;
       yield* Effect.gen(function* () {
-        if (!inside(root, worktreePath) || !(yield* fs.exists(worktreePath))) return;
+        if (!(yield* fs.exists(worktreePath))) return;
         if ((yield* fs.realPath(worktreePath)) !== worktreePath) return;
         if (yield* containsProjectRoot(worktreePath, [project, ...snapshot.projects])) return;
-        // A linked worktree has a .git file. Never remove a main checkout.
-        if ((yield* fs.stat(path.join(worktreePath, ".git"))).type !== "File") return;
-        const status = yield* git.statusDetailsLocal(worktreePath);
-        if (!status.isRepo || status.branch !== thread.branch || status.hasWorkingTreeChanges)
-          return;
-        const head = yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" });
-        const ignored = yield* git.execute({
-          operation: "StorageCleanup.ignoredFiles",
-          cwd: worktreePath,
-          args: ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
-          maxOutputBytes: 64 * 1024,
-        });
-        // Ignored files can contain secrets or local datasets. Dependency installs
-        // are reproducible; every other ignored path prevents automatic removal.
+        const checkout = yield* resolveCheckout(worktreePath, project.workspaceRoot, root);
+        if (checkout === null) return;
+        const clone = checkout.kind !== "linked";
+        const removableSource = (index: number) => (clone ? checkout.sources[index]! : null);
+        // Resume recreates a clone from the thread's branch, so a detached one stays.
+        if (clone && thread.branch === null) return;
+        const heads = new Map<string, string>();
+        for (const [index, repo] of checkout.repos.entries()) {
+          const head = yield* removableHead(repo, thread.branch, removableSource(index));
+          if (head === null) return;
+          heads.set(repo, head);
+        }
         if (
-          ignored.stdoutTruncated ||
-          ignored.stdout
-            .split("\0")
-            .some((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry))
+          checkout.kind === "group" &&
+          !(yield* groupFolderHoldsOnlyMembers(worktreePath, checkout.members))
         )
           return;
         const old =
@@ -244,39 +445,50 @@ export const make = Effect.gen(function* () {
           storageCleanupActivityAt(thread) < now - settings.worktreeAfterDays * DAY_MS;
         let eligible = deleted || old;
         if (!eligible && (settings.worktreeUnchanged || settings.worktreeOnMerge)) {
-          const repositoryCwd = path.resolve(project.workspaceRoot);
-          const remote = yield* git.resolvePrimaryRemoteName(repositoryCwd);
-          const branch = yield* git.resolveDefaultBranchName(repositoryCwd, remote);
-          if (branch === null) return;
-          const defaultRef = `refs/remotes/${remote}/${branch}`;
-          const refreshed = refreshedDefaultRefs.get(repositoryCwd) ?? new Set<string>();
-          if (!refreshed.has(defaultRef)) {
-            yield* git.fetchRemoteTrackingBranch({
+          for (const [index, repo] of checkout.repos.entries()) {
+            // Check against the source repository, fetched once per sweep: it then
+            // has every commit its default branch reaches, so a head missing there
+            // is not merged either.
+            const repositoryCwd = checkout.sources[index]!;
+            const remote = yield* git.resolvePrimaryRemoteName(repositoryCwd);
+            const branch = yield* git.resolveDefaultBranchName(repositoryCwd, remote);
+            if (branch === null) return;
+            const defaultRef = `refs/remotes/${remote}/${branch}`;
+            const refreshed = refreshedDefaultRefs.get(repositoryCwd) ?? new Set<string>();
+            if (!refreshed.has(defaultRef)) {
+              yield* git.fetchRemoteTrackingBranch({
+                cwd: repositoryCwd,
+                remoteName: remote,
+                remoteBranch: branch,
+              });
+              refreshed.add(defaultRef);
+              refreshedDefaultRefs.set(repositoryCwd, refreshed);
+            }
+            const base = yield* git.resolveCommit({
               cwd: repositoryCwd,
-              remoteName: remote,
-              remoteBranch: branch,
+              revision: defaultRef,
             });
-            refreshed.add(defaultRef);
-            refreshedDefaultRefs.set(repositoryCwd, refreshed);
+            const ancestor = yield* git.execute({
+              operation: "StorageCleanup.integratedBranch",
+              cwd: repositoryCwd,
+              args: ["merge-base", "--is-ancestor", heads.get(repo)!, base.commitSha],
+              allowNonZeroExit: true,
+            });
+            if (ancestor.exitCode !== 0) return;
           }
-          const base = yield* git.resolveCommit({
-            cwd: worktreePath,
-            revision: defaultRef,
-          });
-          const ancestor = yield* git.execute({
-            operation: "StorageCleanup.integratedBranch",
-            cwd: worktreePath,
-            args: ["merge-base", "--is-ancestor", head.commitSha, base.commitSha],
-            allowNonZeroExit: true,
-          });
-          if (ancestor.exitCode !== 0) return;
           eligible = settings.worktreeUnchanged;
           if (!eligible && settings.worktreeOnMerge && thread.branch !== null) {
-            const pullRequest = yield* gitManager.branchPullRequest(
-              { cwd: worktreePath, branch: thread.branch },
-              { refresh: true },
-            );
-            eligible = pullRequest?.state === "merged";
+            // A group's change can be a pull request in any of its members.
+            for (const repo of checkout.repos) {
+              const pullRequest = yield* gitManager.branchPullRequest(
+                { cwd: repo, branch: thread.branch },
+                { refresh: true },
+              );
+              if (pullRequest?.state === "merged") {
+                eligible = true;
+                break;
+              }
+            }
           }
         }
         if (!eligible) return;
@@ -316,29 +528,15 @@ export const make = Effect.gen(function* () {
           storageCleanupActivityAt(latest[0]!) !== storageCleanupActivityAt(thread)
         )
           return;
-        const finalStatus = yield* git.statusDetailsLocal(worktreePath);
+        for (const [index, repo] of checkout.repos.entries()) {
+          if (
+            (yield* removableHead(repo, thread.branch, removableSource(index))) !== heads.get(repo)
+          )
+            return;
+        }
         if (
-          !finalStatus.isRepo ||
-          finalStatus.branch !== thread.branch ||
-          finalStatus.hasWorkingTreeChanges
-        )
-          return;
-        if (
-          (yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" })).commitSha !==
-          head.commitSha
-        )
-          return;
-        const finalIgnored = yield* git.execute({
-          operation: "StorageCleanup.ignoredFiles",
-          cwd: worktreePath,
-          args: ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
-          maxOutputBytes: 64 * 1024,
-        });
-        if (
-          finalIgnored.stdoutTruncated ||
-          finalIgnored.stdout
-            .split("\0")
-            .some((entry) => entry !== "" && !/(^|\/)node_modules\/$/.test(entry))
+          checkout.kind === "group" &&
+          !(yield* groupFolderHoldsOnlyMembers(worktreePath, checkout.members))
         )
           return;
         const current = resolveWorktreeCleanup(
@@ -352,7 +550,16 @@ export const make = Effect.gen(function* () {
           )
         )
           return;
-        yield* git.removeWorktree({ cwd: project.workspaceRoot, path: worktreePath, force: false });
+        if (clone) {
+          // Removal first copies the clone's branch (the thread's, checked above),
+          // tags and checkpoints into the project, where a linked worktree's refs
+          // already live, so resume can recreate the checkout offline. When that
+          // copy fails, the clone is kept. The checks above replace Workler's own,
+          // which also refuse dependency installs.
+          yield* multiRepo.removeWorkspace({ cwd: checkout.root, path: worktreePath, force: true });
+        } else {
+          yield* git.removeWorktree({ cwd: checkout.root, path: worktreePath, force: false });
+        }
         yield* gitManager.invalidateStatus(project.workspaceRoot);
         // Preserve branch and path: ProviderCommandReactor recreates the checkout
         // from that branch when the thread is resumed.

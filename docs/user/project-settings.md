@@ -74,9 +74,13 @@ manually. Custom applies separate worktree rules to the selected project or chec
 captures and log retention remain machine-wide.
 
 Worktrees can be removed after a chosen number of inactive days, after merging, or when they
-have no commits beyond the default branch. Only T3-managed worktrees are eligible. Active
-sessions, shared worktrees, uncommitted changes, and ignored files other than `node_modules`
-prevent removal. Branches and thread history stay; starting another turn recreates the checkout.
+have no commits beyond the default branch. Only T3-managed worktrees and Workler workspaces,
+including multi-repo ones, are eligible. Active sessions, shared worktrees, uncommitted changes,
+and ignored files other than `node_modules` and `.DS_Store` prevent removal. A Workler workspace
+is a full clone, so it is also kept while any commit or stash exists only in it, while it isn't
+on a branch, or while a multi-repo workspace has files outside its repositories. Before removing
+one, T3 copies its branches and tags into the project's repositories. Branches and thread history
+stay; starting another turn recreates the checkout.
 Merge cleanup requires the commits to be included in the remote default branch, so squash merges
 may need the inactivity rule instead.
 
