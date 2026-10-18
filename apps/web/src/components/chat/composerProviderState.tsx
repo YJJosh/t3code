@@ -1,5 +1,6 @@
 import {
   type ModelCapabilities,
+  type ModelSelection,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderOptionSelection,
@@ -16,15 +17,9 @@ import {
 import type { ReactNode } from "react";
 
 import type { DraftId } from "../../composerDraftStore";
-import { keepsUnavailableModelOptions } from "../../providerInstances";
 import { getProviderModelCapabilities } from "../../providerModels";
 import type { ComposerControlSize } from "./ComposerControl";
-import {
-  shouldRenderTraitsControls,
-  TraitsMenuContent,
-  TraitsPicker,
-  type TraitsDescriptorScope,
-} from "./TraitsPicker";
+import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
 
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
@@ -54,10 +49,10 @@ type TraitsRenderInput = {
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
+  reportedModelSelection?: ModelSelection | null | undefined;
   prompt: string;
   onPromptChange: (prompt: string) => void;
   planModeEnabled: boolean;
-  descriptorScope?: TraitsDescriptorScope;
   size?: ComposerControlSize;
   hidden?: boolean;
   triggerClassName?: string;
@@ -66,10 +61,6 @@ type TraitsRenderInput = {
 
 export function getComposerPromptInjectionState(prompt: string): ComposerPromptInjectionState {
   return isClaudeUltrathinkPrompt(prompt) ? "ultrathink" : "none";
-}
-
-export function shouldShowRuntimeModeSelector(provider: ProviderDriverKind): boolean {
-  return provider !== "pi";
 }
 
 /**
@@ -119,7 +110,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     promptInjectionState = "none",
     planModeEnabled,
   } = input;
-  if (keepsUnavailableModelOptions(provider)) {
+  if (provider === "opencode") {
     const normalizedModel = normalizeModelSlug(model, provider);
     const modelIsInCatalog = models.some((candidate) => candidate.slug === normalizedModel);
     if (!modelIsInCatalog) {
@@ -181,10 +172,10 @@ function renderTraitsControl(
     model,
     models,
     modelOptions,
+    reportedModelSelection,
     prompt,
     onPromptChange,
     planModeEnabled,
-    descriptorScope = "all",
     size,
     hidden,
     triggerClassName,
@@ -207,7 +198,6 @@ function renderTraitsControl(
       modelOptions: resolvedModelOptions,
       prompt,
       planModeEnabled,
-      descriptorScope,
     })
   ) {
     return null;
@@ -221,10 +211,10 @@ function renderTraitsControl(
       {...(draftId ? { draftId } : {})}
       model={model}
       modelOptions={resolvedModelOptions}
+      reportedModelSelection={reportedModelSelection}
       prompt={prompt}
       onPromptChange={onPromptChange}
       planModeEnabled={planModeEnabled}
-      descriptorScope={descriptorScope}
       {...(size !== undefined ? { size } : {})}
       {...(hidden !== undefined ? { hidden } : {})}
       {...(triggerClassName !== undefined ? { triggerClassName } : {})}

@@ -37,6 +37,8 @@ export const BRAND_ASSET_PATHS = {
   dulliWebFavicon16Png: "assets/dulli/dulli-web-favicon-16x16.png",
   dulliWebFavicon32Png: "assets/dulli/dulli-web-favicon-32x32.png",
   dulliWebAppleTouchIconPng: "assets/dulli/dulli-web-apple-touch-180.png",
+  dulliAndroidMarkPng: "assets/dulli/dulli-android-mark-432.png",
+  dulliAndroidNotificationPng: "assets/dulli/dulli-android-notification-96.png",
 } as const;
 
 export type WebAssetBrand = "development" | "nightly" | "production" | "dulli";

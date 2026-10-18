@@ -1,3 +1,5 @@
+import { AuthRelayWriteScope } from "@t3tools/contracts";
+import { readEnvironmentScope } from "../../state/session";
 import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
 import { useAuth } from "@clerk/expo";
 import Constants from "expo-constants";
@@ -5,7 +7,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Notifications from "expo-notifications";
 import { useNavigation } from "@react-navigation/native";
 import * as Effect from "effect/Effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, AppState, Linking, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -275,6 +277,8 @@ function ConfiguredSettingsNotificationsRouteScreen() {
     const updateResult = await settleAsyncResult(() =>
       runtime.runPromiseExit(
         setLiveActivityUpdatesEnabled({
+          canConfigureEnvironment: (environmentId) =>
+            readEnvironmentScope(environmentId, AuthRelayWriteScope),
           enabled: true,
           previousEnabled: liveActivitiesPreferenceEnabled,
           clerkToken: tokenResult.value,
@@ -306,7 +310,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
       Alert.alert(
         Platform.OS === "android" ? "Ongoing activity enabled" : "Live Activities enabled",
         environmentCount > 0
-          ? `${environmentCount} environment${environmentCount === 1 ? "" : "s"} linked for agent activity updates.`
+          ? "Agent activity updates are enabled for environments this connection can configure."
           : "Agent activity updates are enabled. Add an environment to start receiving updates.",
       );
     } else {
@@ -374,6 +378,8 @@ function ConfiguredSettingsNotificationsRouteScreen() {
             const updateResult = await settleAsyncResult(() =>
               runtime.runPromiseExit(
                 setLiveActivityUpdatesEnabled({
+                  canConfigureEnvironment: (environmentId) =>
+                    readEnvironmentScope(environmentId, AuthRelayWriteScope),
                   enabled: false,
                   previousEnabled: liveActivitiesPreferenceEnabled,
                   clerkToken: token,

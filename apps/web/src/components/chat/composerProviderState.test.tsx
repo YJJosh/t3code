@@ -12,7 +12,6 @@ import {
   getComposerProviderState,
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
-  shouldShowRuntimeModeSelector,
   withImplicitFastModeDefault,
 } from "./composerProviderState";
 
@@ -72,13 +71,6 @@ const ULTRATHINK_FRAME_CLASSES = {
   composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.07)_inset]",
   modelPickerIconClassName: "ultrathink-chroma",
 } as const;
-
-describe("shouldShowRuntimeModeSelector", () => {
-  it("hides permission modes for Pi while retaining them for other providers", () => {
-    expect(shouldShowRuntimeModeSelector(ProviderDriverKind.make("pi"))).toBe(false);
-    expect(shouldShowRuntimeModeSelector(ProviderDriverKind.make("codex"))).toBe(true);
-  });
-});
 
 describe("getComposerProviderState", () => {
   it("derives a stable prompt injection state for ordinary prompt edits", () => {
@@ -276,24 +268,6 @@ describe("getComposerProviderState", () => {
     );
   });
 
-  it("keeps a missing Pi model's thinking level, profile, and config set", () => {
-    const state = getComposerProviderState({
-      provider: ProviderDriverKind.make("pi"),
-      model: "openai/gpt-6.1-sol",
-      models: modelWith([]),
-      modelOptions: selections(
-        ["reasoning", "medium"],
-        ["profile", "reviewer"],
-        ["configSet", "work"],
-      ),
-      planModeEnabled: true,
-    });
-
-    expect(state.modelOptionsForDispatch).toEqual(
-      selections(["reasoning", "medium"], ["profile", "reviewer"], ["configSet", "work"]),
-    );
-  });
-
   it.each(["codex", "claudeAgent", "cursor", "grok"])(
     "does not preserve unknown options for a missing %s model",
     (provider) => {
@@ -445,31 +419,6 @@ describe("getComposerProviderState", () => {
     });
 
     expect(state.modelOptionsForDispatch).toEqual(selections(["fastMode", false]));
-  });
-});
-
-describe("Pi composer option dispatch", () => {
-  it("preserves the independently selected profile and model controls together", () => {
-    const state = getComposerProviderState({
-      provider: ProviderDriverKind.make("pi"),
-      model: MODEL,
-      models: modelWith([
-        selectDescriptor("profile", [
-          { id: "coder", label: "Coder", isDefault: true },
-          { id: "reviewer", label: "Reviewer" },
-        ]),
-        selectDescriptor("thinkingLevel", [
-          { id: "medium", label: "Medium", isDefault: true },
-          { id: "high", label: "High" },
-        ]),
-      ]),
-      modelOptions: selections(["profile", "reviewer"], ["thinkingLevel", "high"]),
-      planModeEnabled: false,
-    });
-
-    expect(state.modelOptionsForDispatch).toEqual(
-      selections(["profile", "reviewer"], ["thinkingLevel", "high"]),
-    );
   });
 });
 

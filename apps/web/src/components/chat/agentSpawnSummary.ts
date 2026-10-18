@@ -9,12 +9,10 @@ export function deriveAgentSpawnSummary({
   agents,
   agentCount,
   coordinatorStatus,
-  workflowMembersAuthoritative = false,
 }: {
   agents: ReadonlyArray<Pick<RuntimeSubagent, "kind" | "status">>;
   agentCount: number;
   coordinatorStatus?: RuntimeSubagent["status"] | undefined;
-  workflowMembersAuthoritative?: boolean;
 }) {
   const working = agents.filter((agent) => isActiveSubagentStatus(agent.status)).length;
   const failed = agents.filter((agent) => agent.status === "failed").length;
@@ -24,14 +22,9 @@ export function deriveAgentSpawnSummary({
   ).length;
   const batches = agents.filter((agent) => agent.kind === "subagent_batch").length;
   const individuals = agentCount - batches;
-  // Native coordinators can run between launches. Pi coordinators are synthetic
-  // containers without a terminal event, so their observed members are authoritative.
+  // Workflow coordinators can keep running between dynamic member launches.
   const live =
-    workflowMembersAuthoritative && coordinatorStatus !== undefined && agents.length > 0
-      ? agents.some((agent) => !isTerminalSubagentStatus(agent.status))
-      : coordinatorStatus !== undefined
-        ? !isTerminalSubagentStatus(coordinatorStatus)
-        : working > 0;
+    coordinatorStatus !== undefined ? !isTerminalSubagentStatus(coordinatorStatus) : working > 0;
   const subjects = [
     individuals > 0 ? `${individuals} subagent${individuals === 1 ? "" : "s"}` : null,
     batches > 0

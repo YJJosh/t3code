@@ -1,5 +1,5 @@
 export type MobileBrand = "t3code" | "dulli";
-export type MobileStageLabel = "Alpha" | "Dev" | "Nightly";
+export type MobileStageLabel = "Beta" | "Dev" | "Nightly";
 
 export function resolveMobileBrand(appBrand: unknown): MobileBrand {
   return appBrand === "dulli" ? "dulli" : "t3code";
@@ -16,5 +16,5 @@ export function resolveMobileBrandWord(appBrand: unknown): "Code" | "Dulli" {
 export function resolveMobileStageLabel(appVariant: unknown): MobileStageLabel {
   if (appVariant === "development") return "Dev";
   if (appVariant === "preview") return "Nightly";
-  return "Alpha";
+  return "Beta";
 }

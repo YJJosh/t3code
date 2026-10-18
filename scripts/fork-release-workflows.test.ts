@@ -92,6 +92,8 @@ describe("fork release workflow safety", () => {
     ["0.0.40-dulli.2", "0.0.40-dulli.2"],
     ["v0.0.40-dulli.2", "0.0.40-dulli.2"],
     ["0.0.41-dulli.0", "0.0.41-dulli.0"],
+    ["0.1.0-dulli.1", "0.1.0-dulli.1"],
+    ["v0.2.15-dulli.3", "0.2.15-dulli.3"],
   ])("accepts the migration and Dulli release sequence (%s)", (version, normalized) => {
     expect(validateReleaseVersion(version)).toEqual({
       status: 0,
@@ -121,10 +123,19 @@ describe("fork release workflow safety", () => {
     "0.0.40-dulli.01",
     "0.0.40-dulli.1+build",
     "0.0.40-dulli.1\n",
+    "1.0.0-dulli.1",
+    "0.01.0-dulli.1",
   ])("rejects non-canonical new release versions (%s)", (version) => {
     const result = validateReleaseVersion(version);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("0.0.<patch>-dulli.<build>");
+    expect(result.stderr).toContain("0.<minor>.<patch>-dulli.<build>");
+    expect(result.output).toBe("");
+  });
+
+  it("rejects patch numbers that overflow the Android versionCode slot", () => {
+    const result = validateReleaseVersion("0.1.1000-dulli.1");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("versionCode");
     expect(result.output).toBe("");
   });
 
@@ -132,6 +143,7 @@ describe("fork release workflow safety", () => {
     ["v0.0.45-dulli.11", "v0.0.45-dulli.10"],
     ["v0.0.46-dulli.0", "v0.0.45-dulli.10"],
     ["v0.0.45-dulli.5", "v0.0.45-dulli.3"],
+    ["v0.1.0-dulli.1", "v0.0.45-dulli.10"],
   ])("compares %s release notes against the previous Dulli tag", (current, previous) => {
     const tags = [
       "v0.0.40-pi.1",

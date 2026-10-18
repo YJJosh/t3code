@@ -4,19 +4,12 @@ import { View } from "react-native";
 
 import { AppText as Text } from "./AppText";
 import { resolveMobileBrandName } from "../lib/mobileBranding";
+import { T3_CODE_BRAND_MARK_SOURCE } from "./brandAssets";
 
 const appVariant = Constants.expoConfig?.extra?.appVariant;
 const brandName = resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand);
-const BRAND_MARK_SOURCE =
-  Constants.expoConfig?.extra?.appBrand === "dulli"
-    ? require("../../../../assets/dulli/dulli-universal-1024.png")
-    : appVariant === "development"
-      ? require("../../../../assets/dev/blueprint-ios-1024.png")
-      : appVariant === "preview"
-        ? require("../../../../assets/nightly/nightly-ios-1024.png")
-        : require("../../../../assets/prod/black-ios-1024.png");
 const DEFAULT_STAGE_LABEL =
-  appVariant === "development" ? "Dev" : appVariant === "preview" ? "Preview" : "Alpha";
+  appVariant === "development" ? "Dev" : appVariant === "preview" ? "Preview" : "Beta";
 
 export function BrandMark(props: { readonly compact?: boolean; readonly stageLabel?: string }) {
   const compact = props.compact ?? false;
@@ -26,7 +19,7 @@ export function BrandMark(props: { readonly compact?: boolean; readonly stageLab
   return (
     <View className="flex-row items-center gap-3">
       <Image
-        source={BRAND_MARK_SOURCE}
+        source={T3_CODE_BRAND_MARK_SOURCE}
         accessibilityIgnoresInvertColors
         style={{
           width: iconSize,

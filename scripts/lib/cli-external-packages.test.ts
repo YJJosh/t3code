@@ -12,7 +12,7 @@ import serverPackageJson from "../../apps/server/package.json" with { type: "jso
 import { findEsmImportsOfExternalPackages } from "./cli-executable-imports.ts";
 
 import {
-  CLI_RUNTIME_EXTERNAL_PREFIXES,
+  isRuntimeExternalCliDependency,
   findInlinedExternalPackages,
   isExternalCliDependency,
   selectCliRuntimeExternalDependencies,
@@ -35,7 +35,7 @@ const decodeManifest = Schema.decodeUnknownSync(Schema.fromJsonString(PackageMan
 
 describe("shouldBundleCliDependency", () => {
   it("bundles ordinary runtime dependencies", () => {
-    for (const id of ["effect", "@effect/platform", "hono", "@t3tools/shared/hostProcess"]) {
+    for (const id of ["effect", "@effect/platform", "hono", "@t3tools/shared/HostProcess"]) {
       assert.strictEqual(shouldBundleCliDependency(id), true, id);
     }
   });
@@ -92,10 +92,13 @@ describe("selectCliRuntimeExternalDependencies", () => {
     assert.deepStrictEqual(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackageJson.dependencies)).sort(),
       [
+        "@cursor/sdk",
         "@earendil-works/pi-coding-agent",
         "@ff-labs/fff-node",
         "@napi-rs/keyring",
         "node-pty",
+        "playwright-core",
+        "undici",
         "workler",
       ],
     );
@@ -161,8 +164,7 @@ it.layer(NodeServices.layer)("external package dependency closure", (it) => {
 
   // Runtime-external only. The build-only entries resolve `bun:*` and are never
   // loaded by Node, so their closure genuinely does not need to be external.
-  const isRuntimeExternal = (name: string) =>
-    CLI_RUNTIME_EXTERNAL_PREFIXES.some((prefix) => name.startsWith(prefix));
+  const isRuntimeExternal = isRuntimeExternalCliDependency;
 
   // A cold walk of the pnpm store can exceed the root timeout when the Windows
   // lane runs four filesystem-heavy workspace suites at once.

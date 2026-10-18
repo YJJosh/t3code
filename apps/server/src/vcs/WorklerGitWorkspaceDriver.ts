@@ -1,4 +1,6 @@
 import * as Effect from "effect/Effect";
+import type * as FileSystem from "effect/FileSystem";
+import { initializeWorkspaceSubmodules } from "./initializeWorkspaceSubmodules.ts";
 import type * as Path from "effect/Path";
 import * as Result from "effect/Result";
 
@@ -182,7 +184,11 @@ export const keepWorklerCloneRefs = Effect.fn("WorklerGitWorkspaceDriver.keepClo
       input.clone,
       ...refspecs,
     ]);
-  const copied = yield* fetchFromClone([...copy, "+refs/t3/checkpoints/*:refs/t3/checkpoints/*"]);
+  const copied = yield* fetchFromClone([
+    ...copy,
+    "+refs/t3/checkpoints/*:refs/t3/checkpoints/*",
+    "+refs/t3/orchestration-v2/checkpoints/*:refs/t3/orchestration-v2/checkpoints/*",
+  ]);
   if (copied.exitCode !== 0) {
     return yield* kept(
       `its branches couldn't be copied into ${input.source} without losing work there. ${copied.stderr.trim()}`,
@@ -232,6 +238,7 @@ export const withWorklerWorkspaceSupport = (input: {
   readonly git: GitVcsDriver.GitVcsDriver["Service"];
   readonly workler: WorklerWorkspaceService.WorklerWorkspaceService["Service"];
   readonly path: Path.Path;
+  readonly fileSystem?: FileSystem.FileSystem;
   readonly settings?: ServerSettingsService["Service"] | undefined;
 }): GitVcsDriver.GitVcsDriver["Service"] => {
   const resolveRoot = Effect.fn("WorklerGitWorkspaceDriver.resolveRoot")(function* (cwd: string) {
@@ -272,8 +279,7 @@ export const withWorklerWorkspaceSupport = (input: {
     if (!(yield* worklerEnabled(createInput.cwd)) || createInput.path !== null) {
       return yield* input.git.createWorktree(createInput, options);
     }
-    // Workler only reports the claim, after the clone; git's checkout progress and
-    // submodule options apply to the plain-worktree path above.
+    // Workler reports the claim after cloning; submodule work follows that claim.
 
     const root = yield* resolveRoot(createInput.cwd);
     const existing = yield* input.workler
@@ -352,6 +358,15 @@ export const withWorklerWorkspaceSupport = (input: {
         detail: "Workler returned a workspace path outside the repository's .worktrees directory.",
       });
     }
+
+    if (input.fileSystem)
+      yield* initializeWorkspaceSubmodules({
+        cwd: managedWorkspace.path,
+        fileSystem: input.fileSystem,
+        path: input.path,
+        git: input.git,
+        options,
+      });
 
     if (createInput.newRefName && createInput.baseRefName) {
       const remoteNames = yield* input.git
@@ -495,9 +510,16 @@ export const withWorklerWorkspaceSupport = (input: {
     const workspaces = yield* input.workler
       .listWorkspaces(root)
       .pipe(Effect.orElseSucceed(() => []));
-    const requestedPath = input.path.normalize(
+    const resolvedPath = input.path.normalize(
       input.path.resolve(removeInput.cwd, removeInput.path),
     );
+    // Git canonicalizes parent symlinks (notably /var on macOS), while the
+    // caller can retain the path originally returned by Workler.
+    const requestedPath = input.fileSystem
+      ? yield* input.fileSystem
+          .realPath(resolvedPath)
+          .pipe(Effect.orElseSucceed(() => resolvedPath))
+      : resolvedPath;
     const workspace = workspaces.find((candidate) => {
       const managed = normalizeManagedWorkspace(input.path, root, candidate);
       return managed?.path === requestedPath;

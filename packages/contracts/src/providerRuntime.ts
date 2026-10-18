@@ -15,11 +15,7 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 import { ProviderUsageLimitsUpdate } from "./providerUsageLimits.ts";
-import {
-  ModelSelection,
-  OrchestrationMessagePhase,
-  ProviderApprovalOption,
-} from "./orchestration.ts";
+import { ProviderApprovalOption } from "./providerPolicy.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -32,7 +28,6 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("claude.sdk.permission"),
   Schema.Literal("codex.sdk.thread-event"),
   Schema.Literal("opencode.sdk.event"),
-  Schema.Literal("pi.rpc"),
   Schema.Literal("acp.jsonrpc"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
 ]);
@@ -260,7 +255,6 @@ const ThreadStateChangedPayload = Schema.Struct({
 export type ThreadStateChangedPayload = typeof ThreadStateChangedPayload.Type;
 
 const ThreadMetadataUpdatedPayload = Schema.Struct({
-  modelSelection: Schema.optional(ModelSelection),
   name: Schema.optional(TrimmedNonEmptyStringSchema),
   metadata: Schema.optional(UnknownRecordSchema),
 });
@@ -283,6 +277,12 @@ export const ThreadTokenUsageSnapshot = Schema.Struct({
   durationMs: Schema.optional(NonNegativeInt),
   compactsAutomatically: Schema.optional(Schema.Boolean),
   autoCompactThreshold: Schema.optional(PositiveInt),
+  cost: Schema.optional(
+    Schema.Struct({
+      amount: Schema.Number.check(Schema.isFinite()),
+      currency: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(32)),
+    }),
+  ),
 });
 export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 
@@ -436,7 +436,6 @@ export const ToolActivitySource = Schema.Struct({
 export type ToolActivitySource = typeof ToolActivitySource.Type;
 
 export const ItemLifecyclePayload = Schema.Struct({
-  phase: Schema.optional(OrchestrationMessagePhase),
   itemType: CanonicalItemType,
   status: Schema.optional(RuntimeItemStatus),
   title: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -492,6 +491,8 @@ export const UserInputQuestion = Schema.Struct({
   question: TrimmedNonEmptyStringSchema,
   options: Schema.Array(UserInputQuestionOption),
   allowCustomAnswer: Schema.optional(Schema.Boolean),
+  /** Editable initial text. Answers preserve whitespace and allow an empty string when present. */
+  initialAnswer: Schema.optional(Schema.String),
   multiSelect: Schema.optional(Schema.Boolean).pipe(
     Schema.withConstructorDefault(Effect.succeed(false)),
   ),
@@ -499,10 +500,8 @@ export const UserInputQuestion = Schema.Struct({
 export type UserInputQuestion = typeof UserInputQuestion.Type;
 
 export const UserInputRequestedPayload = Schema.Struct({
-  /** Native dialogs that accept an empty answer map as cancellation. */
-  dismissible: Schema.optional(Schema.Boolean),
   questions: Schema.Array(UserInputQuestion),
-  responseMode: Schema.optional(Schema.Literals(["message", "terminal"])),
+  responseMode: Schema.optional(Schema.Literal("message")),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
@@ -544,43 +543,6 @@ export const TaskRunHandles = Schema.Struct({
 export type TaskRunHandles = typeof TaskRunHandles.Type;
 
 /**
- * Watch-loop task types: Monitor-tool tasks plus background shells (a shell
- * that outlives its turn is in practice a watch loop). Canonical single copy —
- * the server liveness registry, ingestion's agentKind stamp, and the client
- * fold's legacy fallback all classify with these sets.
- */
-export const MONITOR_TASK_TYPES: ReadonlySet<string> = new Set([
-  "monitor",
-  "monitor_mcp",
-  "local_bash",
-  "shell",
-]);
-/** Task types that are neither agents nor watch loops (plan-mode bookkeeping). */
-export const INERT_TASK_TYPES: ReadonlySet<string> = new Set(["plan", "dream"]);
-
-/**
- * Agent-vs-background classification, stamped by ingestion as `agentKind` so
- * persisted rows are self-describing. A deliberate denylist: the SDK's
- * agent-flavored type names drift (subagent, local_agent, local_workflow, …)
- * and an allowlist silently dropped real subagents when "local_agent"
- * appeared. A task launched from inside a subagent (agentId set) is
- * agent-internal background work UNLESS it is itself agent-flavored — a
- * nested agent can outlive its parent and stays in the roster.
- */
-export function classifyTaskAgentKind(input: {
-  readonly taskType?: string | undefined;
-  readonly agentId?: string | undefined;
-}): "agent" | "background" {
-  const { taskType, agentId } = input;
-  const nonAgentType =
-    taskType !== undefined && (MONITOR_TASK_TYPES.has(taskType) || INERT_TASK_TYPES.has(taskType));
-  if (agentId !== undefined && agentId.trim().length > 0) {
-    return taskType === undefined || nonAgentType ? "background" : "agent";
-  }
-  return nonAgentType ? "background" : "agent";
-}
-
-/**
  * Optional agent-identity linkage carried on every task lifecycle payload.
  * Repeated on progress and terminal rows (not just start) so client folds can
  * reconstruct an agent even when its start row aged out of activity retention.
@@ -591,7 +553,7 @@ const taskAgentLinkageFields = {
    * every row so folds can classify without the start row. */
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
   /**
-   * Server-stamped classification (classifyTaskAgentKind at ingestion).
+   * Server-stamped classification, set at ingestion.
    * Clients trust this stamp outright; rows without it (legacy, pre-stamp)
    * fall back to client-side heuristics.
    */
@@ -648,24 +610,6 @@ export const RuntimeTaskStatus = Schema.Literals([
 ]);
 export type RuntimeTaskStatus = typeof RuntimeTaskStatus.Type;
 
-/**
- * Sanitized child-runtime activity mirrored by providers that expose a
- * subagent transcript. Durable events retain their manager sequence while
- * live-only updates replace the matching live projection row.
- */
-export const RuntimeSubagentTranscriptEvent = Schema.Struct({
-  managerId: TrimmedNonEmptyStringSchema,
-  sequence: NonNegativeInt,
-  timestamp: Schema.String,
-  kind: TrimmedNonEmptyStringSchema,
-  activity: Schema.Struct({
-    type: TrimmedNonEmptyStringSchema,
-    data: Schema.Record(Schema.String, Schema.Unknown),
-    liveOnly: Schema.optional(Schema.Boolean),
-  }),
-});
-export type RuntimeSubagentTranscriptEvent = typeof RuntimeSubagentTranscriptEvent.Type;
-
 const TaskProgressPayload = Schema.Struct({
   taskId: RuntimeTaskId,
   description: TrimmedNonEmptyStringSchema,
@@ -676,7 +620,6 @@ const TaskProgressPayload = Schema.Struct({
   /** Present on synthesized member/child progress rows that carry state. */
   status: Schema.optional(RuntimeTaskStatus),
   error: Schema.optional(TrimmedNonEmptyStringSchema),
-  transcriptEvent: Schema.optional(RuntimeSubagentTranscriptEvent),
   ...taskAgentLinkageFields,
 });
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;

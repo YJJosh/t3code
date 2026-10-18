@@ -5,7 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -249,7 +249,7 @@ describe("WorklerWorkspaceService", () => {
 
   // A worker stuck in a git call can only stop once that call returns, so a
   // cancelled read must hold its place in the read limit until then.
-  it.effect.skipIf(HostProcessPlatform.defaultValue() === "win32")(
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     "waits for a cancelled worker to stop before the cancel finishes",
     () =>
       Effect.gen(function* () {

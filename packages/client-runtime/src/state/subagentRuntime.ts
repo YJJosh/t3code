@@ -1,23 +1,15 @@
 /**
- * Native-provider subagent observability: a tolerant fold over persisted
- * task.* / tool.* thread activities into orchestration-v2-shaped subagent
- * state, plus the source-neutral panel model every client renders.
- *
- * This module is deliberately legacy-bridge code. When orchestration-v2's
- * subagent projection is available for a thread, deriveAgentPanelModel
- * prefers it (see the v2Projection parameter) and the fold is skipped; when
- * the v1 orchestrator is retired this file is deleted. Field names and
- * transition semantics copy the v2 stack (#4779) exactly so that swap is
- * mechanical.
- *
- * Invariants encoded here trace to shipped bugs in the prior PRs (#4220,
- * #3650, #4662): reusable identity vs one-shot activations, idle as a real
- * nonterminal state, provider-specific usage merges, first-write terminal
- * timestamps, reactivation clearing terminal detail, and order-robust
- * folding (completion can create an agent; a late start only fills
- * metadata).
+ * Subagent status helpers shared by web and mobile, and the runtime shape the
+ * web agent rows render.
  */
-import type { OrchestrationThreadActivity } from "@t3tools/contracts";
+import { groupBy } from "effect/Array";
+import * as DateTime from "effect/DateTime";
+import type {
+  OrchestrationV2Subagent,
+  OrchestrationV2SubagentWorkflow,
+  OrchestrationV2TurnItem,
+} from "@t3tools/contracts";
+import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 
 export type RuntimeSubagentStatus =
   | "pending"
@@ -44,63 +36,23 @@ export interface SubagentActivityEntry {
   readonly summary: string;
 }
 
-export type SubagentTranscriptPart =
-  | { readonly type: "text"; readonly text: string }
-  | { readonly type: "thinking"; readonly text: string; readonly redacted?: boolean }
-  | {
-      readonly type: "toolCall";
-      readonly id: string;
-      readonly name: string;
-      readonly argsPreview?: string;
-    };
-
-export type SubagentTranscriptItem =
-  | { readonly sourceId: string; readonly kind: "user"; readonly text: string }
-  | {
-      readonly sourceId: string;
-      readonly kind: "assistant";
-      readonly parts: ReadonlyArray<SubagentTranscriptPart>;
-    }
-  | {
-      readonly sourceId: string;
-      readonly kind: "toolResult";
-      readonly id: string;
-      readonly name: string;
-      readonly isError: boolean;
-      readonly outputPreview?: string;
-    };
-
-export interface SubagentLiveTool {
-  readonly id: string;
-  readonly name: string;
-  readonly argsPreview?: string;
-  readonly outputPreview?: string;
-}
-
-export interface SubagentTranscript {
-  readonly items: ReadonlyArray<SubagentTranscriptItem>;
-  readonly droppedItems: number;
-  readonly liveAssistant: { readonly text: string; readonly thinking: string } | null;
-  readonly liveTools: ReadonlyArray<SubagentLiveTool>;
-}
-
 export interface SubagentWorkflowPhase {
   readonly index: number;
   readonly title: string;
 }
 
+// Optional-and-undefined, matching the contract's own optionals.
 export interface SubagentRunHandles {
-  readonly runId?: string;
-  readonly scriptPath?: string;
-  readonly transcriptDir?: string;
-  readonly sessionUrl?: string;
+  readonly runId?: string | undefined;
+  readonly scriptPath?: string | undefined;
+  readonly transcriptDir?: string | undefined;
+  readonly sessionUrl?: string | undefined;
 }
 
 export interface RuntimeSubagent {
   readonly id: string;
   readonly kind: "subagent" | "subagent_batch" | "workflow" | "workflow_agent";
   readonly title: string;
-  readonly prompt: string | null;
   readonly role: string | null;
   readonly model: string | null;
   readonly effort: string | null;
@@ -118,12 +70,11 @@ export interface RuntimeSubagent {
   readonly phaseTitle: string | null;
   readonly attempt: number | null;
   readonly workflowName: string | null;
-  /** Turn that first introduced this task, used to separate prompt-spawn batches. */
-  readonly originTurnId?: string | null;
   readonly phases: ReadonlyArray<SubagentWorkflowPhase>;
   readonly runHandles: SubagentRunHandles | null;
+  /** The thread this agent owns, when it has one. */
+  readonly childThreadId: string | null;
   readonly recentActivity: ReadonlyArray<SubagentActivityEntry>;
-  readonly transcript: SubagentTranscript;
   /** First retained observation, used as the roster's stable display order. */
   readonly firstSeenAt: string;
   readonly startedAt: string | null;
@@ -145,830 +96,15 @@ export function isTerminalSubagentStatus(status: RuntimeSubagentStatus): boolean
 /** Active = the user may still need to care while it runs. Idle is settled-ish
  * but resumable; waiting counts as active because it needs the user. */
 export function isActiveSubagentStatus(status: RuntimeSubagentStatus): boolean {
-  return status === "pending" || status === "running" || status === "waiting";
+  return isOrchestrationV2WorkActive(status);
 }
 
-const RECENT_ACTIVITY_LIMIT = 6;
-const SUMMARY_CHAR_LIMIT = 180;
-const ROSTER_LIMIT = 100;
-
-/**
- * True when this activity's payload does NOT belong on the Agents surface.
- * Classification happens exactly once, server-side at ingestion
- * (classifyTaskAgentKind → the persisted agentKind stamp); the client only
- * reads it. Rows without a stamp — legacy threads, pre-stamp servers — are
- * background by definition: they render in the ordinary work log, exactly
- * as they did before this feature existed.
- */
-export function isBackgroundTaskActivity(payload: Record<string, unknown>): boolean {
-  return payload.agentKind !== "agent";
+export function isLiveSubagentTurnItem(item: OrchestrationV2TurnItem): boolean {
+  return item.type === "subagent" && isOrchestrationV2WorkActive(item.status);
 }
 
-function bounded(value: string): string {
-  return value.length <= SUMMARY_CHAR_LIMIT ? value : `${value.slice(0, SUMMARY_CHAR_LIMIT - 1)}…`;
-}
-
-/** Appends to the ring buffer, deduping consecutive identical summaries. */
-function appendActivity(
-  entries: ReadonlyArray<SubagentActivityEntry>,
-  at: string,
-  summary: string,
-): ReadonlyArray<SubagentActivityEntry> {
-  const boundedSummary = bounded(summary);
-  if (entries.length > 0 && entries[entries.length - 1]?.summary === boundedSummary) {
-    return entries;
-  }
-  const next = [...entries, { at, summary: boundedSummary }];
-  return next.length > RECENT_ACTIVITY_LIMIT ? next.slice(-RECENT_ACTIVITY_LIMIT) : next;
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function asCount(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-/* eslint-disable no-control-regex -- Terminal transcript sanitization intentionally strips control sequences. */
-function sanitizeTranscriptText(value: string): string {
-  return value
-    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
-    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, "");
-}
-/* eslint-enable no-control-regex */
-
-function transcriptPreview(value: unknown, maxLength = 2_000): string | undefined {
-  if (value === undefined) return undefined;
-  let raw: string;
-  try {
-    raw = typeof value === "string" ? value : JSON.stringify(value);
-  } catch {
-    raw = String(value);
-  }
-  const clean = sanitizeTranscriptText(raw).trim();
-  if (!clean) return undefined;
-  return clean.length > maxLength ? `${clean.slice(0, maxLength - 1)}…` : clean;
-}
-
-function transcriptContentText(value: unknown): string {
-  if (typeof value === "string") return sanitizeTranscriptText(value);
-  if (!Array.isArray(value)) return "";
-  return value
-    .flatMap((candidate) => {
-      const part = asRecord(candidate);
-      if (part?.type === "text" && typeof part.text === "string") {
-        return [sanitizeTranscriptText(part.text)];
-      }
-      return part?.type === "image" ? ["[image]"] : [];
-    })
-    .join("\n");
-}
-
-function transcriptAssistantParts(
-  message: Record<string, unknown>,
-): ReadonlyArray<SubagentTranscriptPart> {
-  if (!Array.isArray(message.content)) return [];
-  return message.content.flatMap((candidate): ReadonlyArray<SubagentTranscriptPart> => {
-    const part = asRecord(candidate);
-    if (!part) return [];
-    if (part.type === "text" && typeof part.text === "string") {
-      return [{ type: "text", text: sanitizeTranscriptText(part.text) }];
-    }
-    if (part.type === "thinking") {
-      const thinking =
-        typeof part.thinking === "string"
-          ? part.thinking
-          : typeof part.text === "string"
-            ? part.text
-            : "";
-      return thinking
-        ? [
-            {
-              type: "thinking",
-              text: sanitizeTranscriptText(thinking),
-              ...(part.redacted === true ? { redacted: true } : {}),
-            },
-          ]
-        : [];
-    }
-    if (part.type === "toolCall") {
-      const argsPreview = transcriptPreview(part.arguments ?? part.args, 500);
-      return [
-        {
-          type: "toolCall",
-          id: asString(part.id) ?? "?",
-          name: asString(part.name) ?? "tool",
-          ...(argsPreview ? { argsPreview } : {}),
-        },
-      ];
-    }
-    return [];
-  });
-}
-
-const MAX_TRANSCRIPT_ITEMS = 1_000;
-const MAX_TRANSCRIPT_CHARS = 2 * 1024 * 1024;
-
-function transcriptItemChars(item: SubagentTranscriptItem): number {
-  if (item.kind === "user") return item.text.length;
-  if (item.kind === "toolResult") return item.name.length + (item.outputPreview?.length ?? 0);
-  return item.parts.reduce(
-    (total, part) =>
-      total +
-      (part.type === "toolCall"
-        ? part.name.length + (part.argsPreview?.length ?? 0)
-        : part.text.length),
-    0,
-  );
-}
-
-function pushTranscriptItem(state: MutableTranscript, item: SubagentTranscriptItem): void {
-  state.items.push(item);
-  state.retainedChars += transcriptItemChars(item);
-  while (state.items.length > MAX_TRANSCRIPT_ITEMS || state.retainedChars > MAX_TRANSCRIPT_CHARS) {
-    const removed = state.items.shift();
-    if (!removed) break;
-    state.retainedChars -= transcriptItemChars(removed);
-    state.droppedItems += 1;
-  }
-}
-
-function applyTranscriptEvent(state: MutableTranscript, value: unknown): void {
-  const event = asRecord(value);
-  const activity = asRecord(event?.activity);
-  const data = asRecord(activity?.data) ?? {};
-  const sourceId = `${asString(event?.managerId) ?? "unknown"}:${asCount(event?.sequence) ?? state.items.length}`;
-  switch (activity?.type) {
-    case "message_update": {
-      const message = asRecord(data.message);
-      if (message?.role !== "assistant") break;
-      const parts = transcriptAssistantParts(message);
-      state.liveAssistant = {
-        text: parts
-          .filter((part) => part.type === "text")
-          .map((part) => part.text)
-          .join("\n"),
-        thinking: parts
-          .filter((part) => part.type === "thinking")
-          .map((part) => (part.redacted ? "[redacted reasoning]" : part.text))
-          .join("\n"),
-      };
-      break;
-    }
-    case "message_end": {
-      const message = asRecord(data.message);
-      if (!message) break;
-      if (message.role === "user") {
-        const text = transcriptContentText(message.content);
-        if (text) pushTranscriptItem(state, { sourceId, kind: "user", text });
-      } else if (message.role === "assistant") {
-        const parts = transcriptAssistantParts(message);
-        if (parts.length > 0) {
-          pushTranscriptItem(state, { sourceId, kind: "assistant", parts });
-        }
-        state.liveAssistant = null;
-      } else if (message.role === "toolResult") {
-        const outputPreview = transcriptPreview(transcriptContentText(message.content));
-        pushTranscriptItem(state, {
-          sourceId,
-          kind: "toolResult",
-          id: asString(message.toolCallId) ?? "?",
-          name: asString(message.toolName) ?? "tool",
-          isError: message.isError === true,
-          ...(outputPreview ? { outputPreview } : {}),
-        });
-      }
-      break;
-    }
-    case "tool_execution_start":
-    case "provider_tool_execution_start": {
-      const id = asString(data.toolCallId) ?? "?";
-      const argsPreview = transcriptPreview(data.args, 500);
-      const next: SubagentLiveTool = {
-        id,
-        name: asString(data.toolName) ?? "tool",
-        ...(argsPreview ? { argsPreview } : {}),
-      };
-      state.liveTools = [...state.liveTools.filter((tool) => tool.id !== id), next];
-      break;
-    }
-    case "tool_execution_update": {
-      const id = asString(data.toolCallId) ?? "?";
-      const partial = asRecord(data.partialResult);
-      const outputPreview = transcriptPreview(transcriptContentText(partial?.content), 500);
-      state.liveTools = state.liveTools.map((tool) =>
-        tool.id === id && outputPreview ? { ...tool, outputPreview } : tool,
-      );
-      break;
-    }
-    case "tool_execution_end": {
-      const id = asString(data.toolCallId) ?? "?";
-      state.liveTools = state.liveTools.filter((tool) => tool.id !== id);
-      break;
-    }
-    case "provider_tool_execution_end": {
-      const id = asString(data.toolCallId) ?? "?";
-      const current = state.liveTools.find((tool) => tool.id === id);
-      const outputPreview = transcriptPreview(data.error ?? data.result);
-      pushTranscriptItem(state, {
-        sourceId,
-        kind: "toolResult",
-        id,
-        name: asString(data.toolName) ?? current?.name ?? "tool",
-        isError: data.isError === true,
-        ...(outputPreview ? { outputPreview } : {}),
-      });
-      state.liveTools = state.liveTools.filter((tool) => tool.id !== id);
-      break;
-    }
-  }
-}
-
-function asUsage(value: unknown): SubagentUsage | undefined {
-  if (typeof value !== "object" || value === null) {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  const totalTokens = asCount(record.totalTokens);
-  if (totalTokens === undefined) {
-    return undefined;
-  }
-  const usage: {
-    totalTokens: number;
-    inputTokens?: number;
-    cachedInputTokens?: number;
-    outputTokens?: number;
-    reasoningOutputTokens?: number;
-    toolUses?: number;
-    durationMs?: number;
-  } = { totalTokens };
-  const inputTokens = asCount(record.inputTokens);
-  if (inputTokens !== undefined) usage.inputTokens = inputTokens;
-  const cachedInputTokens = asCount(record.cachedInputTokens);
-  if (cachedInputTokens !== undefined) usage.cachedInputTokens = cachedInputTokens;
-  const outputTokens = asCount(record.outputTokens);
-  if (outputTokens !== undefined) usage.outputTokens = outputTokens;
-  const reasoningOutputTokens = asCount(record.reasoningOutputTokens);
-  if (reasoningOutputTokens !== undefined) usage.reasoningOutputTokens = reasoningOutputTokens;
-  const toolUses = asCount(record.toolUses);
-  if (toolUses !== undefined) usage.toolUses = toolUses;
-  const durationMs = asCount(record.durationMs);
-  if (durationMs !== undefined) usage.durationMs = durationMs;
-  return usage;
-}
-
-/**
- * Provider-specific usage merge (#4779 semantics, verbatim):
- * - max-merge (Codex-style cumulative frames): field-wise maximum, idempotent
- *   under duplicate or late frames. Cumulative totals never shrink.
- * - accumulate (Claude-style activation deltas): not needed at this layer —
- *   Claude's task_progress usage is itself cumulative per task, so the fold
- *   also max-merges. The distinction matters when v2 sums activations.
- * Field-wise: a terminal payload carrying only totalTokens must not wipe a
- * known breakdown.
- */
-function mergeUsageMax(
-  current: SubagentUsage | null,
-  incoming: SubagentUsage | undefined,
-): SubagentUsage | null {
-  if (!incoming) {
-    return current;
-  }
-  if (!current) {
-    return incoming;
-  }
-  const pick = (a: number | undefined, b: number | undefined): number | undefined =>
-    a === undefined ? b : b === undefined ? a : Math.max(a, b);
-  const merged: {
-    totalTokens: number;
-    inputTokens?: number;
-    cachedInputTokens?: number;
-    outputTokens?: number;
-    reasoningOutputTokens?: number;
-    toolUses?: number;
-    durationMs?: number;
-  } = { totalTokens: Math.max(current.totalTokens, incoming.totalTokens) };
-  const inputTokens = pick(current.inputTokens, incoming.inputTokens);
-  if (inputTokens !== undefined) merged.inputTokens = inputTokens;
-  const cachedInputTokens = pick(current.cachedInputTokens, incoming.cachedInputTokens);
-  if (cachedInputTokens !== undefined) merged.cachedInputTokens = cachedInputTokens;
-  const outputTokens = pick(current.outputTokens, incoming.outputTokens);
-  if (outputTokens !== undefined) merged.outputTokens = outputTokens;
-  const reasoningOutputTokens = pick(current.reasoningOutputTokens, incoming.reasoningOutputTokens);
-  if (reasoningOutputTokens !== undefined) merged.reasoningOutputTokens = reasoningOutputTokens;
-  const toolUses = pick(current.toolUses, incoming.toolUses);
-  if (toolUses !== undefined) merged.toolUses = toolUses;
-  const durationMs = pick(current.durationMs, incoming.durationMs);
-  if (durationMs !== undefined) merged.durationMs = durationMs;
-  return merged;
-}
-
-interface MutableTranscript {
-  items: SubagentTranscriptItem[];
-  retainedChars: number;
-  droppedItems: number;
-  liveAssistant: { text: string; thinking: string } | null;
-  liveTools: SubagentLiveTool[];
-}
-
-interface MutableAgent {
-  id: string;
-  kind: RuntimeSubagent["kind"];
-  title: string;
-  prompt: string | null;
-  role: string | null;
-  model: string | null;
-  effort: string | null;
-  status: RuntimeSubagentStatus;
-  activationCount: number;
-  usage: SubagentUsage | null;
-  progress: string | null;
-  lastToolName: string | null;
-  result: string | null;
-  error: string | null;
-  outputFile: string | null;
-  parentAgentId: string | null;
-  agentIndex: number | null;
-  phaseIndex: number | null;
-  phaseTitle: string | null;
-  attempt: number | null;
-  workflowName: string | null;
-  originTurnId: string | null;
-  phases: ReadonlyArray<SubagentWorkflowPhase>;
-  runHandles: SubagentRunHandles | null;
-  recentActivity: ReadonlyArray<SubagentActivityEntry>;
-  transcriptState: MutableTranscript;
-  firstSeenAt: string;
-  startedAt: string | null;
-  completedAt: string | null;
-  updatedAt: string;
-}
-
-function kindFromPayload(
-  payload: Record<string, unknown>,
-  agentId: string,
-): RuntimeSubagent["kind"] {
-  if (payload.taskType === "subagent_batch") {
-    return "subagent_batch";
-  }
-  if (asString(payload.taskType) === "local_workflow") {
-    return "workflow";
-  }
-  if (payload.parentAgentId !== undefined || agentId.includes(":wf:")) {
-    return "workflow_agent";
-  }
-  return "subagent";
-}
-
-/** Completion can create an agent (its start may have aged out of retention). */
-function getOrCreate(
-  agents: Map<string, MutableAgent>,
-  id: string,
-  payload: Record<string, unknown>,
-  at: string,
-  originTurnId: string | null,
-): MutableAgent {
-  const existing = agents.get(id);
-  if (existing) {
-    return existing;
-  }
-  const created: MutableAgent = {
-    id,
-    kind: kindFromPayload(payload, id),
-    title: asString(payload.title) ?? asString(payload.detail) ?? id,
-    prompt: asString(payload.detail) ?? null,
-    role: asString(payload.role) ?? null,
-    model: asString(payload.model) ?? null,
-    effort: asString(payload.effort) ?? null,
-    status: "pending",
-    activationCount: 0,
-    usage: null,
-    progress: null,
-    lastToolName: null,
-    result: null,
-    error: null,
-    outputFile: null,
-    parentAgentId: asString(payload.parentAgentId) ?? null,
-    agentIndex: asCount(payload.agentIndex) ?? null,
-    phaseIndex: asCount(payload.phaseIndex) ?? null,
-    phaseTitle: asString(payload.phaseTitle) ?? null,
-    attempt: asCount(payload.attempt) ?? null,
-    workflowName: asString(payload.workflowName) ?? null,
-    originTurnId,
-    phases: [],
-    runHandles: null,
-    recentActivity: [],
-    transcriptState: {
-      items: [],
-      retainedChars: 0,
-      droppedItems: 0,
-      liveAssistant: null,
-      liveTools: [],
-    },
-    firstSeenAt: at,
-    startedAt: null,
-    completedAt: null,
-    updatedAt: at,
-  };
-  agents.set(id, created);
-  return created;
-}
-
-/** Metadata fill from any payload: never downgrades known values to null. */
-function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): void {
-  if (payload.taskType === "subagent_batch") agent.kind = "subagent_batch";
-  const title = asString(payload.title);
-  if (title) agent.title = title;
-  const role = asString(payload.role);
-  if (role) agent.role = role;
-  const detail = asString(payload.detail);
-  if (detail && agent.prompt === null) agent.prompt = detail;
-  const model = asString(payload.model);
-  if (model) agent.model = model;
-  const effort = asString(payload.effort);
-  if (effort) agent.effort = effort;
-  const parentAgentId = asString(payload.parentAgentId);
-  if (parentAgentId) {
-    agent.parentAgentId = parentAgentId;
-    if (agent.kind === "subagent") agent.kind = "workflow_agent";
-  }
-  const workflowName = asString(payload.workflowName);
-  if (workflowName) agent.workflowName = workflowName;
-  if (asString(payload.taskType) === "local_workflow") agent.kind = "workflow";
-  const agentIndex = asCount(payload.agentIndex);
-  if (agentIndex !== undefined) agent.agentIndex = agentIndex;
-  const phaseIndex = asCount(payload.phaseIndex);
-  if (phaseIndex !== undefined) agent.phaseIndex = phaseIndex;
-  const phaseTitle = asString(payload.phaseTitle);
-  if (phaseTitle) agent.phaseTitle = phaseTitle;
-  const attempt = asCount(payload.attempt);
-  if (attempt !== undefined) {
-    // A new attempt on a workflow slot is a reactivation of the same
-    // identity: clear the previous attempt's terminal detail so the status
-    // transition (terminal → running, in applyStatus) reads as a fresh run.
-    // The activation bump lives ONLY in applyStatus — bumping here too
-    // counted every retry twice (review finding: two attempts read "run 3").
-    if (agent.attempt !== null && attempt > agent.attempt) {
-      agent.result = null;
-      agent.error = null;
-      agent.completedAt = null;
-    }
-    agent.attempt = attempt;
-  }
-  const outputFile = asString(payload.outputFile);
-  if (outputFile) agent.outputFile = outputFile;
-  if (Array.isArray(payload.phases)) {
-    const phases: SubagentWorkflowPhase[] = [];
-    for (const entry of payload.phases) {
-      if (typeof entry !== "object" || entry === null) continue;
-      const record = entry as Record<string, unknown>;
-      const index = asCount(record.index);
-      const phaseName = asString(record.title);
-      if (index !== undefined && phaseName) {
-        phases.push({ index, title: phaseName });
-      }
-    }
-    if (phases.length > 0) {
-      agent.phases = phases.slice().sort((a, b) => a.index - b.index);
-    }
-  }
-  if (typeof payload.runHandles === "object" && payload.runHandles !== null) {
-    const record = payload.runHandles as Record<string, unknown>;
-    const runHandles: {
-      runId?: string;
-      scriptPath?: string;
-      transcriptDir?: string;
-      sessionUrl?: string;
-    } = {};
-    const runId = asString(record.runId);
-    if (runId) runHandles.runId = runId;
-    const scriptPath = asString(record.scriptPath);
-    if (scriptPath) runHandles.scriptPath = scriptPath;
-    const transcriptDir = asString(record.transcriptDir);
-    if (transcriptDir) runHandles.transcriptDir = transcriptDir;
-    // Defense-in-depth: the adapter already sanitizes, but payloads are not
-    // schema-validated on the read path (shipped XSS lesson).
-    const sessionUrl = asString(record.sessionUrl);
-    if (sessionUrl && /^https?:\/\//i.test(sessionUrl)) runHandles.sessionUrl = sessionUrl;
-    if (Object.keys(runHandles).length > 0) {
-      agent.runHandles = { ...agent.runHandles, ...runHandles };
-    }
-  }
-}
-
-function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: string): void {
-  const wasTerminal = isTerminalSubagentStatus(agent.status);
-  const isTerminal = isTerminalSubagentStatus(status);
-  if (isTerminal) {
-    agent.transcriptState.liveAssistant = null;
-    agent.transcriptState.liveTools = [];
-  }
-  if (wasTerminal && isTerminal) {
-    // Duplicate terminal events are idempotent: first write wins, timestamps
-    // don't slide.
-    return;
-  }
-  if ((wasTerminal || agent.status === "idle") && (status === "running" || status === "pending")) {
-    // Reactivation: same identity, new run. Clear the previous run's terminal
-    // detail so a live card never shows the prior run's output.
-    agent.activationCount += 1;
-    agent.result = null;
-    agent.error = null;
-    agent.completedAt = null;
-    if (status === "running") {
-      agent.startedAt = at;
-    }
-  }
-  if (status === "running" && agent.startedAt === null) {
-    agent.startedAt = at;
-  }
-  if (isTerminal && agent.completedAt === null) {
-    agent.completedAt = at;
-  }
-  agent.status = status;
-}
-
-// Map, not object literal: payloads aren't schema-validated on the read
-// path, so a status like "toString" must miss instead of resolving an
-// inherited Function through the prototype chain.
-const TASK_COMPLETED_STATUS: ReadonlyMap<string, RuntimeSubagentStatus> = new Map([
-  ["completed", "completed"],
-  ["failed", "failed"],
-  ["stopped", "interrupted"],
-]);
-
-const KNOWN_STATUSES: ReadonlySet<string> = new Set([
-  "pending",
-  "running",
-  "waiting",
-  "idle",
-  "completed",
-  "failed",
-  "cancelled",
-  "interrupted",
-]);
-
-function asRuntimeStatus(value: unknown): RuntimeSubagentStatus | undefined {
-  return typeof value === "string" && KNOWN_STATUSES.has(value)
-    ? (value as RuntimeSubagentStatus)
-    : undefined;
-}
-
-/**
- * Folds a thread's persisted activities into subagent state. Tolerant by
- * construction: malformed rows are skipped individually; unknown kinds are
- * ignored. Pure — memoize by activity-list identity at the atom layer.
- *
- * sessionLive=false derives interruption: background tasks die with their
- * provider session, so agents whose terminal rows were lost (server
- * restart, crash) must not read as running forever (review finding: a dead
- * session left a panel full of "Working" agents while the sidebar showed
- * nothing). Idle is preserved — a resumable Codex child stays resumable.
- */
-export function foldSubagentActivities(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-  options?: { readonly sessionLive?: boolean },
-): ReadonlyArray<RuntimeSubagent> {
-  const agents = new Map<string, MutableAgent>();
-
-  for (const activity of activities) {
-    if (typeof activity.payload !== "object" || activity.payload === null) {
-      continue;
-    }
-    const payload = activity.payload as Record<string, unknown>;
-    const at = activity.createdAt;
-
-    switch (activity.kind) {
-      case "task.started": {
-        const taskId = asString(payload.taskId);
-        if (!taskId) break;
-        // Only real agents join the roster. Shells, monitors, and plan-mode
-        // tasks are background work — they render in the ordinary work log,
-        // not the Agents surface (a "Run 12s stall" shell is not a subagent).
-        if (isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
-        fillMetadata(agent, payload);
-        // Order-robustness: a start row arriving after a terminal state is a
-        // late/out-of-order delivery and only fills metadata — it must not
-        // reopen the run. Reactivation comes exclusively from explicit
-        // status transitions (task.updated / progress status). Guard on the
-        // status itself, not activationCount: a task first seen via a
-        // terminal task.updated has zero activations but is still settled
-        // (review finding: a late start reopened a failed child).
-        if (agent.activationCount === 0 && !isTerminalSubagentStatus(agent.status)) {
-          agent.activationCount = 1;
-          agent.startedAt = agent.startedAt ?? at;
-          agent.status = "running";
-        } else if (agent.status === "idle") {
-          applyStatus(agent, "running", at);
-        }
-        const detail = asString(payload.detail);
-        if (detail && agent.title === agent.id) agent.title = detail;
-        agent.updatedAt = at;
-        break;
-      }
-      case "task.progress": {
-        const taskId = asString(payload.taskId);
-        if (!taskId) break;
-        // Membership is sticky per taskId: rows after the first (terminal
-        // rows often carry only taskId+status, no marker fields) inherit the
-        // first row's classification instead of being re-judged.
-        const existed = agents.has(taskId);
-        if (!existed && isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
-        fillMetadata(agent, payload);
-        if (payload.transcriptEvent !== undefined) {
-          applyTranscriptEvent(agent.transcriptState, payload.transcriptEvent);
-        }
-        if (agent.activationCount === 0) agent.activationCount = 1;
-        const explicitStatus = asRuntimeStatus(payload.status);
-        if (explicitStatus) {
-          applyStatus(agent, explicitStatus, at);
-        } else if (
-          (payload.usageSnapshot !== true || !existed) &&
-          !isTerminalSubagentStatus(agent.status) &&
-          agent.status !== "idle"
-        ) {
-          applyStatus(agent, "running", at);
-        }
-        const summary = asString(payload.summary);
-        if (summary) {
-          agent.progress = bounded(summary);
-          agent.recentActivity = appendActivity(agent.recentActivity, at, summary);
-        }
-        const lastToolName = asString(payload.lastToolName);
-        if (lastToolName) {
-          agent.lastToolName = lastToolName;
-          if (!summary) {
-            agent.recentActivity = appendActivity(agent.recentActivity, at, `▸ ${lastToolName}`);
-          }
-        }
-        const error = asString(payload.error);
-        if (error) agent.error = bounded(error);
-        agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
-        agent.updatedAt = at;
-        break;
-      }
-      case "task.updated": {
-        const taskId = asString(payload.taskId);
-        if (!taskId) break;
-        // Membership is sticky per taskId: rows after the first (terminal
-        // rows often carry only taskId+status, no marker fields) inherit the
-        // first row's classification instead of being re-judged.
-        if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
-        fillMetadata(agent, payload);
-        const detail = asString(payload.detail);
-        if (detail) agent.progress = bounded(detail);
-        // A task first seen via task.updated (start row aged out) has run at
-        // least once — zero activations would misreport "run 0" and let a
-        // later start row treat it as never-started (review finding).
-        if (agent.activationCount === 0) agent.activationCount = 1;
-        const wasTerminal = isTerminalSubagentStatus(agent.status);
-        const status = asRuntimeStatus(payload.status);
-        if (status) applyStatus(agent, status, at);
-        const error = asString(payload.error);
-        if (error) agent.error = bounded(error);
-        // Provider end time beats ingestion time for the transition that
-        // actually settled the run (applyStatus fills completedAt with the
-        // activity timestamp first, so check the transition, not null).
-        const endedAt = asString(payload.endedAt);
-        if (endedAt && !wasTerminal && isTerminalSubagentStatus(agent.status)) {
-          agent.completedAt = endedAt;
-        }
-        agent.updatedAt = at;
-        break;
-      }
-      case "task.completed": {
-        const taskId = asString(payload.taskId);
-        if (!taskId) break;
-        // Membership is sticky per taskId: rows after the first (terminal
-        // rows often carry only taskId+status, no marker fields) inherit the
-        // first row's classification instead of being re-judged.
-        if (!agents.has(taskId) && isBackgroundTaskActivity(payload)) break;
-        const agent = getOrCreate(agents, taskId, payload, at, activity.turnId);
-        fillMetadata(agent, payload);
-        if (agent.activationCount === 0) agent.activationCount = 1;
-        // Already-terminal: status and timestamps are frozen (first write
-        // wins, duplicates must not slide them) but the completion still
-        // ENRICHES — Claude commonly emits terminal task.updated before
-        // task.completed, and the completion carries the result summary and
-        // final usage the update lacked (review finding: the early return
-        // dropped both). Fill-if-missing keeps duplicate completions from
-        // replacing the first result.
-        const summary = asString(payload.summary) ?? asString(payload.detail);
-        if (isTerminalSubagentStatus(agent.status)) {
-          if (summary) {
-            if (agent.status === "failed") {
-              agent.error = agent.error ?? bounded(summary);
-            } else {
-              agent.result = agent.result ?? bounded(summary);
-            }
-          }
-          agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
-          break;
-        }
-        const status = TASK_COMPLETED_STATUS.get(asString(payload.status) ?? "") ?? "completed";
-        applyStatus(agent, status, at);
-        if (summary) {
-          if (status === "failed") {
-            agent.error = agent.error ?? bounded(summary);
-          } else {
-            agent.result = bounded(summary);
-          }
-        }
-        agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
-        agent.updatedAt = at;
-        break;
-      }
-      case "tool.progress": {
-        // Agent-owned heartbeat: "what it's doing right now".
-        const taskId = asString(payload.taskId);
-        if (!taskId) break;
-        const agent = agents.get(taskId);
-        if (!agent) break;
-        const toolName = asString(payload.toolName);
-        if (toolName) {
-          agent.lastToolName = toolName;
-          agent.recentActivity = appendActivity(agent.recentActivity, at, `▸ ${toolName}`);
-        }
-        agent.updatedAt = at;
-        break;
-      }
-      default:
-        break;
-    }
-  }
-
-  // Consistency pass: when a workflow coordinator has settled, members that
-  // never received their own terminal row cannot still be in-flight — the
-  // run is over. Cascade the coordinator's outcome so stalled member rows
-  // don't read as working forever (live-test finding: statuses drifted
-  // whenever member terminal rows were lost or never emitted).
-  for (const agent of agents.values()) {
-    if (agent.kind !== "workflow" || !isTerminalSubagentStatus(agent.status)) {
-      continue;
-    }
-    for (const member of agents.values()) {
-      if (member.parentAgentId !== agent.id) {
-        continue;
-      }
-      if (isTerminalSubagentStatus(member.status) || member.status === "idle") {
-        continue;
-      }
-      member.status = agent.status === "completed" ? "completed" : "interrupted";
-      member.completedAt = member.completedAt ?? agent.completedAt ?? agent.updatedAt;
-      member.transcriptState.liveAssistant = null;
-      member.transcriptState.liveTools = [];
-      member.updatedAt = agent.updatedAt;
-    }
-  }
-
-  // Session death orphans every live agent: no process remains to finish
-  // them. Mirrors the server-side liveness registry clearing on
-  // session.exited, so panel and sidebar can never disagree.
-  if (options?.sessionLive === false) {
-    for (const agent of agents.values()) {
-      if (isActiveSubagentStatus(agent.status)) {
-        agent.status = "interrupted";
-        agent.completedAt = agent.completedAt ?? agent.updatedAt;
-        agent.transcriptState.liveAssistant = null;
-        agent.transcriptState.liveTools = [];
-      }
-    }
-  }
-
-  let roster = Array.from(agents.values());
-  if (roster.length > ROSTER_LIMIT) {
-    // Prefer live, then waiting/idle, then newest settled.
-    const rank = (agent: MutableAgent): number =>
-      isActiveSubagentStatus(agent.status) ? 0 : agent.status === "idle" ? 1 : 2;
-    roster = roster
-      .slice()
-      .sort((a, b) => rank(a) - rank(b) || b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, ROSTER_LIMIT);
-  }
-
-  return roster.map(({ transcriptState, ...agent }) => ({
-    ...agent,
-    transcript: {
-      items: transcriptState.items,
-      droppedItems: transcriptState.droppedItems,
-      liveAssistant: transcriptState.liveAssistant,
-      liveTools: transcriptState.liveTools,
-    },
-  }));
-}
-
-export interface AgentPanelWorkflowGroup {
+/** A workflow coordinator with its members grouped by phase, as Lineage renders it. */
+export interface SubagentWorkflowGroup {
   readonly workflow: RuntimeSubagent;
   readonly phases: ReadonlyArray<{
     readonly index: number;
@@ -976,334 +112,209 @@ export interface AgentPanelWorkflowGroup {
     readonly members: ReadonlyArray<RuntimeSubagent>;
     /** done = every member settled (success or error); running = any active. */
     readonly state: "pending" | "running" | "done";
-    readonly activeCount: number;
     readonly settledCount: number;
   }>;
   /** Members with no resolvable phase (orphans render under the workflow). */
   readonly unphasedMembers: ReadonlyArray<RuntimeSubagent>;
 }
 
-export interface AgentPanelDirectGroup {
-  readonly id: string;
-  readonly turnId: string | null;
-  readonly firstSeenAt: string;
-  readonly agents: ReadonlyArray<RuntimeSubagent>;
+function workflowUsage(source: {
+  readonly totalTokens?: number | undefined;
+  readonly toolCalls?: number | undefined;
+  readonly durationMs?: number | undefined;
+}): SubagentUsage | null {
+  if (source.totalTokens === undefined) return null;
+  return {
+    totalTokens: source.totalTokens,
+    ...(source.toolCalls === undefined ? {} : { toolUses: source.toolCalls }),
+    ...(source.durationMs === undefined ? {} : { durationMs: source.durationMs }),
+  };
 }
 
-export interface AgentPanelModel {
-  readonly workflows: ReadonlyArray<AgentPanelWorkflowGroup>;
-  readonly directAgents: ReadonlyArray<RuntimeSubagent>;
-  readonly directAgentGroups: ReadonlyArray<AgentPanelDirectGroup>;
-  readonly runningCount: number;
-  readonly waitingCount: number;
-  readonly idleCount: number;
-  readonly settledCount: number;
-  readonly totalTokens: number;
-  readonly hasAgents: boolean;
-  readonly liveCount: number;
-}
-
-const EMPTY_PANEL_MODEL: AgentPanelModel = {
-  workflows: [],
-  directAgents: [],
-  directAgentGroups: [],
-  runningCount: 0,
-  waitingCount: 0,
-  idleCount: 0,
-  settledCount: 0,
-  totalTokens: 0,
-  hasAgents: false,
-  liveCount: 0,
-};
-
-export function emptyAgentPanelModel(): AgentPanelModel {
-  return EMPTY_PANEL_MODEL;
+function isoFromEpochMillis(value: number | undefined): string | null {
+  return value === undefined ? null : DateTime.formatIso(DateTime.makeUnsafe(value));
 }
 
 /**
- * Source-neutral view model. When the orchestration-v2 subagent projection
- * exists for the thread, pass it as v2Projection and it wins outright — the
- * two sources are never merged (duplicate-agents failure mode). Until v2
- * lands, callers pass null and the native fold output is used.
+ * Expands a coordinator's workflow roster into member rows. Members are
+ * synthesized from the coordinator's snapshot rather than read from their own
+ * subagent entities, so a parent thread's Lineage can show them without
+ * loading the coordinator's child thread; their identity is the coordinator id
+ * plus the spawn ordinal.
  */
-export function deriveAgentPanelModel({
-  agents,
-  v2Projection,
-}: {
-  readonly agents: ReadonlyArray<RuntimeSubagent>;
-  readonly v2Projection?: ReadonlyArray<RuntimeSubagent> | null;
-}): AgentPanelModel {
-  const source = v2Projection ?? agents;
-  if (source.length === 0) {
-    return EMPTY_PANEL_MODEL;
-  }
-
-  const explicitWorkflows = source.filter((agent) => agent.kind === "workflow");
-  const explicitWorkflowIds = new Set(explicitWorkflows.map((workflow) => workflow.id));
-  const syntheticWorkflowMembers = new Map<string, RuntimeSubagent[]>();
-  for (const agent of source) {
-    if (
-      agent.kind !== "workflow" &&
-      agent.parentAgentId !== null &&
-      !explicitWorkflowIds.has(agent.parentAgentId) &&
-      agent.workflowName !== null
-    ) {
-      const entries = syntheticWorkflowMembers.get(agent.parentAgentId) ?? [];
-      entries.push(agent);
-      syntheticWorkflowMembers.set(agent.parentAgentId, entries);
-    }
-  }
-  const syntheticWorkflows = Array.from(syntheticWorkflowMembers, ([id, children]) => {
-    const ordered = children
-      .slice()
-      .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
-    const first = ordered[0]!;
-    const allTerminal = ordered.every((child) => isTerminalSubagentStatus(child.status));
-    const hasFailure = ordered.some((child) => child.status === "failed");
+function workflowMembersToRuntime(
+  coordinator: RuntimeSubagent,
+  workflow: OrchestrationV2SubagentWorkflow,
+): ReadonlyArray<RuntimeSubagent> {
+  return workflow.agents.map((agent) => {
+    // Every member state but queued is already a runtime status.
+    const status =
+      (agent.state === "queued" || agent.state === "running") &&
+      isTerminalSubagentStatus(coordinator.status)
+        ? coordinator.status
+        : agent.state === "queued"
+          ? "pending"
+          : agent.state;
+    const failed = status === "failed";
+    const startedAt = isoFromEpochMillis(agent.startedAt);
+    // The provider reports a settled member's duration, not its end instant.
+    const completedAt = isTerminalSubagentStatus(status)
+      ? agent.startedAt !== undefined && agent.durationMs !== undefined
+        ? isoFromEpochMillis(agent.startedAt + agent.durationMs)
+        : coordinator.completedAt
+      : null;
     return {
-      id,
-      kind: "workflow" as const,
-      title: first.workflowName ?? id,
-      prompt: null,
+      // Members share the run's handles: the transcript directory is what
+      // makes their conversation readable, and only the run knows it.
+      ...coordinator,
+      id: `${coordinator.id}:agent:${agent.index}`,
+      kind: "workflow_agent" as const,
+      title: agent.label,
+      model: agent.model ?? null,
+      status,
+      // A member the workflow retried counts each attempt as a run.
+      activationCount: agent.attempt ?? 1,
+      usage: workflowUsage(agent),
+      // A member keeps its prompt on `progress` even once settled: that is the
+      // question half of its conversation, and the detail view shows both halves.
+      progress: agent.prompt ?? null,
+      result: failed ? null : (agent.result ?? null),
+      error: failed ? (agent.result ?? null) : null,
+      parentAgentId: coordinator.id,
+      agentIndex: agent.index,
+      phaseIndex: agent.phaseIndex ?? null,
+      phaseTitle: agent.phaseTitle ?? null,
+      attempt: agent.attempt ?? null,
+      phases: [],
+      childThreadId: agent.childThreadId ?? null,
+      recentActivity: [],
+      firstSeenAt: isoFromEpochMillis(agent.queuedAt) ?? startedAt ?? coordinator.firstSeenAt,
+      startedAt,
+      completedAt,
+      updatedAt: completedAt ?? startedAt ?? coordinator.firstSeenAt,
+    } satisfies RuntimeSubagent;
+  });
+}
+
+/**
+ * Projects subagents and workflow members into the runtime roster.
+ */
+export function projectedSubagentsToRuntime(
+  subagents: ReadonlyArray<{
+    readonly id: string;
+    readonly title: string | null;
+    readonly prompt: string;
+    readonly model: string | null;
+    readonly status: OrchestrationV2Subagent["status"];
+    readonly progress?: string | undefined;
+    readonly childThreadId?: string | null | undefined;
+    readonly workflow?: OrchestrationV2SubagentWorkflow | undefined;
+    readonly result: string | null;
+    readonly startedAt: DateTime.Utc | null;
+    readonly completedAt: DateTime.Utc | null;
+    readonly updatedAt: DateTime.Utc;
+  }>,
+): ReadonlyArray<RuntimeSubagent> {
+  return subagents.flatMap((subagent) => {
+    const updatedAt = DateTime.formatIso(subagent.updatedAt);
+    const startedAt = subagent.startedAt === null ? null : DateTime.formatIso(subagent.startedAt);
+    const firstSeenAt = startedAt ?? updatedAt;
+    const { workflow } = subagent;
+    const runHandles = workflow?.runHandles ?? null;
+    const coordinator = {
+      id: subagent.id,
+      kind: workflow === undefined ? "subagent" : "workflow",
+      title:
+        subagent.title ??
+        (subagent.prompt.length > 80 ? `${subagent.prompt.slice(0, 77)}...` : subagent.prompt),
       role: null,
-      model: null,
+      model: subagent.model,
       effort: null,
-      status: hasFailure
-        ? ("failed" as const)
-        : allTerminal
-          ? ("completed" as const)
-          : ("running" as const),
+      status: subagent.status,
       activationCount: 1,
-      usage: null,
-      progress: null,
+      usage: workflow === undefined ? null : workflowUsage(workflow),
+      progress: subagent.progress ?? null,
       lastToolName: null,
-      result: null,
-      error: null,
+      result: subagent.result,
+      error: subagent.status === "failed" ? (subagent.result ?? null) : null,
       outputFile: null,
       parentAgentId: null,
       agentIndex: null,
       phaseIndex: null,
       phaseTitle: null,
       attempt: null,
-      workflowName: first.workflowName,
-      originTurnId: first.originTurnId ?? null,
-      phases: [],
-      runHandles: null,
+      workflowName: workflow?.name ?? null,
+      phases: workflow?.phases ?? [],
+      runHandles,
+      childThreadId: subagent.childThreadId ?? null,
       recentActivity: [],
-      transcript: {
-        items: [],
-        droppedItems: 0,
-        liveAssistant: null,
-        liveTools: [],
-      },
-      firstSeenAt: first.firstSeenAt,
-      startedAt: first.startedAt,
-      completedAt: allTerminal
-        ? (ordered
-            .map((child) => child.completedAt)
-            .filter((value): value is string => value !== null)
-            .sort()
-            .at(-1) ?? null)
-        : null,
-      updatedAt: ordered
-        .map((child) => child.updatedAt)
-        .sort()
-        .at(-1)!,
+      firstSeenAt,
+      startedAt,
+      completedAt: subagent.completedAt === null ? null : DateTime.formatIso(subagent.completedAt),
+      updatedAt,
     } satisfies RuntimeSubagent;
+    return workflow === undefined
+      ? [coordinator]
+      : [coordinator, ...workflowMembersToRuntime(coordinator, workflow)];
   });
-  const workflows = [...explicitWorkflows, ...syntheticWorkflows].sort(
-    (a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id),
+}
+
+export function deriveWorkflowGroups(
+  agents: ReadonlyArray<RuntimeSubagent>,
+): ReadonlyArray<SubagentWorkflowGroup> {
+  const workflows = agents
+    .filter((agent) => agent.kind === "workflow")
+    .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
+  const members = groupBy(
+    agents.filter((agent) => agent.kind !== "workflow" && agent.parentAgentId !== null),
+    (agent) => agent.parentAgentId!,
   );
-  const workflowIds = new Set(workflows.map((workflow) => workflow.id));
-  const members = new Map<string, RuntimeSubagent[]>();
-  const direct: RuntimeSubagent[] = [];
 
-  for (const agent of source) {
-    if (agent.kind === "workflow") {
-      continue;
-    }
-    if (agent.parentAgentId !== null && workflowIds.has(agent.parentAgentId)) {
-      const list = members.get(agent.parentAgentId) ?? [];
-      list.push(agent);
-      members.set(agent.parentAgentId, list);
-    } else {
-      // Orphaned members (coordinator aged out) fall back to the direct list.
-      direct.push(agent);
-    }
-  }
-
-  const workflowGroups: AgentPanelWorkflowGroup[] = workflows.map((workflow) => {
-    const workflowMembers = members.get(workflow.id) ?? [];
-    // Some bridges (including Pi) report workflow phase names but no numeric
-    // index. Build stable first-seen indices for those names so children stay
-    // nested under the workflow instead of falling back to top-level agents.
-    const phaseTitlesByIndex = new Map<number, string>(
-      workflow.phases.map((phase) => [phase.index, phase.title]),
-    );
-    const phaseIndicesByTitle = new Map<string, number>(
-      workflow.phases.map((phase) => [phase.title.trim().toLocaleLowerCase(), phase.index]),
-    );
-    let nextDerivedPhaseIndex = Math.max(-1, ...workflow.phases.map((phase) => phase.index)) + 1;
+  return workflows.map((workflow) => {
+    const workflowMembers = Object.hasOwn(members, workflow.id) ? members[workflow.id]! : [];
+    // Union, not either/or: the declared plan lags the members, because the
+    // provider only admits a phase once something in it starts. Members seed
+    // the map; the declared titles then overwrite whatever they guessed.
+    const phaseTitles = new Map<number, string>();
     for (const member of workflowMembers) {
-      if (member.phaseIndex !== null) {
-        if (!phaseTitlesByIndex.has(member.phaseIndex)) {
-          phaseTitlesByIndex.set(
-            member.phaseIndex,
-            member.phaseTitle ?? `Phase ${member.phaseIndex + 1}`,
-          );
-        }
-        if (member.phaseTitle) {
-          phaseIndicesByTitle.set(member.phaseTitle.trim().toLocaleLowerCase(), member.phaseIndex);
-        }
-        continue;
-      }
-      if (!member.phaseTitle) continue;
-      const titleKey = member.phaseTitle.trim().toLocaleLowerCase();
-      if (phaseIndicesByTitle.has(titleKey)) continue;
-      phaseIndicesByTitle.set(titleKey, nextDerivedPhaseIndex);
-      phaseTitlesByIndex.set(nextDerivedPhaseIndex, member.phaseTitle);
-      nextDerivedPhaseIndex += 1;
+      if (member.phaseIndex === null) continue;
+      phaseTitles.set(
+        member.phaseIndex,
+        member.phaseTitle ?? phaseTitles.get(member.phaseIndex) ?? `Phase ${member.phaseIndex + 1}`,
+      );
     }
+    for (const phase of workflow.phases) phaseTitles.set(phase.index, phase.title);
+    const knownPhases = Array.from(phaseTitles.entries())
+      .map(([index, title]) => ({ index, title }))
+      .sort((a, b) => a.index - b.index);
 
-    const resolveMemberPhaseIndex = (member: RuntimeSubagent): number | null => {
-      if (member.phaseIndex !== null) return member.phaseIndex;
-      if (!member.phaseTitle) return null;
-      return phaseIndicesByTitle.get(member.phaseTitle.trim().toLocaleLowerCase()) ?? null;
-    };
-    const knownPhases = Array.from(phaseTitlesByIndex, ([index, title]) => ({ index, title })).sort(
-      (a, b) => a.index - b.index,
-    );
-    const knownPhaseIndices = new Set(knownPhases.map((phase) => phase.index));
     const phases = knownPhases.map((phase) => {
       const phaseMembers = workflowMembers
-        .filter((member) => resolveMemberPhaseIndex(member) === phase.index)
-        .slice()
-        .sort(
-          (a, b) =>
-            (a.agentIndex ?? 0) - (b.agentIndex ?? 0) || a.firstSeenAt.localeCompare(b.firstSeenAt),
-        );
-      const activeCount = phaseMembers.filter(
+        .filter((member) => member.phaseIndex === phase.index)
+        .sort((a, b) => (a.agentIndex ?? 0) - (b.agentIndex ?? 0));
+      const hasActiveMember = phaseMembers.some(
         // Idle members count as active for phase-liveness: a resumable Codex
         // member has not finished the phase.
         (member) => isActiveSubagentStatus(member.status) || member.status === "idle",
-      ).length;
+      );
       const settledCount = phaseMembers.filter((member) =>
         isTerminalSubagentStatus(member.status),
       ).length;
       const state: "pending" | "running" | "done" =
-        phaseMembers.length === 0
-          ? "pending"
-          : activeCount > 0
-            ? "running"
-            : settledCount === phaseMembers.length
-              ? "done"
-              : "pending";
+        phaseMembers.length === 0 ? "pending" : hasActiveMember ? "running" : "done";
       return {
         index: phase.index,
         title: phase.title,
         members: phaseMembers,
         state,
-        activeCount,
         settledCount,
       };
     });
 
-    // Members with neither a numeric nor named phase still remain visible.
     const unphasedMembers = workflowMembers
-      .filter((member) => {
-        const phaseIndex = resolveMemberPhaseIndex(member);
-        return phaseIndex === null || !knownPhaseIndices.has(phaseIndex);
-      })
-      .slice()
-      .sort(
-        (a, b) =>
-          (a.agentIndex ?? 0) - (b.agentIndex ?? 0) || a.firstSeenAt.localeCompare(b.firstSeenAt),
-      );
+      .filter((member) => member.phaseIndex === null)
+      .sort((a, b) => (a.agentIndex ?? 0) - (b.agentIndex ?? 0));
 
     return { workflow, phases, unphasedMembers };
   });
-
-  let runningCount = 0;
-  let waitingCount = 0;
-  let idleCount = 0;
-  let settledCount = 0;
-  let totalTokens = 0;
-  for (const agent of source) {
-    // A workflow coordinator with members is a container for those members, not
-    // work of its own: it reports running for the whole run and aggregates their
-    // usage upstream in some providers. Counting it would report one more agent
-    // working than there are, and double count tokens.
-    if (agent.kind === "workflow" && (members.get(agent.id) ?? []).length > 0) continue;
-    if (agent.status === "running" || agent.status === "pending") runningCount += 1;
-    else if (agent.status === "waiting") waitingCount += 1;
-    else if (agent.status === "idle") idleCount += 1;
-    else settledCount += 1;
-    totalTokens += agent.usage?.totalTokens ?? 0;
-  }
-
-  // Updates and the >100-agent retention ranking must never reshuffle rows
-  // that remain visible.
-  const directAgents = direct
-    .slice()
-    .sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id));
-  const directGroupsByTurn = new Map<string, AgentPanelDirectGroup>();
-  for (const agent of directAgents) {
-    const turnId = agent.originTurnId ?? null;
-    const key = turnId ?? "unattributed";
-    const existing = directGroupsByTurn.get(key);
-    directGroupsByTurn.set(
-      key,
-      existing
-        ? { ...existing, agents: [...existing.agents, agent] }
-        : {
-            id: `direct-turn:${key}`,
-            turnId,
-            firstSeenAt: agent.firstSeenAt,
-            agents: [agent],
-          },
-    );
-  }
-
-  return {
-    workflows: workflowGroups,
-    directAgents,
-    directAgentGroups: Array.from(directGroupsByTurn.values()),
-    runningCount,
-    waitingCount,
-    idleCount,
-    settledCount,
-    totalTokens,
-    hasAgents: true,
-    liveCount: runningCount + waitingCount,
-  };
-}
-
-/**
- * Compact model chip text: strips vendor prefixes/date-or-context suffixes
- * ("claude-sonnet-5[1m]" → "sonnet-5[1m]", "claude-opus-4-20250514" →
- * "opus-4"). Unknown ids pass through untouched; effort appends as "· high".
- */
-export function formatSubagentModelLabel(
-  model: string | null,
-  effort: string | null,
-): string | null {
-  if (!model) {
-    return null;
-  }
-  const compact = model
-    .replace(/^claude-/, "")
-    .replace(/-\d{8}$/, "")
-    .replace(/-latest$/, "");
-  return effort ? `${compact} · ${effort}` : compact;
-}
-
-export function formatSubagentTokenCount(totalTokens: number): string {
-  if (totalTokens < 1000) {
-    return `${totalTokens}`;
-  }
-  if (totalTokens < 1_000_000) {
-    const value = totalTokens / 1000;
-    return `${value >= 100 ? Math.round(value) : value.toFixed(1)}k`;
-  }
-  return `${(totalTokens / 1_000_000).toFixed(1)}M`;
 }

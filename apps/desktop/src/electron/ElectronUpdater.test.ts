@@ -104,6 +104,23 @@ describe("ElectronUpdater", () => {
     }).pipe(Effect.provide(ElectronUpdater.layer)),
   );
 
+  it.effect.each([
+    ["0.0.45-dulli.9", "0.1.0-dulli.1"],
+    ["0.0.45-pi.9", "0.1.0-dulli.1"],
+    ["0.1.0-pi.1", "0.2.0-dulli.2"],
+  ] as const)("keeps normal SemVer upgrades forward-only (%s -> %s)", ([current, next]) =>
+    Effect.gen(function* () {
+      const updater = yield* ElectronUpdater.ElectronUpdater;
+      autoUpdaterMock.currentVersion = { version: current };
+      autoUpdaterMock.checkForUpdates.mockImplementationOnce(async () => {
+        await autoUpdaterMock.isUpdateSupported({ version: next });
+        assert.isFalse(autoUpdaterMock.allowDowngrade);
+        return null;
+      });
+      yield* updater.checkForUpdates({ allowDulliTransition: true });
+    }).pipe(Effect.provide(ElectronUpdater.layer)),
+  );
+
   it.effect("does not enable downgrade for unrelated older candidates", () =>
     Effect.gen(function* () {
       const updater = yield* ElectronUpdater.ElectronUpdater;

@@ -16,7 +16,8 @@ type ProviderRuntimeOptions = ConstructorParameters<typeof GitHubProvider>[2];
  * GitHubProvider derives custom prerelease channels from the installed version.
  * A Pi install therefore cannot discover the first Dulli tag without checking
  * the Dulli channel explicitly. Once installed, Dulli follows its own channel
- * through the upstream provider as usual.
+ * through the upstream provider as usual, including new upstream minor versions
+ * (for example 0.0.45-dulli.9 -> 0.1.0-dulli.1) under normal SemVer ordering.
  */
 export class DulliGitHubProvider extends GitHubProvider {
   readonly #dulliProvider: GitHubProvider;

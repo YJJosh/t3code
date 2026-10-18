@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { UsageAggregator } from "./usageAggregation.ts";
-import { createOverrideRateTable, type RateTable } from "./usagePricing.ts";
-import type { UsageRecord } from "./usageTranscripts.ts";
+import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
+import type { RateTable } from "./usagePricing.ts";
+import type { UsageRecord } from "@t3tools/provider-core/server/usage";
 
 const rates: RateTable = new Map([
   [
@@ -12,7 +12,13 @@ const rates: RateTable = new Map([
       outputCostPerToken: 5e-5,
       cacheReadCostPerToken: 1e-6,
       cacheCreationCostPerToken: 1.25e-5,
-      fastMultiplier: 1,
+      fast: {
+        inputCostPerToken: 2e-5,
+        outputCostPerToken: 1e-4,
+        cacheReadCostPerToken: 2e-6,
+        cacheCreationCostPerToken: 2.5e-5,
+      },
+      ultrafast: null,
     },
   ],
 ]);
@@ -32,7 +38,7 @@ function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
       reasoningTokens: 0,
     },
     reportedCostUsd: null,
-    fast: false,
+    speed: "standard",
     dedupeKey: null,
     ...overrides,
   };
@@ -76,6 +82,24 @@ describe("UsageAggregator", () => {
     ).toThrow("requires exact time bounds");
   });
 
+  it("splits a bucket's cost by category and speed", () => {
+    const [bucket] = aggregate([record(), record({ speed: "fast" })]).buckets;
+
+    // Standard costs $0.005625 and fast twice that.
+    expect(bucket).toMatchObject({
+      costUsd: expect.closeTo(0.016875),
+      categoryCostUsd: {
+        input: expect.closeTo(0.003),
+        cacheRead: expect.closeTo(0.003),
+        cacheWrite: expect.closeTo(0.000375),
+        output: expect.closeTo(0.0075),
+      },
+      fastCostUsd: expect.closeTo(0.01125),
+      speedPremiumUsd: expect.closeTo(0.005625),
+    });
+    expect(bucket).not.toHaveProperty("ultrafastCostUsd");
+  });
+
   it("keeps only the first record for a repeated dedupe key", () => {
     const result = aggregate([
       record({ dedupeKey: "msg_1:" }),
@@ -96,68 +120,47 @@ describe("UsageAggregator", () => {
     expect(result.buckets[0]?.totals.outputTokens).toBe(100);
   });
 
-  it("drops Pi history copied into a fork by its durable entry id", () => {
-    const result = aggregate([
-      record({
-        provider: "pi",
-        model: "openai/gpt-5.6",
-        sessionId: "parent-session",
-        dedupeKey: "pi:entry-1",
-      }),
-      record({
-        provider: "pi",
-        model: "openai/gpt-5.6",
-        sessionId: "fork-session",
-        dedupeKey: "pi:entry-1",
-      }),
-    ]);
-
-    expect(result.duplicatesDropped).toBe(1);
-    expect(result.buckets[0]?.totals.outputTokens).toBe(50);
-  });
-
-  it("applies Pi price overrides while preserving source attribution and fork deduplication", () => {
-    const aggregator = new UsageAggregator({
-      timeZone: "UTC",
-      sinceDay: "2026-08-01",
-      untilDay: "2026-08-31",
-      rates,
-      priceOverrides: createOverrideRateTable({
-        "anthropic/claude-fable-5": {
-          inputCostPerMillionTokens: 2,
-          outputCostPerMillionTokens: 8,
-          cacheReadCostPerMillionTokens: 1,
-          cacheWriteCostPerMillionTokens: 4,
-        },
-      }),
-    });
-    const parent = record({
-      provider: "pi",
-      model: "anthropic/claude-fable-5",
-      dedupeKey: "pi:parent",
-      reportedCostUsd: 1.25,
-    });
-    expect(aggregator.add(parent, 0)).toBe(true);
-    expect(aggregator.add({ ...parent, sessionId: "child" }, 1)).toBe(false);
-    expect(aggregator.add({ ...parent, sessionId: "child", dedupeKey: "pi:child" }, 1)).toBe(true);
-
-    const result = aggregator.finish();
-    expect(result.duplicatesDropped).toBe(1);
-    expect(result.buckets.map((bucket) => bucket.sourceIndex)).toEqual([0, 1]);
-    for (const bucket of result.buckets) {
-      expect(bucket.costUsd).toBeCloseTo(0.00164, 9);
-      expect(bucket.cacheSavingsUsd).toBeCloseTo(0.001, 9);
-      expect(bucket.costSource).toBe("modelPriced");
-      expect(bucket.records).toBe(1);
-    }
-  });
-
   it("buckets by the day in the requested time zone", () => {
     const utc = aggregate([record()], "UTC");
     const losAngeles = aggregate([record()], "America/Los_Angeles");
 
     expect(utc.buckets[0]?.day).toBe("2026-08-07");
     expect(losAngeles.buckets[0]?.day).toBe("2026-08-06");
+  });
+
+  it("finds the day at a quarter-hour zone's midnight across interleaved buckets", () => {
+    // Kathmandu is UTC+5:45, so its midnight falls at 18:15 UTC.
+    const result = aggregate(
+      [
+        record({ timestampMs: Date.parse("2026-08-01T18:14:59.999Z") }),
+        record({ timestampMs: Date.parse("2026-08-01T18:15:00.000Z") }),
+        record({ timestampMs: Date.parse("2026-08-01T18:15:00.000Z"), model: "claude-opus-5" }),
+        record({ timestampMs: Date.parse("2026-08-01T18:16:00.000Z") }),
+      ],
+      "Asia/Kathmandu",
+    );
+
+    expect(result.buckets.map((bucket) => [bucket.day, bucket.model, bucket.records])).toEqual([
+      ["2026-08-01", "claude-fable-5", 1],
+      ["2026-08-02", "claude-fable-5", 2],
+      ["2026-08-02", "claude-opus-5", 1],
+    ]);
+  });
+
+  it("finds the day at a fixed offset's midnight between quarter hours", () => {
+    // At +00:01, midnight falls at 23:59 UTC.
+    const result = aggregate(
+      [
+        record({ timestampMs: Date.parse("2026-08-01T23:58:59.999Z") }),
+        record({ timestampMs: Date.parse("2026-08-01T23:59:00.000Z") }),
+      ],
+      "+00:01",
+    );
+
+    expect(result.buckets.map((bucket) => [bucket.day, bucket.records])).toEqual([
+      ["2026-08-01", 1],
+      ["2026-08-02", 1],
+    ]);
   });
 
   it("splits an hourly request into fixed buckets anchored to its exact start", () => {
@@ -250,17 +253,23 @@ describe("UsageAggregator", () => {
     expect(aggregator.add(record({ timestampMs: Date.parse("2026-07-01T12:00:00Z") }))).toBe(false);
   });
 
-  it("keeps source-attributed records in separate buckets", () => {
+  it("folds a mapped model into its target and prices it there", () => {
     const aggregator = new UsageAggregator({
       timeZone: "UTC",
       sinceDay: "2026-08-01",
       untilDay: "2026-08-31",
       rates,
+      modelAliases: resolveModelAliases({ "example-preview": "claude-fable-5" }),
     });
-    aggregator.add(record(), 0);
-    aggregator.add(record(), 1);
+    aggregator.add(record());
+    aggregator.add(record({ model: "example-preview", rateModel: "example-preview-high" }));
+    const result = aggregator.finish();
 
-    expect(aggregator.finish().buckets.map((bucket) => bucket.sourceIndex)).toEqual([0, 1]);
+    expect(result.buckets).toHaveLength(1);
+    expect(result.buckets[0]?.model).toBe("claude-fable-5");
+    expect(result.buckets[0]?.records).toBe(2);
+    expect(result.buckets[0]?.costUsd).toBeCloseTo(0.00925, 9);
+    expect(result.buckets[0]?.unpricedRecords).toBe(0);
   });
 
   it("separates providers and models into their own buckets", () => {
@@ -271,5 +280,62 @@ describe("UsageAggregator", () => {
     ]);
 
     expect(result.buckets).toHaveLength(3);
+  });
+});
+
+describe("resolveModelAliases", () => {
+  it("follows chains to the final model and drops chains that enter a loop", () => {
+    expect(
+      resolveModelAliases({
+        "preview[1m]": "preview",
+        preview: "example-model",
+        loop: "back",
+        back: "loop",
+        intoLoop: "loop",
+        self: "self",
+      }),
+    ).toEqual(
+      new Map([
+        ["preview[1m]", "example-model"],
+        ["preview", "example-model"],
+      ]),
+    );
+  });
+});
+
+describe("source attribution", () => {
+  it("keeps indexed scans separate even when they share a root", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+    });
+    const input = record({ dedupeKey: null });
+    aggregator.add(input, 0, "/sessions");
+    aggregator.add(input, 1, "/sessions");
+    aggregator.add(input, 0, "/sessions");
+    const buckets = aggregator.finish().buckets;
+    expect(
+      buckets.map((bucket) => [bucket.sourceIndex, bucket.sourcePath, bucket.records]),
+    ).toEqual([
+      [0, "/sessions", 2],
+      [1, "/sessions", 1],
+    ]);
+  });
+
+  it("preserves path-only callers and global cross-source deduplication", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+    });
+    expect(aggregator.add(record({ dedupeKey: "copy" }), "/legacy")).toBe(true);
+    expect(aggregator.add(record({ dedupeKey: "copy" }), 1, "/new")).toBe(false);
+    const { buckets, duplicatesDropped } = aggregator.finish();
+    expect(buckets[0]?.sourcePath).toBe("/legacy");
+    expect(buckets[0]?.sourceIndex).toBeUndefined();
+    expect(duplicatesDropped).toBe(1);
   });
 });

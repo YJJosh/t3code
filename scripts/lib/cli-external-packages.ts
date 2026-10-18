@@ -30,6 +30,10 @@ export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   // Workler reads ../package.json via __dirname at module load. Its CommonJS
   // entry and metadata must stay together, not be inlined into an ES module.
   "workler",
+  // Cursor ships computed Webpack imports and platform helper packages.
+  "@cursor/sdk",
+  // Playwright reads package.json and browsers.json beside its runtime modules.
+  "playwright-core",
   "node-pty",
   "ffi-rs",
   "@yuuang/",
@@ -58,9 +62,25 @@ export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
  * configured Pi command does not lead to an installed SDK.
  */
 export const CLI_RUNTIME_RESOLVED_PACKAGES = ["@earendil-works/pi-coding-agent"] as const;
+// These are Cursor's disk-backed dependency closure. Match package boundaries
+// so "zod" does not also externalize unrelated packages such as zod-to-json-schema.
+const CURSOR_RUNTIME_DEPENDENCIES = [
+  "@bufbuild/protobuf",
+  "@connectrpc/connect",
+  "@connectrpc/connect-node",
+  "@connectrpc/connect-web",
+  "@statsig/js-client",
+  "@statsig/client-core",
+  "zod",
+  "undici",
+  "@fastify/busboy",
+] as const;
 
 export function isRuntimeExternalCliDependency(id: string): boolean {
-  return CLI_RUNTIME_EXTERNAL_PREFIXES.some((prefix) => id.startsWith(prefix));
+  return (
+    CLI_RUNTIME_EXTERNAL_PREFIXES.some((prefix) => id.startsWith(prefix)) ||
+    CURSOR_RUNTIME_DEPENDENCIES.some((name) => id === name || id.startsWith(`${name}/`))
+  );
 }
 
 function isRuntimeResolvedCliDependency(name: string): boolean {

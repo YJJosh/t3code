@@ -2,22 +2,26 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
+import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
+import { AuthOrchestrationOperateScope } from "./auth.ts";
+import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { WS_METHODS, WsRpcGroup, WsSubscribeServerConfigRpc } from "./rpc.ts";
 
 const decodeServerConfigSubscription = Schema.decodeUnknownSync(
   WsSubscribeServerConfigRpc.payloadSchema,
 );
 
-describe("fork RPC compatibility", () => {
-  it.each([
-    WS_METHODS.providerControlTask,
-    WS_METHODS.backgroundTerminalsControl,
-    WS_METHODS.subscribeBackgroundTerminalEvents,
-    WS_METHODS.providerAuthStart,
-    WS_METHODS.providerInstallStart,
-    WS_METHODS.pullRequestsSubscribeRefreshes,
-  ])("keeps %s registered alongside upstream methods", (method) => {
-    expect(WsRpcGroup.requests.has(method)).toBe(true);
+describe("multi-repo RPC compatibility", () => {
+  it("registers group operations without the deferred fork Pi RPCs", () => {
+    expect(WsRpcGroup.requests.has(WS_METHODS.projectsMakeMultiRepo)).toBe(true);
+    expect(clientRpcRequiredScopes(WS_METHODS.projectsMakeMultiRepo, {})).toEqual([
+      AuthOrchestrationOperateScope,
+    ]);
+    expect(WsRpcGroup.requests.has(WS_METHODS.projectsInspectMultiRepoFolder)).toBe(true);
+    const methods = [...WsRpcGroup.requests.keys()];
+    expect(methods).not.toContain("provider.controlTask");
+    expect(methods).not.toContain("backgroundTerminals.control");
+    expect(methods).not.toContain("subscribeBackgroundTerminalEvents");
   });
 });
 
@@ -42,5 +46,43 @@ describe("subscribeServerConfig payload compatibility", () => {
   it("stays optional, so a client that never sends it still subscribes", () => {
     const decoded = decodeServerConfigSubscription({});
     expect(decoded).toEqual({});
+  });
+});
+
+describe("WebSocket RPC contracts", () => {
+  it("exposes only the V2 orchestration transport surface", () => {
+    const methods = [...WsRpcGroup.requests.keys()];
+
+    expect(methods).toEqual(expect.arrayContaining(Object.values(ORCHESTRATION_V2_WS_METHODS)));
+    expect(methods.filter((method) => method.startsWith("orchestrationV1."))).toEqual([]);
+  });
+
+  it("rejects server-internal commands sent to dispatchCommand", () => {
+    const dispatchCommand = WsRpcGroup.requests.get(ORCHESTRATION_V2_WS_METHODS.dispatchCommand);
+    if (dispatchCommand === undefined) throw new Error("dispatchCommand is not registered");
+    const decode = Schema.decodeUnknownExit(dispatchCommand.payloadSchema);
+
+    expect(
+      Exit.isFailure(
+        decode({
+          type: "checkpoint.rollback.fail",
+          commandId: "forged-rollback-failure",
+          threadId: "thread-1",
+          requestId: "rollback-1",
+          message: "Forged failure.",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      Exit.isSuccess(
+        decode({
+          type: "checkpoint.rollback",
+          commandId: "rollback-1",
+          threadId: "thread-1",
+          scopeId: "scope-1",
+          checkpointId: "checkpoint-1",
+        }),
+      ),
+    ).toBe(true);
   });
 });

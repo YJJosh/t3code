@@ -1,12 +1,12 @@
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL,
+  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
-  type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import {
   type CustomModelDefinition,
@@ -15,10 +15,7 @@ import {
   readCustomModelEntries,
   resolveSelectableModel,
 } from "@t3tools/shared/model";
-import {
-  canProviderGenerateText,
-  defaultTextGenerationModel,
-} from "@t3tools/shared/serverSettings";
+import { canProviderGenerateText } from "@t3tools/shared/serverSettings";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
@@ -32,7 +29,6 @@ import { ModelEsque } from "./components/chat/providerIconUtils";
 import {
   type ProviderInstanceEntry,
   deriveProviderInstanceEntries,
-  keepsUnavailableModelSelection,
   NO_PROVIDER_MODEL_SELECTION,
 } from "./providerInstances";
 import { sortModelsForProviderInstance } from "./modelOrdering";
@@ -71,15 +67,7 @@ function readInstanceCustomModels(
       return readCustomModelEntries(value);
     }
   }
-  const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
-  if (instanceId !== defaultInstanceId) {
-    return [];
-  }
-  const legacyProviders = settings.providers as Record<
-    string,
-    { readonly customModels: ReadonlyArray<unknown> } | undefined
-  >;
-  return readCustomModelEntries(legacyProviders[driverKind]?.customModels ?? []);
+  return [];
 }
 
 export interface AppModelOption {
@@ -102,7 +90,7 @@ function appendUnavailableDynamicModelSelection(
   selectedModel: string | null | undefined,
   hiddenModels: ReadonlyArray<string>,
 ): AppModelOption[] {
-  if (!keepsUnavailableModelSelection(provider)) return options;
+  if (provider !== "opencode" && provider !== "antigravity") return options;
   const slug = normalizeCustomModelSlug(selectedModel);
   if (!slug) return options;
   if (provider === "antigravity" && slug === ANTIGRAVITY_DEFAULT_MODEL) return options;
@@ -233,11 +221,8 @@ function getAppModelOptions(
  * come from the instance's own `entry.models` snapshot (rather than the
  * first-matching-kind fallback in `getProviderModels`), so each custom
  * instance gets the precise model list its driver reported. Custom model
- * slugs come from the instance's own `providerInstances[id].config.customModels`
- * when present, falling back to the legacy per-kind
- * `settings.providers[driverKind].customModels` bucket for default
- * instances only. This keeps two instances of the same kind from leaking
- * custom slugs into each other. Custom rows reported by the server are
+ * slugs come from the instance's own `providerInstances[id].config.customModels`,
+ * so two instances of the same kind never leak custom slugs into each other. Custom rows reported by the server are
  * ignored so a slug removed in Settings disappears without waiting for the
  * next provider probe.
  */
@@ -312,7 +297,7 @@ export function resolveAppModelSelectionForInstance(
   }
   if (
     resolutionOptions?.preserveUnavailableSelection &&
-    keepsUnavailableModelSelection(entry.driverKind)
+    (entry.driverKind === "opencode" || entry.driverKind === "antigravity")
   ) {
     const unavailableSelection = normalizeCustomModelSlug(selectedModel);
     const hiddenModels = readInstanceModelPreferences(settings, entry.instanceId).hiddenModels;
@@ -354,48 +339,13 @@ export function getCustomModelOptionsByInstance(
 }
 
 /**
- * Drop the opencode "plan" agent option from a stored model selection.
- * Used when legacy plan mode is turned off so server-side text-generation
- * tasks (title, branch, PR) cannot keep dispatching the plan agent.
+ * Whether stored model options pick the opencode "plan" agent. Shared settings
+ * pickers keep and show such a value even while this device's legacy plan
+ * mode is off: another device may have chosen it, and this device's filter
+ * only applies to picks made here.
  */
-export function withoutPlanAgentSelection(
-  selection: ModelSelection | null | undefined,
-): ModelSelection | null | undefined {
-  if (!selection?.options) {
-    return selection;
-  }
-  const options = selection.options.filter(
-    (option) => !(option.id === "agent" && option.value === "plan"),
-  );
-  if (options.length === selection.options.length) {
-    return selection;
-  }
-  return createModelSelection(selection.instanceId, selection.model, options);
-}
-
-// The dropdown hides the opencode "plan" agent while legacy plan mode is off,
-// but the persisted text-generation selections are only healed when the toggle
-// flips. Users who already have plan mode off and a stored "plan" selection
-// never trip the toggle handler, so resolve the heal once per settings load.
-export function resolvePlanAgentHealPatch(input: {
-  readonly planModeEnabled: boolean;
-  readonly textGenerationModelSelection: ModelSelection | null | undefined;
-  readonly sourceControlWriterModelSelection: ModelSelection | null | undefined;
-}): ServerSettingsPatch | null {
-  if (input.planModeEnabled) {
-    return null;
-  }
-  const healedText = withoutPlanAgentSelection(input.textGenerationModelSelection);
-  const healedSourceControl = withoutPlanAgentSelection(input.sourceControlWriterModelSelection);
-  const patch: ServerSettingsPatch = {
-    ...(healedText && healedText !== input.textGenerationModelSelection
-      ? { textGenerationModelSelection: healedText }
-      : {}),
-    ...(healedSourceControl && healedSourceControl !== input.sourceControlWriterModelSelection
-      ? { sourceControlWriterModelSelection: healedSourceControl }
-      : {}),
-  };
-  return Object.keys(patch).length > 0 ? patch : null;
+export function selectsPlanAgent(options: ModelSelection["options"]): boolean {
+  return options?.some((option) => option.id === "agent" && option.value === "plan") ?? false;
 }
 
 export function resolveAppModelSelectionState(
@@ -406,26 +356,36 @@ export function resolveAppModelSelectionState(
     instanceId: DEFAULT_TEXT_GENERATION_INSTANCE_ID,
     model: DEFAULT_TEXT_GENERATION_MODEL,
   };
-  // Same rule the server uses, so Settings shows the model that actually runs.
   const supportedProviders = providers.filter(canProviderGenerateText);
   const entries = deriveProviderInstanceEntries(supportedProviders);
-  const selectedEntry = entries.find((entry) => entry.instanceId === selection.instanceId);
-  const entry = selectedEntry ?? entries[0];
+  const selectedEntry = entries.find(
+    (entry) => entry.instanceId === selection.instanceId && entry.enabled && entry.isAvailable,
+  );
+  const entry =
+    selectedEntry ?? entries.find((candidate) => candidate.enabled && candidate.isAvailable);
   if (entry) {
-    // When the instance changed due to fallback (e.g. selected instance was not installed),
-    // don't carry over the old instance's model — use the model the server falls back to.
-    const fallbackModel = defaultTextGenerationModel({
-      driver: entry.driverKind,
-      models: entry.models,
-    });
-    const selectedModel = selectedEntry ? selection.model : fallbackModel;
+    // When the instance changed due to fallback (e.g. selected instance was disabled),
+    // don't carry over the old instance's model.
+    const selectedModel = selectedEntry ? selection.model : null;
+    // A saved model the catalog no longer lists, or a new fallback instance,
+    // gets the driver's cheap text generation default. The catalog's own
+    // default is the flagship chat model, which is too expensive here.
+    const options = getAppModelOptionsForInstance(settings, entry);
     const model =
+      resolveSelectableModel(entry.driverKind, selectedModel, options) ??
+      resolveSelectableModel(
+        entry.driverKind,
+        DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[entry.driverKind],
+        options,
+      ) ??
       resolveAppModelSelectionForInstance(
         entry.instanceId,
         settings,
         supportedProviders,
         selectedModel,
-      ) ?? fallbackModel;
+      ) ??
+      entry.models[0]?.slug ??
+      DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[entry.driverKind];
     if (!model) {
       return createModelSelection(entry.instanceId, "", []);
     }
@@ -435,7 +395,7 @@ export function resolveAppModelSelectionState(
       model,
       models: entry.models,
       modelOptions: selectedEntry ? selection.options : undefined,
-      planModeEnabled: settings.planModeEnabled,
+      planModeEnabled: settings.planModeEnabled || selectsPlanAgent(selection.options),
     });
 
     return createModelSelection(entry.instanceId, model, modelOptionsForDispatch);

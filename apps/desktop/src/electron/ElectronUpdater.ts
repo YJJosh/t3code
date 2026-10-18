@@ -16,7 +16,7 @@ export interface ElectronUpdaterCheckOptions {
   readonly allowDulliTransition: boolean;
 }
 
-const DULLI_VERSION_PATTERN = /^0\.0\.(0|[1-9]\d*)-(pi|dulli)\.(0|[1-9]\d*)$/;
+const DULLI_VERSION_PATTERN = /^0\.(0|[1-9]\d*)\.(0|[1-9]\d*)-(pi|dulli)\.(0|[1-9]\d*)$/;
 
 function isForwardPiToDulliTransition(currentVersion: string, nextVersion: string): boolean {
   const current = DULLI_VERSION_PATTERN.exec(currentVersion);
@@ -24,10 +24,11 @@ function isForwardPiToDulliTransition(currentVersion: string, nextVersion: strin
   return (
     current !== null &&
     next !== null &&
-    current[2] === "pi" &&
-    next[2] === "dulli" &&
+    current[3] === "pi" &&
+    next[3] === "dulli" &&
     current[1] === next[1] &&
-    BigInt(next[3]!) > BigInt(current[3]!)
+    current[2] === next[2] &&
+    BigInt(next[4]!) > BigInt(current[4]!)
   );
 }
 
