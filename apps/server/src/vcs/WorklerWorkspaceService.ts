@@ -288,7 +288,8 @@ type WorklerWorkerMessage =
   | { readonly _tag: "success"; readonly value: unknown }
   | { readonly _tag: "failure"; readonly code: string | null; readonly message: string };
 
-const runInWorker = (
+/** Runs one Workler call in a fresh worker thread. Exported for tests. */
+export const runInWorker = (
   libraryPath: string,
   method: WorklerMethod,
   args: ReadonlyArray<unknown>,
@@ -306,16 +307,19 @@ const runInWorker = (
       return;
     }
     let settled = false;
+    let stopped: Promise<unknown> = Promise.resolve();
     const stop = () => {
-      if (settled) return;
-      settled = true;
-      void worker.terminate();
+      if (!settled) {
+        settled = true;
+        stopped = worker.terminate().catch(() => undefined);
+      }
+      return stopped;
     };
     const settle = (
       result: Effect.Effect<unknown, WorklerCallFailure | WorklerWorkerUnavailable>,
     ) => {
       if (settled) return;
-      stop();
+      void stop();
       resume(result);
     };
     worker.once("message", (message: WorklerWorkerMessage) => {
@@ -359,8 +363,10 @@ const runInWorker = (
       ),
     );
     // Only reads can be interrupted (writes run uninterruptibly), and a read
-    // holds no lock, so stopping its worker is safe.
-    return Effect.sync(stop);
+    // holds no lock, so stopping its worker is safe. The worker can only stop
+    // once its git call returns, so wait for that: the read keeps its place in
+    // the read limit until then.
+    return Effect.promise(stop);
   });
 
 // Workler stays external to the CLI bundle because it reads its own

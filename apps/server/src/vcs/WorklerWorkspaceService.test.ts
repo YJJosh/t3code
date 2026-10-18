@@ -1,4 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off - the cancel test needs a real FIFO and a child process that blocks a worker thread.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { assert, describe, it } from "@effect/vitest";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -238,5 +245,57 @@ describe("WorklerWorkspaceService", () => {
       yield* Effect.forEach(reads, Fiber.join);
       assert.equal(running, 5);
     }),
+  );
+
+  // A worker stuck in a git call can only stop once that call returns, so a
+  // cancelled read must hold its place in the read limit until then.
+  it.effect.skipIf(HostProcessPlatform.defaultValue() === "win32")(
+    "waits for a cancelled worker to stop before the cancel finishes",
+    () =>
+      Effect.gen(function* () {
+        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "workler-cancel-"));
+        const started = NodePath.join(dir, "started");
+        const release = NodePath.join(dir, "release");
+        NodeChildProcess.execFileSync("mkfifo", [started, release]);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            // Unblock the child if the test failed before releasing it.
+            try {
+              const fd = NodeFS.openSync(
+                release,
+                NodeFS.constants.O_WRONLY | NodeFS.constants.O_NONBLOCK,
+              );
+              NodeFS.closeSync(fd);
+            } catch {}
+            NodeFS.rmSync(dir, { recursive: true, force: true });
+          }),
+        );
+        // Stands in for a git call: the child says it's running, then blocks
+        // until the test writes to `release`.
+        const library = NodePath.join(dir, "blocking-workler.cjs");
+        NodeFS.writeFileSync(
+          library,
+          [
+            'const { spawnSync } = require("node:child_process");',
+            "exports.listWorkspaces = (started, release) => {",
+            '  spawnSync("sh", ["-c", \'echo running > "$0"; cat "$1" > /dev/null\', started, release]);',
+            "  return [];",
+            "};",
+          ].join("\n"),
+        );
+
+        const read = yield* Effect.forkChild(
+          WorklerWorkspaceService.runInWorker(library, "listWorkspaces", [started, release]),
+          { startImmediately: true },
+        );
+        yield* Effect.promise(() => NodeFS.promises.readFile(started, "utf8"));
+        const cancelling = yield* Effect.forkChild(Fiber.interrupt(read), {
+          startImmediately: true,
+        });
+        assert.equal(cancelling.pollUnsafe(), undefined);
+
+        yield* Effect.promise(() => NodeFS.promises.writeFile(release, "go"));
+        yield* Fiber.join(cancelling);
+      }),
   );
 });
