@@ -1,3 +1,4 @@
+import { dulliClient } from "@t3tools/provider-dulli/client";
 import { isProviderDriverKind } from "@t3tools/contracts";
 import { acpRegistryClient } from "@t3tools/provider-acp-registry/client";
 import { makeProviderClientRegistry } from "@t3tools/provider-core/client";
@@ -14,6 +15,7 @@ const providerClients = makeProviderClientRegistry([
   museClient,
   openCodeClient,
   piClient,
+  dulliClient,
   acpRegistryClient,
 ]);
 

@@ -2268,3 +2268,185 @@ it.layer(NodeServices.layer)("legacy fork branch naming", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 });
+
+it.layer(NodeServices.layer)("fork Pi to Dulli settings migration", (it) => {
+  it.effect(
+    "migrates fork settings before decoding, including instance references and stored secrets",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const sql = yield* SqlClient.SqlClient;
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const secrets = yield* ServerSecretStore.ServerSecretStore;
+        yield* sql`INSERT OR IGNORE INTO dulli_fork_migrations VALUES ('fork-detected')`;
+        const selection = {
+          instanceId: "pi",
+          model: "anthropic/claude",
+          options: [{ id: "profile", value: "coder" }],
+        };
+        const encode = (value: string) => Buffer.from(value).toString("base64url");
+        const oldEnv = `provider-env-${encode("pi")}-${encode("API_TOKEN")}`;
+        const newEnv = `provider-env-${encode("dulli")}-${encode("API_TOKEN")}`;
+        const oldConfig = `provider-config-${encode("work")}-${encode("pi")}-${encode("token")}`;
+        const newConfig = `provider-config-${encode("work")}-${encode("dulli")}-${encode("token")}`;
+        yield* secrets.set(oldEnv, new TextEncoder().encode("environment secret"));
+        yield* secrets.set(oldConfig, new TextEncoder().encode("config secret"));
+        yield* fs.writeFileString(
+          config.settingsPath,
+          JSON.stringify({
+            providers: { pi: { profile: "legacy", piSessions: true, shareWithTerminal: true } },
+            providerInstances: {
+              pi: {
+                driver: "pi",
+                enabled: true,
+                config: { profile: "coder", piSessions: true, shareWithTerminal: false },
+                environment: [
+                  { name: "API_TOKEN", value: "", valueRedacted: true, sensitive: true },
+                ],
+              },
+              work: { driver: "pi", config: { profile: "reviewer", token: "••••••" } },
+            },
+            defaultModelSelection: selection,
+            textGenerationModelSelection: selection,
+            sourceControlWriterModelSelection: selection,
+            reviewGuideModelSelection: selection,
+            favorites: [{ provider: "pi", model: "anthropic/claude" }],
+            providerModelPreferences: { pi: { hiddenModels: ["native/pi"], modelOrder: [] } },
+            projectSettingsOverrides: {
+              project: {
+                defaultModelSelection: selection,
+                providerInstances: { pi: { enabled: false } },
+              },
+            },
+          }),
+        );
+        const settings = yield* service.getSettings;
+        const dulli = ProviderInstanceId.make("dulli");
+        const work = ProviderInstanceId.make("work");
+        assert.equal(settings.providerInstances[dulli]?.driver, "dulli");
+        assert.equal(settings.providerInstances[work]?.driver, "dulli");
+        assert.deepStrictEqual(settings.providerInstances[dulli]?.config, {
+          profile: "coder",
+          piSessions: true,
+          shareWithTerminal: false,
+        });
+        for (const selection of [
+          settings.defaultModelSelection,
+          settings.textGenerationModelSelection,
+          settings.sourceControlWriterModelSelection,
+          settings.reviewGuideModelSelection,
+        ])
+          assert.equal(selection?.instanceId, "dulli");
+        assert.equal(settings.favorites?.[0]?.provider, "dulli");
+        assert.deepStrictEqual(settings.providerModelPreferences?.[dulli]?.hiddenModels, [
+          "native/pi",
+        ]);
+        assert.equal(
+          settings.projectSettingsOverrides[ProjectId.make("project")]?.providerInstances?.[dulli]
+            ?.enabled,
+          false,
+        );
+        assert.equal(
+          new TextDecoder().decode(Option.getOrThrow(yield* secrets.get(newEnv))),
+          "environment secret",
+        );
+        assert.equal(
+          new TextDecoder().decode(Option.getOrThrow(yield* secrets.get(newConfig))),
+          "config secret",
+        );
+        const persisted = JSON.parse(yield* fs.readFileString(config.settingsPath));
+        assert.isUndefined(persisted.providerInstances.pi);
+        assert.lengthOf(
+          yield* sql`SELECT name FROM dulli_fork_migrations WHERE name = 'settings-checked'`,
+          1,
+        );
+        // A new service instance simulates restart. Post-cutover Pi is upstream Pi.
+        persisted.providerInstances.pi = { driver: "pi", config: { binaryPath: "pi" } };
+        yield* fs.writeFileString(config.settingsPath, JSON.stringify(persisted));
+        const restarted = yield* Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          return yield* service.getSettings;
+        }).pipe(Effect.provide(Layer.fresh(ServerSettingsModule.layer)));
+        assert.equal(restarted.providerInstances[ProviderInstanceId.make("pi")]?.driver, "pi");
+        assert.equal(restarted.providerInstances[dulli]?.driver, "dulli");
+      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
+  it.effect("refuses an occupied Dulli slot without changing the settings file", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const raw = JSON.stringify({
+        providerInstances: {
+          pi: { driver: "pi", config: { profile: "coder" } },
+          dulli: { driver: "dulli", config: { profile: "other" } },
+        },
+      });
+      yield* fs.writeFileString(config.settingsPath, raw);
+      const result = yield* Effect.result(service.getSettings);
+      assert.equal(result._tag, "Failure");
+      assert.equal(yield* fs.readFileString(config.settingsPath), raw);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("does not rename upstream Pi settings without fork evidence", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fs.writeFileString(
+        config.settingsPath,
+        JSON.stringify({
+          providerInstances: {
+            pi: { driver: "pi", config: { binaryPath: "pi", launchArgs: "--test" } },
+          },
+        }),
+      );
+      const settings = yield* service.getSettings;
+      assert.equal(settings.providerInstances[ProviderInstanceId.make("pi")]?.driver, "pi");
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+  it.effect("materializes the omitted fork Pi default and marks a missing settings file once", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      yield* sql`INSERT OR IGNORE INTO dulli_fork_migrations VALUES ('fork-detected')`;
+      const settings = yield* service.getSettings;
+      assert.equal(settings.providerInstances[ProviderInstanceId.make("dulli")]?.driver, "dulli");
+      assert.equal(settings.providerInstances[ProviderInstanceId.make("dulli")]?.enabled, true);
+      assert.lengthOf(
+        yield* sql`SELECT name FROM dulli_fork_migrations WHERE name = 'settings-checked'`,
+        1,
+      );
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("keeps legacy-only fork Pi configuration intact", () =>
+    Effect.sync(() => {
+      const config = {
+        enabled: false,
+        binaryPath: "/bin/pi",
+        profile: "coder",
+        agentDir: "/native/pi",
+        piSessions: false,
+        shareWithTerminal: false,
+        customModels: [{ slug: "native/pi" }],
+      };
+      const result = ServerSettingsModule.migrateForkPiSettings({
+        providers: { pi: config },
+        defaultModelSelection: { provider: "pi", model: "native/pi" },
+        loadBalancingWeights: { pi: 70, work: 30 },
+      });
+      assert.deepStrictEqual(result.settings.providerInstances, {
+        dulli: { driver: "dulli", config, enabled: false },
+      });
+      assert.deepStrictEqual(result.settings.defaultModelSelection, {
+        provider: "dulli",
+        model: "native/pi",
+      });
+      assert.deepStrictEqual(result.settings.loadBalancingWeights, { dulli: 70, work: 30 });
+    }),
+  );
+});

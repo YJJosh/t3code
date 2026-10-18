@@ -82,6 +82,14 @@ export function parseTimestampMs(value: unknown): number | null {
 /** JSON fields a format reads. `true` keeps the whole subtree. */
 export type SelectedFields = { readonly [key: string]: true | SelectedFields };
 
+/** A bounded JSONL source, including sources discovered from transcript headers. */
+export interface TranscriptUsageDirectory {
+  readonly dir: string;
+  readonly fileName?: string;
+  readonly maxDepth?: number;
+  readonly filePattern?: UsageSourceScan["filePattern"];
+}
+
 /**
  * How the server's JSONL engine reads one provider's transcript lines.
  *
@@ -89,6 +97,11 @@ export type SelectedFields = { readonly [key: string]: true | SelectedFields };
  * `selectFields` and handed to `parseProjected` instead of `parseLine`.
  */
 export interface TranscriptUsageFormat<State> {
+  /** Readers of the same native format share physical directories; highest priority owns a root. */
+  readonly sourceFamily?: string;
+  readonly sourcePriority?: number;
+  /** Additional bounded roots derived from persisted header state, on cold and warm scans. */
+  directoriesFromState?(state: State): readonly TranscriptUsageDirectory[];
   readonly selectFields: SelectedFields;
   /**
    * ASCII substrings, at least one of which every line that matters contains.

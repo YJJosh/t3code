@@ -146,6 +146,7 @@ export function resolveTextGenerationModelSelection(
 const TEXT_GENERATION_FALLBACK_DRIVERS = [
   "codex",
   "claudeAgent",
+  "dulli",
   "cursor",
   "grok",
   "muse",

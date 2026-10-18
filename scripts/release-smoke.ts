@@ -31,6 +31,7 @@ const workspaceFiles = [
   "packages/provider-core/package.json",
   "packages/provider-testing/package.json",
   "packages/provider-pi/package.json",
+  "packages/provider-dulli/package.json",
   "packages/provider-acp/package.json",
   "packages/provider-acp-registry/package.json",
   "packages/provider-cursor/package.json",

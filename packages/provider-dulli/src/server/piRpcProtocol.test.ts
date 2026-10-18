@@ -1,0 +1,214 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { describe, expect, it } from "@effect/vitest";
+import { DulliSettings as PiSettings } from "../settings.ts";
+import * as Effect from "effect/Effect";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+
+import {
+  buildPiRpcArgs,
+  buildPiRpcEnv,
+  extractPiAssistantContent,
+  parseClaudeCodeToolTrace,
+  extractPiAssistantText,
+  parsePiContextWindow,
+  parsePiFastServiceEnabled,
+  parsePiThinkingLevel,
+  resolvePiBinary,
+  supportsPiCodexFastService,
+} from "./piRpcProtocol.ts";
+
+const decodeSettings = Schema.decodeSync(PiSettings);
+
+describe("Pi RPC protocol", () => {
+  it("builds approved long-lived RPC arguments without disabling resources", () => {
+    expect(buildPiRpcArgs(decodeSettings({}))).toEqual([
+      "--mode",
+      "rpc",
+      "--approve",
+      "--profile",
+      "coder",
+    ]);
+    expect(
+      buildPiRpcArgs(decodeSettings({ profile: "provider-default" }), {
+        profile: "thread-profile",
+        resumeSessionId: "session-1",
+        model: "anthropic/claude-sonnet-5",
+        thinkingLevel: "high",
+      }),
+    ).toEqual([
+      "--mode",
+      "rpc",
+      "--approve",
+      "--profile",
+      "thread-profile",
+      "--session",
+      "session-1",
+      "--model",
+      "anthropic/claude-sonnet-5",
+      "--thinking",
+      "high",
+    ]);
+  });
+
+  it.effect("uses Pi defaults and normalizes the child agent directory", () =>
+    Effect.gen(function* () {
+      const paths = yield* Path.Path;
+      expect(resolvePiBinary(decodeSettings({}))).toBe("pi");
+      expect(resolvePiBinary(decodeSettings({ binaryPath: "/opt/pi" }))).toBe("/opt/pi");
+      expect(buildPiRpcEnv(paths, decodeSettings({}), { HOME: "/home/test" })).toEqual({
+        HOME: "/home/test",
+        PI_SUBAGENTS_RPC_BRIDGE: "1",
+        PI_BACKGROUND_TERMINALS_RPC_BRIDGE: "1",
+        PI_BACKGROUND_THREADS_RPC_BRIDGE: "1",
+        PI_CODING_AGENT_DIR: paths.join("/home/test", ".pi", "agent"),
+      });
+      expect(
+        buildPiRpcEnv(paths, decodeSettings({ agentDir: "~/agents" }), {
+          HOME: "/home/test",
+          PI_CODING_AGENT_DIR: "/ignored",
+        }),
+      ).toEqual({
+        HOME: "/home/test",
+        PI_SUBAGENTS_RPC_BRIDGE: "1",
+        PI_BACKGROUND_TERMINALS_RPC_BRIDGE: "1",
+        PI_BACKGROUND_THREADS_RPC_BRIDGE: "1",
+        PI_CODING_AGENT_DIR: paths.join("/home/test", "agents"),
+      });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("normalizes current and legacy environment overrides without mutating them", () =>
+    Effect.gen(function* () {
+      const paths = yield* Path.Path;
+      const environment = { HOME: "/home/test", TAU_CODING_AGENT_DIR: "~/tau-agent" };
+      expect(buildPiRpcEnv(paths, decodeSettings({}), environment).PI_CODING_AGENT_DIR).toBe(
+        paths.join("/home/test", "tau-agent"),
+      );
+      expect(
+        buildPiRpcEnv(paths, decodeSettings({}), {
+          ...environment,
+          PI_CODING_AGENT_DIR: "~/pi-agent",
+        }).PI_CODING_AGENT_DIR,
+      ).toBe(paths.join("/home/test", "pi-agent"));
+      expect(environment).toEqual({ HOME: "/home/test", TAU_CODING_AGENT_DIR: "~/tau-agent" });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("pins all PM session selection keys without changing the parent environment", () =>
+    Effect.gen(function* () {
+      const paths = yield* Path.Path;
+      const baseEnv = {
+        HOME: "/home/test",
+        PI_CONFIG_SET_NAME: "old",
+        PI_CONFIG_SET_DIR: "/old",
+        PI_CONFIG_SET_REGISTRY: "/old/registry.json",
+      };
+      const configSet = {
+        name: "dev",
+        directory: "/pi/sets/dev",
+        root: "/pi",
+        registryPath: "/pi/config-sets.json",
+      };
+      expect(
+        buildPiRpcEnv(paths, decodeSettings({ agentDir: "/ignored" }), baseEnv, configSet),
+      ).toMatchObject({
+        PI_CODING_AGENT_DIR: "/pi/sets/dev",
+        PI_CONFIG_SET_NAME: "dev",
+        PI_CONFIG_SET_DIR: "/pi/sets/dev",
+        PI_CONFIG_SET_ROOT: "/pi",
+        PI_CONFIG_SET_REGISTRY: "/pi/config-sets.json",
+      });
+      expect(baseEnv.PI_CONFIG_SET_NAME).toBe("old");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it("parses only safe thinking, context, and service-tier selections", () => {
+    expect(parsePiThinkingLevel("max")).toBe("max");
+    expect(parsePiThinkingLevel("turbo")).toBeUndefined();
+    expect(parsePiContextWindow("200k")).toBe("200k");
+    expect(parsePiContextWindow("1.5m")).toBe("1.5m");
+    expect(parsePiContextWindow("auto")).toBe("auto");
+    expect(parsePiContextWindow("200k\n/fast on")).toBeUndefined();
+    expect(parsePiFastServiceEnabled("priority")).toBe(true);
+    expect(parsePiFastServiceEnabled("default")).toBe(false);
+    expect(supportsPiCodexFastService("openai-codex/gpt-5.4")).toBe(true);
+    expect(supportsPiCodexFastService("anthropic/claude-sonnet-5")).toBe(false);
+  });
+
+  it("marks only explicit tool calls as work boundaries between snapshot blocks", () => {
+    expect(
+      extractPiAssistantContent({
+        content: [
+          { type: "text", text: "First final paragraph." },
+          { type: "text", text: "Second final paragraph." },
+          { type: "toolCall", id: "bash-1", name: "bash" },
+          { type: "text", text: "Answer after work." },
+        ],
+      }).blocks,
+    ).toEqual([
+      {
+        streamKind: "assistant_text",
+        contentIndex: 0,
+        content: "First final paragraph.",
+      },
+      {
+        streamKind: "assistant_text",
+        contentIndex: 1,
+        content: "Second final paragraph.",
+      },
+      {
+        streamKind: "assistant_text",
+        contentIndex: 3,
+        content: "Answer after work.",
+        workBoundaryBefore: true,
+      },
+    ]);
+  });
+
+  it("treats Claude Code tool traces as work boundaries, not thinking", () => {
+    const content = extractPiAssistantContent({
+      content: [
+        { type: "thinking", thinking: "Checking the repo." },
+        { type: "text", text: "I’ll look first." },
+        { type: "thinking", thinking: "✓ Bash git status", claudeCodeSyntheticTool: true },
+        { type: "text", text: "It is clean." },
+      ],
+    });
+    expect(content.thinking).toBe("Checking the repo.");
+    expect(content.blocks.at(-1)).toEqual({
+      streamKind: "assistant_text",
+      contentIndex: 3,
+      content: "It is clean.",
+      workBoundaryBefore: true,
+    });
+    expect(content.toolTraces).toEqual([
+      { contentIndex: 2, done: true, toolName: "Bash", detail: "git status" },
+    ]);
+    expect(parseClaudeCodeToolTrace("◌ Bash")).toEqual({ done: false, toolName: "Bash" });
+    expect(parseClaudeCodeToolTrace("✓ Read /repo/a b.ts")).toEqual({
+      done: true,
+      toolName: "Read",
+      detail: "/repo/a b.ts",
+    });
+    expect(parseClaudeCodeToolTrace("Thinking about ◌ Bash")).toBeUndefined();
+  });
+
+  it("extracts assistant text and thinking with explicit content-block boundaries", () => {
+    expect(
+      extractPiAssistantText({
+        content: [
+          { type: "thinking", thinking: "first\n\n" },
+          { type: "text", text: "Now I’ll verify the command." },
+          { type: "thinking", thinking: "second" },
+          { type: "text", text: "# Invoice Summary" },
+          { type: "text", text: "| Total | $42 |" },
+        ],
+      }),
+    ).toEqual({
+      text: "Now I’ll verify the command.\n\n# Invoice Summary\n\n| Total | $42 |",
+      thinking: "first\n\nsecond",
+    });
+    expect(extractPiAssistantText(null)).toEqual({ text: "", thinking: "" });
+  });
+});

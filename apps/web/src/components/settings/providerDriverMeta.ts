@@ -1,3 +1,4 @@
+import { dulliClient } from "@t3tools/provider-dulli/client";
 import {
   AntigravitySettings,
   ClaudeSettings,
@@ -34,5 +35,6 @@ export const providerClients = makeProviderClientRegistry([
   },
   museClient,
   piClient,
+  dulliClient,
   acpRegistryClient,
 ]);

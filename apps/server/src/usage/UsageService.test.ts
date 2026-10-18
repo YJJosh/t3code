@@ -137,7 +137,26 @@ const layerService = (input: {
     ),
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(Layer.succeed(HostProcess.Platform, input.platform ?? "linux")),
-    Layer.provideMerge(ServerSettings.layerTest(input.settings)),
+    Layer.provideMerge(
+      ServerSettings.layerTest({
+        ...input.settings,
+        providerInstances: {
+          // Existing Pi tests exercise upstream parsing, independently of Dulli.
+          [ProviderInstanceId.make("dulli")]: {
+            driver: ProviderDriverKind.make("dulli"),
+            config: { agentDir: NodePath.join(input.home, "dulli") },
+            environment: [
+              {
+                name: "PI_CODING_AGENT_SESSION_DIR",
+                value: NodePath.join(input.home, "dulli", "sessions"),
+                sensitive: false,
+              },
+            ],
+          },
+          ...input.settings?.providerInstances,
+        },
+      }),
+    ),
     Layer.provideMerge(
       Layer.succeed(
         HttpClient.HttpClient,
@@ -270,6 +289,109 @@ function cursorSource(summary: { readonly sources: readonly UsageSource[] }) {
 }
 
 describe("UsageService", () => {
+  it.live(
+    "assigns shared physical Pi/Dulli roots to Dulli, including aliases and fork copies",
+    () =>
+      Effect.gen(function* () {
+        const { home, settings } = yield* setup;
+        const agent = NodePath.join(home, "pi");
+        const sessions = NodePath.join(agent, "sessions");
+        const alias = NodePath.join(home, "sessions-alias");
+        const project = NodePath.join(home, "project", ".worktrees", "branch");
+        const child = NodePath.join(home, "project", ".pi-subagents", "runs", "run", "session");
+        const lines = (id: string, output: number) =>
+          [
+            { type: "session", id, cwd: project },
+            { type: "model_change", provider: "anthropic", modelId: "model" },
+            {
+              type: "message",
+              id: "entry-" + id,
+              timestamp: "2026-08-01T10:00:00Z",
+              message: {
+                role: "assistant",
+                usage: { output, reasoning: 100, cost: { total: 0.5 } },
+              },
+            },
+          ]
+            .map((line) => JSON.stringify(line))
+            .join("\n") + "\n";
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(NodePath.join(sessions, "project"), { recursive: true });
+          await NodeFSP.mkdir(child, { recursive: true });
+          await NodeFSP.symlink(sessions, alias, "dir");
+          await NodeFSP.writeFile(
+            NodePath.join(sessions, "project", "main.jsonl"),
+            lines("main", 7),
+          );
+          await NodeFSP.writeFile(
+            NodePath.join(sessions, "project", "fork.jsonl"),
+            lines("main", 7),
+          );
+          await NodeFSP.writeFile(NodePath.join(agent, "legacy.jsonl"), lines("legacy", 3));
+          await NodeFSP.writeFile(NodePath.join(child, "child.jsonl"), lines("child", 5));
+          await NodeFSP.writeFile(
+            NodePath.join(child, "..", "events.jsonl"),
+            lines("journal", 999),
+          );
+        });
+        const testLayer = layerService({
+          prefix: "usage-dulli",
+          home,
+          settings: {
+            ...settings,
+            providerInstances: {
+              [ProviderInstanceId.make("pi")]: {
+                driver: ProviderDriverKind.make("pi"),
+                enabled: true,
+              },
+              [ProviderInstanceId.make("dulli")]: {
+                driver: ProviderDriverKind.make("dulli"),
+                enabled: true,
+                config: { agentDir: agent },
+                environment: [
+                  { name: "PI_CODING_AGENT_SESSION_DIR", value: alias, sensitive: false },
+                ],
+              },
+            },
+          },
+        });
+        for (let restart = 0; restart < 2; restart++) {
+          yield* Effect.gen(function* () {
+            const service = yield* UsageService.make;
+            for (let pass = 0; pass < 2; pass++) {
+              const summary = yield* service.readSummary(WINDOW);
+              assert.strictEqual(
+                summary.buckets.filter((bucket) => bucket.provider === "pi").length,
+                0,
+              );
+              const buckets = summary.buckets.filter((bucket) => bucket.provider === "dulli");
+              assert.strictEqual(
+                buckets.reduce((sum, bucket) => sum + totalTokens(bucket.totals), 0),
+                15,
+              );
+              assert.strictEqual(
+                buckets.reduce((sum, bucket) => sum + bucket.costUsd, 0),
+                1.5,
+              );
+              assert.strictEqual(
+                summary.sources.filter(
+                  (source) =>
+                    source.fingerprint.provider === "pi" &&
+                    source.fingerprint.resolvedHomePath === sessions,
+                ).length,
+                0,
+              );
+            }
+            yield* service.awaitPersisted;
+          }).pipe(Effect.scoped, Effect.provide(Layer.fresh(testLayer)));
+          // Header-derived roots and attribution survive a restart after cleanup.
+          yield* Effect.promise(() =>
+            NodeFSP.rm(NodePath.join(child, "child.jsonl"), { force: true }),
+          );
+        }
+      }).pipe(Effect.scoped),
+  );
+
   it.live(
     "reads Pi per-model usage and auxiliary costs once across forks and repeated entries",
     () =>

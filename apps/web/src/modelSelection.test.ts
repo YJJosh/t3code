@@ -344,6 +344,11 @@ describe("instance-scoped model selection", () => {
 
   describe.each([
     {
+      driverName: "dulli",
+      availableModel: "anthropic/claude-sonnet-5",
+      missingModel: "openai-codex/gpt-5.4",
+    },
+    {
       driverName: "opencode",
       availableModel: "opencode/big-pickle",
       missingModel: "opencode/kimi-k3",

@@ -77,6 +77,14 @@ import Migration0060 from "./Migrations/060_ThreadSnapshotWindowIndexes.ts";
 import Migration0061 from "./Migrations/061_PullRequestReviewGuides.ts";
 import Migration0062 from "./Migrations/062_ThreadFailureLookupIndex.ts";
 import Migration0063 from "./Migrations/050_ProjectionThreadMessagePhase.ts";
+import Migration0064, {
+  detectDulliFork,
+  hasForkPiSettings,
+} from "./Migrations/064_DulliProviderIdentity.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as ServerConfig from "../config.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -154,9 +162,12 @@ export const migrationEntries = [
   [61, "PullRequestReviewGuides", Migration0061],
   [62, "ThreadFailureLookupIndex", Migration0062],
   [63, "ProjectionThreadMessagePhase", Migration0063],
+  [64, "DulliProviderIdentity", Migration0064],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
+
+const decodeRawSettingsJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const makeMigrationLoader = (throughId?: number) =>
   Migrator.fromRecord(
@@ -253,6 +264,25 @@ export interface RunMigrationsOptions {
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
+  // Preserve fork evidence before removing the old conflicting phase ledger entry.
+  yield* detectDulliFork;
+  const config = yield* Effect.serviceOption(ServerConfig.ServerConfig);
+  const fs = yield* Effect.serviceOption(FileSystem.FileSystem);
+  if (Option.isSome(config) && Option.isSome(fs)) {
+    const sql = yield* SqlClient.SqlClient;
+    const checked =
+      yield* sql`SELECT name FROM dulli_fork_migrations WHERE name = 'database-checked'`;
+    if (!checked.length) {
+      const raw = yield* fs.value.readFileString(config.value.settingsPath).pipe(Effect.option);
+      if (Option.isSome(raw)) {
+        const fork = yield* decodeRawSettingsJson(raw.value).pipe(
+          Effect.map(hasForkPiSettings),
+          Effect.orElseSucceed(() => false),
+        );
+        if (fork) yield* sql`INSERT OR IGNORE INTO dulli_fork_migrations VALUES ('fork-detected')`;
+      }
+    }
+  }
   yield* reconcileForkMessagePhaseHistory(toMigrationInclusive);
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;

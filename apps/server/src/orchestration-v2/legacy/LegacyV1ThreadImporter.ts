@@ -31,6 +31,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as EventSink from "../EventSink.ts";
+import { restoreDulliNativeContinuity } from "./DulliNativeContinuity.ts";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 
 const IMPORT_EVENT_PREFIX = "migration:v1";
@@ -652,6 +653,10 @@ const make = Effect.gen(function* () {
       importedThreadCount += 1;
       importedMessageCount += previews.length;
     }
+    yield* restoreDulliNativeContinuity.pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(EventSink.EventSinkV2, eventSink),
+    );
     return { importedThreadCount, importedMessageCount };
   });
 

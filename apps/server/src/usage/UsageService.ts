@@ -59,6 +59,7 @@ import type {
   ProviderUsageInstance,
   TranscriptUsageFormat,
   UsageRecord,
+  TranscriptUsageDirectory,
 } from "@t3tools/provider-core/server/usage";
 import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
@@ -382,15 +383,34 @@ export const make = Effect.gen(function* () {
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* (
     settings: ServerSettingsValue,
     retentionCutoffMs: number,
+    alreadyScanned?: readonly TranscriptSource[],
   ) {
     const dirs: Array<TranscriptSource> = [];
+    const scanned = new Set(
+      alreadyScanned?.map(
+        ({ provider, dir, fileName, maxDepth, filePattern }) =>
+          `${provider}\0${dir}\0${encodeUsageRecordKey({ fileName, maxDepth, filePattern })}`,
+      ),
+    );
     const seen = new Set<string>();
     for (const { driver, reader } of transcriptReaders) {
       const { provider, format } = reader;
-      const directories = yield* Effect.forEach(
-        yield* usageInstances(driver, settings),
-        (instance) => reader.directories(instance),
-      );
+      const directories =
+        alreadyScanned === undefined
+          ? yield* Effect.forEach(yield* usageInstances(driver, settings), (instance) =>
+              reader.directories(instance),
+            )
+          : [];
+      const discovered: TranscriptUsageDirectory[] = [];
+      if (format.directoriesFromState && format.state) {
+        const decodeState = Schema.decodeUnknownOption(format.state.schema);
+        for (const entry of fileCache.values()) {
+          if (entry.provider !== provider || entry.mtimeMs < retentionCutoffMs) continue;
+          const state = decodeState(entry.position.state);
+          if (Option.isSome(state)) discovered.push(...format.directoriesFromState(state.value));
+        }
+      }
+      directories.push(discovered);
       for (const { dir: directory, ...scanOptions } of directories.flat()) {
         const sourceKey = provider + "\0" + directory;
         const previous = sourceCache.get(sourceKey);
@@ -399,6 +419,8 @@ export const make = Effect.gen(function* () {
         const dir = yield* fileSystem
           .realPath(directory)
           .pipe(Effect.orElseSucceed(() => previous?.dir ?? directory));
+        const key = `${provider}\0${dir}\0${encodeUsageRecordKey(scanOptions)}`;
+        if (scanned.has(key)) continue;
         const currentVolumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
         const hasRetainedHistory = fileCache
           .entries()
@@ -426,7 +448,6 @@ export const make = Effect.gen(function* () {
           sourceCache.set(sourceKey, { dir, volumeId, ancestorVolumeIds });
           cacheDirty = true;
         }
-        const key = `${provider}\0${dir}\0${encodeUsageRecordKey(scanOptions)}`;
         if (seen.has(key)) continue;
         seen.add(key);
         dirs.push({
@@ -439,7 +460,20 @@ export const make = Effect.gen(function* () {
         });
       }
     }
-    return dirs;
+    // Canonical physical roots, not configured aliases or provider labels, own
+    // scans. Distinct native formats may legitimately read the same directory.
+    const owners = new Map<string, TranscriptSource>();
+    for (const source of [...(alreadyScanned ?? []), ...dirs]) {
+      const key = (source.format.sourceFamily ?? source.provider) + "\0" + source.dir;
+      const previous = owners.get(key);
+      if (!previous || (source.format.sourcePriority ?? 0) > (previous.format.sourcePriority ?? 0))
+        owners.set(key, source);
+    }
+    return dirs.filter(
+      (source) =>
+        owners.get((source.format.sourceFamily ?? source.provider) + "\0" + source.dir)
+          ?.provider === source.provider,
+    );
   });
 
   /**
@@ -743,7 +777,13 @@ export const make = Effect.gen(function* () {
       [Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs)), scans],
       { concurrency: "unbounded" },
     );
-    const scanned: readonly ScannedDir[] = [...transcripts, ...scanDirs.flat()];
+    // The first cold pass learns project roots from headers. Warm scans already
+    // have those headers in the persisted reducer state and need no extra walks.
+    const extra = yield* resolveTranscriptDirs(settings, retentionCutoffMs, dirs).pipe(
+      Effect.provideContext(readerContext),
+    );
+    const children = yield* Effect.forEach(extra, (dir) => scanTranscriptDir(dir, windowStartMs));
+    const scanned: readonly ScannedDir[] = [...transcripts, ...children, ...scanDirs.flat()];
     return scanned;
   });
 

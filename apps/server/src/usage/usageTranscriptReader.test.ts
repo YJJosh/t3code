@@ -76,6 +76,57 @@ function codexUsageLine(outputTokens: number, secondsOffset: number): string {
 }
 
 describe("readTranscriptRecords resume", () => {
+  it("persists Dulli header/model state across streaming projection and unterminated tails", async () => {
+    const path = NodePath.join(dir, "dulli.jsonl");
+    const usage = (id: string) =>
+      JSON.stringify({
+        type: "message",
+        id,
+        timestamp: "2026-08-01T10:00:00Z",
+        message: { role: "assistant", usage: { output: 7 } },
+      });
+    await NodeFSP.writeFile(
+      path,
+      [
+        JSON.stringify({
+          type: "session",
+          id: "session",
+          cwd: "/workspace/project",
+          padding: "x".repeat(5000),
+        }),
+        JSON.stringify({ type: "model_change", provider: "openai", modelId: "model" }),
+        usage("one"),
+        usage("tail"),
+      ].join("\n"),
+    );
+    const first = await readTranscriptRecords(path, TEST_FORMATS.dulli, undefined, {
+      streamingThresholdBytes: 1,
+    });
+    assert.isNotNull(first);
+    assert.strictEqual(first.records.length, 1);
+    assert.strictEqual(first.tailRecords.length, 1);
+    assert.deepStrictEqual(first.position.state, {
+      sessionId: "session",
+      projectPath: "/workspace/project",
+      provider: "openai",
+      model: "model",
+    });
+    await NodeFSP.appendFile(path, "\n" + usage("two") + "\n");
+    const second = await readTranscriptRecords(path, TEST_FORMATS.dulli, first.position);
+    assert.isNotNull(second);
+    assert.isTrue(second.resumed);
+    assert.deepStrictEqual(
+      second.records.map(({ model, sessionId, dedupeKey }) => ({ model, sessionId, dedupeKey })),
+      [
+        { model: "openai/model", sessionId: "session", dedupeKey: "pi:tail" },
+        { model: "openai/model", sessionId: "session", dedupeKey: "pi:two" },
+      ],
+    );
+    const cold = await readTranscriptRecords(path, TEST_FORMATS.dulli);
+    assert.isNotNull(cold);
+    assert.deepStrictEqual([...first.records, ...second.records], cold.records);
+  });
+
   it("parses only appended lines when resuming a grown file", async () => {
     const path = NodePath.join(dir, "claude.jsonl");
     await NodeFSP.writeFile(path, claudeLine(1, 5) + claudeLine(2, 7));

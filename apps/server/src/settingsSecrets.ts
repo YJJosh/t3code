@@ -1,3 +1,4 @@
+import { dulliClient } from "@t3tools/provider-dulli/client";
 import {
   AntigravitySettings,
   ClaudeSettings,
@@ -25,7 +26,15 @@ const providerSecretFields = new Map([
   ["codex", secretSettingsFields(CodexSettings)],
   ["claudeAgent", secretSettingsFields(ClaudeSettings)],
   ["antigravity", secretSettingsFields(AntigravitySettings)],
-  ...[cursorClient, grokClient, museClient, openCodeClient, piClient, acpRegistryClient].map(
+  ...[
+    cursorClient,
+    grokClient,
+    museClient,
+    openCodeClient,
+    piClient,
+    dulliClient,
+    acpRegistryClient,
+  ].map(
     (definition) =>
       [definition.driverKind, secretSettingsFields(definition.settingsSchema)] as const,
   ),
@@ -147,4 +156,34 @@ export function mapSettingsSecrets(
   ) as ServerSettings["usageLimitSources"];
 
   return { ...settings, providerInstances, sourceControlHosts, usageLimitSources };
+}
+
+/** Names to copy before the fork's pi slot/driver rename is committed. Pi had no
+ * schema-declared credential fields, but opaque instance configs can carry them.
+ * Checking every present config key also preserves credentials added by local forks.
+ */
+export function forkPiSecretMoves(
+  instanceId: string,
+  config: Readonly<Record<string, unknown>>,
+  environment: ReadonlyArray<{ readonly name: string }>,
+): Array<{ from: string; to: string }> {
+  const nextId = instanceId === "pi" ? "dulli" : instanceId;
+  const moves: Array<{ from: string; to: string }> = [];
+  for (const [field, value] of Object.entries(config)) {
+    for (const [host] of readSecretFieldValues(value)) {
+      const suffix = `-${encode(field)}${host === null ? "" : `-${encode(host)}`}`;
+      moves.push({
+        from: `provider-config-${encode(instanceId)}-${encode("pi")}${suffix}`,
+        to: `provider-config-${encode(nextId)}-${encode("dulli")}${suffix}`,
+      });
+    }
+  }
+  if (instanceId === "pi") {
+    for (const variable of environment)
+      moves.push({
+        from: `provider-env-${encode(instanceId)}-${encode(variable.name)}`,
+        to: `provider-env-${encode(nextId)}-${encode(variable.name)}`,
+      });
+  }
+  return moves;
 }

@@ -149,6 +149,11 @@ const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const MUSE_DRIVER_KIND = ProviderDriverKind.make("muse");
 const PI_DRIVER_KIND = ProviderDriverKind.make("pi");
+const DULLI_DRIVER_KIND = ProviderDriverKind.make("dulli");
+
+/** Native Pi option keys retained by the Dulli provider and migrated selections. */
+export const PI_PROFILE_OPTION_ID = "profile";
+export const PI_CONFIG_SET_OPTION_ID = "configSet";
 const ACP_REGISTRY_DRIVER_KIND = ProviderDriverKind.make("acpRegistry");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 
@@ -182,6 +187,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [ACP_REGISTRY_DRIVER_KIND]: "default",
   // "default" defers to the user's own Pi settings.json model selection.
   [PI_DRIVER_KIND]: "default",
+  [DULLI_DRIVER_KIND]: "anthropic/claude-sonnet-5",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
   [ProviderDriverKind.make("antigravity")]: ANTIGRAVITY_DEFAULT_MODEL,
 };
@@ -234,5 +240,6 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [MUSE_DRIVER_KIND]: "Muse Code",
   [ACP_REGISTRY_DRIVER_KIND]: "ACP Registry",
   [PI_DRIVER_KIND]: "Pi",
+  [DULLI_DRIVER_KIND]: "Dulli",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
 };

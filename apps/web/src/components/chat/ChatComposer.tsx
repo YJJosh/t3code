@@ -3048,6 +3048,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPromptChange: setPromptFromTraitsStable,
     planModeEnabled: settings.planModeEnabled,
     isComposerOwned: true,
+    descriptorScope: selectedProvider === "dulli" ? "pi-other" : "all",
   } satisfies Parameters<typeof renderProviderTraitsPicker>[0];
   const providerTraitsPicker = renderProviderTraitsPicker(providerTraitsPickerInput);
   const [inlineRestingControlsHost, setInlineRestingControlsHost] = useState<HTMLDivElement | null>(
@@ -5354,18 +5355,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       : []),
     {
       id: "mode",
-      content: (
-        <ComposerFooterModeControls
-          showInteractionModeToggle={planModeUiEnabled}
-          interactionMode={interactionMode}
-          runtimeMode={compatibleRuntimeMode}
-          runtimeModeOptions={compatibleRuntimeModeOptions}
-          size={composerControlsCollapsed ? "xs" : "sm"}
-          hidden={composerControlsHidden || restingHiddenBlockCount > 0}
-          onToggleInteractionMode={toggleInteractionMode}
-          onRuntimeModeChange={handleRuntimeModeChange}
-        />
-      ),
+      content:
+        selectedProvider === "dulli" ? (
+          renderProviderTraitsPicker({
+            ...providerTraitsPickerInput,
+            descriptorScope: "pi-configuration",
+            size: composerControlsCollapsed ? "xs" : "sm",
+            hidden: composerControlsHidden || restingHiddenBlockCount > 0,
+          })
+        ) : (
+          <ComposerFooterModeControls
+            showInteractionModeToggle={planModeUiEnabled}
+            interactionMode={interactionMode}
+            runtimeMode={compatibleRuntimeMode}
+            runtimeModeOptions={compatibleRuntimeModeOptions}
+            size={composerControlsCollapsed ? "xs" : "sm"}
+            hidden={composerControlsHidden || restingHiddenBlockCount > 0}
+            onToggleInteractionMode={toggleInteractionMode}
+            onRuntimeModeChange={handleRuntimeModeChange}
+          />
+        ),
     },
   ];
   const hiddenRestingBlockIds = restingBlockDefs
@@ -5524,11 +5533,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             interactionMode={interactionMode}
             runtimeMode={compatibleRuntimeMode}
             runtimeModeOptions={compatibleRuntimeModeOptions}
+            showRuntimeModeToggle={selectedProvider !== "dulli"}
             size={composerControlsCollapsed ? "xs" : "sm"}
             hidden={composerControlsHidden || hiddenRestingBlockIds.length === 0}
             showInteractionModeToggle={planModeUiEnabled && hiddenRestingBlockIds.includes("mode")}
             traitsMenuContent={
-              hiddenRestingBlockIds.includes("traits") ? providerTraitsMenuContent : undefined
+              hiddenRestingBlockIds.includes("traits") ||
+              (selectedProvider === "dulli" && hiddenRestingBlockIds.includes("mode"))
+                ? providerTraitsMenuContent
+                : undefined
             }
             onToggleInteractionMode={toggleInteractionMode}
             onRuntimeModeChange={handleRuntimeModeChange}

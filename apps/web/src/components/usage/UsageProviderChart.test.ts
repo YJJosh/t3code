@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { buildPeriodColumns, chartScale, niceScale } from "./UsageProviderChart";
-import { providersWithUsage } from "./usageProviders";
+import { PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 
 describe("chartScale", () => {
   const column = (codex: number) => ({
@@ -115,6 +115,7 @@ describe("buildPeriodColumns", () => {
       { provider: "opencode", value: 0 },
       { provider: "antigravity", value: 0 },
       { provider: "pi", value: 5 },
+      { provider: "dulli", value: 0 },
     ]);
   });
 
@@ -160,4 +161,14 @@ describe("hourly chart columns", () => {
       ).map((column) => column.total),
     ).toEqual([0, 4, 0]);
   });
+});
+
+it("orders Dulli after Pi and uses its branded label", () => {
+  expect(
+    providersWithUsage([
+      { provider: "dulli", costUsd: 1, totalTokens: 1 },
+      { provider: "pi", costUsd: 1, totalTokens: 1 },
+    ]),
+  ).toEqual(["pi", "dulli"]);
+  expect(PROVIDER_PRESENTATION.dulli.label).toBe("Dulli");
 });

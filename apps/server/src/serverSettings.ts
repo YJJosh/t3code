@@ -65,13 +65,102 @@ import {
   sourceControlHostSecretName,
 } from "./sourceControl/sourceControlHostSecrets.ts";
 
-import { mapSettingsSecrets, SECRET_REDACTED, type SettingsSecret } from "./settingsSecrets.ts";
+import {
+  forkPiSecretMoves,
+  mapSettingsSecrets,
+  SECRET_REDACTED,
+  type SettingsSecret,
+} from "./settingsSecrets.ts";
+
+import {
+  hasForkPiSettings,
+  jsonObject,
+  renamePiPaths,
+} from "./persistence/Migrations/064_DulliProviderIdentity.ts";
+
+/** Raw migration: never send the fork config through upstream Pi's narrower schema.
+ * An occupied destination is a startup error, not an implicit settings/secret merge.
+ */
+export function migrateForkPiSettings(raw: Record<string, unknown>) {
+  const settings = structuredClone(raw);
+  const instances = jsonObject(settings.providerInstances) ?? {};
+  const legacy = jsonObject(settings.providers);
+  const legacyPi = jsonObject(legacy?.pi);
+  const canonicalPi = jsonObject(instances.pi);
+  if (canonicalPi && canonicalPi.driver !== "pi") {
+    throw new Error("Dulli migration conflict: the historical pi slot is owned by another driver.");
+  }
+  if (
+    ((legacyPi || canonicalPi?.driver === "pi") && instances.dulli !== undefined) ||
+    jsonObject(instances.dulli)?.driver === "pi"
+  ) {
+    throw new Error(
+      "Dulli migration conflict: both pi and dulli provider slots exist. Preserve both configurations and resolve the destination before upgrading.",
+    );
+  }
+  const secretMoves: Array<{ from: string; to: string }> = [];
+  if (!canonicalPi && legacyPi) {
+    instances.pi = { driver: "pi", config: legacyPi, enabled: legacyPi.enabled ?? true };
+  }
+  for (const [id, value] of Object.entries(instances)) {
+    const instance = jsonObject(value);
+    if (instance?.driver !== "pi") continue;
+    const config = jsonObject(instance.config) ?? {};
+    const environment = Array.isArray(instance.environment)
+      ? instance.environment.flatMap((entry) => {
+          const variable = jsonObject(entry);
+          return typeof variable?.name === "string" ? [{ name: variable.name }] : [];
+        })
+      : [];
+    secretMoves.push(...forkPiSecretMoves(id, config, environment));
+    instances[id === "pi" ? "dulli" : id] = { ...instance, driver: "dulli" };
+    if (id === "pi") delete instances.pi;
+  }
+  // The old fork enabled Pi even when its default config was omitted from disk.
+  if (instances.dulli === undefined)
+    instances.dulli = { driver: "dulli", enabled: true, config: {} };
+  settings.providerInstances = instances;
+  if (legacy) delete legacy.pi;
+  const renameKey = (value: unknown) => {
+    const map = jsonObject(value);
+    if (!map || !("pi" in map)) return;
+    if ("dulli" in map) throw new Error("Dulli migration conflict in instance-keyed settings.");
+    map.dulli = map.pi;
+    delete map.pi;
+  };
+  const selections = [
+    "defaultModelSelection",
+    "textGenerationModelSelection",
+    "sourceControlWriterModelSelection",
+    "reviewGuideModelSelection",
+  ];
+  const rewriteScope = (scope: Record<string, unknown>) => {
+    renamePiPaths(
+      scope,
+      selections.flatMap((key) => [`${key}.instanceId`, `${key}.provider`]),
+    );
+    renamePiPaths(scope, ["favorites.*.provider"]);
+    renameKey(scope.providerModelPreferences);
+    renameKey(scope.loadBalancingWeights);
+  };
+  rewriteScope(settings);
+  for (const value of Object.values(jsonObject(settings.projectSettingsOverrides) ?? {})) {
+    const scope = jsonObject(value);
+    if (!scope) continue;
+    rewriteScope(scope);
+    renameKey(scope.providerInstances);
+  }
+  return { settings, secretMoves };
+}
 
 export {
   resolveTextGenerationModelSelection,
   resolveReviewGuideModelSelection,
   resolveSourceControlWriterModelSelection,
 } from "@t3tools/shared/serverSettings";
+
+const decodeRawSettingsJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+const encodeRawSettingsJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
 const encodeServerSettingsJson = Schema.encodeUnknownEffect(fromJsonStringPretty(ServerSettings));
@@ -730,8 +819,77 @@ const make = Effect.gen(function* () {
     // the fold below only writes when it started from the file's real contents.
     let settingsFileTrusted = true;
 
-    if (yield* readConfigExists) {
-      const raw = yield* readRawConfig;
+    {
+      let raw = (yield* readConfigExists) ? yield* readRawConfig : "{}";
+      // The database migration runs before this service and records the fork evidence
+      // even when settings omitted Pi (the historical fork default).
+      const markers = yield* sql<{ name: string }>`SELECT name FROM dulli_fork_migrations`.pipe(
+        Effect.mapError(
+          (cause) =>
+            new ServerSettingsError({ settingsPath, operation: "read-provider-history", cause }),
+        ),
+      );
+      if (!markers.some((row) => row.name === "settings-checked")) {
+        const parsed = yield* decodeRawSettingsJson(raw).pipe(Effect.option);
+        if (Option.isSome(parsed) && jsonObject(parsed.value)) {
+          const fork =
+            markers.some((row) => row.name === "fork-detected") || hasForkPiSettings(parsed.value);
+          if (fork) {
+            const migration = yield* Effect.try(() =>
+              migrateForkPiSettings(jsonObject(parsed.value)!),
+            ).pipe(
+              Effect.tapError(() =>
+                Effect.logError(
+                  "Dulli provider migration stopped: conflicting provider slots or instance-keyed preferences. Existing settings were not overwritten.",
+                ),
+              ),
+              Effect.mapError(
+                (cause) => new ServerSettingsError({ settingsPath, operation: "normalize", cause }),
+              ),
+            );
+            for (const move of migration.secretMoves) {
+              yield* Effect.gen(function* () {
+                const secret = yield* secretStore.get(move.from);
+                if (Option.isNone(secret)) return;
+                const destination = yield* secretStore.get(move.to);
+                if (
+                  Option.isSome(destination) &&
+                  !Buffer.from(destination.value).equals(Buffer.from(secret.value))
+                ) {
+                  return yield* new ServerSettingsError({
+                    settingsPath,
+                    operation: "write-secret",
+                    cause: new Error("Dulli migration destination secret already exists."),
+                  });
+                }
+                if (Option.isNone(destination)) yield* secretStore.set(move.to, secret.value);
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerSettingsError({ settingsPath, operation: "write-secret", cause }),
+                ),
+              );
+            }
+            raw = `${yield* encodeRawSettingsJson(migration.settings).pipe(Effect.mapError((cause) => new ServerSettingsError({ settingsPath, operation: "write-file", cause })))}\n`;
+            yield* writeFileStringAtomically({ filePath: settingsPath, contents: raw }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, pathService),
+              Effect.mapError(
+                (cause) =>
+                  new ServerSettingsError({ settingsPath, operation: "write-file", cause }),
+              ),
+            );
+            // Retain old secret names as recovery copies. They are not read after the
+            // rename, and keeping them closes the file/SQLite crash window safely.
+            yield* Effect.log("Migrated fork Pi settings and credentials to Dulli.");
+          }
+          yield* sql`INSERT OR IGNORE INTO dulli_fork_migrations VALUES ('settings-checked')`.pipe(
+            Effect.mapError(
+              (cause) => new ServerSettingsError({ settingsPath, operation: "write-file", cause }),
+            ),
+          );
+        }
+      }
       const decoded = decodeServerSettingsJsonExit(raw);
       const legacySettings = decodeLegacyProviderSettingsJsonExit(raw);
       if (legacySettings._tag === "Success") {

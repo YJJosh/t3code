@@ -4,7 +4,12 @@ import {
   ProviderDriverKind,
   type ProviderOptionDescriptor,
 } from "@t3tools/contracts";
-import { buildTraitsTriggerDisplay, buildUnavailableModelOptionDescriptors } from "./TraitsPicker";
+import {
+  filterTraitsDescriptors,
+  mergeScopedProviderOptions,
+  buildTraitsTriggerDisplay,
+  buildUnavailableModelOptionDescriptors,
+} from "./TraitsPicker";
 
 function selectDescriptor(
   id: string,
@@ -316,4 +321,32 @@ it("shows Unknown until a matching provider report provides Default", () => {
       reportedModelSelection: { ...selection, options: [{ id: "variant", value: "default" }] },
     }).label,
   ).toBe("Default");
+});
+
+describe("Dulli scoped configuration", () => {
+  it("orders home before profile and preserves unrelated selected traits on edits", () => {
+    const profile = selectDescriptor("profile", [{ id: "coder", label: "Coder" }], "coder");
+    const home = selectDescriptor("configSet", [{ id: "work", label: "Work" }], "work");
+    const reasoning = selectDescriptor("reasoning", [{ id: "high", label: "High" }], "high");
+    expect(filterTraitsDescriptors([reasoning, profile, home], "pi-configuration")).toEqual([
+      home,
+      profile,
+    ]);
+    expect(filterTraitsDescriptors([reasoning, profile, home], "pi-other")).toEqual([reasoning]);
+    expect(
+      mergeScopedProviderOptions(
+        [
+          { id: "profile", value: "old" },
+          { id: "reasoning", value: "high" },
+          { id: "serviceTier", value: "priority" },
+        ],
+        [home, profile],
+      ),
+    ).toEqual([
+      { id: "reasoning", value: "high" },
+      { id: "serviceTier", value: "priority" },
+      { id: "configSet", value: "work" },
+      { id: "profile", value: "coder" },
+    ]);
+  });
 });

@@ -43,6 +43,35 @@ import { useComposerMenuState } from "./useComposerMenuState";
 
 type ProviderOptions = ReadonlyArray<ProviderOptionSelection>;
 
+export type TraitsDescriptorScope = "all" | "pi-configuration" | "pi-other";
+
+export function filterTraitsDescriptors(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  scope: TraitsDescriptorScope,
+): ReadonlyArray<ProviderOptionDescriptor> {
+  const filtered = descriptors.filter((descriptor) =>
+    scope === "pi-configuration"
+      ? descriptor.id === "profile" || descriptor.id === "configSet"
+      : scope === "pi-other"
+        ? descriptor.id !== "profile" && descriptor.id !== "configSet"
+        : true,
+  );
+  return scope === "pi-configuration"
+    ? [...filtered].sort((a, b) => (a.id === "configSet" ? -1 : b.id === "configSet" ? 1 : 0))
+    : filtered;
+}
+
+export function mergeScopedProviderOptions(
+  current: ProviderOptions | null | undefined,
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): ReadonlyArray<ProviderOptionSelection> {
+  const scopedIds = new Set(descriptors.map((descriptor) => descriptor.id));
+  return [
+    ...(current ?? []).filter((selection) => !scopedIds.has(selection.id)),
+    ...(buildProviderOptionSelectionsFromDescriptors(descriptors) ?? []),
+  ];
+}
+
 const SAVED_OPTION_LABELS: Readonly<Record<string, string>> = {
   agent: "Agent",
   effort: "Effort",
@@ -140,12 +169,13 @@ function getSelectedTraits(
   modelOptions: ProviderOptions | null | undefined,
   allowPromptInjectedEffort: boolean,
   planModeEnabled: boolean,
+  descriptorScope: TraitsDescriptorScope = "all",
 ) {
   const caps = getProviderModelCapabilities(models, model, provider, planModeEnabled);
   const modelIsUnavailable =
-    provider === "opencode" &&
+    (provider === "opencode" || provider === "dulli") &&
     !models.some((candidate) => candidate.slug === normalizeModelSlug(model, provider));
-  const descriptors = modelIsUnavailable
+  const allDescriptors = modelIsUnavailable
     ? buildUnavailableModelOptionDescriptors(
         planModeEnabled
           ? modelOptions
@@ -155,6 +185,7 @@ function getSelectedTraits(
         caps,
         selections: modelOptions,
       });
+  const descriptors = filterTraitsDescriptors(allDescriptors, descriptorScope);
   const selectDescriptors = descriptors.filter(
     (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
       descriptor.type === "select",
@@ -222,6 +253,7 @@ function getTraitsSectionVisibility(input: {
   modelOptions: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
   planModeEnabled: boolean;
+  descriptorScope?: TraitsDescriptorScope;
 }) {
   const selected = getSelectedTraits(
     input.provider,
@@ -231,6 +263,7 @@ function getTraitsSectionVisibility(input: {
     input.modelOptions,
     input.allowPromptInjectedEffort ?? true,
     input.planModeEnabled,
+    input.descriptorScope,
   );
 
   const showEffort = selected.primarySelectDescriptor !== null;
@@ -264,6 +297,7 @@ export function shouldRenderTraitsControls(input: {
   modelOptions: ProviderOptions | null | undefined;
   allowPromptInjectedEffort?: boolean;
   planModeEnabled: boolean;
+  descriptorScope?: TraitsDescriptorScope;
 }): boolean {
   return getTraitsSectionVisibility(input).hasAnyControls;
 }
@@ -279,6 +313,7 @@ export interface TraitsMenuContentProps {
   reportedModelSelection?: ModelSelection | null | undefined;
   allowPromptInjectedEffort?: boolean;
   planModeEnabled: boolean;
+  descriptorScope?: TraitsDescriptorScope;
   triggerClassName?: string;
   isComposerOwned?: boolean;
 }
@@ -293,6 +328,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   modelOptions,
   reportedModelSelection,
   allowPromptInjectedEffort = true,
+  descriptorScope = "all",
   planModeEnabled,
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
@@ -333,10 +369,11 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     prompt,
     modelOptions,
     allowPromptInjectedEffort,
+    descriptorScope,
     planModeEnabled,
   });
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
-    updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
+    updateModelOptions(mergeScopedProviderOptions(modelOptions, nextDescriptors));
   };
 
   const handleSelectChange = (
@@ -498,13 +535,20 @@ export function buildTraitsTriggerDisplay(input: {
   let reasoningLabelIndex = -1;
   const labels: Array<string> = [];
   for (const descriptor of input.descriptors) {
+    if (
+      input.provider === "dulli" &&
+      descriptor.id === "configSet" &&
+      descriptor.type === "select" &&
+      descriptor.options.filter((option) => option.id !== "__providerDefault").length < 2
+    )
+      continue;
     if (descriptor.id === "fastMode" && descriptor.type === "boolean") {
       speedLabel = descriptor.currentValue === true ? "Fast" : null;
       fastModeFallbackLabel = speedLabel ?? "Normal";
       continue;
     }
     if (
-      input.provider === "codex" &&
+      (input.provider === "codex" || input.provider === "dulli") &&
       descriptor.id === "serviceTier" &&
       descriptor.type === "select"
     ) {
@@ -576,6 +620,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   modelOptions,
   reportedModelSelection,
   allowPromptInjectedEffort = true,
+  descriptorScope = "all",
   planModeEnabled,
   triggerClassName,
   isComposerOwned,
@@ -599,6 +644,7 @@ export const TraitsPicker = memo(function TraitsPicker({
       prompt,
       modelOptions,
       allowPromptInjectedEffort,
+      descriptorScope,
       planModeEnabled,
     });
   if (
@@ -609,6 +655,7 @@ export const TraitsPicker = memo(function TraitsPicker({
       prompt,
       modelOptions,
       allowPromptInjectedEffort,
+      descriptorScope,
       planModeEnabled,
     })
   ) {
@@ -688,6 +735,7 @@ export const TraitsPicker = memo(function TraitsPicker({
           onPromptChange={onPromptChange}
           modelOptions={modelOptions}
           reportedModelSelection={reportedModelSelection}
+          descriptorScope={descriptorScope}
           allowPromptInjectedEffort={allowPromptInjectedEffort}
           planModeEnabled={planModeEnabled}
           {...persistence}

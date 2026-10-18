@@ -19,7 +19,12 @@ import type { ReactNode } from "react";
 import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
 import type { ComposerControlSize } from "./ComposerControl";
-import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
+import {
+  shouldRenderTraitsControls,
+  TraitsMenuContent,
+  TraitsPicker,
+  type TraitsDescriptorScope,
+} from "./TraitsPicker";
 
 export type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
@@ -42,6 +47,7 @@ export type ComposerProviderState = {
 };
 
 type TraitsRenderInput = {
+  descriptorScope?: TraitsDescriptorScope;
   provider: ProviderDriverKind;
   instanceId?: ProviderInstanceId;
   threadRef?: ScopedThreadRef;
@@ -110,7 +116,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     promptInjectionState = "none",
     planModeEnabled,
   } = input;
-  if (provider === "opencode") {
+  if (provider === "opencode" || provider === "dulli") {
     const normalizedModel = normalizeModelSlug(model, provider);
     const modelIsInCatalog = models.some((candidate) => candidate.slug === normalizedModel);
     if (!modelIsInCatalog) {
@@ -180,6 +186,7 @@ function renderTraitsControl(
     hidden,
     triggerClassName,
     isComposerOwned,
+    descriptorScope = "all",
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
   const { selections: resolvedModelOptions } = resolveComposerOptionSelections(
@@ -198,6 +205,7 @@ function renderTraitsControl(
       modelOptions: resolvedModelOptions,
       prompt,
       planModeEnabled,
+      descriptorScope,
     })
   ) {
     return null;
@@ -205,6 +213,7 @@ function renderTraitsControl(
   return (
     <Component
       provider={provider}
+      descriptorScope={descriptorScope}
       {...(instanceId ? { instanceId } : {})}
       models={models}
       {...(threadRef ? { threadRef } : {})}
