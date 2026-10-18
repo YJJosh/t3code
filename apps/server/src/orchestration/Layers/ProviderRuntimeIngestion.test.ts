@@ -38,6 +38,7 @@ import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
+import * as Statement from "effect/unstable/sql/Statement";
 import { it as effectIt } from "@effect/vitest";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
@@ -65,7 +66,10 @@ import {
 } from "./ProviderRuntimeIngestion.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
@@ -243,6 +247,21 @@ async function waitForThread(
   return poll();
 }
 
+// Shared by the replay tests so the file stays within its
+// Effect.runPromise lint ceiling.
+// Lists the activity ids the event log appended, in order.
+async function appendedActivityIds(
+  readEvents: OrchestrationEngineShape["readEvents"],
+  prefix: string,
+) {
+  const persisted = await Effect.runPromise(Stream.runCollect(readEvents(0)));
+  return persisted.flatMap((event) =>
+    event.type === "thread.activity-appended" && event.payload.activity.id.startsWith(prefix)
+      ? [event.payload.activity.id]
+      : [],
+  );
+}
+
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
     OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
@@ -276,6 +295,8 @@ describe("ProviderRuntimeIngestion", () => {
     threadTitle?: string;
     workspaceSubdirectory?: string;
     isGitRepository?: CheckpointStore.CheckpointStore["Service"]["isGitRepository"];
+    // Inject a failed dedup SELECT without disabling the real append/project transaction.
+    sqlTransformer?: Statement.Transformer;
   }) {
     const repositoryRoot = makeTempDir("t3-provider-project-");
     NodeChildProcess.execFileSync("git", ["init", "--initial-branch=main"], {
@@ -349,6 +370,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
       Layer.provideMerge(Layer.succeed(Tracer.Tracer, sqlCounter.tracer)),
+      Layer.provideMerge(Layer.succeed(Statement.CurrentTransformer, options?.sqlTransformer)),
     );
     const testRuntime = ManagedRuntime.make(layer);
     runtime = testRuntime;
@@ -5323,6 +5345,233 @@ describe("ProviderRuntimeIngestion", () => {
       ),
     ).toBe(false);
   });
+
+  // Share realistic transcript fixtures across replay, live-update, and lookup-failure regressions.
+  const durable = (eventId: string, text: string, sequence: number) => {
+    const now = "2026-01-01T00:00:00.000Z";
+    return {
+      type: "task.progress" as const,
+      eventId: asEventId(eventId),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-replay"),
+      payload: {
+        taskId: "agent-replay",
+        description: "Replay task",
+        transcriptEvent: {
+          managerId: "manager-1",
+          timestamp: now,
+          kind: "child_message",
+          sequence,
+          activity: {
+            type: "message_end",
+            data: { message: { role: "assistant", content: [{ type: "text", text }] } },
+          },
+        },
+      },
+    };
+  };
+
+  it("stores a replayed subagent transcript event once", async () => {
+    const harness = await createHarness();
+    await harness.emitAndDrain([durable("evt-live", "Full live text", 7)]);
+    // A reconnect replays the same event (here in a shorter form) plus a new one.
+    await harness.emitAndDrain([
+      durable("evt-replay-old", "Short", 7),
+      durable("evt-replay-new", "Missed while away", 8),
+    ]);
+
+    expect(await appendedActivityIds(harness.engine.readEvents, "task-transcript:")).toEqual([
+      "task-transcript:thread-1:agent-replay:manager-1:7",
+      "task-transcript:thread-1:agent-replay:manager-1:8",
+    ]);
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task-transcript:thread-1:agent-replay:manager-1:8",
+      ),
+    );
+    const kept = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) =>
+        activity.id === "task-transcript:thread-1:agent-replay:manager-1:7",
+    );
+    expect(JSON.stringify(kept?.payload)).toContain("Full live text");
+  });
+
+  // Covers the usage snapshot a replayed event carries, and a duplicate inside
+  // one replay batch.
+  it("skips the usage snapshot of a replayed subagent event", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const progress = (
+      eventId: string,
+      sequence: number,
+      options: { readonly totalTokens?: number; readonly liveOnly?: boolean } = {},
+    ) => ({
+      type: "task.progress" as const,
+      eventId: asEventId(eventId),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-replay"),
+      payload: {
+        taskId: "agent-replay",
+        description: "Replay task",
+        ...(options.totalTokens !== undefined
+          ? { typedUsage: { totalTokens: options.totalTokens } }
+          : {}),
+        transcriptEvent: {
+          managerId: "manager-1",
+          timestamp: now,
+          kind: "child_message",
+          sequence,
+          activity: {
+            type: options.liveOnly ? "message_update" : "message_end",
+            ...(options.liveOnly ? { liveOnly: true } : {}),
+            data: { message: { role: "assistant", content: [{ type: "text", text: "Hi" }] } },
+          },
+        },
+      },
+    });
+
+    await harness.emitAndDrain([
+      progress("evt-live-durable", 7, { totalTokens: 100 }),
+      // The latest count arrived on an event the extension does not journal.
+      progress("evt-live-update", 8, { totalTokens: 200, liveOnly: true }),
+    ]);
+    await harness.emitAndDrain([
+      progress("evt-replay-durable", 7, { totalTokens: 100 }),
+      progress("evt-replay-new", 9),
+      progress("evt-replay-new-again", 9),
+    ]);
+
+    expect(await appendedActivityIds(harness.engine.readEvents, "task-usage:")).toHaveLength(2);
+    expect(await appendedActivityIds(harness.engine.readEvents, "task-transcript:")).toEqual([
+      "task-transcript:thread-1:agent-replay:manager-1:7",
+      "task-transcript:thread-1:agent-replay:manager-1:9",
+    ]);
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "task-transcript:thread-1:agent-replay:manager-1:9",
+      ),
+    );
+    const usage = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "task-usage:thread-1:agent-replay",
+    );
+    expect(usage?.payload).toMatchObject({ typedUsage: { totalTokens: 200 } });
+  });
+  // A duplicate inside one provider batch sees the earlier committed projection
+  // and is skipped with its usage, while another manager's sequence gets through.
+  effectIt.effect("deduplicates within a batch without dropping another manager", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const replay = durable("evt-replay", "Short", 7);
+      const otherManager = durable("evt-other-manager", "Other manager", 7);
+      yield* Effect.promise(() =>
+        harness.emitAndDrain([
+          durable("evt-first", "Full text", 7),
+          { ...replay, payload: { ...replay.payload, typedUsage: { totalTokens: 42 } } },
+          {
+            ...otherManager,
+            payload: {
+              ...otherManager.payload,
+              transcriptEvent: { ...otherManager.payload.transcriptEvent, managerId: "manager-2" },
+            },
+          },
+        ]),
+      );
+      const events = yield* Stream.runCollect(harness.engine.readEvents(0));
+      const activities = events.flatMap((event) =>
+        event.type === "thread.activity-appended" ? [event.payload.activity] : [],
+      );
+      expect(activities.map((activity) => activity.id)).toEqual([
+        "task-transcript:thread-1:agent-replay:manager-1:7",
+        "task-transcript:thread-1:agent-replay:manager-2:7",
+      ]);
+    }),
+  );
+
+  // liveOnly ids intentionally upsert; treating them as immutable would freeze streamed text.
+  effectIt.effect("keeps updating the same live transcript row", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      yield* Effect.promise(() =>
+        harness.emitAndDrain(
+          ["First", "First and second"].map((text, index) => {
+            const event = durable(`evt-live-${index}`, text, index);
+            return {
+              ...event,
+              payload: {
+                ...event.payload,
+                transcriptEvent: {
+                  ...event.payload.transcriptEvent,
+                  activity: {
+                    ...event.payload.transcriptEvent.activity,
+                    type: "message_update",
+                    liveOnly: true,
+                  },
+                },
+              },
+            };
+          }),
+        ),
+      );
+      const events = yield* Stream.runCollect(harness.engine.readEvents(0));
+      expect(events.filter((event) => event.type === "thread.activity-appended")).toHaveLength(2);
+      const thread = (yield* Effect.promise(harness.readModel)).threads.find(
+        (thread) => thread.id === "thread-1",
+      );
+      expect(thread?.activities).toHaveLength(1);
+      expect(thread?.activities[0]?.payload).toMatchObject({
+        transcriptEvent: {
+          activity: {
+            data: { message: { content: [{ type: "text", text: "First and second" }] } },
+          },
+        },
+      });
+    }),
+  );
+
+  // Dedup is an optimization, not a delivery prerequisite. A failed lookup must
+  // not discard the transcript or the usage row emitted from the same event.
+  effectIt.effect("still appends transcript and usage when the dedup lookup fails", () =>
+    Effect.gen(function* () {
+      let failedLookups = 0;
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          sqlTransformer: (statement, sql) => {
+            const [query] = statement.compile();
+            if (
+              query.includes('SELECT activity_id AS "activityId"') &&
+              query.includes("WHERE activity_id =")
+            ) {
+              failedLookups++;
+              return Effect.succeed(sql`SELECT * FROM review_missing_table`);
+            }
+            return Effect.succeed(statement);
+          },
+        }),
+      );
+      const event = durable("evt-lookup-failed", "Must not disappear", 7);
+      yield* Effect.promise(() =>
+        harness.emitAndDrain([
+          { ...event, payload: { ...event.payload, typedUsage: { totalTokens: 42 } } },
+        ]),
+      );
+      expect(failedLookups).toBe(1);
+      const events = yield* Stream.runCollect(harness.engine.readEvents(0));
+      expect(
+        events.flatMap((event) =>
+          event.type === "thread.activity-appended" ? [event.payload.activity.id] : [],
+        ),
+      ).toEqual([
+        "task-transcript:thread-1:agent-replay:manager-1:7",
+        "task-usage:thread-1:agent-replay",
+      ]);
+    }),
+  );
 
   it("titles task activities with the task description, including on completion", async () => {
     const harness = await createHarness();

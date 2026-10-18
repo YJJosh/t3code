@@ -14,6 +14,7 @@ import {
   ListProjectionThreadActivitiesInput,
   GetLatestProjectionThreadTaskActivityInput,
   ProjectionThreadActivity,
+  ProjectionThreadActivityExistsInput,
   ProjectionThreadActivityRepository,
   type ProjectionThreadActivityRepositoryShape,
 } from "../Services/ProjectionThreadActivities.ts";
@@ -189,6 +190,17 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const findProjectionThreadActivityId = SqlSchema.findOneOption({
+    Request: ProjectionThreadActivityExistsInput,
+    Result: Schema.Struct({ activityId: Schema.String }),
+    execute: ({ activityId }) =>
+      sql`
+        SELECT activity_id AS "activityId"
+        FROM projection_thread_activities
+        WHERE activity_id = ${activityId}
+      `,
+  });
+
   const deleteProjectionThreadActivityRows = SqlSchema.void({
     Request: DeleteProjectionThreadActivitiesInput,
     execute: ({ threadId }) =>
@@ -244,6 +256,17 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       Effect.map(Option.map(toProjectionThreadActivity)),
     );
 
+  const exists: ProjectionThreadActivityRepositoryShape["exists"] = (input) =>
+    findProjectionThreadActivityId(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionThreadActivityRepository.exists:query",
+          "ProjectionThreadActivityRepository.exists:decodeRow",
+        ),
+      ),
+      Effect.map(Option.isSome),
+    );
+
   const deleteByThreadId: ProjectionThreadActivityRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadActivityRows(input).pipe(
       Effect.mapError(
@@ -256,6 +279,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
     listByThreadId,
     listUserInputLifecycleByThreadId,
     getLatestTaskActivity,
+    exists,
     deleteByThreadId,
   } satisfies ProjectionThreadActivityRepositoryShape;
 });

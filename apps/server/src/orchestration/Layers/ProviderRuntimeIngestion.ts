@@ -2825,7 +2825,31 @@ const make = Effect.gen(function* () {
         }
       }
 
+      // A subagent transcript row is keyed by manager and sequence, so the same
+      // id is always the same event. Pi replays them on every reconnect; an
+      // event whose transcript row is already stored was ingested live, so its
+      // other rows (the usage snapshot it carried, now older than the stored
+      // one) are skipped with it. A failed lookup appends anyway: an occasional
+      // duplicate is better than losing the event.
       const activities = runtimeEventToActivities(activityEvent, taskTitle);
+      const transcriptActivity = activities.find((activity) =>
+        activity.id.startsWith("task-transcript:"),
+      );
+      if (
+        transcriptActivity &&
+        (yield* projectionThreadActivityRepository
+          .exists({ activityId: transcriptActivity.id })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("subagent transcript dedup lookup failed; appending", {
+                activityId: transcriptActivity.id,
+                error,
+              }).pipe(Effect.as(false)),
+            ),
+          ))
+      ) {
+        return;
+      }
       yield* Effect.forEach(activities, (activity) =>
         providerCommandId(event, "thread-activity-append").pipe(
           Effect.flatMap((commandId) =>

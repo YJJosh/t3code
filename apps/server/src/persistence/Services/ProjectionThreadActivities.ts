@@ -48,6 +48,11 @@ export const GetLatestProjectionThreadTaskActivityInput = Schema.Struct({
 export type GetLatestProjectionThreadTaskActivityInput =
   typeof GetLatestProjectionThreadTaskActivityInput.Type;
 
+export const ProjectionThreadActivityExistsInput = Schema.Struct({
+  activityId: EventId,
+});
+export type ProjectionThreadActivityExistsInput = typeof ProjectionThreadActivityExistsInput.Type;
+
 export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -92,6 +97,13 @@ export interface ProjectionThreadActivityRepositoryShape {
   readonly getLatestTaskActivity: (
     input: GetLatestProjectionThreadTaskActivityInput,
   ) => Effect.Effect<Option.Option<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Whether a row with this activity id is already projected.
+   */
+  readonly exists: (
+    input: ProjectionThreadActivityExistsInput,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
 
   /**
    * Delete projected thread activity rows by thread.
