@@ -68,6 +68,13 @@ layer("ProjectionThreadActivityRepository", (it) => {
         createdAt: "2026-03-01T00:00:05.000Z",
       });
 
+      // Existence must use only the indexed id, even when an unrelated
+      // activity has invalid/large JSON, and missing ids must not count as stored.
+      assert.isTrue(
+        yield* repository.exists({ activityId: EventId.make("activity-task-unrelated-tool") }),
+      );
+      assert.isFalse(yield* repository.exists({ activityId: EventId.make("activity-missing") }));
+
       const recent = yield* repository.listByThreadId({
         threadId,
         activityKinds: ["task.progress"],
@@ -94,6 +101,13 @@ layer("ProjectionThreadActivityRepository", (it) => {
       assert.equal(
         (yield* repository.getLatestTaskActivity({ threadId, taskId: "missing" }))._tag,
         "None",
+      );
+
+      // A reverted/recreated thread can replay a removed row; don't retain
+      // a process-local tombstone after its projection is deleted.
+      yield* repository.deleteByThreadId({ threadId });
+      assert.isFalse(
+        yield* repository.exists({ activityId: EventId.make("activity-task-progress") }),
       );
     }),
   );
