@@ -329,6 +329,7 @@ interface BackgroundTerminalRosterGroupProps {
 
 /**
  * One collapsible strip group: a summary row with the count, rows when expanded.
+ * The settled summary also counts failures, since failed rows hide inside it.
  * Starts collapsed; key it by environment and thread so switching threads resets it.
  */
 function BackgroundTerminalRosterGroupSection({
@@ -337,6 +338,10 @@ function BackgroundTerminalRosterGroupSection({
   onOpenTerminal,
 }: BackgroundTerminalRosterGroupProps) {
   const label = backgroundTerminalRosterSummaryLabel(group, terminals.length);
+  const failedCount =
+    group === "settled"
+      ? terminals.filter((terminal) => terminal.view.status === "failed").length
+      : 0;
   return (
     <Collapsible>
       <CollapsibleTrigger
@@ -347,6 +352,14 @@ function BackgroundTerminalRosterGroupSection({
           <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-info" />
         )}
         {label}
+        {failedCount > 0 && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-destructive" />
+            <span className="sr-only">,</span>
+            {failedCount} failed
+          </>
+        )}
       </CollapsibleTrigger>
       <CollapsiblePanel>
         <div
