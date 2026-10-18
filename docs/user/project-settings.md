@@ -79,8 +79,9 @@ including multi-repo ones, are eligible. Active sessions, shared worktrees, unco
 and ignored files other than `node_modules` and `.DS_Store` prevent removal. A Workler workspace
 is a full clone, so it is also kept while any commit or stash exists only in it, while it isn't
 on a branch, or while a multi-repo workspace has files outside its repositories. Before removing
-one, T3 copies its branches and tags into the project's repositories. Branches and thread history
-stay; starting another turn recreates the checkout.
+one, T3 copies its branches and tags into the project's repositories. A tag whose name the
+project already uses for something else is kept as `refs/t3/kept-tags/<id>/<tag>`. Branches and
+thread history stay; starting another turn recreates the checkout.
 Merge cleanup requires the commits to be included in the remote default branch, so squash merges
 may need the inactivity rule instead.
 

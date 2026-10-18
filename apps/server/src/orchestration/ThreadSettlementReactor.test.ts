@@ -2258,9 +2258,11 @@ describe("storage cleanup", () => {
           if (scenario === "clone-local-tag" || scenario === "clone-tag-taken") {
             yield* run(worktreePath, ["tag", "v1"]);
           }
+          let workspaceTag = "";
           if (scenario === "clone-tag-taken") {
-            // The project already has a different `v1`. The clone's tags a pushed
-            // commit, so nothing is lost and the project's tag stays as it is.
+            workspaceTag = (yield* run(worktreePath, ["rev-parse", "v1"])).stdout.trim();
+            // The project already has a different `v1`. Its tag stays as it is,
+            // and the clone's is kept under refs/t3/kept-tags.
             yield* run(root, [...author, "commit", "--allow-empty", "-m", "other"]);
             yield* run(root, ["tag", "v1"]);
           }
@@ -2350,6 +2352,14 @@ describe("storage cleanup", () => {
             assert.strictEqual(
               (yield* run(root, ["rev-parse", "v1^{commit}"])).stdout,
               (yield* run(root, ["rev-parse", "main"])).stdout,
+            );
+            assert.strictEqual(
+              (yield* run(root, [
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/t3/kept-tags",
+              ])).stdout.trim(),
+              `refs/t3/kept-tags/${workspaceTag}/v1 ${workspaceTag}`,
             );
           }
           if (scenario === "clone-checkpoint") {

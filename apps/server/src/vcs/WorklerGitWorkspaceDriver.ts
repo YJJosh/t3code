@@ -54,10 +54,12 @@ export function mapWorklerError(
  * Removing a Workler clone deletes its refs, while a linked worktree's stay in
  * the project. Call before removing one: copies into the repository it was
  * cloned from every branch and tag the project doesn't have yet, fast-forwards
- * branches the clone moved ahead, and copies T3's checkpoints. Fails, so the
- * caller keeps the clone, when that would mean overwriting a branch or tag of
- * the project and losing work (always for the current branch, which resuming
- * the thread needs), or when the clone has a stash or commits on no branch.
+ * branches the clone moved ahead, and copies T3's checkpoints. A tag whose
+ * name the project uses for something else is kept as
+ * `refs/t3/kept-tags/<object>/<tag>`. Fails, so the caller keeps the clone,
+ * when that would mean overwriting a branch of the project and losing work
+ * (always for the current branch, which resuming the thread needs), or when
+ * the clone has a stash or commits on no branch.
  */
 export const keepWorklerCloneRefs = Effect.fn("WorklerGitWorkspaceDriver.keepCloneRefs")(function* (
   git: Pick<GitVcsDriver.GitVcsDriver["Service"], "execute">,
@@ -142,20 +144,20 @@ export const keepWorklerCloneRefs = Effect.fn("WorklerGitWorkspaceDriver.keepClo
       copy.push(`${ref}:${ref}`);
       continue;
     }
-    yield* mirrorSourceBranches();
-    const branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : null;
-    // The project's branch already holds everything (e.g. it moved on since).
-    if (branch !== null && (yield* reachedFrom(ref, [`refs/remotes/workler-root/${branch}`]))) {
+    if (ref.startsWith("refs/tags/")) {
+      // The project uses this tag name for something else. Keep the clone's
+      // tag (and an annotated tag's message) under a name that can't clash;
+      // the object ID in it means the copy never overwrites anything.
+      copy.push(`${ref}:refs/t3/kept-tags/${objectName}/${ref.slice("refs/tags/".length)}`);
       continue;
     }
+    yield* mirrorSourceBranches();
+    const branch = ref.slice("refs/heads/".length);
+    // The project's branch already holds everything (e.g. it moved on since).
+    if (yield* reachedFrom(ref, [`refs/remotes/workler-root/${branch}`])) continue;
     // Pushed, so nothing would be lost; only the current branch is needed by name.
     const pushed = yield* reachedFrom(ref, ["--remotes"]);
     if (pushed && ref !== headRef) continue;
-    if (branch === null) {
-      return yield* kept(
-        `its tag ${ref.slice("refs/tags/".length)} has commits the project's tag of that name doesn't.`,
-      );
-    }
     // The current branch is pushed and the project's is only behind it, so
     // resume stays on the same history. Git refuses to move a branch that is
     // checked out there, which is fine.
