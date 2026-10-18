@@ -18,6 +18,7 @@ link packages/provider-acp/node_modules
 link packages/provider-acp-registry/node_modules
 link packages/provider-core/node_modules
 link packages/provider-cursor/node_modules
+link packages/provider-dulli/node_modules
 link packages/provider-grok/node_modules
 link packages/provider-muse/node_modules
 link packages/provider-opencode/node_modules
