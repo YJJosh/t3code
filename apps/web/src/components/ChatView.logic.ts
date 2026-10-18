@@ -814,9 +814,9 @@ export function readFileAsDataUrl(file: File): Promise<string> {
 
 export function resolveSendEnvMode(input: {
   requestedEnvMode: DraftThreadEnvMode;
-  isGitRepo: boolean;
+  supportsWorktrees: boolean;
 }): DraftThreadEnvMode {
-  return input.isGitRepo ? input.requestedEnvMode : "local";
+  return input.supportsWorktrees ? input.requestedEnvMode : "local";
 }
 
 export function resolveBackgroundDraftWorkspaceOptions(input: {

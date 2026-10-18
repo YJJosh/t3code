@@ -5,7 +5,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Struct from "effect/Struct";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { ProviderOptionSelections } from "./model.ts";
-import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
+import { ProjectMultiRepo, RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -543,6 +543,10 @@ export const OrchestrationProject = Schema.Struct({
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
+  multiRepo: Schema.optional(Schema.NullOr(ProjectMultiRepo)),
+  // Repositories inside a plain project folder, which could become a
+  // multi-repo project. Sent only when there are some.
+  nestedRepositories: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   // Per-project override for where new threads start. Null/absent means
   // "no override": clients fall back to t3.json, then the global setting.
@@ -873,6 +877,10 @@ export const OrchestrationProjectShell = Schema.Struct({
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
+  multiRepo: Schema.optional(Schema.NullOr(ProjectMultiRepo)),
+  // Repositories inside a plain project folder, which could become a
+  // multi-repo project. Sent only when there are some.
+  nestedRepositories: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   defaultThreadEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
   autoPull: Schema.optional(Schema.Boolean),

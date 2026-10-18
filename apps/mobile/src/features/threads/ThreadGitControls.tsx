@@ -86,6 +86,8 @@ export type ThreadGitMenuProps = {
   readonly currentBranch: string | null;
   readonly gitStatus: VcsStatusResult | null;
   readonly gitOperationLabel: string | null;
+  // False for multi-repo projects: files and terminal stay, the Git menu goes.
+  readonly showGitControls?: boolean;
   readonly onOpenFilesInspector?: () => void;
   readonly onOpenGitInspector?: () => void;
   readonly onPull: () => Promise<void>;
@@ -395,16 +397,26 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
 export function useThreadGitRightHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
   return useMemo(
-    () => [actionItems.git, actionItems.files, actionItems.terminal] as HeaderItems,
-    [actionItems],
+    () =>
+      [
+        ...(props.showGitControls === false ? [] : [actionItems.git]),
+        actionItems.files,
+        actionItems.terminal,
+      ] as HeaderItems,
+    [actionItems, props.showGitControls],
   );
 }
 
 export function useThreadGitCenterHeaderItems(props: ThreadGitControlsProps): HeaderItems {
   const actionItems = useThreadGitHeaderActionItems(props);
   return useMemo(
-    () => [actionItems.files, actionItems.git, actionItems.terminal] as HeaderItems,
-    [actionItems],
+    () =>
+      [
+        actionItems.files,
+        ...(props.showGitControls === false ? [] : [actionItems.git]),
+        actionItems.terminal,
+      ] as HeaderItems,
+    [actionItems, props.showGitControls],
   );
 }
 
@@ -492,7 +504,9 @@ export function ThreadGitControls(props: ThreadGitControlsProps) {
           separateBackground
         />
       ) : null}
-      {showActionControls ? createNativeHeaderMenu(threadGitMenuDefinition(props, model)) : null}
+      {showActionControls && props.showGitControls !== false
+        ? createNativeHeaderMenu(threadGitMenuDefinition(props, model))
+        : null}
     </NativeHeaderToolbar>
   );
 }
@@ -509,7 +523,8 @@ export function ThreadGitMenu(props: ThreadGitMenuProps) {
 
 /** Returns menu data because native toolbars serialize direct items rather than rendering component children. */
 export function useThreadGitMenuDefinition(props: ThreadGitMenuProps): ScreenHeaderMenu | null {
-  return threadGitMenuDefinition(props, useThreadGitControlModel(props));
+  const model = useThreadGitControlModel(props);
+  return props.showGitControls === false ? null : threadGitMenuDefinition(props, model);
 }
 
 function threadGitMenuDefinition(

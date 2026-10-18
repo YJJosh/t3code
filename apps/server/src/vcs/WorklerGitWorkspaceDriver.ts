@@ -36,7 +36,7 @@ export function sanitizeWorklerWorkspaceName(value: string): string {
   return WINDOWS_RESERVED_NAME.test(safeName) ? `workspace-${safeName}` : safeName;
 }
 
-function mapWorklerError(
+export function mapWorklerError(
   operation: string,
   cwd: string,
   error: WorklerWorkspaceService.WorklerWorkspaceError,
@@ -49,6 +49,147 @@ function mapWorklerError(
     cause: error,
   });
 }
+
+/**
+ * Removing a Workler clone deletes its refs, while a linked worktree's stay in
+ * the project. Call before removing one: copies into the repository it was
+ * cloned from every branch and tag the project doesn't have yet, fast-forwards
+ * branches the clone moved ahead, and copies T3's checkpoints. A tag whose
+ * name the project uses for something else is kept as
+ * `refs/t3/kept-tags/<object>/<tag>`. Fails, so the caller keeps the clone,
+ * when that would mean overwriting a branch of the project and losing work
+ * (always for the current branch, which resuming the thread needs), or when
+ * the clone has a stash or commits on no branch.
+ */
+export const keepWorklerCloneRefs = Effect.fn("WorklerGitWorkspaceDriver.keepCloneRefs")(function* (
+  git: Pick<GitVcsDriver.GitVcsDriver["Service"], "execute">,
+  input: { readonly source: string; readonly clone: string },
+) {
+  const operation = "WorklerGitWorkspaceDriver.keepCloneRefs";
+  const kept = (reason: string) =>
+    new GitCommandError({
+      operation,
+      command: "git",
+      cwd: input.clone,
+      detail: `Kept ${input.clone}, because ${reason}`,
+    });
+  const run = (cwd: string, args: ReadonlyArray<string>) =>
+    git.execute({ operation, cwd, args, allowNonZeroExit: true });
+  const listRefs = Effect.fn(function* (cwd: string) {
+    const listed = yield* git.execute({
+      operation,
+      cwd,
+      args: ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags"],
+    });
+    return new Map(
+      listed.stdout
+        .split("\n")
+        .filter((line) => line.length > 0)
+        .map((line) => [line.slice(line.indexOf(" ") + 1), line.slice(0, line.indexOf(" "))]),
+    );
+  });
+  // True when every commit `ref` reaches is also reached from `from`.
+  const reachedFrom = Effect.fn(function* (ref: string, from: ReadonlyArray<string>) {
+    const result = yield* git.execute({
+      operation,
+      cwd: input.clone,
+      args: ["rev-list", "--max-count=1", ref, "--not", ...from],
+    });
+    return result.stdout.trim() === "";
+  });
+  // The project's branches as they are now, for checks inside the clone.
+  let mirrored = false;
+  const mirrorSourceBranches = Effect.fn(function* () {
+    if (mirrored) return;
+    mirrored = true;
+    yield* git.execute({
+      operation,
+      cwd: input.clone,
+      args: [
+        "fetch",
+        "--no-recurse-submodules",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--prune",
+        input.source,
+        "+refs/heads/*:refs/remotes/workler-root/*",
+      ],
+    });
+  });
+
+  if (
+    (yield* run(input.clone, ["rev-parse", "--verify", "--quiet", "refs/stash"])).exitCode === 0
+  ) {
+    return yield* kept("it has stashed changes. Apply or drop them (git stash list) first.");
+  }
+  const head = yield* run(input.clone, ["symbolic-ref", "--quiet", "HEAD"]);
+  const headRef = head.exitCode === 0 ? head.stdout.trim() : null;
+  if (headRef === null) {
+    // A rebase or bisect stopped halfway leaves commits that only HEAD reaches.
+    yield* mirrorSourceBranches();
+    if (!(yield* reachedFrom("HEAD", ["--branches", "--tags", "--remotes"]))) {
+      return yield* kept(
+        "its HEAD has commits on no branch, maybe from a rebase that stopped halfway. Finish or abort it first.",
+      );
+    }
+  }
+
+  const sourceRefs = yield* listRefs(input.source);
+  const copy: Array<string> = [];
+  const fastForwardIfAllowed: Array<string> = [];
+  for (const [ref, objectName] of yield* listRefs(input.clone)) {
+    const sourceObjectName = sourceRefs.get(ref);
+    if (sourceObjectName === objectName) continue;
+    if (sourceObjectName === undefined) {
+      copy.push(`${ref}:${ref}`);
+      continue;
+    }
+    if (ref.startsWith("refs/tags/")) {
+      // The project uses this tag name for something else. Keep the clone's
+      // tag (and an annotated tag's message) under a name that can't clash;
+      // the object ID in it means the copy never overwrites anything.
+      copy.push(`${ref}:refs/t3/kept-tags/${objectName}/${ref.slice("refs/tags/".length)}`);
+      continue;
+    }
+    yield* mirrorSourceBranches();
+    const branch = ref.slice("refs/heads/".length);
+    // The project's branch already holds everything (e.g. it moved on since).
+    if (yield* reachedFrom(ref, [`refs/remotes/workler-root/${branch}`])) continue;
+    // Pushed, so nothing would be lost; only the current branch is needed by name.
+    const pushed = yield* reachedFrom(ref, ["--remotes"]);
+    if (pushed && ref !== headRef) continue;
+    // The current branch is pushed and the project's is only behind it, so
+    // resume stays on the same history. Git refuses to move a branch that is
+    // checked out there, which is fine.
+    if (pushed && (yield* reachedFrom(`refs/remotes/workler-root/${branch}`, [ref]))) {
+      fastForwardIfAllowed.push(`${ref}:${ref}`);
+      continue;
+    }
+    // Fast-forward only; git refuses otherwise, or when it's checked out there.
+    copy.push(`${ref}:${ref}`);
+  }
+
+  const fetchFromClone = (refspecs: ReadonlyArray<string>) =>
+    run(input.source, [
+      "fetch",
+      // Submodules would reach their remotes and fail offline.
+      "--no-recurse-submodules",
+      // A user's fetch.prune (and fetch.pruneTags) would otherwise delete
+      // every project checkpoint and tag the clone doesn't have.
+      "--no-prune",
+      "--no-tags",
+      "--no-write-fetch-head",
+      input.clone,
+      ...refspecs,
+    ]);
+  const copied = yield* fetchFromClone([...copy, "+refs/t3/checkpoints/*:refs/t3/checkpoints/*"]);
+  if (copied.exitCode !== 0) {
+    return yield* kept(
+      `its branches couldn't be copied into ${input.source} without losing work there. ${copied.stderr.trim()}`,
+    );
+  }
+  if (fastForwardIfAllowed.length > 0) yield* fetchFromClone(fastForwardIfAllowed);
+});
 
 function isPathInside(path: Path.Path, parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
@@ -131,8 +272,8 @@ export const withWorklerWorkspaceSupport = (input: {
     if (!(yield* worklerEnabled(createInput.cwd)) || createInput.path !== null) {
       return yield* input.git.createWorktree(createInput, options);
     }
-    // Workler clones a complete workspace, so git's checkout progress, claim
-    // and submodule options only apply to the plain-worktree path above.
+    // Workler only reports the claim, after the clone; git's checkout progress and
+    // submodule options apply to the plain-worktree path above.
 
     const root = yield* resolveRoot(createInput.cwd);
     const existing = yield* input.workler
@@ -190,6 +331,12 @@ export const withWorklerWorkspaceSupport = (input: {
         Effect.mapError((error) =>
           mapWorklerError("GitVcsDriver.createWorktree", createInput.cwd, error),
         ),
+        // The Workler call finishes even after a cancel, so claim the workspace
+        // before the interrupt lands; bootstrap then removes it.
+        Effect.tap(
+          (workspace) => options?.progress?.onWorktreeClaimed?.(workspace.path) ?? Effect.void,
+        ),
+        Effect.uninterruptible,
       );
     const managedWorkspace = normalizeManagedWorkspace(input.path, root, {
       ...workspace,
@@ -357,6 +504,7 @@ export const withWorklerWorkspaceSupport = (input: {
     });
     if (!workspace) return yield* gitRemoval.failure;
 
+    yield* keepWorklerCloneRefs(input.git, { source: root, clone: requestedPath });
     return yield* input.workler
       .removeWorkspace({
         root,

@@ -1,5 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import type * as Path from "effect/Path";
 
 import {
@@ -83,6 +85,9 @@ function makeGit(
   return {
     execute: (input: GitVcsDriver.ExecuteGitInput) => {
       calls.push(`git.execute:${input.args.join(" ")}:${input.cwd}`);
+      if (input.args.includes("refs/stash")) {
+        return Effect.succeed({ ...successfulExecution(), exitCode: 1 });
+      }
       if (input.args[0] === "rev-parse") return Effect.succeed(successfulExecution("/repo\n"));
       if (input.args[0] === "remote") return Effect.succeed(successfulExecution("origin\n"));
       return Effect.succeed(successfulExecution());
@@ -112,6 +117,8 @@ function makeWorkler(
   overrides: Partial<WorklerWorkspaceService.WorklerWorkspaceService["Service"]> = {},
 ): WorklerWorkspaceService.WorklerWorkspaceService["Service"] {
   return {
+    inspectGroup: () => Effect.succeed(null),
+    initGroup: () => Effect.succeed({ projects: [] }),
     listWorkspaces: () => {
       calls.push("workler.list");
       return Effect.succeed([]);
@@ -518,3 +525,53 @@ describe("WorklerGitWorkspaceDriver removal", () => {
     );
   });
 });
+
+// The Workler call finishes after a cancel, and bootstrap's cleanup still needs its directory.
+it.effect("claims a Workler clone before delivering a pending cancellation", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let claimed: string | null = null;
+    const driver = makeDriver({
+      calls: [],
+      enabled: true,
+      workler: {
+        createWorkspace: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(started, undefined);
+            yield* Deferred.await(release);
+            return {
+              name: "feature-work",
+              path: "/repo/.worktrees/feature-work",
+              branch: "feature/work",
+              head: null,
+              detached: false,
+            };
+          }).pipe(Effect.uninterruptible),
+      },
+    });
+    const fiber = yield* driver
+      .createWorktree(
+        {
+          cwd: "/repo",
+          path: null,
+          refName: "HEAD",
+          newRefName: "feature/work",
+        },
+        {
+          progress: {
+            onWorktreeClaimed: (path) =>
+              Effect.sync(() => {
+                claimed = path;
+              }),
+          },
+        },
+      )
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(started);
+    fiber.interruptUnsafe();
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.await(fiber);
+    assert.equal(claimed, "/repo/.worktrees/feature-work");
+  }),
+);

@@ -9,7 +9,12 @@ import { VcsRepositoryDetectionError } from "@t3tools/contracts";
 import * as GitManager from "./GitManager.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+
+const noMultiRepoLayer = Layer.mock(MultiRepoWorkspaces.MultiRepoWorkspaces)({
+  members: () => Effect.succeed(null),
+});
 
 function makeLayer(input: {
   readonly detect: VcsDriverRegistry.VcsDriverRegistry["Service"]["detect"];
@@ -22,6 +27,7 @@ function makeLayer(input: {
     ),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
     Layer.provide(Layer.mock(GitManager.GitManager)({})),
+    Layer.provide(noMultiRepoLayer),
   );
 }
 
@@ -131,6 +137,7 @@ describe("GitWorkflowService", () => {
           status,
         }),
       ),
+      Layer.provide(noMultiRepoLayer),
     );
 
     return Effect.gen(function* () {
@@ -219,5 +226,49 @@ describe("GitWorkflowService", () => {
         }),
       ),
     );
+  });
+
+  it.effect("sends worktree commands for a multi-repo project to its group workspaces", () => {
+    const createWorkspace = vi.fn(() =>
+      Effect.succeed({ worktree: { path: "/group/.worktrees/feat", refName: "feat" } }),
+    );
+    const renameBranch = vi.fn(() => Effect.succeed({ branch: "feature/login" }));
+    // The registry would refuse the plain group folder, so it must never be asked.
+    const testLayer = GitWorkflowService.layer.pipe(
+      Layer.provide(Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({})),
+      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(Layer.mock(GitManager.GitManager)({})),
+      Layer.provide(
+        Layer.mock(MultiRepoWorkspaces.MultiRepoWorkspaces)({
+          members: (cwd) => Effect.succeed(cwd.startsWith("/group") ? ["api", "web"] : null),
+          createWorkspace,
+          renameBranch,
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const created = yield* workflow.createWorktree({
+        cwd: "/group",
+        refName: "HEAD",
+        newRefName: "feat",
+        path: null,
+      });
+      assert.equal(created.worktree.path, "/group/.worktrees/feat");
+      yield* workflow.pruneWorktrees({ cwd: "/group" });
+      const renamed = yield* workflow.renameBranch({
+        cwd: "/group/.worktrees/feat",
+        oldBranch: "feat",
+        newBranch: "feature/login",
+      });
+      assert.equal(renamed.branch, "feature/login");
+      expect(renameBranch).toHaveBeenCalledWith({
+        cwd: "/group/.worktrees/feat",
+        members: ["api", "web"],
+        oldBranch: "feat",
+        newBranch: "feature/login",
+      });
+    }).pipe(Effect.provide(testLayer));
   });
 });

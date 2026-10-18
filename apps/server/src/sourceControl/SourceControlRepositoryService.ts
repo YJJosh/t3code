@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 
 import {
   SourceControlRepositoryError,
+  type ProjectCloneMember,
   type SourceControlCloneRepositoryInput,
   type SourceControlCloneRepositoryResult,
   type SourceControlCloneProtocol,
@@ -18,6 +19,7 @@ import {
   type SourceControlRepositoryInfo,
   type SourceControlRepositoryLookupInput,
 } from "@t3tools/contracts";
+import { redactGitRemoteUrl } from "@t3tools/shared/git";
 
 import { ServerConfig } from "../config.ts";
 import { expandHomePathWith } from "../pathExpansion.ts";
@@ -51,6 +53,26 @@ export class SourceControlRepositoryService extends Context.Service<
     readonly discardClone: (
       destinationPath: string,
     ) => Effect.Effect<void, SourceControlRepositoryError>;
+    /**
+     * Everything `cloneMultiRepo` checks before running git: the destination
+     * is empty, and every member is its own folder inside it.
+     */
+    readonly prepareMultiRepoClone: (input: {
+      readonly destinationPath: string;
+      readonly members: ReadonlyArray<ProjectCloneMember>;
+    }) => Effect.Effect<SourceControlPreparedMultiRepoClone, SourceControlRepositoryError>;
+    /**
+     * Clones every member of a multi-repo project in turn, then writes the
+     * `.workler` that lists them. Progress details name the member.
+     */
+    readonly cloneMultiRepo: (
+      prepared: SourceControlPreparedMultiRepoClone,
+      options?: SourceControlCloneOptions,
+    ) => Effect.Effect<void, SourceControlRepositoryError>;
+    /** Removes what a partial or failed multi-repo clone left in the destination. */
+    readonly discardMultiRepoClone: (
+      prepared: SourceControlPreparedMultiRepoClone,
+    ) => Effect.Effect<void, SourceControlRepositoryError>;
     readonly publishRepository: (
       input: SourceControlPublishRepositoryInput,
     ) => Effect.Effect<SourceControlPublishRepositoryResult, SourceControlRepositoryError>;
@@ -64,6 +86,18 @@ export interface SourceControlPreparedClone {
   /** What git is given; may carry embedded credentials. */
   readonly cloneUrl: string;
   readonly repository: SourceControlRepositoryInfo | null;
+}
+
+export interface SourceControlPreparedMultiRepoClone {
+  readonly destinationPath: string;
+  readonly members: ReadonlyArray<{
+    /** `/`-separated, relative to the destination. */
+    readonly path: string;
+    /** Credential-free; safe to show and to store in snapshots. */
+    readonly remoteUrl: string;
+    /** What git is given; may carry embedded credentials. */
+    readonly cloneUrl: string;
+  }>;
 }
 
 export interface SourceControlCloneOptions {
@@ -110,27 +144,6 @@ function toRepositoryInfo(
   };
 }
 
-/**
- * The URL clients see. A pasted `https://user:token@host/…` must not travel
- * back over `subscribeProjectClones` to every reader; git still gets the
- * original.
- */
-function redactRemoteUrl(remoteUrl: string): string {
-  try {
-    const url = new URL(remoteUrl);
-    // Clone URLs have no legitimate query; when one is present it is a token.
-    if (url.username.length === 0 && url.password.length === 0 && url.search.length === 0) {
-      return remoteUrl;
-    }
-    url.username = "";
-    url.password = "";
-    url.search = "";
-    return url.toString();
-  } catch {
-    return remoteUrl;
-  }
-}
-
 // Userinfo may itself contain `@`; everything up to the last one before the
 // host boundary goes.
 const URL_WITH_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/]+@/gi;
@@ -138,6 +151,38 @@ const URL_WITH_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/]+@/gi;
 /** Drops `user:token@` from any URL embedded in free text. */
 function redactUrlCredentials(text: string): string {
   return text.replace(URL_WITH_USERINFO, "$1");
+}
+
+const WORKLER_CONFIG_FILE = ".workler";
+// Folders Workler manages itself, so they can never be a member.
+const RESERVED_MEMBER_FOLDERS = new Set([".git", ".worktrees", WORKLER_CONFIG_FILE]);
+
+/** A member path as Workler accepts it, `/`-separated, or null when it would leave its folder. */
+function normalizeMultiRepoMemberPath(raw: string): string | null {
+  // `.workler` is one `project <path>` per line with no escapes, so control
+  // characters (a newline above all) would leave a broken file behind a finished clone.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(raw) || /^(?:[a-zA-Z]:|[\\/])/.test(raw)) return null;
+  // Workler quotes a path with one kind of quote, so it cannot hold both.
+  if (raw.includes('"') && raw.includes("'")) return null;
+  const segments = raw.split(/[\\/]+/).filter((segment) => segment.length > 0 && segment !== ".");
+  if (segments.length === 0 || segments.includes("..")) return null;
+  if (RESERVED_MEMBER_FOLDERS.has(segments[0]!.toLowerCase())) return null;
+  // A repository's own .git folder is never a place for another clone.
+  if (segments.some((segment) => segment.toLowerCase() === ".git")) return null;
+  return segments.join("/");
+}
+
+function memberPathsOverlap(left: string, right: string): boolean {
+  const a = left.toLowerCase();
+  const b = right.toLowerCase();
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+/** Quotes a `.workler` path the way Workler writes one. */
+function quoteWorklerPath(value: string): string {
+  if (!/[\s#"']/.test(value)) return value;
+  return value.includes('"') ? `'${value}'` : `"${value}"`;
 }
 
 function selectRemoteUrl(
@@ -209,7 +254,7 @@ export const make = Effect.gen(function* () {
   );
 
   const prepareDestination = Effect.fn("SourceControlRepositoryService.prepareDestination")(
-    function* (destinationPath: string) {
+    function* (destinationPath: string, ignoredEntries: ReadonlyArray<string> = []) {
       const normalizedDestination = yield* normalizeDestinationPath(destinationPath);
       if (yield* fileSystem.exists(normalizedDestination)) {
         const entries = yield* fileSystem
@@ -225,7 +270,7 @@ export const make = Effect.gen(function* () {
                 }),
             ),
           );
-        if (entries.length > 0) {
+        if (entries.some((entry) => !ignoredEntries.includes(entry))) {
           return yield* new SourceControlRepositoryError({
             operation: "cloneRepository",
             provider: "unknown",
@@ -272,7 +317,7 @@ export const make = Effect.gen(function* () {
 
     return {
       destinationPath: preparedDestination.destinationPath,
-      remoteUrl: redactRemoteUrl(remoteUrl),
+      remoteUrl: redactGitRemoteUrl(remoteUrl),
       cloneUrl: remoteUrl,
       repository,
     } satisfies SourceControlPreparedClone;
@@ -303,7 +348,15 @@ export const make = Effect.gen(function* () {
       .execute({
         operation: "SourceControlRepositoryService.cloneRepository",
         cwd: path.dirname(prepared.destinationPath),
-        args: ["clone", "--progress", prepared.cloneUrl, path.basename(prepared.destinationPath)],
+        // `--` keeps a URL starting with `-` from being read as an option. Member
+        // URLs of a multi-repo setup come from another environment's `.git/config`.
+        args: [
+          "clone",
+          "--progress",
+          "--",
+          prepared.cloneUrl,
+          path.basename(prepared.destinationPath),
+        ],
         timeoutMs: options?.timeoutMs === undefined ? CLONE_TIMEOUT_MS : options.timeoutMs,
         // Progress redraws add up on a slow multi-GB clone. The buffered copy
         // is never read (the tail is kept by hand above), so keep it small
@@ -385,6 +438,124 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const prepareMultiRepoClone = Effect.fn("SourceControlRepositoryService.prepareMultiRepoClone")(
+    function* (input: {
+      readonly destinationPath: string;
+      readonly members: ReadonlyArray<ProjectCloneMember>;
+    }) {
+      const members: Array<SourceControlPreparedMultiRepoClone["members"][number]> = [];
+      for (const member of input.members) {
+        const memberPath = normalizeMultiRepoMemberPath(member.path);
+        if (memberPath === null) {
+          return yield* new SourceControlRepositoryError({
+            operation: "cloneRepository",
+            provider: "unknown",
+            detail: `'${member.path}' is not a folder inside the project.`,
+          });
+        }
+        const overlap = members.find((existing) => memberPathsOverlap(existing.path, memberPath));
+        if (overlap) {
+          return yield* new SourceControlRepositoryError({
+            operation: "cloneRepository",
+            provider: "unknown",
+            detail: `The repositories '${overlap.path}' and '${memberPath}' would share a folder.`,
+          });
+        }
+        members.push({
+          path: memberPath,
+          remoteUrl: redactGitRemoteUrl(member.remoteUrl),
+          cloneUrl: member.remoteUrl,
+        });
+      }
+      // Members clone into subfolders, so Finder's .DS_Store in a folder made in
+      // Finder doesn't get in their way.
+      const destination = yield* prepareDestination(input.destinationPath, [".DS_Store"]);
+      return {
+        destinationPath: destination.destinationPath,
+        members,
+      } satisfies SourceControlPreparedMultiRepoClone;
+    },
+  );
+
+  const cloneMultiRepo = Effect.fn("SourceControlRepositoryService.cloneMultiRepo")(function* (
+    prepared: SourceControlPreparedMultiRepoClone,
+    options?: SourceControlCloneOptions,
+  ) {
+    for (const [index, member] of prepared.members.entries()) {
+      const label = `${member.path} (${index + 1}/${prepared.members.length})`;
+      const onProgress = options?.onProgress;
+      yield* cloneRepository(
+        {
+          remoteUrl: member.cloneUrl,
+          destinationPath: path.join(prepared.destinationPath, member.path),
+        },
+        {
+          ...options,
+          ...(onProgress
+            ? {
+                onProgress: (line) =>
+                  onProgress({
+                    ...line,
+                    detail: line.detail ? `${label} · ${line.detail}` : label,
+                  }),
+              }
+            : {}),
+        },
+      ).pipe(
+        Effect.mapError((error) =>
+          isSourceControlRepositoryError(error)
+            ? new SourceControlRepositoryError({
+                operation: error.operation,
+                provider: error.provider,
+                detail: `${member.path}: ${error.detail}`,
+                cause: error,
+              })
+            : error,
+        ),
+      );
+    }
+    // Written last: until every member is in place the folder is no group.
+    yield* fileSystem
+      .writeFileString(
+        path.join(prepared.destinationPath, WORKLER_CONFIG_FILE),
+        prepared.members.map((member) => `project ${quoteWorklerPath(member.path)}\n`).join(""),
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new SourceControlRepositoryError({
+              operation: "cloneRepository",
+              provider: "unknown",
+              detail: "The repositories were cloned, but the .workler file could not be written.",
+              cause,
+            }),
+        ),
+      );
+  });
+
+  const discardMultiRepoClone = Effect.fn("SourceControlRepositoryService.discardMultiRepoClone")(
+    function* (prepared: SourceControlPreparedMultiRepoClone) {
+      const root = yield* normalizeDestinationPath(prepared.destinationPath);
+      // The destination was empty when the clone started, so the .workler is ours.
+      yield* fileSystem.remove(path.join(root, WORKLER_CONFIG_FILE), { force: true });
+      // Deepest first, so the folders a nested member needed can go as well.
+      const members = prepared.members.toSorted((a, b) => b.path.length - a.path.length);
+      for (const member of members) {
+        let folder = path.join(root, member.path);
+        yield* discardClone(folder);
+        while (folder !== root && folder.startsWith(root)) {
+          const entries = yield* fileSystem
+            .readDirectory(folder)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (entries !== null && entries.length > 0) break;
+          // Empty, so recursive only satisfies `rm` for a directory.
+          if (entries !== null) yield* fileSystem.remove(folder, { recursive: true });
+          folder = path.dirname(folder);
+        }
+      }
+    },
+  );
+
   const publishRepository = Effect.fn("SourceControlRepositoryService.publishRepository")(
     function* (input: SourceControlPublishRepositoryInput) {
       const providerKind = yield* ensureConcreteProvider({
@@ -453,6 +624,12 @@ export const make = Effect.gen(function* () {
       ),
     discardClone: (destinationPath) =>
       discardClone(destinationPath).pipe(mapRepositoryError("discardClone", "unknown")),
+    prepareMultiRepoClone: (input) =>
+      prepareMultiRepoClone(input).pipe(mapRepositoryError("cloneRepository", "unknown")),
+    cloneMultiRepo: (prepared, options) =>
+      cloneMultiRepo(prepared, options).pipe(mapRepositoryError("cloneRepository", "unknown")),
+    discardMultiRepoClone: (prepared) =>
+      discardMultiRepoClone(prepared).pipe(mapRepositoryError("discardClone", "unknown")),
     publishRepository: (input) =>
       publishRepository(input).pipe(mapRepositoryError("publishRepository", input.provider)),
   });

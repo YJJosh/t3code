@@ -30,6 +30,7 @@ import {
 
 import * as GitManager from "./GitManager.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
 export class GitWorkflowService extends Context.Service<
@@ -154,6 +155,18 @@ export const make = Effect.gen(function* () {
   const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
+  const multiRepo = yield* MultiRepoWorkspaces.MultiRepoWorkspaces;
+
+  // A multi-repo project folder is not a repository (or sits inside an
+  // unrelated one), so its workspaces are checked for before any Git routing.
+  const unlessMultiRepo = <A, E>(
+    cwd: string,
+    onMultiRepo: (members: ReadonlyArray<string>) => Effect.Effect<A, E>,
+    otherwise: Effect.Effect<A, E>,
+  ) =>
+    multiRepo
+      .members(cwd)
+      .pipe(Effect.flatMap((members) => (members === null ? otherwise : onMultiRepo(members))));
 
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,
@@ -341,8 +354,12 @@ export const make = Effect.gen(function* () {
         ),
       ),
     createWorktree: (input, options) =>
-      ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
-        Effect.andThen(git.createWorktree(input, options)),
+      unlessMultiRepo(
+        input.cwd,
+        () => multiRepo.createWorkspace(input, options),
+        ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
+          Effect.andThen(git.createWorktree(input, options)),
+        ),
       ),
     fetchRemote: (input) =>
       ensureGitCommand("GitWorkflowService.fetchRemote", input.cwd).pipe(
@@ -361,12 +378,21 @@ export const make = Effect.gen(function* () {
         Effect.andThen(git.resolveRemoteTrackingCommit(input)),
       ),
     removeWorktree: (input) =>
-      ensureGitCommand("GitWorkflowService.removeWorktree", input.cwd).pipe(
-        Effect.andThen(git.removeWorktree(input)),
+      unlessMultiRepo(
+        input.cwd,
+        () => multiRepo.removeWorkspace(input),
+        ensureGitCommand("GitWorkflowService.removeWorktree", input.cwd).pipe(
+          Effect.andThen(git.removeWorktree(input)),
+        ),
       ),
     pruneWorktrees: (input) =>
-      ensureGitCommand("GitWorkflowService.pruneWorktrees", input.cwd).pipe(
-        Effect.andThen(git.pruneWorktrees(input)),
+      unlessMultiRepo(
+        input.cwd,
+        // Workspaces of a group are clones, so there are no worktree entries to prune.
+        () => Effect.void,
+        ensureGitCommand("GitWorkflowService.pruneWorktrees", input.cwd).pipe(
+          Effect.andThen(git.pruneWorktrees(input)),
+        ),
       ),
     createRef: (input) =>
       ensureGitCommand("GitWorkflowService.createRef", input.cwd).pipe(
@@ -377,8 +403,12 @@ export const make = Effect.gen(function* () {
         Effect.andThen(Effect.scoped(git.switchRef(input))),
       ),
     renameBranch: (input) =>
-      ensureGit("GitWorkflowService.renameBranch", input.cwd).pipe(
-        Effect.andThen(git.renameBranch(input)),
+      unlessMultiRepo<{ readonly branch: string }, GitManagerServiceError>(
+        input.cwd,
+        (members) => multiRepo.renameBranch({ ...input, members }),
+        ensureGit("GitWorkflowService.renameBranch", input.cwd).pipe(
+          Effect.andThen(git.renameBranch(input)),
+        ),
       ),
   });
 });

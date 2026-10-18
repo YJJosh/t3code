@@ -57,6 +57,14 @@ export type ProjectCloneSubscribeInput = typeof ProjectCloneSubscribeInput.Type;
 export const ProjectCloneListEvent = Schema.Array(ProjectCloneSnapshot);
 export type ProjectCloneListEvent = typeof ProjectCloneListEvent.Type;
 
+/** One repository to clone into a multi-repo project folder. */
+export const ProjectCloneMember = Schema.Struct({
+  /** Folder inside the destination, `/`-separated, as listed in `.workler`. */
+  path: TrimmedNonEmptyString,
+  remoteUrl: TrimmedNonEmptyString,
+});
+export type ProjectCloneMember = typeof ProjectCloneMember.Type;
+
 export const ProjectCloneStartInput = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -66,6 +74,13 @@ export const ProjectCloneStartInput = Schema.Struct({
   remoteUrl: Schema.optional(TrimmedNonEmptyString),
   destinationPath: TrimmedNonEmptyString,
   protocol: Schema.optional(SourceControlCloneProtocol),
+  /**
+   * Sets up a multi-repo project instead: clones every member into its folder
+   * of the destination, then writes the `.workler` that lists them. The
+   * single-repository fields are ignored. Needs the `multiRepoProjects`
+   * capability.
+   */
+  members: Schema.optional(Schema.Array(ProjectCloneMember).check(Schema.isMinLength(1))),
 });
 export type ProjectCloneStartInput = typeof ProjectCloneStartInput.Type;
 

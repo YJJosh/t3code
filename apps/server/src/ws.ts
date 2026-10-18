@@ -50,6 +50,7 @@ import {
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   type ProjectCreateNewInput,
+  type ProjectMakeMultiRepoInput,
   type ProjectEntriesFailure,
   type ProjectFileFailure,
   type ProjectFileOperation,
@@ -147,6 +148,7 @@ import * as ReviewService from "./review/ReviewService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as NewProject from "./project/NewProject.ts";
+import * as ProjectMultiRepoResolver from "./project/ProjectMultiRepoResolver.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
@@ -178,6 +180,7 @@ import * as GitLabCli from "./sourceControl/GitLabCli.ts";
 import * as ForgejoCli from "./sourceControl/ForgejoCli.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as MultiRepoWorkspaces from "./vcs/MultiRepoWorkspaces.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
@@ -560,6 +563,7 @@ const makeWsRpcLayer = (
       const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
       const remoteOpenTargets = yield* RemoteOpenTargets.RemoteOpenTargets;
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+      const multiRepoWorkspaces = yield* MultiRepoWorkspaces.MultiRepoWorkspaces;
       const review = yield* ReviewService.ReviewService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
@@ -626,6 +630,7 @@ const makeWsRpcLayer = (
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      const projectMultiRepoResolver = yield* ProjectMultiRepoResolver.ProjectMultiRepoResolver;
       // Clone hooks run on the tracker's fiber, outside any RPC, so the
       // normalizer's services are captured here rather than inherited.
       const normalizerContext = yield* Effect.context<
@@ -1336,12 +1341,52 @@ const makeWsRpcLayer = (
 
           const bootstrapProgram = Effect.gen(function* () {
             const prepareWorktree = bootstrap?.prepareWorktree;
+            // A multi-repo project is a plain folder of repositories; its
+            // workspace starts every member from that member's own default branch.
+            const multiRepoMembers = prepareWorktree
+              ? yield* multiRepoWorkspaces.members(prepareWorktree.projectCwd)
+              : null;
             let shouldPrepareWorktree = prepareWorktree
-              ? yield* gitWorkflow.isRepository(prepareWorktree.projectCwd)
+              ? multiRepoMembers !== null ||
+                (yield* gitWorkflow.isRepository(prepareWorktree.projectCwd))
               : false;
             let worktreeBaseRef = prepareWorktree?.baseBranch ?? null;
 
-            if (prepareWorktree && shouldPrepareWorktree) {
+            if (prepareWorktree && multiRepoMembers !== null) {
+              // Members start from `origin/HEAD`, so "start from origin" fetches
+              // them first. A failed fetch only means an older starting point.
+              if (prepareWorktree.startFromOrigin === true) {
+                yield* track(worktreeSetupTracker.stageStatus(threadId, "fetch", "running"));
+                const unfetched = yield* multiRepoWorkspaces.fetchMembers(
+                  prepareWorktree.projectCwd,
+                  multiRepoMembers,
+                );
+                yield* track(
+                  unfetched.length === 0
+                    ? worktreeSetupTracker.stageStatus(
+                        threadId,
+                        "fetch",
+                        "done",
+                        "each repository starts from its remote default branch",
+                      )
+                    : worktreeSetupTracker.stageStatus(
+                        threadId,
+                        "fetch",
+                        "warning",
+                        `could not fetch ${unfetched.join(", ")}, using the last fetched branch`,
+                      ),
+                );
+              } else {
+                yield* track(
+                  worktreeSetupTracker.stageStatus(
+                    threadId,
+                    "fetch",
+                    "skipped",
+                    "each repository starts from its last fetched default branch",
+                  ),
+                );
+              }
+            } else if (prepareWorktree && shouldPrepareWorktree) {
               // "Start from origin" is a stored default; repos without the
               // requested remote branch fall back to the local base branch.
               const startFromOrigin =
@@ -2137,6 +2182,65 @@ const makeWsRpcLayer = (
         vcsStatusBroadcaster
           .refreshStatus(cwd)
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
+
+      // A project folder changed what it holds (a clone finished, or it became
+      // a multi-repo project), so its cached identity is stale. Re-emitting the
+      // project shell carries the new one to every client without a round trip.
+      const refreshProjectFolder = (
+        project: { readonly projectId: ProjectId; readonly workspaceRoot: string },
+        commandTag: string,
+      ) =>
+        repositoryIdentityResolver.resolve(project.workspaceRoot, { refresh: true }).pipe(
+          Effect.andThen(
+            projectMultiRepoResolver.resolve(project.workspaceRoot, { refresh: true }),
+          ),
+          Effect.andThen(
+            Effect.gen(function* () {
+              const command = yield* normalizeDispatchCommand({
+                type: "project.meta.update",
+                commandId: yield* serverCommandId(commandTag),
+                projectId: project.projectId,
+              });
+              yield* dispatchNormalizedCommand(command);
+            }),
+          ),
+          Effect.andThen(refreshGitStatus(project.workspaceRoot)),
+          Effect.ignoreCause({ log: true }),
+          Effect.provideContext(normalizerContext),
+        );
+
+      // Writes a `.workler` listing the repositories in a plain project folder,
+      // with Workler's own `init`, so the project becomes a multi-repo project.
+      const makeMultiRepoProject = (input: ProjectMakeMultiRepoInput) =>
+        Effect.gen(function* () {
+          const project = yield* projectionSnapshotQuery.getProjectShellById(input.projectId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationDispatchCommandError({
+                  message: "Failed to look up the project.",
+                  cause,
+                }),
+            ),
+          );
+          if (Option.isNone(project)) {
+            return yield* new OrchestrationDispatchCommandError({
+              message: "The project no longer exists.",
+            });
+          }
+          const { workspaceRoot } = project.value;
+          const members = yield* multiRepoWorkspaces
+            .makeGroup(workspaceRoot)
+            .pipe(
+              Effect.mapError(
+                (cause) => new OrchestrationDispatchCommandError({ message: cause.detail, cause }),
+              ),
+            );
+          yield* refreshProjectFolder(
+            { projectId: input.projectId, workspaceRoot },
+            "project-make-multi-repo",
+          );
+          return { members };
+        });
 
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
@@ -3313,26 +3417,9 @@ const makeWsRpcLayer = (
                   yield* dispatchNormalizedCommand(normalizedCommand);
                   yield* recordClientCommandAnalytics(normalizedCommand);
                 }).pipe(Effect.provideContext(normalizerContext)),
-              onCloned: (project) =>
-                // The project was created against an empty directory, so its
-                // cached identity is "not a repository" until this refresh.
-                // Re-emitting the project shell carries the new identity to
-                // every client without a round trip.
-                repositoryIdentityResolver.resolve(project.workspaceRoot, { refresh: true }).pipe(
-                  Effect.andThen(
-                    Effect.gen(function* () {
-                      const command = yield* normalizeDispatchCommand({
-                        type: "project.meta.update",
-                        commandId: yield* serverCommandId("project-clone-done"),
-                        projectId: project.projectId,
-                      });
-                      yield* dispatchNormalizedCommand(command);
-                    }),
-                  ),
-                  Effect.andThen(refreshGitStatus(project.workspaceRoot)),
-                  Effect.ignoreCause({ log: true }),
-                  Effect.provideContext(normalizerContext),
-                ),
+              // The project was created against an empty directory, so its
+              // cached identity is "not a repository" until this refresh.
+              onCloned: (project) => refreshProjectFolder(project, "project-clone-done"),
             }),
             { "rpc.aggregate": "source-control" },
           ),
@@ -3344,6 +3431,16 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.projectsCreateNew, createNewProject(input), {
             "rpc.aggregate": "orchestration",
           }),
+        [WS_METHODS.projectsMakeMultiRepo]: (input) =>
+          observeRpcEffect(WS_METHODS.projectsMakeMultiRepo, makeMultiRepoProject(input), {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.projectsInspectMultiRepoFolder]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsInspectMultiRepoFolder,
+            multiRepoWorkspaces.inspectFolder(input.path),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [WS_METHODS.projectCloneCancel]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectCloneCancel,

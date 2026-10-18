@@ -99,6 +99,38 @@ For a local Git repository without a remote, **Publish Repository** creates a ho
 adds it as `origin`, and pushes your commits. If there are no commits yet, it creates the remote;
 make your first commit before pushing.
 
+## Multi-repo projects
+
+A multi-repo project is one folder that holds several Git repositories you work on together. To
+start one, open **Add Project → Multi-repo project** and pick a folder:
+
+- A folder that already holds your repositories becomes the project.
+- A new or empty folder asks which repositories to clone into it: paste Git URLs or GitHub
+  `owner/repo`, separated by spaces.
+
+A plain folder you added with **Add Project → Local folder** works too: if it has repositories
+inside it, the thread header shows **Make multi-repo project**, with **Initialize Git** in its menu.
+Either way the folder becomes a [Workler](https://github.com/yjjosh/Workler) project group: a
+`.workler` file that lists each repository, like `project api` and `project web`, plus a
+`.worktrees/` folder for its workspaces and a `.gitignore` entry for it. Edit `.workler` to change
+the list, then reload the app to see the change. To make the folder a plain folder again, delete its
+worktree threads first, then delete `.workler`: T3 Code can only remove their workspaces while the
+folder is still a group.
+
+**New worktree** in a multi-repo project makes one workspace with every repository on the same new
+branch, so the agent can work across all of them. These threads have no branch picker, so
+**Settings → Projects & threads → Start from origin** decides whether each repository is fetched
+first. Each starts from its remote's default branch, or from the branch it has checked out
+if any repository has no remote default branch. Diffs, checkpoints, and Git actions are not
+available in these threads yet.
+
+To use the project on another machine, open **Add Project** for that machine and pick the project
+under **Set up from another machine**, or right-click one of its threads and choose **Set up on**
+that machine. T3 Code clones each repository into the folder you choose and writes a `.workler` file
+that lists them. The machine that has the project must be connected, and every repository needs an
+`origin` remote that the other machine can reach, not a local path. Only the repository list is
+copied, not other `.workler` rules. Both copies then show as one project in the sidebar.
+
 ## Create a pull request
 
 Use a thread's Git actions to commit, push, and create a pull request. T3 Code can generate commit

@@ -61,7 +61,13 @@ import { ServerConfig } from "../config.ts";
 import * as StorageCleanup from "../storageCleanup.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import { TerminalManager } from "../terminal/Manager.ts";
-import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import { GitVcsDriver, layer as GitVcsDriverLayer } from "../vcs/GitVcsDriver.ts";
+import {
+  MultiRepoWorkspaces,
+  layer as MultiRepoWorkspacesLayer,
+} from "../vcs/MultiRepoWorkspaces.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as WorklerWorkspaceService from "../vcs/WorklerWorkspaceService.ts";
 import { ThreadDeletionReactor } from "./Services/ThreadDeletionReactor.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 
@@ -1940,6 +1946,8 @@ describe("storage cleanup", () => {
                     return fs.remove(input.path, { recursive: true }).pipe(Effect.orDie);
                   },
                 }),
+                // Linked worktrees never ask for group members.
+                Layer.mock(MultiRepoWorkspaces)({}),
                 Layer.mock(TerminalManager)({
                   subscribeMetadata: (listener) =>
                     listener({
@@ -2035,4 +2043,396 @@ describe("storage cleanup", () => {
         ),
     );
   }
+
+  for (const scenario of [
+    "clone",
+    "clone-linked-deps",
+    "clone-deps-file",
+    "clone-unpushed",
+    "clone-branch-taken",
+    "clone-local-tag",
+    "clone-tag-taken",
+    "clone-pushed",
+    "clone-tag-only",
+    "clone-other-t3-ref",
+    "clone-checkpoint",
+    "clone-detached",
+    "clone-local-main",
+    "clone-no-origin",
+    "clone-merged",
+    "clone-stale-mirror",
+    "clone-finder-metadata",
+    "group",
+    "group-linked-deps",
+    "group-root-deps-file",
+    "group-root-deps",
+    "group-root-linked-deps",
+    "group-pushed",
+    "group-unpushed",
+    "group-stash",
+    "group-stray-file",
+    "group-edited-config",
+    "group-config-link",
+    "group-finder-metadata",
+  ] as const) {
+    it.effect(
+      `removes an old Workler workspace only when nothing exists only in it (${scenario})`,
+      () =>
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(NOW));
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const git = yield* GitVcsDriver;
+          const workler = yield* WorklerWorkspaceService.make;
+          const run = (cwd: string, args: ReadonlyArray<string>) =>
+            git.execute({ operation: "StorageCleanup.test", cwd, args, timeoutMs: 10_000 });
+          const author = ["-c", "user.email=test@test.com", "-c", "user.name=Test"];
+          const temp = yield* fs.realPath(
+            yield* fs.makeTempDirectoryScoped({ prefix: "t3-storage-workler-" }),
+          );
+          const group = scenario.startsWith("group");
+          const root = path.join(temp, "project");
+          const members = group ? ["api", "web"] : ["."];
+          for (const member of members) {
+            const upstream = path.join(
+              temp,
+              "upstream",
+              `${member === "." ? "project" : member}.git`,
+            );
+            yield* fs.makeDirectory(upstream, { recursive: true });
+            yield* run(upstream, ["init", "--bare", "--initial-branch=main"]);
+            const repo = path.join(root, member);
+            yield* fs.makeDirectory(repo, { recursive: true });
+            yield* run(repo, ["init", "--initial-branch=main"]);
+            yield* fs.writeFileString(
+              path.join(repo, ".gitignore"),
+              scenario.endsWith("-linked-deps") || scenario === "clone-deps-file"
+                ? "node_modules\n"
+                : "node_modules/\n",
+            );
+            yield* run(repo, ["add", "."]);
+            yield* run(repo, [...author, "commit", "-m", "init"]);
+            if (scenario === "clone-no-origin") continue;
+            yield* run(repo, ["remote", "add", "origin", upstream]);
+            yield* run(repo, ["push", "-u", "origin", "main"]);
+            yield* run(repo, ["remote", "set-head", "origin", "main"]);
+          }
+          // The clone starts with this unpushed commit on its own main.
+          if (scenario === "clone-local-main") {
+            yield* run(root, [...author, "commit", "--allow-empty", "-m", "local only"]);
+          }
+          if (group) {
+            yield* fs.writeFileString(path.join(root, ".workler"), "project api\nproject web\n");
+          }
+          const worktreePath = (yield* workler.createWorkspace({
+            root,
+            name: "feature",
+            branch: "feature",
+          })).path;
+          const firstRepo = group ? path.join(worktreePath, "api") : worktreePath;
+          // Workler commonly links dependencies back to the source.
+          // These must be removable too, without removing their target.
+          const dependencyRoot = scenario.endsWith("-linked-deps")
+            ? path.join(temp, "deps", "node_modules")
+            : path.join(firstRepo, "node_modules");
+          if (scenario === "clone-deps-file") {
+            yield* fs.writeFileString(dependencyRoot, "not a dependency install\n");
+          } else {
+            yield* fs.makeDirectory(path.join(dependencyRoot, "pkg"), { recursive: true });
+            yield* fs.writeFileString(path.join(dependencyRoot, "pkg", "index.js"), "");
+          }
+          if (scenario.endsWith("-linked-deps")) {
+            yield* fs.symlink(dependencyRoot, path.join(firstRepo, "node_modules"));
+          }
+          if (scenario.endsWith("-unpushed")) {
+            yield* fs.writeFileString(path.join(firstRepo, "work.txt"), "unpushed\n");
+            yield* run(firstRepo, ["add", "work.txt"]);
+            yield* run(firstRepo, [...author, "commit", "-m", "work"]);
+          }
+          // Pushing from the workspace doesn't update the project's refs.
+          if (scenario.endsWith("-pushed")) {
+            yield* run(firstRepo, [...author, "commit", "--allow-empty", "-m", "pushed work"]);
+            yield* run(firstRepo, ["push", "origin", "feature"]);
+          }
+          // Merged upstream after the project last fetched.
+          if (scenario === "clone-merged") {
+            yield* run(firstRepo, [...author, "commit", "--allow-empty", "-m", "merged work"]);
+            yield* run(firstRepo, ["push", "origin", "feature", "feature:main"]);
+          }
+          // A commit only a tag reaches is still work that exists only here.
+          if (scenario === "clone-tag-only") {
+            yield* run(firstRepo, [...author, "commit", "--allow-empty", "-m", "tagged work"]);
+            yield* run(firstRepo, ["tag", "keep-me"]);
+            yield* run(firstRepo, ["reset", "--hard", "HEAD~1"]);
+          }
+          // A mirrored source branch that's gone from the source protects nothing.
+          if (scenario === "clone-stale-mirror") {
+            yield* run(firstRepo, [...author, "commit", "--allow-empty", "-m", "experiment"]);
+            yield* run(firstRepo, ["branch", "experiment"]);
+            yield* run(firstRepo, ["update-ref", "refs/remotes/workler-root/experiment", "HEAD"]);
+            yield* run(firstRepo, ["reset", "--hard", "HEAD~1"]);
+          }
+          // Only checkpoint refs are copied before removal. A different
+          // ref under refs/t3 must still protect a clone's otherwise unreachable work.
+          if (scenario === "clone-other-t3-ref") {
+            yield* run(firstRepo, [...author, "commit", "--allow-empty", "-m", "saved work"]);
+            yield* run(firstRepo, ["update-ref", "refs/t3/backup", "HEAD"]);
+            yield* run(firstRepo, ["reset", "--hard", "HEAD~1"]);
+          }
+          // T3's checkpoint commits are never pushed; they move to the project instead.
+          if (scenario === "clone-checkpoint") {
+            const checkpoint = yield* run(firstRepo, [
+              ...author,
+              "commit-tree",
+              "-p",
+              "HEAD",
+              "-m",
+              "checkpoint",
+              "HEAD^{tree}",
+            ]);
+            yield* run(firstRepo, [
+              "update-ref",
+              "refs/t3/checkpoints/workler-thread/turn/1",
+              checkpoint.stdout.trim(),
+            ]);
+            // A common user Git config. Copying refs back must not prune the
+            // project's refs the clone never had.
+            yield* run(root, ["config", "fetch.prune", "true"]);
+            yield* run(root, ["config", "fetch.pruneTags", "true"]);
+            yield* run(root, ["update-ref", "refs/t3/checkpoints/other-thread/turn/1", "HEAD"]);
+            yield* run(root, ["tag", "project-only"]);
+          }
+          if (scenario === "group-config-link") {
+            yield* fs.remove(path.join(worktreePath, ".workler"));
+            yield* fs.symlink(path.join(root, ".workler"), path.join(worktreePath, ".workler"));
+          }
+          if (scenario === "group-edited-config") {
+            yield* fs.writeFileString(
+              path.join(worktreePath, ".workler"),
+              "project api\nproject web\n# workspace-only settings\n",
+            );
+          }
+          const originalHeads = yield* Effect.forEach(members, (member) =>
+            run(path.join(worktreePath, member), ["rev-parse", "HEAD"]).pipe(
+              Effect.map((result) => result.stdout.trim()),
+            ),
+          );
+          if (scenario === "clone-detached") {
+            yield* run(firstRepo, ["checkout", "--detach"]);
+          }
+          if (scenario === "group-stash") {
+            yield* fs.writeFileString(path.join(worktreePath, "web", ".gitignore"), "changed\n");
+            yield* run(path.join(worktreePath, "web"), [...author, "stash"]);
+          }
+          if (scenario === "group-stray-file") {
+            yield* fs.writeFileString(path.join(worktreePath, "notes.md"), "only here\n");
+          }
+          // The folder-level dependency exception must not discard a regular file.
+          if (scenario === "group-root-deps-file") {
+            yield* fs.writeFileString(path.join(worktreePath, "node_modules"), "only here\n");
+          }
+          // Finder writes .DS_Store into every folder it shows; Macs usually ignore it globally.
+          if (scenario === "clone-finder-metadata") {
+            yield* fs.makeDirectory(path.join(worktreePath, ".git", "info"), { recursive: true });
+            yield* fs.writeFileString(
+              path.join(worktreePath, ".git", "info", "exclude"),
+              ".DS_Store\n",
+            );
+            yield* fs.writeFileString(path.join(worktreePath, ".DS_Store"), "");
+          }
+          if (scenario === "group-finder-metadata") {
+            yield* fs.writeFileString(path.join(worktreePath, ".DS_Store"), "");
+          }
+          if (scenario === "group-root-deps") {
+            yield* fs.makeDirectory(path.join(worktreePath, "node_modules"));
+          }
+          if (scenario === "group-root-linked-deps") {
+            yield* fs.symlink(dependencyRoot, path.join(worktreePath, "node_modules"));
+          }
+          if (scenario === "clone-branch-taken") {
+            // The project already has an unrelated `feature`, so the clone's can't be kept there.
+            yield* run(root, ["switch", "--orphan", "feature"]);
+            yield* run(root, [...author, "commit", "--allow-empty", "-m", "other"]);
+            yield* run(root, ["switch", "main"]);
+          }
+          if (scenario === "clone-local-tag" || scenario === "clone-tag-taken") {
+            yield* run(worktreePath, ["tag", "v1"]);
+          }
+          let workspaceTag = "";
+          if (scenario === "clone-tag-taken") {
+            workspaceTag = (yield* run(worktreePath, ["rev-parse", "v1"])).stdout.trim();
+            // The project already has a different `v1`. Its tag stays as it is,
+            // and the clone's is kept under refs/t3/kept-tags.
+            yield* run(root, [...author, "commit", "--allow-empty", "-m", "other"]);
+            yield* run(root, ["tag", "v1"]);
+          }
+          const thread = makeThread("workler-thread", {
+            branch: scenario === "clone-detached" ? null : "feature",
+            worktreePath,
+            latestUserMessageAt: "2026-08-01T00:00:00.000Z",
+          });
+          const snapshotRead = yield* Deferred.make<void>();
+          const cleanup = yield* StorageCleanup.make.pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                ServerSettingsService.layerTest({
+                  storageCleanup: {
+                    worktreeAfterDays: scenario === "clone-merged" ? null : 8,
+                    worktreeOnDelete: false,
+                    worktreeOnMerge: false,
+                    worktreeUnchanged: scenario === "clone-merged",
+                    browserArtifactsAfterDays: null,
+                    logsAfterDays: null,
+                  },
+                }),
+                Layer.mock(ProjectionSnapshotQuery)({
+                  getShellSnapshot: () =>
+                    Deferred.succeed(snapshotRead, undefined).pipe(
+                      Effect.as(makeSnapshot([thread], [makeProject(PROJECT_ID, root)])),
+                    ),
+                  getArchivedShellSnapshot: () => Effect.succeed(makeSnapshot([], [])),
+                }),
+                Layer.mock(GitManager)({ invalidateStatus: () => Effect.void }),
+                Layer.mock(OrchestrationEngineService)({
+                  subscribeDomainEvents: Effect.succeed(Stream.empty),
+                }),
+                Layer.mock(ThreadDeletionReactor)({}),
+                Layer.mock(ProviderService)({}),
+                Layer.mock(TerminalManager)({
+                  subscribeMetadata: (listener) =>
+                    listener({ type: "snapshot", terminals: [] }).pipe(Effect.as(() => {})),
+                }),
+                MultiRepoWorkspacesLayer,
+              ),
+            ),
+          );
+          yield* cleanup.start();
+          yield* Deferred.await(snapshotRead);
+          yield* cleanup.drain;
+
+          const removed =
+            scenario === "clone" ||
+            scenario === "clone-local-tag" ||
+            scenario === "clone-tag-taken" ||
+            scenario === "clone-checkpoint" ||
+            scenario.endsWith("-linked-deps") ||
+            scenario.endsWith("-finder-metadata") ||
+            scenario === "clone-local-main" ||
+            scenario === "clone-no-origin" ||
+            scenario === "clone-merged" ||
+            scenario === "group" ||
+            scenario === "group-root-deps" ||
+            scenario.endsWith("-pushed");
+          assert.strictEqual(yield* fs.exists(worktreePath), !removed);
+          if (scenario.endsWith("-linked-deps")) {
+            assert.strictEqual(
+              yield* fs.exists(path.join(dependencyRoot, "pkg", "index.js")),
+              true,
+            );
+          }
+          // The project's own repositories stay.
+          for (const member of members) {
+            assert.strictEqual(yield* fs.exists(path.join(root, member, ".gitignore")), true);
+          }
+          if (removed) {
+            // The branch moves to the project's repositories, so resume can recreate it.
+            for (const member of members) {
+              yield* run(path.join(root, member), [
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/heads/feature",
+              ]);
+            }
+          }
+          if (scenario === "clone-local-tag") {
+            yield* run(root, ["show-ref", "--verify", "--quiet", "refs/tags/v1"]);
+          }
+          if (scenario === "clone-tag-taken") {
+            assert.strictEqual(
+              (yield* run(root, ["rev-parse", "v1^{commit}"])).stdout,
+              (yield* run(root, ["rev-parse", "main"])).stdout,
+            );
+            assert.strictEqual(
+              (yield* run(root, [
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/t3/kept-tags",
+              ])).stdout.trim(),
+              `refs/t3/kept-tags/${workspaceTag}/v1 ${workspaceTag}`,
+            );
+          }
+          if (scenario === "clone-checkpoint") {
+            yield* run(root, [
+              "show-ref",
+              "--verify",
+              "--quiet",
+              "refs/t3/checkpoints/workler-thread/turn/1",
+            ]);
+            yield* run(root, [
+              "show-ref",
+              "--verify",
+              "--quiet",
+              "refs/t3/checkpoints/other-thread/turn/1",
+            ]);
+            yield* run(root, ["show-ref", "--verify", "--quiet", "refs/tags/project-only"]);
+          }
+          if (removed) {
+            // Resume recreates every member at the commit it was removed at.
+            yield* workler.createWorkspace({ root, name: "feature", branch: "feature" });
+            for (const [index, member] of members.entries()) {
+              const head = yield* run(path.join(worktreePath, member), ["rev-parse", "HEAD"]);
+              assert.strictEqual(head.stdout.trim(), originalHeads[index]);
+            }
+          }
+        }).pipe(
+          Effect.provide(
+            GitVcsDriverLayer.pipe(
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), { prefix: "t3-storage-workler-config-" }),
+              ),
+              Layer.provideMerge(VcsProcess.layer),
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ),
+          Effect.scoped,
+        ),
+    );
+  }
 });
+
+it.effect("settles inactive group threads without looking up a group pull request", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(NOW));
+      const fixture = yield* makeHarness({
+        snapshot: makeSnapshot(
+          [
+            makeThread("inactive-group", { branch: "feature/old" }),
+            makeThread("recent-group", { branch: "feature/new", latestUserMessageAt: NOW }),
+          ],
+          [
+            {
+              ...makeProject(),
+              multiRepo: { members: [{ path: "api", remoteUrl: "git@example.test:acme/api.git" }] },
+            },
+          ],
+        ),
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          sidebarAutoSettleAfterDays: 7,
+          sidebarAutoSettleOnMerge: true,
+        },
+      });
+      yield* Effect.gen(function* () {
+        const reactor = yield* ThreadSettlementReactor.ThreadSettlementReactor;
+        yield* startHarness(reactor, fixture.activation, fixture.snapshotReads);
+        assert.deepEqual(
+          (yield* Ref.get(fixture.commands)).map((command) => command.threadId),
+          [ThreadId.make("inactive-group")],
+        );
+        assert.deepEqual(yield* Ref.get(fixture.branchCalls), []);
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+  ),
+);

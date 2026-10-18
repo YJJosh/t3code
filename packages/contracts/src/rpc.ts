@@ -169,6 +169,10 @@ import {
 import {
   ProjectCreateNewInput,
   ProjectCreateNewResult,
+  ProjectInspectMultiRepoFolderInput,
+  ProjectInspectMultiRepoFolderResult,
+  ProjectMakeMultiRepoInput,
+  ProjectMakeMultiRepoResult,
   ProjectEnsureScratchResult,
   ProjectListEntriesError,
   ProjectListEntriesInput,
@@ -306,6 +310,8 @@ export const WS_METHODS = {
   projectsWriteFile: "projects.writeFile",
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
+  projectsMakeMultiRepo: "projects.makeMultiRepo",
+  projectsInspectMultiRepoFolder: "projects.inspectMultiRepoFolder",
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -1024,6 +1030,20 @@ const WsProjectsCreateNewRpc = Rpc.make(WS_METHODS.projectsCreateNew, {
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
+// Writes a `.workler` listing the repositories in a plain project folder (Workler's `init`).
+const WsProjectsMakeMultiRepoRpc = Rpc.make(WS_METHODS.projectsMakeMultiRepo, {
+  payload: ProjectMakeMultiRepoInput,
+  success: ProjectMakeMultiRepoResult,
+  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+});
+
+// Says whether a folder can hold a new multi-repo project, and how.
+const WsProjectsInspectMultiRepoFolderRpc = Rpc.make(WS_METHODS.projectsInspectMultiRepoFolder, {
+  payload: ProjectInspectMultiRepoFolderInput,
+  success: ProjectInspectMultiRepoFolderResult,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
@@ -1563,6 +1583,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,
   WsProjectsCreateNewRpc,
+  WsProjectsMakeMultiRepoRpc,
+  WsProjectsInspectMultiRepoFolderRpc,
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,

@@ -65,14 +65,17 @@ export function shouldShowEnvironmentIndicator(input: {
 
 export function shouldShowComposerContextStrip(input: {
   hasActiveProject: boolean;
-  isGitRepo: boolean;
+  /** The project can switch between local and new-worktree runs. */
+  hasWorkspaceControls: boolean;
   showEnvironmentIndicator: boolean;
   /** A collapsed composer's controls currently fit in their measured strip host. */
   hostsRestingComposerControls: boolean;
 }): boolean {
   return (
     input.hasActiveProject &&
-    (input.isGitRepo || input.showEnvironmentIndicator || input.hostsRestingComposerControls)
+    (input.hasWorkspaceControls ||
+      input.showEnvironmentIndicator ||
+      input.hostsRestingComposerControls)
   );
 }
 

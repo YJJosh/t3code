@@ -71,6 +71,8 @@ interface BranchToolbarProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
   showGitControls: boolean;
+  /** Shows the Local / New worktree switch; defaults to `showGitControls`. */
+  showWorkspaceControls?: boolean;
   draftId?: DraftId;
   onEnvModeChange: (mode: EnvMode) => void;
   /** The thread's env mode as ChatView resolves it. */
@@ -509,6 +511,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   environmentId,
   threadId,
   showGitControls,
+  showWorkspaceControls = showGitControls,
   draftId,
   onEnvModeChange,
   envMode,
@@ -589,7 +592,7 @@ export const BranchToolbar = memo(function BranchToolbar({
     () => ({
       openBranchPicker: () => branchSelectorRef.current?.open(),
       usePreviousWorktree: () => {
-        if (!showGitControls || !canUsePreviousWorktree || !previousWorktreeSeed) return;
+        if (!showWorkspaceControls || !canUsePreviousWorktree || !previousWorktreeSeed) return;
         onUsePreviousWorktree();
         onComposerFocusRequest?.();
       },
@@ -599,7 +602,7 @@ export const BranchToolbar = memo(function BranchToolbar({
       onComposerFocusRequest,
       onUsePreviousWorktree,
       previousWorktreeSeed,
-      showGitControls,
+      showWorkspaceControls,
     ],
   );
 
@@ -629,7 +632,7 @@ export const BranchToolbar = memo(function BranchToolbar({
         !contextStripVisible && "pointer-events-none invisible absolute inset-x-0 top-full",
       )}
     >
-      {showGitControls ? (
+      {showWorkspaceControls ? (
         <div className="contents @3xl/composer-surface:hidden">
           <MobileRunContextSelector
             forceNewWorktree={forceNewWorktree}
@@ -651,11 +654,11 @@ export const BranchToolbar = memo(function BranchToolbar({
           />
         </div>
       ) : null}
-      {showGitControls || showEnvironmentIndicator ? (
+      {showWorkspaceControls || showEnvironmentIndicator ? (
         <div
           className={cn(
             "min-h-7 min-w-10 items-center gap-1 sm:min-h-6",
-            showGitControls ? "hidden @3xl/composer-surface:flex" : "flex",
+            showWorkspaceControls ? "hidden @3xl/composer-surface:flex" : "flex",
             composerControlsHostRef ? "shrink" : "flex-1",
           )}
         >
@@ -669,7 +672,7 @@ export const BranchToolbar = memo(function BranchToolbar({
                 availableEnvironments={availableEnvironments}
                 {...(showEnvironmentPicker && onEnvironmentChange ? { onEnvironmentChange } : {})}
               />
-              {showGitControls ? (
+              {showWorkspaceControls ? (
                 <Separator
                   orientation="vertical"
                   className="mx-0.5 h-3.5!"
@@ -678,7 +681,7 @@ export const BranchToolbar = memo(function BranchToolbar({
               ) : null}
             </>
           )}
-          {showGitControls ? (
+          {showWorkspaceControls ? (
             <BranchToolbarEnvModeSelector
               forceNewWorktree={forceNewWorktree}
               envLocked={envModeLocked}

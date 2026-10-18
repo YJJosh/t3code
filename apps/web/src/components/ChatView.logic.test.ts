@@ -1625,8 +1625,12 @@ describe("getStartedThreadModelChangeBlockReason", () => {
 
 describe("resolveSendEnvMode", () => {
   it("keeps worktree mode only for git repositories", () => {
-    expect(resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: true })).toBe("worktree");
-    expect(resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: false })).toBe("local");
+    expect(resolveSendEnvMode({ requestedEnvMode: "worktree", supportsWorktrees: true })).toBe(
+      "worktree",
+    );
+    expect(resolveSendEnvMode({ requestedEnvMode: "worktree", supportsWorktrees: false })).toBe(
+      "local",
+    );
   });
 });
 

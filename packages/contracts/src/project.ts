@@ -302,6 +302,48 @@ export const ProjectCreateNewResult = Schema.Struct({
 });
 export type ProjectCreateNewResult = typeof ProjectCreateNewResult.Type;
 
+/** Makes a plain project folder a multi-repo project of the repositories inside it. */
+export const ProjectMakeMultiRepoInput = Schema.Struct({
+  projectId: ProjectId,
+});
+export type ProjectMakeMultiRepoInput = typeof ProjectMakeMultiRepoInput.Type;
+
+export const ProjectMakeMultiRepoResult = Schema.Struct({
+  /** The repositories the project now groups, as written to its `.workler`. */
+  members: Schema.Array(TrimmedNonEmptyString),
+});
+export type ProjectMakeMultiRepoResult = typeof ProjectMakeMultiRepoResult.Type;
+
+/** Looks at a folder picked for a new multi-repo project, without writing anything. */
+export const ProjectInspectMultiRepoFolderInput = Schema.Struct({
+  path: TrimmedNonEmptyString,
+});
+export type ProjectInspectMultiRepoFolderInput = typeof ProjectInspectMultiRepoFolderInput.Type;
+
+/**
+ * `missing` and `empty` folders can have repositories cloned into them,
+ * `repositories` holds repositories it can group, `group` already is a
+ * multi-repo project, and `unavailable` is none of these (see `reason`).
+ */
+export const ProjectMultiRepoFolderKind = Schema.Literals([
+  "missing",
+  "empty",
+  "repositories",
+  "group",
+  "unavailable",
+]);
+export type ProjectMultiRepoFolderKind = typeof ProjectMultiRepoFolderKind.Type;
+
+export const ProjectInspectMultiRepoFolderResult = Schema.Struct({
+  /** The folder as an absolute path. */
+  path: TrimmedNonEmptyString,
+  kind: ProjectMultiRepoFolderKind,
+  /** The repositories the folder holds or already groups. */
+  repositories: Schema.Array(TrimmedNonEmptyString),
+  reason: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type ProjectInspectMultiRepoFolderResult = typeof ProjectInspectMultiRepoFolderResult.Type;
+
 export class ProjectWriteFileError extends Schema.TaggedError<ProjectWriteFileError>()(
   "ProjectWriteFileError",
   {

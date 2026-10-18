@@ -16,6 +16,7 @@ import {
   getCloneDestinationBrowsePath,
   getCloneDestinationPath,
   getCloneDirectoryName,
+  parseMultiRepoCloneInput,
   getDefaultCloneUrl,
   normalizePastedCloneUrl,
   resolveAddProjectPath,
@@ -108,6 +109,55 @@ describe("add project shared logic", () => {
     expect(getCloneDirectoryName("C:\\src\\repo.git")).toBe("repo");
     expect(getCloneDirectoryName("git@github.com:repo.git")).toBe("repo");
     expect(getCloneDirectoryName("  https://github.com/owner/repo.git  ")).toBe("repo");
+  });
+
+  it("reads the repositories typed for a new multi-repo project", () => {
+    expect(
+      parseMultiRepoCloneInput(
+        "acme/api, git@github.com:acme/web.git\n https://gitlab.com/other/API.git acme/api",
+      ),
+    ).toEqual({
+      members: [
+        { path: "api", remoteUrl: "https://github.com/acme/api.git" },
+        { path: "web", remoteUrl: "git@github.com:acme/web.git" },
+        { path: "API-2", remoteUrl: "https://gitlab.com/other/API.git" },
+      ],
+      invalid: [],
+    });
+    expect(parseMultiRepoCloneInput("/srv/git/api.git file:///tmp/web.git api")).toEqual({
+      members: [],
+      invalid: ["/srv/git/api.git", "file:///tmp/web.git", "api"],
+    });
+    expect(parseMultiRepoCloneInput("  ")).toEqual({ members: [], invalid: [] });
+    // One repository written three ways is cloned once.
+    expect(
+      parseMultiRepoCloneInput(
+        "acme/api https://github.com/acme/api git@github.com:Acme/api.git acme/web",
+      ),
+    ).toEqual({
+      members: [
+        { path: "api", remoteUrl: "https://github.com/acme/api.git" },
+        { path: "web", remoteUrl: "https://github.com/acme/web.git" },
+      ],
+      invalid: [],
+    });
+  });
+
+  it("allows hidden repository names but not Workler's reserved folders", () => {
+    expect(parseMultiRepoCloneInput("acme/.github https://gitlab.com/acme/.config.git")).toEqual({
+      members: [
+        { path: ".github", remoteUrl: "https://github.com/acme/.github.git" },
+        { path: ".config", remoteUrl: "https://gitlab.com/acme/.config.git" },
+      ],
+      invalid: [],
+    });
+    const reserved = [".git", ".worktrees", ".workler", ".", ".."].map(
+      (name) => `https://github.com/acme/${name}`,
+    );
+    expect(parseMultiRepoCloneInput(reserved.join(" "))).toEqual({
+      members: [],
+      invalid: reserved,
+    });
   });
 
   it("keeps a numeric repository name that sits on a path", () => {

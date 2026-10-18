@@ -9,6 +9,7 @@ import {
   resolveLiveThreadBranchUpdate,
   resolveQuickAction,
   resolveThreadBranchUpdate,
+  summarizeRepositories,
   resolveThreadBranchMetadataPatch,
 } from "./GitActionsControl.logic";
 
@@ -1151,5 +1152,14 @@ describe("resolveAutoFeatureBranchName", () => {
   it("falls back to feature/update when no preferred name is provided", () => {
     const ref = resolveAutoFeatureBranchName(["main"]);
     assert.equal(ref, "feature/update");
+  });
+});
+
+describe("summarizeRepositories", () => {
+  it("names every repository when there are few, and counts the rest otherwise", () => {
+    assert.equal(summarizeRepositories(["api"]), "api");
+    assert.equal(summarizeRepositories(["api", "web"]), "api and web");
+    assert.equal(summarizeRepositories(["a", "b", "c", "d"]), "a, b, c and d");
+    assert.equal(summarizeRepositories(["a", "b", "c", "d", "e", "f"]), "a, b, c and 3 more");
   });
 });

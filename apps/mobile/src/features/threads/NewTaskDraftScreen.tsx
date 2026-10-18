@@ -1564,15 +1564,18 @@ export function NewTaskDraftScreen(props: {
         showChevron={false}
       />
 
-      <ComposerInlineControl
-        accessibilityLabel={`${flow.workspaceMode === "worktree" ? "Base branch" : "Branch"}: ${selectedBranchLabel}`}
-        chevronDirection="right"
-        disabled={isComposerInteractionLocked}
-        icon="arrow.triangle.branch"
-        label={showBranchLoading ? "Loading branches…" : selectedBranchLabel}
-        maxWidth={190}
-        onPress={() => openContextPicker("NewTaskBranch")}
-      />
+      {/* A multi-repo project has no base branch to pick: each repository uses its own. */}
+      {!selectedProject.multiRepo ? (
+        <ComposerInlineControl
+          accessibilityLabel={`${flow.workspaceMode === "worktree" ? "Base branch" : "Branch"}: ${selectedBranchLabel}`}
+          chevronDirection="right"
+          disabled={isComposerInteractionLocked}
+          icon="arrow.triangle.branch"
+          label={showBranchLoading ? "Loading branches…" : selectedBranchLabel}
+          maxWidth={190}
+          onPress={() => openContextPicker("NewTaskBranch")}
+        />
+      ) : null}
     </View>
   );
 

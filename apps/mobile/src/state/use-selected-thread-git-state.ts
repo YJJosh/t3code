@@ -33,10 +33,15 @@ export function useSelectedThreadGitState() {
   const selectedThreadBranchTarget = useMemo(
     () => ({
       environmentId: selectedThread?.environmentId ?? null,
-      cwd: selectedThreadProject?.workspaceRoot ?? null,
+      // A multi-repo project folder is not a repository, so it has no branches.
+      cwd: selectedThreadProject?.multiRepo ? null : (selectedThreadProject?.workspaceRoot ?? null),
       query: null,
     }),
-    [selectedThread?.environmentId, selectedThreadProject?.workspaceRoot],
+    [
+      selectedThread?.environmentId,
+      selectedThreadProject?.multiRepo,
+      selectedThreadProject?.workspaceRoot,
+    ],
   );
   const selectedThreadBranchState = useBranches(selectedThreadBranchTarget);
   const selectedThreadBranches = useMemo(
