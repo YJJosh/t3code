@@ -34,6 +34,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import { workerThreadEnvironment } from "../../process/workerThreadEnvironment.ts";
 import { buildSelectOptionDescriptor } from "../providerSnapshot.ts";
 import { resolvePiAgentDir } from "./piPaths.ts";
 import {
@@ -580,20 +581,6 @@ const loadSdk = async (urls) => {
 })().catch(sendError);
 `;
 
-function piDiscoveryWorkerEnvironment(environment: NodeJS.ProcessEnv | undefined) {
-  const workerEnvironment = Object.fromEntries(
-    Object.entries(environment ?? process.env).filter(
-      (entry): entry is [string, string] => entry[1] !== undefined,
-    ),
-  );
-  // Node's watch loader reports imports over the parent's IPC channel. In a
-  // worker this either throws or sends watch messages into our result protocol.
-  delete workerEnvironment.WATCH_REPORT_DEPENDENCIES;
-  delete workerEnvironment.NODE_CHANNEL_FD;
-  delete workerEnvironment.NODE_CHANNEL_SERIALIZATION_MODE;
-  return workerEnvironment;
-}
-
 function loadPiDiscoverySnapshotInWorker(
   sdkUrls: ReadonlyArray<string>,
   options: PiModelDiscoveryOptions,
@@ -601,7 +588,7 @@ function loadPiDiscoverySnapshotInWorker(
   return new Promise((resolve, reject) => {
     const worker = new NodeWorkerThreads.Worker(PI_DISCOVERY_WORKER_SOURCE, {
       eval: true,
-      env: piDiscoveryWorkerEnvironment(options.environment),
+      env: workerThreadEnvironment(options.environment),
       workerData: {
         sdkUrls,
         options: {

@@ -110,6 +110,8 @@ const removed = await runPromise(service.removeWorkspace({ root, name: "bundle-c
 assert.equal(removed.path, created.path);
 await assert.rejects(stat(created.path), { code: "ENOENT" });
 assert.ok(!(await runPromise(service.listWorkspaces(root))).some((workspace) => workspace.name === "bundle-check"));
+// Workler blocks on git, so the server must only ever load it on worker threads.
+assert.ok(!Object.keys(createRequire(import.meta.url).cache).some((file) => file.includes(path.join("workler", "dist"))));
 console.log("Packaged Workler clone lifecycle passed.");`,
     );
     const result = await execFile(process.execPath, ["--no-global-search-paths", runner, repo], {

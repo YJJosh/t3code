@@ -70,7 +70,10 @@ describe("WorklerWorkspaceService", () => {
       assert.deepEqual(stub.calls, [
         {
           method: "createWorkspace",
-          args: ["/repo", { name: "feature-login", branch: "feature/login", base: "origin/main" }],
+          args: [
+            "/repo",
+            { name: "feature-login", branch: "feature/login", base: "origin/main", setup: false },
+          ],
         },
       ]);
       assert.equal(created.branch, "feature/login");
@@ -131,6 +134,43 @@ describe("WorklerWorkspaceService", () => {
         .pipe(Effect.flip);
       assert.equal(error.code, "BRANCH_EXISTS");
       assert.include(error.detail, "already exists");
+    }),
+  );
+
+  it.effect("removes a workspace that failed after cloning began, and only then", () =>
+    Effect.gen(function* () {
+      const stub = makeLibrary();
+      let code = "SETUP_FAILED";
+      const failing = {
+        ...stub.library,
+        createWorkspace: () => {
+          throw new StubWorklerError(
+            code,
+            "projects/web: clone failed for /group/.worktrees/feat/projects/web: boom\n" +
+              "the partial workspace was left in place so you can inspect it, or run `workler remove feat --force`",
+          );
+        },
+      } as unknown as WorklerWorkspaceService.WorklerLibrary;
+      const service = WorklerWorkspaceService.makeFromLibrary(Effect.succeed(failing));
+
+      const error = yield* service
+        .createWorkspace({ root: "/group", name: "feat", branch: "feat" })
+        .pipe(Effect.flip);
+      assert.equal(error.code, "SETUP_FAILED");
+      assert.equal(
+        error.detail,
+        "projects/web: clone failed for /group/.worktrees/feat/projects/web: boom",
+      );
+      assert.deepEqual(stub.calls, [
+        { method: "removeWorkspace", args: ["/group", "feat", { force: true }] },
+      ]);
+
+      // Plan failures happen before Workler creates anything; a folder at the
+      // name may belong to someone else.
+      stub.calls.length = 0;
+      code = "WORKSPACE_EXISTS";
+      yield* service.createWorkspace({ root: "/group", name: "feat" }).pipe(Effect.flip);
+      assert.deepEqual(stub.calls, []);
     }),
   );
 });
