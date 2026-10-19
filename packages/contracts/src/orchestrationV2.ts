@@ -1920,7 +1920,8 @@ export const OrchestrationV2ThreadProjection = Schema.Struct({
   subagents: Schema.Array(OrchestrationV2Subagent),
   dulliRuns: Schema.optional(Schema.Array(OrchestrationV2Subagent)),
   dulliTranscript: Schema.optional(Schema.Array(OrchestrationV2TurnItem)),
-  dulliTranscriptRevision: Schema.optional(Schema.String),
+  /** Latest transcript event id per Dulli run node, so a client refetches only the run that changed. */
+  dulliTranscriptRevisions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   providerSessions: Schema.Array(OrchestrationV2ProviderSession),
   providerThreads: Schema.Array(OrchestrationV2ProviderThread),
   providerTurns: Schema.Array(OrchestrationV2ProviderTurn),

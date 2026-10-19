@@ -258,8 +258,14 @@ export function applyOrchestrationV2ProjectionEvent(
     case "dulli-run.updated":
       return { ...base, dulliRuns: upsertEntity(base.dulliRuns ?? [], event.payload) };
     case "dulli-transcript.updated":
-    case "dulli-transcript.changed":
-      return { ...base, dulliTranscriptRevision: event.id };
+    case "dulli-transcript.changed": {
+      const nodeId = event.payload.nodeId;
+      if (!nodeId) return base;
+      return {
+        ...base,
+        dulliTranscriptRevisions: { ...base.dulliTranscriptRevisions, [nodeId]: event.id },
+      };
+    }
     case "subagent.updated":
       return { ...base, subagents: upsertEntity(base.subagents, event.payload) };
     case "provider-session.attached":

@@ -67,7 +67,7 @@ export function DulliAgentsInspector({
           input: {
             threadId: target.threadId,
             subagentId: selected.id,
-            revision: inspector?.revision,
+            revision: inspector?.revision(selected.id),
           },
         })
       : null,

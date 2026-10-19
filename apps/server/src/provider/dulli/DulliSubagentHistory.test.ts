@@ -138,7 +138,7 @@ it.effect.each([
         });
       }
       const projection = yield* store.getThreadProjection(threadId);
-      // REVIEW: Persisted child history must be available to the inspector but
+      // Persisted child history must be available to the inspector but
       // absent from both the full and SQL-windowed parent conversation.
       assert.deepEqual(
         projection.visibleTurnItems.map((row) => row.item.id),

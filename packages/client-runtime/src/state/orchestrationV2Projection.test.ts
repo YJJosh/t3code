@@ -128,6 +128,23 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
     expect(settled.visibleTurnItems).toEqual([]);
   });
 
+  it("tracks Dulli transcript changes per run, so one run's update leaves others' revision alone", () => {
+    const changed = (id: string, nodeId: string): OrchestrationV2DomainEvent =>
+      ({
+        id,
+        type: "dulli-transcript.changed",
+        threadId,
+        occurredAt: now,
+        payload: { nodeId },
+      }) as OrchestrationV2DomainEvent;
+    const first = applyOrchestrationV2ProjectionEvent(emptyProjection, changed("e1", "run-a"))!;
+    const second = applyOrchestrationV2ProjectionEvent(first, changed("e2", "run-b"))!;
+    expect(second.dulliTranscriptRevisions).toEqual({ "run-a": "e1", "run-b": "e2" });
+    const third = applyOrchestrationV2ProjectionEvent(second, changed("e3", "run-b"))!;
+    expect(third.dulliTranscriptRevisions?.["run-a"]).toBe("e1");
+    expect(third.dulliTranscriptRevisions?.["run-b"]).toBe("e3");
+  });
+
   it("applies a compact PR sync without replacing other links or thread metadata", () => {
     const link = (number: number): ThreadPullRequestLink => ({
       host: "github.com",

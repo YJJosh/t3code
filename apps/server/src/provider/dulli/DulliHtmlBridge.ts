@@ -64,7 +64,16 @@ export const makeFactory = Effect.gen(function* () {
                   title: input.title,
                   height: input.height,
                 })
-                .pipe(Effect.option);
+                .pipe(
+                  Effect.tapError((error) =>
+                    Effect.logWarning("Dulli html_show could not publish inline HTML", {
+                      threadId: context.threadId,
+                      path: input.path,
+                      error,
+                    }),
+                  ),
+                  Effect.option,
+                );
               if (
                 reference._tag === "None" ||
                 !live ||

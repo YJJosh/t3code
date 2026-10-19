@@ -341,7 +341,7 @@ const isSettledLeafNode = (node: ProjectionNode, runs: ReadonlyArray<ProjectionR
   !runs.some((run) => run.id === node.runId && activeRunStatuses.has(run.status));
 export type ProjectionRecordField = Exclude<
   keyof OrchestrationV2ThreadProjection,
-  "thread" | "updatedAt" | "visibleTurnItems" | "dulliTranscriptRevision"
+  "thread" | "updatedAt" | "visibleTurnItems" | "dulliTranscriptRevisions"
 >;
 export type ProjectionRecords<K extends ProjectionRecordField> = Pick<
   OrchestrationV2ThreadProjection,
@@ -844,10 +844,19 @@ export function applyToProjection(
       return {
         ...base,
         dulliTranscript: upsertById(base.dulliTranscript ?? [], event.payload),
-        dulliTranscriptRevision: event.id,
+        dulliTranscriptRevisions: {
+          ...base.dulliTranscriptRevisions,
+          [event.payload.nodeId!]: event.id,
+        },
       };
     case "dulli-transcript.changed":
-      return { ...base, dulliTranscriptRevision: event.id };
+      return {
+        ...base,
+        dulliTranscriptRevisions: {
+          ...base.dulliTranscriptRevisions,
+          [event.payload.nodeId]: event.id,
+        },
+      };
     case "subagent.updated":
       return {
         ...base,

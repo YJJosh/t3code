@@ -100,7 +100,7 @@ it.effect(
     }).pipe(Effect.provide(Sqlite.layerMemory)),
 );
 
-// REVIEW: the no-Pi fast path still installs the schema without rewriting an
+// The no-Pi fast path still installs the schema without rewriting an
 // upstream-only event history or native subagent, including on a retry.
 it.effect("upstream-only installs create empty Dulli tables and preserve native history", () =>
   Effect.gen(function* () {

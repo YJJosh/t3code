@@ -10,7 +10,7 @@ import * as DateTime from "effect/DateTime";
 export function deriveDulliAgentInspector(
   projection: Pick<
     OrchestrationV2ThreadProjection,
-    "dulliRuns" | "dulliTranscript" | "dulliTranscriptRevision" | "messages"
+    "dulliRuns" | "dulliTranscript" | "dulliTranscriptRevisions" | "messages"
   > & {
     readonly providerSessions: ReadonlyArray<
       Pick<
@@ -74,7 +74,7 @@ export function deriveDulliAgentInspector(
   }
   return {
     agents,
-    revision: projection.dulliTranscriptRevision,
+    revision: (agentId: string) => projection.dulliTranscriptRevisions?.[agentId],
     groups: [...groups.values()],
     children: (agent: OrchestrationV2Subagent) =>
       agents.filter((child) => child.parentNodeId === agent.id),

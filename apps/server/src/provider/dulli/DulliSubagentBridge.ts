@@ -743,7 +743,7 @@ export const makeSubagentFactory =
                 type: "assistant_message",
                 text: text(parts.text),
                 streaming: type === "message_update" && !terminal(agent.status),
-                // REVIEW: ids match the transcript fingerprint. `sequence % 500` collided
+                // Ids match the transcript fingerprint. `sequence % 500` collided
                 // inside the 1000-slot window, and native sequences restart per manager.
                 messageId: MessageId.make(`${agent.id}:message:${event.managerId}:${sequence}`),
               });
@@ -899,7 +899,8 @@ export const makeSubagentFactory =
           }),
         // Keeps T3 from idle-releasing (and so shutting down) the Pi process
         // while its children still run; Pi's shutdown stops every child.
-        hasPendingBackgroundWork: () => [...agents.values()].some((agent) => !terminal(agent.status)),
+        hasPendingBackgroundWork: () =>
+          [...agents.values()].some((agent) => !terminal(agent.status)),
       };
     });
 

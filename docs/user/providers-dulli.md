@@ -37,7 +37,7 @@ Without shared terminal chats, Dulli owns one Pi RPC process per active thread. 
 
 ## Agent tools
 
-Pi is Dulli's agent harness. Use your Pi extensions for child agents, new threads, browsers, and HTML; Dulli does not register T3's duplicate delegation, thread-creation, browser-preview, or HTML tools. New Pi threads use `pi-sessions`.
+Pi is Dulli's agent harness. Use your Pi extensions for child agents, new threads, browsers, and HTML; Dulli does not register T3's duplicate delegation, thread-creation, browser-preview, or HTML tools. New Pi threads use `pi-sessions`: its `session_spawn` tool is only there while the **pi-sessions** setting is on, because T3 imports new threads through it. With sharing off, an agent can still start a T3 thread with `t3_thread_launch`.
 
 The **T3 Code** tool group remains available for projects, thread records, schedules, secrets, PR links, attachments, worktree handoff, devices, and environment settings. Its provider/model catalog remains available too. To show an image in chat, the agent should embed a standalone Markdown image using an absolute path, such as `![Screenshot](/absolute/path.png)`, rather than only linking the file; never use base64.
 
