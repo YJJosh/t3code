@@ -2,7 +2,12 @@ import { ThreadId, TurnItemId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
-import { turnItemOutputImages, turnItemOutputText } from "./itemDetail.ts";
+import {
+  turnItemHasDetail,
+  turnItemNeedsDetailFetch,
+  turnItemOutputImages,
+  turnItemOutputText,
+} from "./itemDetail.ts";
 
 const screenshot = {
   id: TurnItemId.make("tool-screenshot"),
@@ -90,4 +95,24 @@ describe("tool output images", () => {
       expect(turnItemOutputImages(item)).toHaveLength(1);
     }
   });
+});
+
+it("keeps html_show title-only without fetching the HTML or terminal copy", () => {
+  for (const input of [
+    { title: "Results", html: "<h1>Results</h1>", text: "Terminal copy" },
+    { title: "Results", path: "/tmp/page.html", text: "Terminal copy" },
+    { summary: "<h1>Results</h1>", truncated: true },
+  ]) {
+    const item = {
+      ...screenshot,
+      toolName: "html_show",
+      title: "Results",
+      input,
+      outputOmitted: true,
+    };
+    expect(turnItemHasDetail(item)).toBe(false);
+    expect(turnItemNeedsDetailFetch(item)).toBe(false);
+    expect(turnItemHasDetail({ ...item, toolName: "other_tool" })).toBe(true);
+    expect(turnItemNeedsDetailFetch({ ...item, toolName: "other_tool" })).toBe(true);
+  }
 });

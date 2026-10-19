@@ -90,7 +90,7 @@ it.effect(
         yield* h.fs.writeFileString(h.path, `<h1>Visual</h1><img src="${image}">`);
         expect(h.bridge.notify![0]!.prefix).toBe("pi-html-show:event:v1:");
         // A malicious threadId field cannot redirect publication.
-        yield* h.notify({ ...h.envelope, threadId: "other" });
+        yield* h.notify({ ...h.envelope, threadId: "other", text: "Terminal-only table copy" });
         expect(h.emitted).toHaveLength(1);
         const event = h.emitted[0]!;
         expect(event.type).toBe("turn_item.updated");
@@ -111,6 +111,8 @@ it.effect(
         expect(html).toContain('<style id="t3-theme">');
         expect(encode(event).length).toBeLessThan(8192);
         expect(encode(event)).not.toContain("<h1>");
+        expect(encode(event)).not.toContain("Terminal-only table copy");
+        expect(event.turnItem.input).toEqual({ title: "Visual", height: 600 });
         yield* h.notify(h.envelope);
         expect(h.emitted).toHaveLength(1);
         yield* h.bridge.onStop!("stopped");

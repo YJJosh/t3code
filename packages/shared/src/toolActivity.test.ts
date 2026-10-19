@@ -172,3 +172,17 @@ describe("toolActivity", () => {
     expect(dynamicToolTitle("Read", { skill: "full-send" })).toBeUndefined();
   });
 });
+
+it("uses only the visual title for html_show, including summarized inputs", () => {
+  expect(
+    dynamicToolTitle(
+      "html_show",
+      { title: " Results ", html: "<h1>Raw</h1>", text: "Terminal copy" },
+      "html_show",
+    ),
+  ).toBe("Results");
+  expect(
+    dynamicToolTitle("html_show", { summary: "<h1>Raw</h1>", truncated: true }, "Results"),
+  ).toBe("Results");
+  expect(dynamicToolTitle("html_show", {})).toBe("Show HTML");
+});

@@ -127,6 +127,19 @@ const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   );
 
 describe("Dulli pi-subagents v2 bridge", () => {
+  it.effect("requests a correlated replay so Pi sends no human confirmation", () =>
+    provide(
+      Effect.gen(function* () {
+        const h = yield* setup();
+        yield* h.bridge.onStart!();
+        const prompt = yield* h.takePrompt;
+        const payload = decode(String(prompt.message).slice("/subagents-rpc ".length));
+        assert.equal(payload.action, "replay");
+        assert.match(String(payload.request_id), /^t3-.+/);
+      }),
+    ),
+  );
+
   it.effect("projects lifecycle, linkage, selected child effort and usage as v2 records", () =>
     provide(
       Effect.gen(function* () {

@@ -1005,6 +1005,7 @@ describe("DulliAdapterV2", () => {
       assert.equal(offer.threadId, THREAD_ID);
       assert.equal(offer.providerThreadId, providerThread.id);
       assert.equal(offer.delivery, "adapter_buffered");
+      assert.isNull(offer.notification, "Pi wake must not add a synthetic notification row");
       assert.isTrue(yield* runtime.hasPendingBackgroundWork!);
       let dispatchCommitted = false;
       yield* offer.dispatchIfCurrent!(
@@ -4760,3 +4761,42 @@ describe("recorded native Pi protocol", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 });
+
+it.effect("retains html_show's short title across native start and end with large arguments", () =>
+  Effect.gen(function* () {
+    const fake = yield* makeFakePi;
+    const { runtime, takeEvent } = yield* openRuntime(fake);
+    const providerThread = yield* runtime.ensureThread({
+      threadId: THREAD_ID,
+      modelSelection: modelSelection("default"),
+      runtimePolicy,
+    });
+    yield* startTurn(runtime, providerThread);
+    yield* fake.takeRequest("prompt");
+    yield* fake.emit({ type: "agent_start" });
+    const args = { title: "Revenue", html: "x".repeat(400_000), text: "Terminal-only table" };
+    for (const phase of ["start", "end"] as const) {
+      yield* fake.emit({
+        type: `tool_execution_${phase}`,
+        toolCallId: "large-html-show",
+        toolName: "html_show",
+        ...(phase === "start"
+          ? { args }
+          : {
+              result: {
+                content: [{ type: "text", text: "Already shown; do not repeat the visual." }],
+              },
+              isError: false,
+            }),
+      });
+      const event = yield* takeEvent(
+        (event) => event.type === "turn_item.updated" && event.turnItem.type === "dynamic_tool",
+      );
+      if (event.type !== "turn_item.updated" || event.turnItem.type !== "dynamic_tool")
+        return yield* Effect.die("Expected html_show item");
+      assert.equal(event.turnItem.title, "Revenue");
+      assert.equal(event.turnItem.toolName, "html_show");
+      assert.equal(event.turnItem.status, phase === "start" ? "running" : "completed");
+    }
+  }).pipe(Effect.scoped, Effect.provide(layerTest)),
+);

@@ -1,3 +1,4 @@
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Stream from "effect/Stream";
 import * as DateTime from "effect/DateTime";
@@ -419,7 +420,12 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           interactionMode: "default" as const,
           cwd: f.home,
         };
+        const offers =
+          yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
         const adapter = yield* makeDulliAdapterV2({
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
           instanceId,
           settings: {
             enabled: true,
@@ -577,6 +583,105 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           if (event.type !== "turn.terminal") continue;
           expect(event.status).toBe("interrupted");
           break;
+        }
+        // Native terminal messages and extension results start their own Pi work.
+        // Each adopts a hidden T3 wake, replays its actual content, and settles
+        // without sending the synthetic wake text back to Pi.
+        let ordinal = 2;
+        for (const origin of ["terminal", "subagents-result", "background-terminal-result"]) {
+          yield* f.push({ type: "rpc-out", message: { type: "agent_start" } });
+          const offer = yield* Queue.take(offers);
+          expect(offer.notification).toBeNull();
+          expect(offer.delivery).toBe("adapter_buffered");
+          const nativeMessage =
+            origin === "terminal"
+              ? { role: "user", content: "Question from terminal" }
+              : { role: "custom", customType: origin, content: "Finished result" };
+          yield* f.push({
+            type: "rpc-out",
+            message: { type: "message_start", message: nativeMessage },
+          });
+          yield* f.push({
+            type: "rpc-out",
+            message: {
+              type: "message_end",
+              piSessionsOrigin: origin === "terminal" ? "terminal" : "extension",
+              message: nativeMessage,
+            },
+          });
+          yield* f.push({
+            type: "rpc-out",
+            message: { type: "message_start", message: { role: "assistant" } },
+          });
+          yield* f.push({
+            type: "rpc-out",
+            message: {
+              type: "message_update",
+              assistantMessageEvent: {
+                type: "text_delta",
+                contentIndex: 0,
+                delta: `Reply to ${origin}`,
+              },
+            },
+          });
+          yield* f.push({
+            type: "rpc-out",
+            message: { type: "message_end", message: { role: "assistant" } },
+          });
+          yield* f.push({ type: "rpc-out", message: { type: "agent_settled" } });
+          // The ready receipt marks all native events buffered before adoption.
+          while (true) {
+            const event = yield* Queue.take(events);
+            if (
+              event.type === "provider_session.updated" &&
+              event.providerSession.status === "ready"
+            )
+              break;
+          }
+          ordinal += 1;
+          const wakeRunId = RunId.make(`wake-${origin}`);
+          yield* runtime.startTurn({
+            ...turnInput,
+            providerThread: resumed,
+            runId: wakeRunId,
+            runOrdinal: ordinal,
+            providerTurnOrdinal: ordinal,
+            attemptId: RunAttemptId.make(`attempt-${ordinal}`),
+            message: {
+              ...turnInput.message,
+              text: "Synthetic wake",
+              createdBy: "agent",
+              creationSource: "provider",
+            },
+          });
+          const wakeEvents: ProviderAdapter.ProviderAdapterV2Event[] = [];
+          while (true) {
+            const event = yield* Queue.take(events);
+            wakeEvents.push(event);
+            if (event.type === "turn.terminal") break;
+          }
+          expect(wakeEvents).toContainEqual(
+            expect.objectContaining({
+              type: "message.updated",
+              message: expect.objectContaining({
+                role: "assistant",
+                text: `Reply to ${origin}`,
+                runId: wakeRunId,
+              }),
+            }),
+          );
+          if (origin === "terminal")
+            expect(wakeEvents).toContainEqual(
+              expect.objectContaining({
+                type: "message.updated",
+                message: expect.objectContaining({
+                  role: "user",
+                  text: "Question from terminal",
+                  runId: wakeRunId,
+                }),
+              }),
+            );
+          expect(wakeEvents.at(-1)).toMatchObject({ type: "turn.terminal", status: "completed" });
         }
         expect(f.maxWriters()).toBe(1);
         const requests = yield* Queue.takeAll(f.requests);

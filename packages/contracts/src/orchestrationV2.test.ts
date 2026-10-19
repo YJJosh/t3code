@@ -1380,6 +1380,10 @@ it("round-trips typed notifications and keeps work outcome separate from item st
     expect(decodeOrchestrationV2TurnItemJson(wire)).toEqual(runtime);
     expect(runtime).toMatchObject({ status: "completed", outcome: "failed", source });
     expect(runtime).not.toHaveProperty("messageId");
+    const hidden = decodeOrchestrationV2TurnItem({ ...base, source, updatedAt: now, hidden: true });
+    const hiddenWire = encodeOrchestrationV2TurnItemJson(hidden);
+    expect(hiddenWire).toHaveProperty("hidden", true);
+    expect(decodeOrchestrationV2TurnItemJson(hiddenWire)).toEqual(hidden);
     expect(() =>
       decodeOrchestrationV2TurnItem({ ...base, source, summary: "", updatedAt: now }),
     ).toThrow();

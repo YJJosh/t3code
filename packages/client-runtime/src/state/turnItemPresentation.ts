@@ -6,6 +6,11 @@ import {
 
 const WORKSPACE_PREPARATION_INPUT = "Preparing workspace";
 
+/** A wake can own a run without adding synthetic content to the conversation. */
+export function turnItemIsHiddenNotification(item: OrchestrationV2TurnItem): boolean {
+  return item.type === "notification" && item.hidden === true;
+}
+
 /**
  * Workspace setup is client bookkeeping; preparation failures have their own
  * error item. A retry cancels that item, which then has nothing left to say.

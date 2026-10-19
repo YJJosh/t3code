@@ -83,6 +83,7 @@ export const makeFactory = Effect.gen(function* () {
               const now = yield* DateTime.now;
               // A separate item cannot be overwritten by Pi's ordinary html_show tool end.
               // html_render is the existing cross-client presentation contract, not a second tool.
+              // Never forward the terminal text version: the native html_show row is title-only.
               const nativeId = `html-show:${context.providerSessionId}:${input.toolCallId}`;
               yield* context.emit({
                 type: "turn_item.updated",

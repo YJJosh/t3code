@@ -144,7 +144,10 @@ export function turnItemNeedsDetailFetch(item: OrchestrationV2TurnItem): boolean
     case "command_execution":
       return item.outputOmitted === true;
     case "dynamic_tool":
-      return item.outputOmitted === true || isSummarizedValue(item.input);
+      return (
+        item.toolName !== "html_show" &&
+        (item.outputOmitted === true || isSummarizedValue(item.input))
+      );
     default:
       return false;
   }
@@ -249,7 +252,11 @@ export function turnItemHasDetail(item: OrchestrationV2TurnItem): boolean {
     case "web_search":
       return (item.results?.length ?? 0) > 0 || (item.patterns?.length ?? 0) > 0;
     case "dynamic_tool":
-      return item.outputOmitted === true || toolCallHasLines(toolCallLines({ args: item.input }));
+      // html_show renders once as an inline artifact; its native row is title-only.
+      return (
+        item.toolName !== "html_show" &&
+        (item.outputOmitted === true || toolCallHasLines(toolCallLines({ args: item.input })))
+      );
     case "approval_request":
       return Boolean(item.prompt?.trim());
     case "user_input_request":
