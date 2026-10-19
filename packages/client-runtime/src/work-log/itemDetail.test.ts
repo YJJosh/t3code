@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  toolCallLines,
   turnItemHasDetail,
   turnItemNeedsDetailFetch,
   turnItemOutputImages,
@@ -115,4 +116,25 @@ it("keeps html_show title-only without fetching the HTML or terminal copy", () =
     expect(turnItemHasDetail({ ...item, toolName: "other_tool" })).toBe(true);
     expect(turnItemNeedsDetailFetch({ ...item, toolName: "other_tool" })).toBe(true);
   }
+});
+
+it("keeps html_show failure output inspectable without exposing source arguments", () => {
+  const item = {
+    ...screenshot,
+    toolName: "html_show",
+    status: "failed" as const,
+    input: { title: "Results", html: "<h1>Results</h1>", text: "Terminal copy" },
+    output: { content: [{ type: "text", text: "Source file does not exist." }] },
+  };
+  const withheld = { ...item, output: undefined, outputOmitted: true };
+  expect(turnItemHasDetail(withheld)).toBe(true);
+  expect(turnItemNeedsDetailFetch(withheld)).toBe(true);
+  expect(turnItemHasDetail(item)).toBe(true);
+  expect(turnItemOutputText(item)).toBe("Source file does not exist.");
+  expect(toolCallLines({ toolName: item.toolName, args: item.input })).toEqual({
+    command: null,
+    args: null,
+    argsText: null,
+  });
+  expect(toolCallLines({ args: item.input }).args).not.toBeNull();
 });

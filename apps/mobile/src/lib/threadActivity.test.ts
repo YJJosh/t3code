@@ -2947,3 +2947,24 @@ it("shows the Dulli HTML artifact once and keeps its native tool row title-only"
     expect(display).not.toContain("Terminal-only table");
   }
 });
+
+it("keeps failed html_show calls expandable for their error, without copying visual sources", () => {
+  const item: OrchestrationV2TurnItem = {
+    ...base("failed-html-show", "2026-06-20T00:00:02.000Z", 1),
+    type: "dynamic_tool",
+    status: "failed",
+    toolName: "html_show",
+    title: "Revenue",
+    input: { title: "Revenue", html: "<h1>Raw HTML</h1>", text: "Terminal-only table" },
+    outputOmitted: true,
+  };
+  const activity = buildThreadFeed([projected(item, 0)]).flatMap((entry) =>
+    entry.type === "activity-group" ? entry.activities : [],
+  )[0]!;
+  expect(activity.canExpand).toBe(true);
+  expect(activity.fetchesDetail).toBe(true);
+  for (const display of [activity.getCopyText(), activity.getFullDetail()]) {
+    expect(display).not.toContain("Raw HTML");
+    expect(display).not.toContain("Terminal-only table");
+  }
+});

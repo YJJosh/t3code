@@ -88,11 +88,14 @@ function formatToolValue(value: unknown, hasImagePreview = false): string | null
 export function toolCallLines(input: {
   readonly command?: string | undefined;
   readonly args?: unknown;
+  readonly toolName?: string | null | undefined;
 }): {
   readonly command: string | null;
   readonly args: ReadonlyArray<readonly [string, string]> | null;
   readonly argsText: string | null;
 } {
+  // REVIEW: failed html_show calls may expand for their error, never their visual sources.
+  if (input.toolName === "html_show") return { command: null, args: null, argsText: null };
   if (input.command !== undefined) {
     // The row title truncates to its width, so the body always has the full command.
     const command = input.command.trim();
@@ -144,10 +147,9 @@ export function turnItemNeedsDetailFetch(item: OrchestrationV2TurnItem): boolean
     case "command_execution":
       return item.outputOmitted === true;
     case "dynamic_tool":
-      return (
-        item.toolName !== "html_show" &&
-        (item.outputOmitted === true || isSummarizedValue(item.input))
-      );
+      return item.toolName === "html_show"
+        ? item.status === "failed" && item.outputOmitted === true
+        : item.outputOmitted === true || isSummarizedValue(item.input);
     default:
       return false;
   }
@@ -252,11 +254,11 @@ export function turnItemHasDetail(item: OrchestrationV2TurnItem): boolean {
     case "web_search":
       return (item.results?.length ?? 0) > 0 || (item.patterns?.length ?? 0) > 0;
     case "dynamic_tool":
-      // html_show renders once as an inline artifact; its native row is title-only.
-      return (
-        item.toolName !== "html_show" &&
-        (item.outputOmitted === true || toolCallHasLines(toolCallLines({ args: item.input })))
-      );
+      // REVIEW: successful visuals stay title-only, but failures must retain their cause.
+      return item.toolName === "html_show"
+        ? item.status === "failed" &&
+            (item.outputOmitted === true || turnItemOutputText(item) !== null)
+        : item.outputOmitted === true || toolCallHasLines(toolCallLines({ args: item.input }));
     case "approval_request":
       return Boolean(item.prompt?.trim());
     case "user_input_request":
