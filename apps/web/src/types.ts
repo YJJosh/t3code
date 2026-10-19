@@ -91,6 +91,7 @@ export function isBrowserPreviewAttachment(attachment: ChatFileAttachment): bool
 }
 
 export interface ChatMessage {
+  readonly phase?: import("@t3tools/contracts").OrchestrationV2AssistantMessagePhase;
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
   readonly id: MessageId;
   readonly role: "user" | "assistant" | "system";

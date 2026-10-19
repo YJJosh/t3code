@@ -50,6 +50,35 @@ const base = {
 };
 
 describe("orchestration V2 wire projection", () => {
+  it.each(["commentary", "final_answer", undefined] as const)(
+    "preserves optional assistant phase through wire and JSON codecs: %s",
+    (phase) => {
+      const item = decodeTurnItem({
+        ...base,
+        type: "assistant_message",
+        messageId: MessageId.make("answer"),
+        text: "Answer",
+        streaming: false,
+        ...(phase ? { phase } : {}),
+      });
+      const wire = projectTurnItemForWire(item);
+      const roundTrip = decodeTurnItemJson(encodeTurnItemJson(wire));
+      expect(roundTrip).toMatchObject({ type: "assistant_message", text: "Answer" });
+      if (roundTrip.type !== "assistant_message") throw new Error("Expected assistant item");
+      expect(roundTrip.phase).toBe(phase);
+      if (phase === undefined) expect(roundTrip).not.toHaveProperty("phase");
+      const event = projectDomainEventForWire({
+        id: EventId.make("phase-event"),
+        type: "turn-item.updated",
+        threadId: base.threadId,
+        occurredAt: base.updatedAt,
+        payload: item,
+      });
+      expect(event.payload).toBe(wire);
+      expect(() => decodeTurnItem({ ...item, phase: "invalid" })).toThrow();
+    },
+  );
+
   it("keeps copied handoff transcripts out of activity items and live events", () => {
     const item = {
       ...base,

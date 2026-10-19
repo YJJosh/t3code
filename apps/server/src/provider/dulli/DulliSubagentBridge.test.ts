@@ -396,7 +396,7 @@ describe("Dulli pi-subagents v2 bridge", () => {
             .control({ threadId: THREAD, taskId: "child", action: "stop" })
             .pipe(Effect.result, Effect.forkScoped);
           yield* h.takePrompt;
-          yield* h.bridge.onStop!();
+          yield* h.bridge.onStop!("stopped");
           assert.equal((yield* Fiber.join(disconnected))._tag, "Failure");
           assert.equal(
             (yield* h.controls
@@ -545,6 +545,71 @@ describe("Dulli pi-subagents v2 bridge", () => {
       ),
   );
 
+  it.effect.each(["running", "waiting"] as const)(
+    "preserves a %s child on shared detach and restores live controls after reconnect",
+    (status) =>
+      provide(
+        Effect.gen(function* () {
+          const h = yield* setup();
+          yield* h.bridge.onStart!();
+          yield* h.takePrompt;
+          yield* h.notify(envelope({ kind: status === "waiting" ? "needs_input" : "run_running" }));
+          yield* h.bridge.onStop!("detached");
+          assert.equal([...h.agents.values()][0]?.status, status);
+          assert.equal([...h.agents.values()][0]?.completedAt, null);
+          assert.equal(
+            (yield* h.controls
+              .control({ threadId: THREAD, taskId: "child", action: "stop" })
+              .pipe(Effect.result))._tag,
+            "Failure",
+          );
+
+          const reopened = yield* h.factory(h.context);
+          yield* reopened.onStart!();
+          yield* h.takePrompt;
+          yield* reopened.notify![0]!.handle(
+            encode(
+              envelope({
+                kind: "snapshot",
+                sequence: 2,
+                snapshot: { runs: [envelope().view], events: [] },
+              }),
+            ),
+            {},
+          );
+          const child = [...h.agents.values()][0]!;
+          assert.equal(child.status, "running");
+          assert.equal(child.completedAt, null);
+          assert.equal(
+            [...h.items.values()].find((item) => item.type === "subagent")?.status,
+            "running",
+          );
+          const pending = yield* h.controls
+            .control({
+              threadId: THREAD,
+              taskId: "child",
+              action: "steer",
+              message: "Continue",
+            })
+            .pipe(Effect.forkScoped);
+          const prompt = yield* h.takePrompt;
+          const payload = decode(String(prompt.message).slice("/subagents-rpc ".length));
+          assert.equal(payload.action, "steer");
+          yield* reopened.notify![0]!.handle(
+            encode(
+              envelope({
+                kind: "control_result",
+                sequence: 3,
+                control: { requestId: payload.request_id, action: "steer", success: true },
+              }),
+            ),
+            {},
+          );
+          yield* Fiber.join(pending);
+        }),
+      ),
+  );
+
   it.effect(
     "does not reopen an ended child from a stale snapshot and interrupts remaining children on session exit",
     () =>
@@ -566,7 +631,7 @@ describe("Dulli pi-subagents v2 bridge", () => {
             envelope({ kind: "resumed", sequence: 3, timestamp: "2026-01-01T00:01:00.000Z" }),
           );
           assert.equal([...h.agents.values()][0]?.status, "running");
-          yield* h.bridge.onStop!();
+          yield* h.bridge.onStop!("stopped");
           assert.equal([...h.agents.values()][0]?.status, "interrupted");
         }),
       ),

@@ -5501,3 +5501,151 @@ describe("shouldCollapseUserMessage", () => {
     expect(shouldCollapseUserMessage(text)).toBe(false);
   });
 });
+
+// Ported from the fork's explicit assistant phase cases, using V2 items.
+describe("explicit assistant phases", () => {
+  const threadId = ThreadId.make("phase-thread");
+  const runId = RunId.make("phase-run");
+  const time = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second)).toISOString();
+  const item = (
+    id: string,
+    phase: "commentary" | "final_answer" | undefined,
+    second: number,
+    run: RunId | null = runId,
+  ): Extract<OrchestrationV2TurnItem, { type: "assistant_message" }> => ({
+    id: TurnItemId.make(id),
+    threadId,
+    runId: run,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: second,
+    status: "completed",
+    title: null,
+    startedAt: DateTime.makeUnsafe(time(second)),
+    completedAt: DateTime.makeUnsafe(time(second)),
+    updatedAt: DateTime.makeUnsafe(time(second)),
+    type: "assistant_message",
+    messageId: MessageId.make(id),
+    text: id,
+    streaming: false,
+    ...(phase ? { phase } : {}),
+  });
+  const inputFor = (items: OrchestrationV2TurnItem[]) => ({
+    timelineEntries: deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: (
+        [
+          {
+            ...item("user", undefined, 0, items[0]?.runId ?? null),
+            type: "user_message",
+            createdBy: "user",
+            creationSource: "web",
+            inputIntent: "turn_start",
+            messageId: MessageId.make("user"),
+            text: "Question",
+            attachments: [],
+          },
+          ...items,
+        ] satisfies OrchestrationV2TurnItem[]
+      ).map((item) => ({
+        position: item.ordinal,
+        visibility: "local" as const,
+        sourceThreadId: threadId,
+        sourceItemId: item.id,
+        item,
+      })),
+      optimisticMessages: [],
+    }),
+    latestRun: { runId, status: "completed" as const, startedAt: time(0), completedAt: time(5) },
+    isWorking: false,
+    turnDiffSummaries: [],
+    supportsConversationRollback: false,
+  });
+  const messageIds = (rows: MessagesTimelineRow[]) =>
+    rows.flatMap((row) =>
+      row.kind === "message" && row.message.role === "assistant" ? [row.message.id] : [],
+    );
+
+  it.each([runId, null])(
+    "folds commentary before and after the true final, including imported runs: %s",
+    (run) => {
+      const input = inputFor([
+        item("comment", "commentary", 1, run),
+        item("answer", "final_answer", 2, run),
+        item("late", "commentary", 3, run),
+      ]);
+      const collapsed = deriveMessagesTimelineRows(input);
+      expect(messageIds(collapsed)).toEqual(["answer"]);
+      expect(
+        collapsed.find((row) => row.kind === "message" && row.message.id === "answer"),
+      ).toMatchObject({ showAssistantMeta: true, showAssistantCopyButton: true });
+      const fold = collapsed.find((row) => row.kind === "turn-fold");
+      expect(fold).toBeDefined();
+      if (fold?.kind !== "turn-fold") throw new Error("Expected fold");
+      const expanded = deriveMessagesTimelineRows({
+        ...input,
+        expandedRunIds: new Set([fold.runId]),
+      });
+      expect(messageIds(expanded)).toEqual(["comment", "answer", "late"]);
+      expect(
+        expanded
+          .filter((row) => row.kind === "message" && row.showAssistantMeta)
+          .map((row) => row.id),
+      ).toEqual(["answer"]);
+    },
+  );
+
+  it("keeps fresh terminal finals and unknown partial replies visible, choosing the last final for metadata", () => {
+    const rows = deriveMessagesTimelineRows(
+      inputFor([
+        item("answer", "final_answer", 1),
+        item("late", "commentary", 2),
+        item("terminal-answer", "final_answer", 3),
+        item("partial", undefined, 4),
+      ]),
+    );
+    expect(messageIds(rows)).toEqual(["answer", "terminal-answer", "partial"]);
+    expect(
+      rows.filter((row) => row.kind === "message" && row.showAssistantMeta).map((row) => row.id),
+    ).toEqual(["terminal-answer"]);
+  });
+
+  it("folds commentary-only replies without inventing a final", () => {
+    const rows = deriveMessagesTimelineRows(
+      inputFor([item("comment", "commentary", 1), item("late", "commentary", 2)]),
+    );
+    expect(messageIds(rows)).toEqual([]);
+    expect(rows.some((row) => row.kind === "turn-fold")).toBe(true);
+  });
+
+  it("preserves the upstream last-message rule when all phases are absent", () => {
+    expect(
+      messageIds(
+        deriveMessagesTimelineRows(
+          inputFor([item("first", undefined, 1), item("last", undefined, 2)]),
+        ),
+      ),
+    ).toEqual(["last"]);
+  });
+
+  it("keeps streaming replies unfolded and reprojects phase-only updates", () => {
+    const comment = item("comment", "commentary", 1);
+    const answer = item("answer", "final_answer", 2);
+    const late = item("late", "commentary", 3);
+    const active = deriveMessagesTimelineRows(
+      inputFor([comment, answer, { ...late, streaming: true } as OrchestrationV2TurnItem]),
+    );
+    expect(messageIds(active)).toEqual(["comment", "answer", "late"]);
+    const first = deriveMessagesTimelineRowsWithState(
+      inputFor([
+        comment,
+        { ...answer, phase: undefined } as OrchestrationV2TurnItem,
+        { ...late, phase: undefined } as OrchestrationV2TurnItem,
+      ]),
+    );
+    const next = deriveMessagesTimelineRowsWithState(inputFor([comment, answer, late]), first);
+    expect(messageIds(next.rows)).toEqual(["answer"]);
+  });
+});

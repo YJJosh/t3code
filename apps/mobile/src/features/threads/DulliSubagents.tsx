@@ -8,7 +8,7 @@ import type { EnvironmentId, ThreadId, OrchestrationV2TurnItem } from "@t3tools/
 import * as DateTime from "effect/DateTime";
 import { AsyncResult } from "effect/reactivity";
 import { useMemo, useState } from "react";
-import { Pressable, ScrollView, TextInput, View } from "react-native";
+import { Pressable, TextInput, View } from "react-native";
 import { AppText as Text } from "../../components/AppText";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -90,11 +90,7 @@ export function DulliAgentsInspector({
       setError("Child control failed. The child may have ended or its extension is unavailable.");
   };
   return (
-    <ScrollView
-      keyboardShouldPersistTaps="handled"
-      contentInsetAdjustmentBehavior="automatic"
-      contentContainerClassName="gap-3 px-4 pb-10"
-    >
+    <View className="gap-3">
       {!selected ? (
         inspector?.groups.map((group) => (
           <View key={group.id} className="gap-2">
@@ -243,7 +239,7 @@ export function DulliAgentsInspector({
           ) : null}
         </>
       )}
-    </ScrollView>
+    </View>
   );
 }
 

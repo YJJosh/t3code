@@ -194,7 +194,7 @@ it.effect("rejects wrong-action results and releases pending controls on stop", 
         .pipe(Effect.flip, Effect.forkChild);
       // Wait until get_commands and prompt are delivered, without sleeps or polling.
       yield* Effect.yieldNow;
-      yield* h.bridge.onStop!();
+      yield* h.bridge.onStop!("stopped");
       expect((yield* Fiber.join(pending))._tag).toBe("DulliBackgroundTerminalControlError");
       expect(
         (yield* h.service.control({ threadId, action: "replay" }).pipe(Effect.flip)).message,
@@ -203,9 +203,9 @@ it.effect("rejects wrong-action results and releases pending controls on stop", 
   ).pipe(Effect.provide(testLayer)),
 );
 
-it.effect(
-  "streams only this thread; session epochs reset and a replaced session cannot clear/publish into its successor",
-  () =>
+it.effect.each(["detached", "stopped"] as const)(
+  "streams only this thread; %s resets the epoch and a replaced session cannot clear/publish into its successor",
+  (reason) =>
     Effect.scoped(
       Effect.gen(function* () {
         const h = yield* harness;
@@ -229,12 +229,16 @@ it.effect(
         const replacement = yield* factory(h.context);
         yield* replacement.onStart!();
         expect((yield* pull)[0]?.managerId).toMatch(/^dulli-session-/);
-        yield* h.bridge.onStop!();
+        yield* h.bridge.onStop!(reason);
         yield* notify(h.bridge, event(3));
         yield* notify(replacement, event(1, "replacement"));
         expect((yield* pull)[0]?.managerId).toBe("replacement");
-        yield* replacement.onStop!();
-        expect((yield* pull)[0]?.managerId).toMatch(/^dulli-session-/);
+        yield* replacement.onStop!(reason);
+        expect((yield* pull)[0]).toMatchObject({
+          managerId: expect.stringMatching(/^dulli-session-/),
+          kind: "snapshot",
+          snapshot: { terminals: [] },
+        });
       }),
     ).pipe(Effect.provide(testLayer)),
 );

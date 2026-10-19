@@ -87,7 +87,22 @@ it.effect(
         });
         yield* f.handle("pi_sessions_ui_prompt", { phase: "end" });
         expect(f.events.at(-3)).toMatchObject({ runtimeRequest: { status: "resolved" } });
-        yield* f.bridge.onStop!();
+        yield* f.bridge.onStop!("stopped");
+        expect(f.events).toHaveLength(6);
+      }),
+    ),
+);
+it.effect.each(["detached", "stopped"] as const)(
+  "%s closes the observed terminal prompt without leaving a pending request",
+  (reason) =>
+    provide(
+      Effect.gen(function* () {
+        const f = yield* setup;
+        yield* f.handle("pi_sessions_ui_prompt", { phase: "start", title: "Choose a profile" });
+        yield* f.bridge.onStop!(reason);
+        expect(f.events.at(-3)).toMatchObject({ runtimeRequest: { status: "resolved" } });
+        expect(f.events.at(-1)).toMatchObject({ turnItem: { status: "completed" } });
+        yield* f.bridge.onStop!(reason);
         expect(f.events).toHaveLength(6);
       }),
     ),

@@ -59,7 +59,8 @@ export interface DulliBridge {
     readonly handle: (payload: string, event: PiRpcRecord) => Effect.Effect<PiRpcRecord>;
   }>;
   readonly onStart?: () => Effect.Effect<void>;
-  readonly onStop?: () => Effect.Effect<void>;
+  /** Shared detach is loss of observation, not proof that native work stopped. */
+  readonly onStop?: (reason: "detached" | "stopped") => Effect.Effect<void>;
   readonly hasPendingBackgroundWork?: () => boolean;
   readonly stopSubagent?: NonNullable<ProviderAdapterV2SessionRuntime["stopSubagent"]>;
 }

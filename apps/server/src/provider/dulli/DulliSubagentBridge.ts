@@ -904,7 +904,7 @@ export const makeSubagentFactory =
                 });
             }).pipe(Effect.ignore);
           }),
-        onStop: () =>
+        onStop: (reason) =>
           Effect.gen(function* () {
             stopped = true;
             if (token) yield* dependencies.controls.unregister(context.threadId, token);
@@ -916,6 +916,9 @@ export const makeSubagentFactory =
             waiters.clear();
             live.clear();
             publishedAt.clear();
+            // The terminal owns shared children. Detaching only unregisters
+            // local controls; reconnect replay supplies their current status.
+            if (reason === "detached") return;
             const now = yield* DateTime.now;
             for (const agent of agents.values()) {
               if (!terminal(agent.status))

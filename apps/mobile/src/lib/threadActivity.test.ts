@@ -25,6 +25,7 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  terminalThreadFeedAssistantMessageIds,
   workEntryRowLabel,
   isContextHandoffActivityGroup,
   buildThreadFeed,
@@ -2768,5 +2769,125 @@ describe("MCP apps", () => {
 
   it("keeps a running app call an ordinary work row", () => {
     expect(feed("running").some((candidate) => candidate.type === "mcp-app")).toBe(false);
+  });
+});
+
+// Mirrors the fork's phase cases against the V2 mobile feed.
+describe("explicit assistant phases", () => {
+  const message = (
+    id: string,
+    phase: "commentary" | "final_answer" | undefined,
+    second: number,
+    run: RunId | null = runId,
+  ): OrchestrationV2TurnItem => ({
+    ...assistantMessage(`2026-06-20T00:00:0${second}.000Z`),
+    id: TurnItemId.make(id),
+    messageId: MessageId.make(id),
+    ordinal: second,
+    runId: run,
+    ...(phase ? { phase } : {}),
+  });
+  const latestRun = {
+    runId,
+    status: "completed" as const,
+    startedAt: "2026-06-20T00:00:00.000Z",
+    completedAt: "2026-06-20T00:00:05.000Z",
+  };
+  const feedFor = (messages: OrchestrationV2TurnItem[]) =>
+    buildThreadFeed([
+      projected({ ...userMessage(), runId: messages[0]?.runId ?? null }, 0),
+      ...messages.map((item, i) => projected(item, i + 1)),
+    ]);
+  const messageIds = (feed: ReadonlyArray<ThreadFeedEntry>) =>
+    feed.flatMap((entry) =>
+      entry.type === "message" && entry.message.role === "assistant" ? [entry.message.id] : [],
+    );
+
+  it.each([runId, null])(
+    "folds early and late commentary but not the final, including runless imports: %s",
+    (run) => {
+      const feed = feedFor([
+        message("comment", "commentary", 1, run),
+        message("answer", "final_answer", 2, run),
+        message("late", "commentary", 3, run),
+      ]);
+      const collapsed = deriveThreadFeedPresentation(feed, latestRun, new Set());
+      expect(messageIds(collapsed)).toEqual(["answer"]);
+      expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual(["answer"]);
+      const fold = collapsed.find((entry) => entry.type === "run-fold");
+      expect(fold).toBeDefined();
+      if (fold?.type !== "run-fold") throw new Error("Expected fold");
+      expect(
+        messageIds(deriveThreadFeedPresentation(feed, latestRun, new Set([fold.runId]))),
+      ).toEqual(["comment", "answer", "late"]);
+    },
+  );
+
+  it("keeps multiple final answers and unknown replies visible", () => {
+    const feed = feedFor([
+      message("answer", "final_answer", 1),
+      message("late", "commentary", 2),
+      message("terminal-answer", "final_answer", 3),
+      message("partial", undefined, 4),
+    ]);
+    expect(messageIds(deriveThreadFeedPresentation(feed, latestRun, new Set()))).toEqual([
+      "answer",
+      "terminal-answer",
+      "partial",
+    ]);
+    expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual(["terminal-answer"]);
+  });
+
+  it("folds a commentary-only response", () => {
+    const feed = feedFor([message("comment", "commentary", 1), message("late", "commentary", 2)]);
+    expect(messageIds(deriveThreadFeedPresentation(feed, latestRun, new Set()))).toEqual([]);
+    expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual([]);
+  });
+
+  it("preserves upstream opening/final behavior without phases", () => {
+    const feed = feedFor([
+      message("first", undefined, 1),
+      message("middle", undefined, 2),
+      message("last", undefined, 3),
+    ]);
+    expect(messageIds(deriveThreadFeedPresentation(feed, latestRun, new Set()))).toEqual([
+      "first",
+      "last",
+    ]);
+    expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual(["last"]);
+    expect([
+      ...terminalThreadFeedAssistantMessageIds(feedFor([message("runless", undefined, 1, null)])),
+    ]).toEqual([]);
+  });
+
+  it("does not fold active or streaming phase-classified replies", () => {
+    const messages = [
+      message("comment", "commentary", 1),
+      message("answer", "final_answer", 2),
+      message("late", "commentary", 3),
+    ];
+    const feed = feedFor(messages);
+    expect(
+      messageIds(
+        deriveThreadFeedPresentation(
+          feed,
+          { ...latestRun, status: "running", completedAt: null },
+          new Set(),
+        ),
+      ),
+    ).toEqual(["comment", "answer", "late"]);
+    const late = messages[2]!;
+    expect(
+      messageIds(
+        deriveThreadFeedPresentation(
+          feedFor([
+            ...messages.slice(0, 2),
+            { ...late, streaming: true } as OrchestrationV2TurnItem,
+          ]),
+          latestRun,
+          new Set(),
+        ),
+      ),
+    ).toEqual(["comment", "answer", "late"]);
   });
 });

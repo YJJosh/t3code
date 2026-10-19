@@ -1214,7 +1214,11 @@ export const OrchestrationV2Notification = Schema.Struct({
 });
 export type OrchestrationV2Notification = typeof OrchestrationV2Notification.Type;
 
+export const OrchestrationV2AssistantMessagePhase = Schema.Literals(["commentary", "final_answer"]);
+export type OrchestrationV2AssistantMessagePhase = typeof OrchestrationV2AssistantMessagePhase.Type;
+
 export const OrchestrationV2ConversationMessage = Schema.Struct({
+  phase: Schema.optional(OrchestrationV2AssistantMessagePhase),
   notification: Schema.optional(OrchestrationV2Notification),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
@@ -1494,6 +1498,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("assistant_message"),
+    phase: Schema.optional(OrchestrationV2AssistantMessagePhase),
     messageId: MessageId,
     text: Schema.String,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
@@ -2286,6 +2291,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("assistant_message"),
+    phase: Schema.optional(OrchestrationV2AssistantMessagePhase),
     messageId: MessageId,
     text: Schema.String,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),

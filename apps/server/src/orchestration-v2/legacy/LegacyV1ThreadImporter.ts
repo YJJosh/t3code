@@ -32,6 +32,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as EventSink from "../EventSink.ts";
 import { restoreDulliNativeContinuity } from "./DulliNativeContinuity.ts";
+import { importDulliLegacySubagentHistory } from "./DulliLegacySubagentHistory.ts";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 
 const IMPORT_EVENT_PREFIX = "migration:v1";
@@ -72,6 +73,7 @@ interface LegacyMessageRow {
   readonly message_id: string;
   readonly thread_id: string;
   readonly role: "user" | "assistant";
+  readonly phase: "commentary" | "final_answer" | null;
   readonly text: string;
   readonly attachments_json: string | null;
   readonly context_json?: string | null;
@@ -257,6 +259,7 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
     runId: null,
     nodeId: null,
     role: row.role,
+    ...(row.role === "assistant" && row.phase ? { phase: row.phase } : {}),
     text: row.text,
     ...(row.context_json
       ? {
@@ -308,6 +311,7 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
       : {
           ...baseTurnItem,
           type: "assistant_message",
+          ...(row.phase ? { phase: row.phase } : {}),
           messageId,
           text: row.text,
           ...(row.context_json
@@ -359,6 +363,7 @@ const make = Effect.gen(function* () {
         text,
         attachments_json,
         context_json,
+        phase,
         is_streaming,
         created_at,
         updated_at,
@@ -382,6 +387,7 @@ const make = Effect.gen(function* () {
           message.text,
           message.attachments_json,
           message.context_json,
+          message.phase,
           message.is_streaming,
           message.created_at,
           message.updated_at,
@@ -412,6 +418,7 @@ const make = Effect.gen(function* () {
           message.text,
           message.attachments_json,
           message.context_json,
+          message.phase,
           message.is_streaming,
           message.created_at,
           message.updated_at,
@@ -700,6 +707,10 @@ const make = Effect.gen(function* () {
     transcriptImports.withLock(
       threadId,
       Effect.gen(function* () {
+        yield* importDulliLegacySubagentHistory(threadId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(EventSink.EventSinkV2, eventSink),
+        );
         const imports = yield* sql<LegacyImportRow>`
           SELECT thread_id, transcript_imported_at
           FROM orchestration_v2_legacy_imports
@@ -780,6 +791,10 @@ const make = Effect.gen(function* () {
         );
 
   const importPendingTranscripts = Effect.gen(function* () {
+    yield* importDulliLegacySubagentHistory().pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(EventSink.EventSinkV2, eventSink),
+    );
     const rows = yield* sql<LegacyImportRow>`
       SELECT thread_id, transcript_imported_at
       FROM orchestration_v2_legacy_imports

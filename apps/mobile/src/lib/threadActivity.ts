@@ -123,6 +123,7 @@ export interface ThreadFeedActivity {
 }
 
 export interface ThreadFeedMessage {
+  readonly phase?: import("@t3tools/contracts").OrchestrationV2AssistantMessagePhase;
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
   readonly id: MessageId;
   readonly role: "user" | "assistant";
@@ -1029,6 +1030,33 @@ interface ThreadFeedRunFold {
   readonly label: string;
 }
 
+/** Explicit phases own the answer footer; unclassified runs keep the upstream last-reply rule. */
+export function terminalThreadFeedAssistantMessageIds(feed: ReadonlyArray<ThreadFeedEntry>) {
+  const lastByResponse = new Map<string, string>();
+  const classifiedResponses = new Set<string>();
+  const finalByResponse = new Map<string, string>();
+  let runlessResponse = 0;
+  for (const entry of feed) {
+    if (entry.type !== "message") continue;
+    const { message } = entry;
+    if (message.role === "user") {
+      runlessResponse += 1;
+      continue;
+    }
+    const responseKey = message.runId ? `run:${message.runId}` : `runless:${runlessResponse}`;
+    // Upstream does not attach a footer to unclassified runless history.
+    if (message.runId) lastByResponse.set(responseKey, message.id);
+    if (message.phase !== undefined) classifiedResponses.add(responseKey);
+    if (message.phase === "final_answer") finalByResponse.set(responseKey, message.id);
+  }
+  for (const response of classifiedResponses) {
+    lastByResponse.delete(response);
+    const finalId = finalByResponse.get(response);
+    if (finalId) lastByResponse.set(response, finalId);
+  }
+  return new Set(lastByResponse.values());
+}
+
 export function failedFeedRunIds(
   feed: ReadonlyArray<ThreadFeedEntry>,
   latestRun: ThreadFeedLatestRun | null,
@@ -1064,6 +1092,8 @@ function deriveThreadFeedRunFolds(
 ): ReadonlyMap<string, ThreadFeedRunFold> {
   const firstAssistantMessageIdByRun = new Map<RunId, string>();
   const terminalAssistantMessageIdByRun = new Map<RunId, string>();
+  const classifiedRunIds = new Set<RunId>();
+  const lastFinalMessageIdByRun = new Map<RunId, string>();
   const interruptedRunIds = new Set<RunId>();
   const failedRunIds = new Set(feedFailedRunIds);
   const promptIndexByRunId = new Map<RunId, number>();
@@ -1125,6 +1155,8 @@ function deriveThreadFeedRunFolds(
         firstAssistantMessageIdByRun.set(runId, entry.id);
       }
       terminalAssistantMessageIdByRun.set(runId, entry.id);
+      if (entry.message.phase !== undefined) classifiedRunIds.add(runId);
+      if (entry.message.phase === "final_answer") lastFinalMessageIdByRun.set(runId, entry.id);
     }
     if (entry.type !== "activity-group") continue;
     for (const activity of entry.activities) {
@@ -1153,14 +1185,22 @@ function deriveThreadFeedRunFolds(
     ) {
       continue;
     }
-    const firstAssistantId = firstAssistantMessageIdByRun.get(runId);
-    const terminalAssistantId = terminalAssistantMessageIdByRun.get(runId);
+    const hasExplicitPhase = classifiedRunIds.has(runId);
+    const firstAssistantId = hasExplicitPhase ? undefined : firstAssistantMessageIdByRun.get(runId);
+    const terminalAssistantId = hasExplicitPhase
+      ? lastFinalMessageIdByRun.get(runId)
+      : terminalAssistantMessageIdByRun.get(runId);
     const hiddenEntryIds = new Set(
       group.entries
         .filter(
           (entry) =>
             entry.id !== firstAssistantId &&
             entry.id !== terminalAssistantId &&
+            !(
+              hasExplicitPhase &&
+              entry.type === "message" &&
+              entry.message.phase !== "commentary"
+            ) &&
             entry.type !== "html-render" &&
             entry.type !== "mcp-app" &&
             !(
@@ -1851,6 +1891,7 @@ export function buildThreadFeed(
           id: item.messageId,
           role: item.type === "user_message" ? "user" : "assistant",
           text: item.text,
+          ...(item.type === "assistant_message" && item.phase ? { phase: item.phase } : {}),
           ...(item.type === "user_message" && item.context ? { context: item.context } : {}),
           attachments: item.attachments ?? [],
           runId: item.runId,

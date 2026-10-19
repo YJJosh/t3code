@@ -29,12 +29,21 @@ export interface ThreadCheckpointSummary {
 export function deriveThreadCheckpointSummaries(
   projection: OrchestrationV2ThreadProjection,
 ): ReadonlyArray<ThreadCheckpointSummary> {
+  const lastAssistantByRun = new Map<RunId, MessageId>();
+  const lastFinalByRun = new Map<RunId, MessageId>();
+  const classifiedRuns = new Set<RunId>();
+  for (const message of projection.messages) {
+    if (message.runId === null || message.role !== "assistant") continue;
+    lastAssistantByRun.set(message.runId, message.id);
+    if (message.phase !== undefined) classifiedRuns.add(message.runId);
+    if (message.phase === "final_answer") lastFinalByRun.set(message.runId, message.id);
+  }
   return projection.checkpoints.flatMap((checkpoint) => {
     if (checkpoint.appRunOrdinal === null || checkpoint.runId === null) return [];
     const assistantMessageId =
-      projection.messages.findLast(
-        (message) => message.runId === checkpoint.runId && message.role === "assistant",
-      )?.id ?? null;
+      (classifiedRuns.has(checkpoint.runId) ? lastFinalByRun : lastAssistantByRun).get(
+        checkpoint.runId,
+      ) ?? null;
     return [
       {
         checkpointId: checkpoint.id,

@@ -262,6 +262,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           thinkingLevel: "high",
         });
         const seen: PiRpcRecord[] = [];
+        const stopReasons: string[] = [];
         const adapter = yield* makeDulliAdapterV2({
           instanceId: ProviderInstanceId.make("dulli"),
           settings: {
@@ -282,6 +283,10 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           Effect.provideService(DulliBridgeRegistry, [
             () =>
               Effect.succeed({
+                onStop: (reason) =>
+                  Effect.sync(() => {
+                    stopReasons.push(reason);
+                  }),
                 events: [
                   {
                     type: "pi_sessions_state",
@@ -324,6 +329,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           expect(yield* runtime.hasPendingBackgroundWork!).toBe(true);
         }).pipe(Effect.scoped);
         yield* Deferred.await(f.closed);
+        expect(stopReasons).toEqual(["detached"]);
         const requests = yield* Queue.takeAll(f.requests);
         expect(
           requests

@@ -56,8 +56,8 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const detail = useAtomValue(environmentThreadDetails.threadAtom(target));
   const hasDulliAgents =
     detail?.projection.subagents.some((agent) => agent.driver === "dulli") ?? false;
-  const subagents = turn?.subagents ?? [];
-  const hasLiveAgent = (turn?.liveCount ?? 0) > 0;
+  const subagents = turn?.subagents.filter((agent) => agent.driver !== "dulli") ?? [];
+  const hasLiveAgent = subagents.some((agent) => isOrchestrationV2WorkActive(agent.status));
 
   const openChildThread = (childThreadId: ThreadId) => {
     void Haptics.selectionAsync();
@@ -71,11 +71,10 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
     );
   };
 
-  const content = hasDulliAgents ? (
-    <DulliAgentsInspector target={target} initialSubagentId={target.subagentId} />
-  ) : (
+  const content = (
     <ScrollView
       nestedScrollEnabled
+      keyboardShouldPersistTaps="handled"
       className="flex-1"
       // The iOS header is translucent and floats over this view; UIKit has to
       // inset the content or the first row sits underneath the title.
@@ -83,7 +82,10 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
-      {subagents.length === 0 ? (
+      {hasDulliAgents && subagents.length > 0 ? (
+        <Text className="pt-4 text-sm font-bold text-foreground">Current agents</Text>
+      ) : null}
+      {subagents.length === 0 && !hasDulliAgents ? (
         <Text className="pt-6 text-center text-sm text-foreground-muted">
           No agents in this turn.
         </Text>
@@ -98,6 +100,12 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
           />
         ))
       )}
+      {hasDulliAgents ? (
+        <View className="gap-3 pt-4">
+          <Text className="text-sm font-bold text-foreground">Dulli agents</Text>
+          <DulliAgentsInspector target={target} initialSubagentId={target.subagentId} />
+        </View>
+      ) : null}
     </ScrollView>
   );
 

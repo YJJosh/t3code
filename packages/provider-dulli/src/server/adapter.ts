@@ -188,12 +188,11 @@ const PiProviderCapabilitiesV2 = {
     supportsDynamicToolCallbacks: false,
   },
   approvals: {
-    // Pi exposes a blocking tool_call extension hook. The T3 bridge uses it
-    // for supervised and auto-accept modes and forwards its confirmations
-    // through the same extension UI protocol as user-installed extensions.
-    supportsCommandApproval: true,
+    // Dulli runs in full-access mode. Extension confirmation dialogs are
+    // supported, but they do not provide a supervised tool-approval policy.
+    supportsCommandApproval: false,
     supportsFileReadApproval: false,
-    supportsFileChangeApproval: true,
+    supportsFileChangeApproval: false,
     supportsApplyPatchApproval: false,
     approvalsHaveNativeRequestIds: true,
     approvalCallbacksAreLiveOnly: true,
@@ -388,6 +387,7 @@ interface PiStreamItemState {
   readonly nativeItemId: string;
   readonly kind: "assistant_message" | "reasoning";
   text: string;
+  phase?: "commentary" | "final_answer";
   completed: boolean;
   flushScheduled: boolean;
   readonly startedAt: DateTime.Utc;
@@ -840,9 +840,11 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       const stopBridges = Effect.suspend(() => {
         if (bridgesStopped) return Effect.void;
         bridgesStopped = true;
-        return Effect.forEach(bridges, (bridge) => bridge.onStop?.() ?? Effect.void, {
-          discard: true,
-        });
+        return Effect.forEach(
+          bridges,
+          (bridge) => bridge.onStop?.(opened.shared ? "detached" : "stopped") ?? Effect.void,
+          { discard: true },
+        );
       });
       yield* Effect.addFinalizer(() => stopBridges);
       const bridgeInputs = new Set<string>();
@@ -1183,6 +1185,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                 title: null,
                 completedAt: streaming ? null : emittedAt,
                 type: "assistant_message",
+                ...(item.phase ? { phase: item.phase } : {}),
                 messageId,
                 text: item.text,
                 streaming,
@@ -1200,6 +1203,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                   nativeItemId: item.nativeItemId,
                 }),
                 role: "assistant",
+                ...(item.phase ? { phase: item.phase } : {}),
                 text: item.text,
                 attachments: [],
                 streaming,
@@ -1272,10 +1276,13 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           return item.text.length === 0 ? Effect.void : emitStreamItem(turn, item, false);
         });
 
-      const completeOpenStreamItems = (turn: ActivePiTurn) =>
+      const completeOpenStreamItems = (turn: ActivePiTurn, phase?: "commentary" | "final_answer") =>
         Effect.forEach(
           Array.from(turn.streamItems.values()).filter((item) => !item.completed),
-          (item) => completeStreamItem(turn, item),
+          (item) => {
+            if (item.kind === "assistant_message" && phase) item.phase = phase;
+            return completeStreamItem(turn, item);
+          },
           { discard: true },
         );
 
@@ -1288,7 +1295,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       ) {
         for (const delta of deltas) {
           if (turn.workBoundaryPending || delta.workBoundaryBefore) {
-            yield* completeOpenStreamItems(turn);
+            yield* completeOpenStreamItems(turn, "commentary");
             turn.segmentOrdinal += 1;
             turn.workBoundaryPending = false;
           }
@@ -2407,16 +2414,26 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
 
             if (turn === null || recordString(message, "role") !== "assistant") return;
             yield* reconcileAssistantSnapshot(turn, message);
-            // Like CodexAdapterV2, commentary and unknown replies remain
-            // assistant_message items; v2 has no persisted phase field. Never
-            // suppress a late or partial answer just because it followed work.
-            if (
-              recordString(message, "stopReason") === "stop" &&
-              turn.assistantOrigin === "normal" &&
-              !turn.workBoundaryPending
-            )
-              turn.hasPrimaryAnswer = true;
-            yield* completeOpenStreamItems(turn);
+            const stopReason = recordString(message, "stopReason");
+            // Only explicit work boundaries or a late async acknowledgement fold.
+            // Unknown/partial replies and an async result supplying the first
+            // answer stay unclassified rather than hiding the only answer.
+            const hasAssistantText = Array.from(turn.streamItems.values()).some(
+              (item) =>
+                item.kind === "assistant_message" && !item.completed && item.text.length > 0,
+            );
+            const phase =
+              turn.workBoundaryPending || stopReason === "toolUse" || !hasAssistantText
+                ? "commentary"
+                : turn.assistantOrigin === "async_result"
+                  ? turn.hasPrimaryAnswer
+                    ? "commentary"
+                    : undefined
+                  : stopReason === "stop"
+                    ? "final_answer"
+                    : undefined;
+            yield* completeOpenStreamItems(turn, phase);
+            if (phase === "final_answer") turn.hasPrimaryAnswer = true;
             if (recordString(message, "stopReason") === "aborted") turn.nativeAborted = true;
             if (recordString(message, "stopReason") === "error" && turn.failure === null) {
               turn.failure = makeProviderFailure({

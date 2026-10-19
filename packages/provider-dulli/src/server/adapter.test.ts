@@ -4290,6 +4290,80 @@ describe("PiRpc early process exit", () => {
 });
 
 describe("Dulli fork policy", () => {
+  it.effect(
+    "classifies late async acknowledgements without replacing primary or fresh terminal answers",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const thread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, thread);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        const reply = Effect.fnUntraced(function* (text: string, stopReason = "stop") {
+          yield* fake.emit({ type: "message_start", message: { role: "assistant" } });
+          yield* fake.emit({
+            type: "message_end",
+            message: {
+              role: "assistant",
+              stopReason,
+              content: [{ type: "text", text }],
+            },
+          });
+          const itemEvent = yield* takeEvent(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "assistant_message" &&
+              !event.turnItem.streaming,
+          );
+          const messageEvent = yield* takeEvent(
+            (event) => event.type === "message.updated" && !event.message.streaming,
+          );
+          assert.isTrue(
+            itemEvent.type === "turn_item.updated" &&
+              itemEvent.turnItem.type === "assistant_message",
+          );
+          if (
+            itemEvent.type !== "turn_item.updated" ||
+            itemEvent.turnItem.type !== "assistant_message" ||
+            messageEvent.type !== "message.updated"
+          )
+            throw new Error("Expected assistant output");
+          assert.equal(itemEvent.turnItem.phase, messageEvent.message.phase);
+          return itemEvent.turnItem;
+        });
+        assert.equal((yield* reply("Checking", "toolUse")).phase, "commentary");
+        assert.equal((yield* reply("Primary answer")).phase, "final_answer");
+        for (const customType of ["subagents-result", "subagents-workflow-result"]) {
+          yield* fake.emit({ type: "message_start", message: { role: "custom", customType } });
+          assert.equal((yield* reply(`Acknowledged ${customType}`)).phase, "commentary");
+        }
+        yield* fake.emit({
+          type: "message_start",
+          message: { role: "custom", customType: "background-terminal-result" },
+        });
+        assert.equal((yield* reply("Fresh terminal answer")).phase, "final_answer");
+        yield* fake.emit({ type: "message_start", message: { role: "user" } });
+        // A textless assistant stop is not a primary answer either.
+        yield* fake.emit({ type: "message_start", message: { role: "assistant" } });
+        yield* fake.emit({
+          type: "message_end",
+          message: { role: "assistant", stopReason: "stop", content: [] },
+        });
+        yield* fake.emit({
+          type: "message_start",
+          message: { role: "custom", customType: "subagents-result" },
+        });
+        assert.isUndefined((yield* reply("Only async answer")).phase);
+        yield* fake.emit({ type: "message_start", message: { role: "user" } });
+        assert.isUndefined((yield* reply("Partial", "aborted")).phase);
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect("launches native Pi with approval, the coder profile and native bridge opt-ins", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi;
@@ -4318,6 +4392,8 @@ describe("Dulli fork policy", () => {
       const fake = yield* makeFakePi;
       const adapter = yield* makeAdapter(fake);
       const capabilities = yield* adapter.getCapabilities();
+      assert.isFalse(capabilities.approvals.supportsCommandApproval);
+      assert.isFalse(capabilities.approvals.supportsFileChangeApproval);
       for (const key of ["profile", "configSet", "reasoning"]) {
         const plan = yield* adapter.planSelectionTransition({
           current: modelSelection("anthropic/claude-sonnet-5"),
@@ -4556,7 +4632,7 @@ describe("Dulli fork policy", () => {
                 observed,
                 `start:${context.getProviderThread()?.nativeThreadRef?.driver}`,
               ).pipe(Effect.asVoid),
-            onStop: () => Queue.offer(observed, "stop").pipe(Effect.asVoid),
+            onStop: (reason) => Queue.offer(observed, `stop:${reason}`).pipe(Effect.asVoid),
             notify: [
               {
                 prefix: "test:notify:",
@@ -4598,7 +4674,7 @@ describe("Dulli fork policy", () => {
           assert.equal(response["id"], "private");
           assert.equal(response["value"], "result");
         }).pipe(Effect.provideService(DulliBridgeRegistry, [factory]), Effect.scoped);
-        assert.equal(yield* Queue.take(observed), "stop");
+        assert.equal(yield* Queue.take(observed), "stop:stopped");
       }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 });

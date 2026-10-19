@@ -227,6 +227,11 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
             '2026-01-04T00:00:00.000Z', NULL)
       `;
 
+      yield* sql`UPDATE projection_thread_messages SET phase = 'final_answer'
+        WHERE message_id = 'message:legacy:2'`;
+      yield* sql`UPDATE projection_thread_messages SET phase = 'commentary'
+        WHERE message_id = 'message:legacy:4'`;
+
       assert.equal(yield* importer.pendingThreadCount, 1);
       const shellImport = yield* importer.reconcileShells;
       assert.equal(yield* importer.pendingThreadCount, 1);
@@ -245,6 +250,16 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
 
       assert.isTrue((yield* maintenance.verify).valid);
       const shellProjection = yield* projections.getThreadProjection(threadId);
+      assert.equal(
+        shellProjection.messages.find((message) => message.id === "message:legacy:4")?.phase,
+        "commentary",
+      );
+      assert.deepStrictEqual(
+        shellProjection.visibleTurnItems.flatMap(({ item }) =>
+          item.type === "assistant_message" ? [item.phase] : [],
+        ),
+        ["commentary"],
+      );
       assert.equal(shellProjection.thread.historyOrigin, "v1_import");
       assert.equal(shellProjection.thread.branch, "main");
       assert.equal(shellProjection.thread.worktreePath, "/tmp/legacy-project");
@@ -315,6 +330,16 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
         importedMessageCount: 2,
       });
       const projection = yield* projections.getThreadProjection(threadId);
+      assert.deepStrictEqual(
+        projection.messages.map((message) => message.phase),
+        [undefined, "final_answer", undefined, "commentary"],
+      );
+      assert.deepStrictEqual(
+        projection.turnItems
+          .filter((item) => item.type === "assistant_message")
+          .map((item) => item.phase),
+        ["final_answer", "commentary"],
+      );
       assert.equal(projection.thread.title, "Renamed after shell import");
       assert.equal(projection.thread.runtimeMode, "approval-required");
       assert.equal(projection.thread.interactionMode, "plan");

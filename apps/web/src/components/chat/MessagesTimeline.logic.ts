@@ -714,6 +714,8 @@ export function resolveAssistantMessageCopyState({
 
 function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
   const lastAssistantMessageIdByResponseKey = new Map<string, string>();
+  const classifiedResponseKeys = new Set<string>();
+  const lastFinalMessageIdByResponseKey = new Map<string, string>();
   let nullTurnResponseIndex = 0;
 
   for (const timelineEntry of timelineEntries) {
@@ -733,9 +735,19 @@ function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<Timeli
       ? `turn:${message.runId}`
       : `unkeyed:${nullTurnResponseIndex}`;
     lastAssistantMessageIdByResponseKey.set(responseKey, message.id);
+    if (message.phase !== undefined) classifiedResponseKeys.add(responseKey);
+    if (message.phase === "final_answer") {
+      lastFinalMessageIdByResponseKey.set(responseKey, message.id);
+    }
   }
 
-  return new Set(lastAssistantMessageIdByResponseKey.values());
+  return new Set(
+    Array.from(lastAssistantMessageIdByResponseKey).flatMap(([key, id]) => {
+      if (!classifiedResponseKeys.has(key)) return [id];
+      const finalId = lastFinalMessageIdByResponseKey.get(key);
+      return finalId ? [finalId] : [];
+    }),
+  );
 }
 
 interface TurnFold {
@@ -1137,7 +1149,15 @@ function deriveTurnFolds(input: {
     const terminalEntryIndex = group.terminalEntry
       ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)
       : group.entries.length;
+    const hasExplicitPhase = group.entries.some(
+      (entry) => entry.kind === "message" && entry.message.phase !== undefined,
+    );
     for (const [index, entry] of group.entries.entries()) {
+      // Explicit finals (including a fresh background-terminal answer) stay
+      // visible. Unknown/partial replies must not disappear with commentary.
+      if (hasExplicitPhase && entry.kind === "message" && entry.message.phase !== "commentary") {
+        continue;
+      }
       if (entry.id === group.terminalEntry?.id) {
         continue;
       }
@@ -1147,7 +1167,13 @@ function deriveTurnFolds(input: {
         entry.kind === "work" &&
         entry.entry.toolLifecycleStatus !== "inProgress" &&
         !workEntryDisplayIndicatesToolFailure(entry.entry);
-      if (!isCompaction && index > terminalEntryIndex && !isFoldableTrailingActivity) {
+      const isCommentary = entry.kind === "message" && entry.message.phase === "commentary";
+      if (
+        !isCompaction &&
+        !isCommentary &&
+        index > terminalEntryIndex &&
+        !isFoldableTrailingActivity
+      ) {
         continue;
       }
       // Linked resources and still-working children can outlive their
