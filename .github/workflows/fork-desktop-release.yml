@@ -166,6 +166,11 @@ jobs:
       - name: Align package versions
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
+      # @t3tools/desktop#build compiles the Linux browser secret helper, which
+      # needs libsecret headers.
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
       - name: Build JS bundle
         run: vp run build:desktop
 
@@ -707,7 +712,6 @@ jobs:
           run-install: |
             args:
               - --filter=@t3tools/mobile...
-              - --prod=false
 
       - name: Expose pnpm
         run: |
