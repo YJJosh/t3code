@@ -22,6 +22,7 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -703,14 +704,26 @@ const make = Effect.gen(function* () {
   // keeps that path off the database entirely after first confirmation.
   const confirmedTranscriptThreadIds = new Set<ThreadId>();
 
+  // REVIEW: old Dulli subagent runs are a best-effort extra. A thread whose
+  // history cannot be folded must still open, and must not stop the background
+  // transcript hydration of every other thread. Without a marker it retries on
+  // the next start.
+  const importSubagentHistory = (threadId?: ThreadId) =>
+    importDulliLegacySubagentHistory(threadId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(EventSink.EventSinkV2, eventSink),
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterrupts(cause),
+        (cause) =>
+          Effect.logWarning("Failed to import legacy Dulli subagent history", { threadId, cause }),
+      ),
+    );
+
   const ensureTranscriptBase = (threadId: ThreadId) =>
     transcriptImports.withLock(
       threadId,
       Effect.gen(function* () {
-        yield* importDulliLegacySubagentHistory(threadId).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.provideService(EventSink.EventSinkV2, eventSink),
-        );
+        yield* importSubagentHistory(threadId);
         const imports = yield* sql<LegacyImportRow>`
           SELECT thread_id, transcript_imported_at
           FROM orchestration_v2_legacy_imports
@@ -791,10 +804,7 @@ const make = Effect.gen(function* () {
         );
 
   const importPendingTranscripts = Effect.gen(function* () {
-    yield* importDulliLegacySubagentHistory().pipe(
-      Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.provideService(EventSink.EventSinkV2, eventSink),
-    );
+    yield* importSubagentHistory();
     const rows = yield* sql<LegacyImportRow>`
       SELECT thread_id, transcript_imported_at
       FROM orchestration_v2_legacy_imports

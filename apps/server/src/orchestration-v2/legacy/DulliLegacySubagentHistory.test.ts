@@ -341,6 +341,28 @@ describe("Dulli legacy child history", () => {
         );
       }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("still opens and hydrates a thread whose subagent history cannot be folded", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO dulli_fork_migrations VALUES('fork-detected')`;
+      yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at) VALUES('m1',${threadId},'user','hello',0,${at(1)},${at(1)})`;
+      yield* sql`INSERT INTO orchestration_v2_projection_subagents(subagent_id,thread_id,parent_node_id,provider,origin,status,updated_at,payload_json) VALUES('broken',${threadId},'node','dulli','native','running',${at(1)},'{not json')`;
+      const importer = yield* Importer.LegacyV1ThreadImporter;
+      assert.equal((yield* importer.ensureTranscript(threadId)).importedMessageCount, 1);
+      assert.deepStrictEqual(yield* importer.importPendingTranscripts, {
+        importedThreadCount: 0,
+        importedMessageCount: 0,
+      });
+      // Without a marker the fold is retried on the next start.
+      assert.equal(
+        (yield* sql`SELECT 1 FROM dulli_fork_migrations WHERE name LIKE 'subagent-history-v1:%'`)
+          .length,
+        0,
+      );
+    }).pipe(Effect.provide(layer)),
+  );
 });
 const seedThread = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
