@@ -106,6 +106,28 @@ const emptyProjection = {
 } as OrchestrationV2ThreadProjection;
 
 describe("applyOrchestrationV2ProjectionEvent", () => {
+  it("retains live Dulli child transcript records without inserting them into parent chat", () => {
+    const item = commandItem("dulli:subagent:thread:child:transcript:0");
+    const next = applyOrchestrationV2ProjectionEvent(emptyProjection, {
+      id: "child-tool" as OrchestrationV2DomainEvent["id"],
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: now,
+      payload: item,
+    })!;
+    expect(next.turnItems).toEqual([item]);
+    expect(next.visibleTurnItems).toEqual([]);
+    const settled = applyOrchestrationV2ProjectionEvent(next, {
+      id: "settled" as OrchestrationV2DomainEvent["id"],
+      type: "run.updated",
+      threadId,
+      occurredAt: now,
+      payload: run,
+    })!;
+    expect(settled.turnItems).toEqual([item]);
+    expect(settled.visibleTurnItems).toEqual([]);
+  });
+
   it("applies a compact PR sync without replacing other links or thread metadata", () => {
     const link = (number: number): ThreadPullRequestLink => ({
       host: "github.com",

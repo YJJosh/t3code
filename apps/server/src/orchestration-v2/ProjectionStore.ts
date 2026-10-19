@@ -67,6 +67,7 @@ import {
 } from "@t3tools/contracts";
 import {
   createOrchestrationV2TurnItemVisibility,
+  isDulliSubagentTranscriptItem,
   isOrchestrationV2SupersededInterrupt,
 } from "@t3tools/shared/orchestrationV2Timeline";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
@@ -1373,6 +1374,7 @@ function visibleTurnItemsThroughRun(input: {
     }));
   const localPrefix = inheritedVisibleTurnItemsFromLocalItems(
     input.sourceProjection.turnItems.filter((item) => {
+      if (isDulliSubagentTranscriptItem(item)) return false;
       if (
         isOrchestrationV2SupersededInterrupt({
           item,
@@ -2810,6 +2812,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   LEFT JOIN orchestration_v2_projection_runs AS run
                     ON run.run_id = item.run_id
                   WHERE item.thread_id = ${threadId}
+                    -- REVIEW: Match shared timeline visibility before the window
+                    -- limit; child replay must not crowd out parent conversation.
+                    AND item.turn_item_id NOT GLOB 'dulli:subagent:*:transcript:*'
                     AND item.ordinal <= COALESCE(
                       (
                         SELECT ordinal
@@ -5033,6 +5038,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ),
             ...source.local.filter(
               (row) =>
+                !isDulliSubagentTranscriptItem(row.item) &&
                 !isOrchestrationV2SupersededInterrupt({
                   item: row.item,
                   attempts: source.records.attempts,

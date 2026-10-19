@@ -9,7 +9,17 @@ type TimelineRun = Pick<OrchestrationV2Run, "id" | "status">;
 type TimelineRunAttempt = Pick<OrchestrationV2RunAttempt, "runId" | "rootNodeId" | "status">;
 type TimelineTurnItem = Pick<OrchestrationV2TurnItem, "type" | "runId" | "nodeId"> & {
   readonly inputIntent?: OrchestrationV2UserMessageInputIntent;
+  readonly id?: OrchestrationV2TurnItem["id"];
 };
+
+// REVIEW: Dulli persists child transcripts as turn items for on-demand inspectors,
+// not parent conversation rows. Use their stable slot namespace so snapshots and
+// live client reductions agree without changing any upstream provider's timeline.
+export function isDulliSubagentTranscriptItem(item: {
+  readonly id?: OrchestrationV2TurnItem["id"];
+}): boolean {
+  return item.id?.startsWith("dulli:subagent:") === true && item.id.includes(":transcript:");
+}
 
 export function isOrchestrationV2SupersededInterrupt(input: {
   readonly item: TimelineTurnItem;
@@ -46,6 +56,7 @@ export function isOrchestrationV2TurnItemVisible(input: {
   readonly items: ReadonlyArray<TimelineTurnItem>;
 }): boolean {
   const { item } = input;
+  if (isDulliSubagentTranscriptItem(item)) return false;
   if (
     item.runId !== null &&
     input.runs.some((run) => run.id === item.runId && run.status === "rolled_back")
@@ -93,6 +104,7 @@ export function createOrchestrationV2TurnItemVisibility(input: {
     input.items.filter((item) => item.type === "run_interrupt_request").map((item) => item.runId),
   );
   return (item) => {
+    if (isDulliSubagentTranscriptItem(item)) return false;
     const status = item.runId === null ? undefined : statuses.get(item.runId);
     if (status === "rolled_back") return false;
     if (

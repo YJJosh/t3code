@@ -1,4 +1,4 @@
-import { NodeId, RunId } from "@t3tools/contracts";
+import { NodeId, RunId, TurnItemId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -17,6 +17,43 @@ describe.each([
       createOrchestrationV2TurnItemVisibility(input)(input.item),
   ],
 ] as const)("%s timeline visibility", (_, isVisible) => {
+  it("keeps Dulli child transcript slots out of the parent timeline only", () => {
+    const item = { type: "assistant_message" as const, runId, nodeId };
+    const input = { runs: [], attempts: [], items: [item] };
+    expect(
+      isVisible({
+        ...input,
+        item: { ...item, id: TurnItemId.make("dulli:subagent:thread:child:transcript:0") },
+      }),
+    ).toBe(false);
+    expect(
+      isVisible({
+        ...input,
+        item: {
+          ...item,
+          runId: null,
+          id: TurnItemId.make("dulli:subagent:thread:child:transcript:0"),
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isVisible({
+        ...input,
+        item: {
+          ...item,
+          type: "subagent",
+          id: TurnItemId.make("dulli:subagent:thread:child:task"),
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isVisible({
+        ...input,
+        item: { ...item, id: TurnItemId.make("pi:subagent:thread:child:transcript:0") },
+      }),
+    ).toBe(true);
+  });
+
   it("hides unpaired interruption results from superseded attempts", () => {
     expect(
       isVisible({

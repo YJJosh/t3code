@@ -6,6 +6,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -45,6 +46,7 @@ it.effect.each([
           creationSource: "web",
           projectId: ProjectId.make("project"),
           title: "Parent",
+          historyOrigin: "v1_import",
           providerInstanceId: instanceId,
           modelSelection: { instanceId, model: "default" },
           runtimeMode: "full-access",
@@ -91,9 +93,12 @@ it.effect.each([
           updatedAt: now,
         },
       });
+      const childAnswer = `${subagentId}:transcript:0`;
+      const lateChildAnswer = `${subagentId}:transcript:1`;
       for (const [id, nodeId, ordinal] of [
-        ["child-answer", subagentId, 1],
+        [childAnswer, subagentId, 1],
         ["parent-answer", NodeId.make("root"), 99],
+        [lateChildAnswer, subagentId, 100],
       ] as const) {
         yield* store.apply({
           id: EventId.make(`event:${id}`),
@@ -123,12 +128,69 @@ it.effect.each([
         });
       }
       const projection = yield* store.getThreadProjection(threadId);
+      // REVIEW: Persisted child history must be available to the inspector but
+      // absent from both the full and SQL-windowed parent conversation.
+      assert.deepEqual(
+        projection.visibleTurnItems.map((row) => row.item.id),
+        ["parent-answer"],
+      );
+      const windowed = yield* store.getThreadSnapshotWindow(threadId, { rowLimit: 1 });
+      assert.deepEqual(
+        windowed.projection.visibleTurnItems.map((row) => row.item.id),
+        ["parent-answer"],
+      );
       const bounded = buildBoundedThreadProjection({
         projection,
         snapshotSequence: 3,
         policy: { maxItems: 1, maxUserTurns: 1, maxEncodedBytes: 1024 * 1024 },
       });
-      assert.isFalse(bounded.projection.turnItems.some((item) => item.id === "child-answer"));
+      assert.isFalse(bounded.projection.turnItems.some((item) => item.id === childAnswer));
+      const boundaryRunId = RunId.make("fork-boundary");
+      yield* store.apply({
+        id: EventId.make("boundary-run"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: boundaryRunId,
+          threadId,
+          ordinal: 1,
+          providerInstanceId: instanceId,
+          modelSelection: projection.thread.modelSelection,
+          providerThreadId: null,
+          userMessageId: MessageId.make("boundary-prompt"),
+          rootNodeId: null,
+          activeAttemptId: null,
+          status: "completed",
+          requestedAt: now,
+          startedAt: now,
+          completedAt: now,
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      });
+      const forkThreadId = ThreadId.make("history-fork");
+      yield* store.apply({
+        id: EventId.make("fork-created"),
+        type: "thread.created",
+        threadId: forkThreadId,
+        occurredAt: now,
+        payload: {
+          ...projection.thread,
+          id: forkThreadId,
+          forkedFrom: { type: "run", threadId, runId: boundaryRunId },
+        },
+      });
+      const fork = yield* store.getThreadProjection(forkThreadId);
+      assert.deepEqual(
+        fork.visibleTurnItems.map((row) => row.item.id),
+        ["parent-answer", `turn-item:fork:${forkThreadId}`],
+      );
+      const forkPage = yield* store.getTimelinePage(forkThreadId, { limit: 10, view: "activity" });
+      assert.deepEqual(
+        forkPage.items.map((row) => row.item.id),
+        fork.visibleTurnItems.map((row) => row.item.id),
+      );
       const serviceLayer = ThreadManagement.layer.pipe(
         Layer.provide(
           Layer.mock(Orchestrator.OrchestratorV2)({
@@ -152,7 +214,7 @@ it.effect.each([
         const history = yield* service.getSubagentTranscript({ threadId, subagentId });
         assert.deepEqual(
           history.items.map((item) => item.id),
-          ["child-answer"],
+          [childAnswer, lateChildAnswer],
         );
         assert.deepEqual(
           (yield* service.getSubagentTranscript({ threadId, subagentId: NodeId.make("missing") }))
