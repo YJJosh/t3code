@@ -17,7 +17,8 @@ export interface ProviderContinuationRequest {
   readonly providerThreadId: ProviderThreadId;
   readonly driver: ProviderDriverKind;
   readonly detail: string | null;
-  readonly notification?: OrchestrationV2Notification;
+  /** Omitted uses the generic background notification; null hides its timeline row. */
+  readonly notification?: OrchestrationV2Notification | null;
   /**
    * Durable ownership for an app-owned delegated-task completion delivery.
    * The continuation worker re-reads the cohort before dispatching so a later

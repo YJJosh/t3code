@@ -18,7 +18,7 @@ import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { formatTokens } from "@t3tools/shared/usageFormat";
-import { classifyToolActivity } from "@t3tools/shared/toolActivity";
+import { classifyToolActivity, dynamicToolTitle } from "@t3tools/shared/toolActivity";
 import { toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
 
 import {
@@ -35,6 +35,16 @@ export function toolItemForDisplay(item: OrchestrationV2TurnItem): Orchestration
     case "command_execution":
     case "dynamic_tool": {
       const { output: _output, ...displayItem } = item;
+      // Copy/inspection must not bring back HTML or its terminal-only text copy,
+      // including when reading older retained items with full arguments.
+      if (displayItem.type === "dynamic_tool" && displayItem.toolName === "html_show") {
+        return {
+          ...displayItem,
+          input: {
+            title: dynamicToolTitle(displayItem.toolName, displayItem.input, displayItem.title),
+          },
+        };
+      }
       return displayItem;
     }
     case "file_change": {

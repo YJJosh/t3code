@@ -2896,3 +2896,75 @@ describe("explicit assistant phases", () => {
     ).toEqual(["comment", "answer", "late"]);
   });
 });
+
+it("hides bookkeeping wake notifications without hiding real user or assistant content", () => {
+  const hidden = {
+    ...base("hidden-wake", "2026-06-20T00:00:01.000Z", 0),
+    type: "notification" as const,
+    source: { kind: "background_task" as const },
+    outcome: "updated" as const,
+    summary: "Background activity updated",
+    hidden: true as const,
+  };
+  const realContent = [projected(userMessage(), 1), projected(assistantMessage(), 2)];
+  expect(buildThreadFeed([projected(hidden, 0), ...realContent])).toEqual(
+    buildThreadFeed(realContent),
+  );
+  expect(buildThreadFeed(realContent).length).toBeGreaterThan(0);
+});
+
+it("shows the Dulli HTML artifact once and keeps its native tool row title-only", () => {
+  const native: OrchestrationV2TurnItem = {
+    ...base("native-html-show", "2026-06-20T00:00:02.000Z", 1),
+    type: "dynamic_tool",
+    toolName: "html_show",
+    title: "Revenue",
+    input: { title: "Revenue", html: "<h1>Raw HTML</h1>", text: "Terminal-only table" },
+    output: {
+      content: [{ type: "text", text: "Already shown" }],
+      details: { text: "Terminal-only table" },
+    },
+  };
+  const artifact: OrchestrationV2TurnItem = {
+    ...base("html-show-artifact", "2026-06-20T00:00:02.100Z", 2),
+    type: "dynamic_tool",
+    toolName: "html_render",
+    title: "Revenue",
+    input: { title: "Revenue", height: 320 },
+    output: { htmlRender: { attachmentId: "revenue-page", title: "Revenue", height: 320 } },
+  };
+  const feed = buildThreadFeed([projected(native, 0), projected(artifact, 1)]);
+  expect(feed.filter((entry) => entry.type === "html-render")).toHaveLength(1);
+  const activity = feed.flatMap((entry) =>
+    entry.type === "activity-group" ? entry.activities : [],
+  )[0]!;
+  expect(activity.summary).toBe("Revenue");
+  expect(activity.detail).toBeNull();
+  expect(activity.canExpand).toBe(false);
+  expect(activity.fetchesDetail).toBe(false);
+  for (const display of [activity.getCopyText(), activity.getFullDetail()]) {
+    expect(display).not.toContain("Raw HTML");
+    expect(display).not.toContain("Terminal-only table");
+  }
+});
+
+it("keeps failed html_show calls expandable for their error, without copying visual sources", () => {
+  const item: OrchestrationV2TurnItem = {
+    ...base("failed-html-show", "2026-06-20T00:00:02.000Z", 1),
+    type: "dynamic_tool",
+    status: "failed",
+    toolName: "html_show",
+    title: "Revenue",
+    input: { title: "Revenue", html: "<h1>Raw HTML</h1>", text: "Terminal-only table" },
+    outputOmitted: true,
+  };
+  const activity = buildThreadFeed([projected(item, 0)]).flatMap((entry) =>
+    entry.type === "activity-group" ? entry.activities : [],
+  )[0]!;
+  expect(activity.canExpand).toBe(true);
+  expect(activity.fetchesDetail).toBe(true);
+  for (const display of [activity.getCopyText(), activity.getFullDetail()]) {
+    expect(display).not.toContain("Raw HTML");
+    expect(display).not.toContain("Terminal-only table");
+  }
+});

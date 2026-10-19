@@ -4778,45 +4778,47 @@ describe("linked timeline resources", () => {
   });
 });
 
-it.each([true, false])(
-  "keeps a wake notification visible outside folded work, working=%s",
-  (isWorking) => {
-    const fixture = makeStreamingTimelineFixture();
-    const source = fixture.visibleTurnItems.find((row) => row.item.type === "user_message")!;
-    if (source.item.type !== "user_message") throw new Error("Expected user message fixture");
-    const notification = {
-      ...source,
-      item: {
-        ...source.item,
-        type: "notification" as const,
-        source: { kind: "background_task" as const },
-        outcome: "completed" as const,
-        summary: "Delegated task finished",
-      },
-    };
-    const entries = deriveTimelineEntriesFromVisibleTurnItems({
-      visibleTurnItems: fixture.visibleTurnItems.map((row) =>
-        row === source ? notification : row,
-      ),
-      optimisticMessages: [],
-    });
-    const rows = deriveMessagesTimelineRows({
-      timelineEntries: entries,
-      isWorking,
-      runningRunId: fixture.runId,
-      activeTurnStartedAt: fixture.time(0),
-      turnDiffSummaries: [],
-      supportsConversationRollback: false,
-    });
-    expect(
-      rows.some(
-        (row) =>
-          row.kind === "work" &&
-          row.groupedEntries.some((entry) => entry.label === "Delegated task finished"),
-      ),
-    ).toBe(true);
-  },
-);
+it.each([
+  { isWorking: true, hidden: undefined },
+  { isWorking: false, hidden: undefined },
+  { isWorking: true, hidden: true as const },
+  { isWorking: false, hidden: true as const },
+])("only shows visible wake notifications outside folded work, %j", ({ isWorking, hidden }) => {
+  const fixture = makeStreamingTimelineFixture();
+  const source = fixture.visibleTurnItems.find((row) => row.item.type === "user_message")!;
+  if (source.item.type !== "user_message") throw new Error("Expected user message fixture");
+  const notification = {
+    ...source,
+    item: {
+      ...source.item,
+      type: "notification" as const,
+      source: { kind: "background_task" as const },
+      outcome: "completed" as const,
+      summary: "Delegated task finished",
+      hidden,
+    },
+  };
+  const entries = deriveTimelineEntriesFromVisibleTurnItems({
+    visibleTurnItems: fixture.visibleTurnItems.map((row) => (row === source ? notification : row)),
+    optimisticMessages: [],
+  });
+  const rows = deriveMessagesTimelineRows({
+    timelineEntries: entries,
+    isWorking,
+    runningRunId: fixture.runId,
+    activeTurnStartedAt: fixture.time(0),
+    turnDiffSummaries: [],
+    supportsConversationRollback: false,
+  });
+  expect(
+    rows.some(
+      (row) =>
+        row.kind === "work" &&
+        row.groupedEntries.some((entry) => entry.label === "Delegated task finished"),
+    ),
+  ).toBe(hidden !== true);
+  expect(entries.some((entry) => entry.kind === "message")).toBe(true);
+});
 
 it.each([true, false])(
   "keeps completed responses folded across notification wakes, working=%s",
@@ -5658,4 +5660,50 @@ describe("explicit assistant phases", () => {
     const next = deriveMessagesTimelineRowsWithState(inputFor([comment, answer, late]), first);
     expect(messageIds(next.rows)).toEqual(["answer"]);
   });
+});
+
+it("shows one Dulli HTML artifact beside a compact title-only native tool row", () => {
+  const fixture = makeStreamingTimelineFixture();
+  const basis = fixture.visibleTurnItems[0]!;
+  const native: Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }> = {
+    id: TurnItemId.make("native-html-show"),
+    type: "dynamic_tool",
+    status: "completed",
+    threadId: basis.item.threadId,
+    runId: fixture.runId,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 1,
+    startedAt: basis.item.startedAt,
+    completedAt: basis.item.completedAt,
+    updatedAt: basis.item.updatedAt,
+    toolName: "html_show",
+    title: "Revenue",
+    input: { title: "Revenue", html: "<h1>Raw HTML</h1>", text: "Terminal-only table" },
+    output: { content: [{ type: "text", text: "Already shown" }] },
+  };
+  const artifact: Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }> = {
+    ...native,
+    id: TurnItemId.make("html-show-artifact"),
+    toolName: "html_render",
+    input: { title: "Revenue", height: 320 },
+    output: { htmlRender: { attachmentId: "revenue-page", title: "Revenue", height: 320 } },
+  };
+  const entries = deriveTimelineEntriesFromVisibleTurnItems({
+    visibleTurnItems: [native, artifact].map((item, position) => ({
+      ...basis,
+      position,
+      item,
+      sourceItemId: item.id,
+    })),
+    optimisticMessages: [],
+  });
+  expect(entries.filter((entry) => entry.kind === "html-render")).toHaveLength(1);
+  const work = entries.find((entry) => entry.kind === "work");
+  if (work?.kind !== "work") throw new Error("Expected native tool row");
+  expect(workEntryDisplayLabel(work.entry, undefined)).toBe("Revenue");
+  expect(work.entry.detail).toBeUndefined();
 });

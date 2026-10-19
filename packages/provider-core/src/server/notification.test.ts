@@ -124,6 +124,24 @@ describe("notificationTurnItem", () => {
     task("c", "Update docs", "running"),
   ];
 
+  it("preserves a hidden wake without projecting its synthetic user message", () => {
+    const item = notificationTurnItem(
+      userMessage,
+      {
+        notification: {
+          source: { kind: "background_task" },
+          outcome: "updated",
+          summary: "Background activity updated",
+          hidden: true,
+        },
+      },
+      [],
+    );
+    assert.deepInclude(item, { type: "notification", hidden: true });
+    assert.notProperty(item, "messageId");
+    assert.notProperty(item, "text");
+  });
+
   it("says how many of a run's delegated tasks a delivery reports", () => {
     const item = notificationTurnItem(userMessage, delivery(["a", "b"]), tasks);
     assert.equal(item.type, "notification");

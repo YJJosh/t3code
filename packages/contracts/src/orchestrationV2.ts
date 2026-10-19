@@ -1206,6 +1206,8 @@ export type OrchestrationV2NotificationSource = typeof OrchestrationV2Notificati
 // A notification records an observed event, not whether its payload has reached the agent.
 // Provider delivery, wake policy, and agent-facing instructions belong to the backend.
 export const OrchestrationV2Notification = Schema.Struct({
+  // Bookkeeping wakes still carry notification semantics without a timeline row.
+  hidden: Schema.optional(Schema.Literal(true)),
   source: OrchestrationV2NotificationSource,
   // Item status describes this timeline record; outcome describes the reported work.
   outcome: Schema.Literals(["completed", "failed", "cancelled", "updated", "unknown"]),

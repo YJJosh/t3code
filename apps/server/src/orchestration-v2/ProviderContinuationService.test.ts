@@ -183,6 +183,32 @@ describe("ProviderContinuationService", () => {
     });
   });
 
+  it.effect("keeps a hidden wake as a provider continuation without a visible notification", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Queue.unbounded<unknown>();
+      yield* Effect.gen(function* () {
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        yield* requests.offer({ ...request(), notification: null });
+        const command = (yield* Queue.take(dispatched)) as {
+          readonly creationSource: string;
+          readonly notification: OrchestrationV2Notification;
+        };
+        assert.equal(command.creationSource, "provider");
+        assert.deepEqual(command.notification, {
+          source: { kind: "background_task" },
+          outcome: "updated",
+          summary: "Background activity updated",
+          hidden: true,
+        });
+      }).pipe(
+        Effect.provide(
+          layerTest({ dispatched, getThreadRecords: () => Effect.succeed(projection) }),
+        ),
+        Effect.scoped,
+      );
+    }),
+  );
+
   it.effect("dispatches a wake under the message its adapter named", () => {
     return Effect.gen(function* () {
       const dispatched = yield* Queue.unbounded<unknown>();

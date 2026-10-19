@@ -210,7 +210,12 @@ function ToolCallBody(
     readonly exitCode?: number | undefined;
   },
 ) {
-  const call = toolCallLines({ command: props.command, args: props.args });
+  // Failed visuals show their error output without dumping either source version.
+  const call = toolCallLines({
+    command: props.command,
+    args: props.args,
+    toolName: props.toolName,
+  });
   return (
     <div className={cn("space-y-1.5", monoClassName)}>
       {call.command ? <ShellCommandBlock command={call.command} /> : null}

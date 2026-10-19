@@ -216,6 +216,7 @@ export const layer = Layer.effectDiscard(
           messageId,
           text: request.detail ?? CONTINUATION_MESSAGE_TEXT,
           notification: request.notification ?? {
+            ...(request.notification === null ? { hidden: true as const } : {}),
             source: { kind: "background_task" },
             outcome: "updated",
             summary: "Background activity updated",

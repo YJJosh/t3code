@@ -2,7 +2,13 @@ import { ThreadId, TurnItemId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
-import { turnItemOutputImages, turnItemOutputText } from "./itemDetail.ts";
+import {
+  toolCallLines,
+  turnItemHasDetail,
+  turnItemNeedsDetailFetch,
+  turnItemOutputImages,
+  turnItemOutputText,
+} from "./itemDetail.ts";
 
 const screenshot = {
   id: TurnItemId.make("tool-screenshot"),
@@ -90,4 +96,45 @@ describe("tool output images", () => {
       expect(turnItemOutputImages(item)).toHaveLength(1);
     }
   });
+});
+
+it("keeps html_show title-only without fetching the HTML or terminal copy", () => {
+  for (const input of [
+    { title: "Results", html: "<h1>Results</h1>", text: "Terminal copy" },
+    { title: "Results", path: "/tmp/page.html", text: "Terminal copy" },
+    { summary: "<h1>Results</h1>", truncated: true },
+  ]) {
+    const item = {
+      ...screenshot,
+      toolName: "html_show",
+      title: "Results",
+      input,
+      outputOmitted: true,
+    };
+    expect(turnItemHasDetail(item)).toBe(false);
+    expect(turnItemNeedsDetailFetch(item)).toBe(false);
+    expect(turnItemHasDetail({ ...item, toolName: "other_tool" })).toBe(true);
+    expect(turnItemNeedsDetailFetch({ ...item, toolName: "other_tool" })).toBe(true);
+  }
+});
+
+it("keeps html_show failure output inspectable without exposing source arguments", () => {
+  const item = {
+    ...screenshot,
+    toolName: "html_show",
+    status: "failed" as const,
+    input: { title: "Results", html: "<h1>Results</h1>", text: "Terminal copy" },
+    output: { content: [{ type: "text", text: "Source file does not exist." }] },
+  };
+  const withheld = { ...item, output: undefined, outputOmitted: true };
+  expect(turnItemHasDetail(withheld)).toBe(true);
+  expect(turnItemNeedsDetailFetch(withheld)).toBe(true);
+  expect(turnItemHasDetail(item)).toBe(true);
+  expect(turnItemOutputText(item)).toBe("Source file does not exist.");
+  expect(toolCallLines({ toolName: item.toolName, args: item.input })).toEqual({
+    command: null,
+    args: null,
+    argsText: null,
+  });
+  expect(toolCallLines({ args: item.input }).args).not.toBeNull();
 });

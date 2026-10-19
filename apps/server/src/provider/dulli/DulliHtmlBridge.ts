@@ -3,6 +3,7 @@ import type { DulliBridgeFactory } from "@t3tools/provider-dulli/server";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as HtmlRender from "../../htmlRender/HtmlRender.ts";
 
@@ -72,17 +73,14 @@ export const makeFactory = Effect.gen(function* () {
                       error,
                     }),
                   ),
-                  Effect.option,
+                  Effect.result,
                 );
-              if (
-                reference._tag === "None" ||
-                !live ||
-                context.getActiveTurn()?.providerTurn.id !== active.providerTurn.id
-              )
+              if (!live || context.getActiveTurn()?.providerTurn.id !== active.providerTurn.id)
                 return;
               const now = yield* DateTime.now;
               // A separate item cannot be overwritten by Pi's ordinary html_show tool end.
               // html_render is the existing cross-client presentation contract, not a second tool.
+              // Never forward the terminal text version: the native html_show row is title-only.
               const nativeId = `html-show:${context.providerSessionId}:${input.toolCallId}`;
               yield* context.emit({
                 type: "turn_item.updated",
@@ -97,7 +95,9 @@ export const makeFactory = Effect.gen(function* () {
                   nativeItemRef: { driver: DRIVER, nativeId, strength: "strong" },
                   parentItemId: null,
                   ordinal: context.getItemOrdinal?.(nativeId) ?? 0,
-                  status: "completed",
+                  // The native html_show row is title-only, so a failed publication
+                  // must show here rather than leave the visual silently missing.
+                  status: Result.isSuccess(reference) ? "completed" : "failed",
                   title: input.title,
                   startedAt: now,
                   completedAt: now,
@@ -105,7 +105,16 @@ export const makeFactory = Effect.gen(function* () {
                   type: "dynamic_tool",
                   toolName: "html_render",
                   input: { title: input.title, height: input.height },
-                  output: { htmlRender: reference.value },
+                  output: Result.isSuccess(reference)
+                    ? { htmlRender: reference.success }
+                    : {
+                        content: [
+                          {
+                            type: "text",
+                            text: `T3 could not display this visual. ${reference.failure.message}`,
+                          },
+                        ],
+                      },
                 },
               });
             }),

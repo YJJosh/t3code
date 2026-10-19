@@ -1081,3 +1081,26 @@ describe("liveThoughtLine", () => {
     expect(liveThoughtLine("   ")).toBe("");
   });
 });
+
+it("omits both html_show versions from inspection and copy, retaining only the title", () => {
+  const basis = commandItem();
+  if (basis.type !== "command_execution") throw new Error("Expected command fixture");
+  const item: OrchestrationV2TurnItem = {
+    ...basis,
+    type: "dynamic_tool",
+    toolName: "html_show",
+    title: "Results",
+    input: {
+      title: "Results",
+      html: "<h1>Raw HTML</h1>",
+      path: "/tmp/page.html",
+      text: "Terminal copy",
+    },
+    output: { content: [{ type: "text", text: "Terminal copy" }] },
+  };
+  const display = toolItemForDisplay(item);
+  expect(display.type === "dynamic_tool" && display.input).toEqual({ title: "Results" });
+  expect(JSON.stringify(display)).not.toContain("Raw HTML");
+  expect(JSON.stringify(display)).not.toContain("Terminal copy");
+  expect(JSON.stringify(display)).not.toContain("/tmp/page.html");
+});

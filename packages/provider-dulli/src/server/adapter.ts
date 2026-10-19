@@ -1575,7 +1575,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           driver: DULLI_PROVIDER,
           turnItem: {
             ...shared,
-            title: toolName,
+            title: toolName === "html_show" ? (recordString(args, "title") ?? toolName) : toolName,
             type: "dynamic_tool",
             ...mcpToolPresentation({ toolName }),
             toolName,
@@ -2306,6 +2306,8 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                   driver: DULLI_PROVIDER,
                   detail: null,
                   delivery: "adapter_buffered",
+                  // Pi supplies the real user/result and assistant events below.
+                  notification: null,
                   dispatchIfCurrent: (dispatch) =>
                     sessionEventPermit.withPermits(1)(
                       Effect.suspend(() =>

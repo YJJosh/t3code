@@ -41,6 +41,8 @@ Pi is Dulli's agent harness. Use your Pi extensions for child agents, new thread
 
 The **T3 Code** tool group remains available for projects, thread records, schedules, secrets, PR links, attachments, worktree handoff, devices, and environment settings. Its provider/model catalog remains available too. To show an image in chat, the agent should embed a standalone Markdown image using an absolute path, such as `![Screenshot](/absolute/path.png)`, rather than only linking the file; never use base64.
 
+With the optional `pi-html-show` extension installed, ask Pi to show a chart, table, diagram, or mockup with `html_show`. It supplies HTML and a short equivalent text version. Dulli displays the HTML inline on web, desktop, and mobile; successful native tool rows stay title-only, without dumping HTML arguments or a second text copy. Failed tool calls can be expanded to read the error, without exposing the visual source. In a terminal, Pi displays the text version and one dim saved-file path instead, without opening a browser. The agent should not repeat the visual or link the saved file in its reply. When both clients share a chat, each displays its own version of the same tool result.
+
 ## Shared terminal chats
 
 Install the native `pi-sessions` extension on the environment machine and leave **pi-sessions** and **Share with terminal** enabled in Dulli's provider settings. Dulli and the terminal can then use the same live Pi conversation. If sharing is unavailable, new connections fall back to a private RPC process; a session already open elsewhere is never opened as a second writer. Closing a shared connection detaches T3 rather than killing Pi.

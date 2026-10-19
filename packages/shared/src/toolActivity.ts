@@ -55,6 +55,10 @@ export function dynamicToolTitle(
   input: unknown,
   retainedTitle?: string | null,
 ): string | undefined {
+  // html_show's visual is a separate inline artifact, not a second text preview.
+  if (toolName === "html_show") {
+    return asTrimmedString(asRecord(input)?.title) ?? asTrimmedString(retainedTitle) ?? "Show HTML";
+  }
   if (isJavaScriptReplTool(toolName)) {
     const title = asTrimmedString(retainedTitle);
     const meaningfulTitle =

@@ -867,7 +867,10 @@ export const makeSubagentFactory =
               if (yield* advertised)
                 yield* context.rpc.request({
                   type: "prompt",
-                  message: '/subagents-rpc {"action":"replay"}',
+                  message: `/subagents-rpc ${encodeJson({
+                    action: "replay",
+                    request_id: `t3-${yield* randomUuidV4}`,
+                  })}`,
                 });
             }).pipe(Effect.ignore);
           }),
