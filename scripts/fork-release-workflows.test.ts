@@ -80,6 +80,7 @@ const hardDisabledWorkflows = {
   "deploy-relay.yml": ["deploy_relay"],
   "desktop-macos-preview.yml": ["build", "publish", "cleanup"],
   "mobile-eas-preview.yml": ["preview"],
+  "mobile-android-apk.yml": ["mirror"],
   "mobile-eas-production.yml": ["production"],
   "publish-aur.yml": ["publish"],
   "web-preview.yml": ["deploy"],
