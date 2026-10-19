@@ -1030,10 +1030,9 @@ interface ThreadFeedRunFold {
   readonly label: string;
 }
 
-/** Explicit phases own the answer footer; unclassified runs keep the upstream last-reply rule. */
+/** A final answer owns the answer footer, else the last non-commentary reply (upstream rule). */
 export function terminalThreadFeedAssistantMessageIds(feed: ReadonlyArray<ThreadFeedEntry>) {
   const lastByResponse = new Map<string, string>();
-  const classifiedResponses = new Set<string>();
   const finalByResponse = new Map<string, string>();
   let runlessResponse = 0;
   for (const entry of feed) {
@@ -1045,15 +1044,12 @@ export function terminalThreadFeedAssistantMessageIds(feed: ReadonlyArray<Thread
     }
     const responseKey = message.runId ? `run:${message.runId}` : `runless:${runlessResponse}`;
     // Upstream does not attach a footer to unclassified runless history.
-    if (message.runId) lastByResponse.set(responseKey, message.id);
-    if (message.phase !== undefined) classifiedResponses.add(responseKey);
+    if (message.runId && message.phase !== "commentary")
+      lastByResponse.set(responseKey, message.id);
     if (message.phase === "final_answer") finalByResponse.set(responseKey, message.id);
   }
-  for (const response of classifiedResponses) {
-    lastByResponse.delete(response);
-    const finalId = finalByResponse.get(response);
-    if (finalId) lastByResponse.set(response, finalId);
-  }
+  // REVIEW: an interrupted or errored Dulli reply has no phase and keeps its footer.
+  for (const [response, finalId] of finalByResponse) lastByResponse.set(response, finalId);
   return new Set(lastByResponse.values());
 }
 

@@ -76,6 +76,13 @@ describe("phase-aware checkpoint answer binding", () => {
     );
     expect(summaries[0]?.assistantMessageId).toBe("terminal-answer");
   });
+  it("attaches an interrupted run's diff to its unclassified partial reply", () => {
+    expect(
+      deriveThreadCheckpointSummaries(
+        projectionFor([message("comment", "commentary"), message("partial")]),
+      )[0]?.assistantMessageId,
+    ).toBe("partial");
+  });
   it("does not attach a checkpoint to commentary-only output", () => {
     expect(
       deriveThreadCheckpointSummaries(projectionFor([message("comment", "commentary")]))[0]

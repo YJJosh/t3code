@@ -2838,6 +2838,11 @@ describe("explicit assistant phases", () => {
     expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual(["terminal-answer"]);
   });
 
+  it("keeps the footer on an interrupted reply that follows commentary", () => {
+    const feed = feedFor([message("comment", "commentary", 1), message("partial", undefined, 2)]);
+    expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual(["partial"]);
+  });
+
   it("folds a commentary-only response", () => {
     const feed = feedFor([message("comment", "commentary", 1), message("late", "commentary", 2)]);
     expect(messageIds(deriveThreadFeedPresentation(feed, latestRun, new Set()))).toEqual([]);

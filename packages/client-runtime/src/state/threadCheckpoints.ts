@@ -29,21 +29,19 @@ export interface ThreadCheckpointSummary {
 export function deriveThreadCheckpointSummaries(
   projection: OrchestrationV2ThreadProjection,
 ): ReadonlyArray<ThreadCheckpointSummary> {
-  const lastAssistantByRun = new Map<RunId, MessageId>();
+  const lastReplyByRun = new Map<RunId, MessageId>();
   const lastFinalByRun = new Map<RunId, MessageId>();
-  const classifiedRuns = new Set<RunId>();
   for (const message of projection.messages) {
     if (message.runId === null || message.role !== "assistant") continue;
-    lastAssistantByRun.set(message.runId, message.id);
-    if (message.phase !== undefined) classifiedRuns.add(message.runId);
+    if (message.phase !== "commentary") lastReplyByRun.set(message.runId, message.id);
     if (message.phase === "final_answer") lastFinalByRun.set(message.runId, message.id);
   }
   return projection.checkpoints.flatMap((checkpoint) => {
     if (checkpoint.appRunOrdinal === null || checkpoint.runId === null) return [];
+    // REVIEW: the final answer owns the diff, else the last non-commentary
+    // reply (upstream rule). An interrupted Dulli reply has no phase.
     const assistantMessageId =
-      (classifiedRuns.has(checkpoint.runId) ? lastFinalByRun : lastAssistantByRun).get(
-        checkpoint.runId,
-      ) ?? null;
+      lastFinalByRun.get(checkpoint.runId) ?? lastReplyByRun.get(checkpoint.runId) ?? null;
     return [
       {
         checkpointId: checkpoint.id,

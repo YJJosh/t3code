@@ -5612,6 +5612,16 @@ describe("explicit assistant phases", () => {
     ).toEqual(["terminal-answer"]);
   });
 
+  it("keeps the footer on an interrupted reply that follows commentary", () => {
+    const rows = deriveMessagesTimelineRows(
+      inputFor([item("comment", "commentary", 1), item("partial", undefined, 2)]),
+    );
+    expect(messageIds(rows)).toEqual(["partial"]);
+    expect(
+      rows.filter((row) => row.kind === "message" && row.showAssistantMeta).map((row) => row.id),
+    ).toEqual(["partial"]);
+  });
+
   it("folds commentary-only replies without inventing a final", () => {
     const rows = deriveMessagesTimelineRows(
       inputFor([item("comment", "commentary", 1), item("late", "commentary", 2)]),

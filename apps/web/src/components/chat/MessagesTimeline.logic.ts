@@ -714,7 +714,6 @@ export function resolveAssistantMessageCopyState({
 
 function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<TimelineEntry>) {
   const lastAssistantMessageIdByResponseKey = new Map<string, string>();
-  const classifiedResponseKeys = new Set<string>();
   const lastFinalMessageIdByResponseKey = new Map<string, string>();
   let nullTurnResponseIndex = 0;
 
@@ -734,19 +733,21 @@ function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<Timeli
     const responseKey = message.runId
       ? `turn:${message.runId}`
       : `unkeyed:${nullTurnResponseIndex}`;
-    lastAssistantMessageIdByResponseKey.set(responseKey, message.id);
-    if (message.phase !== undefined) classifiedResponseKeys.add(responseKey);
+    if (message.phase !== "commentary") {
+      lastAssistantMessageIdByResponseKey.set(responseKey, message.id);
+    }
     if (message.phase === "final_answer") {
       lastFinalMessageIdByResponseKey.set(responseKey, message.id);
     }
   }
 
+  // REVIEW: commentary is never terminal and a final answer wins. An
+  // interrupted or errored Dulli reply has no phase, so it keeps its footer.
   return new Set(
-    Array.from(lastAssistantMessageIdByResponseKey).flatMap(([key, id]) => {
-      if (!classifiedResponseKeys.has(key)) return [id];
-      const finalId = lastFinalMessageIdByResponseKey.get(key);
-      return finalId ? [finalId] : [];
-    }),
+    Array.from(
+      lastAssistantMessageIdByResponseKey,
+      ([key, id]) => lastFinalMessageIdByResponseKey.get(key) ?? id,
+    ),
   );
 }
 
