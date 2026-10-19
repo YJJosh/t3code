@@ -17,6 +17,7 @@ import {
   resolveWebIconOverrides,
   type WebAssetBrand,
 } from "../../../scripts/lib/brand-assets.ts";
+import { selectCliRuntimeExternalDependencies } from "../../../scripts/lib/cli-external-packages.ts";
 import { resolveCatalogDependencies } from "../../../scripts/lib/resolve-catalog.ts";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
@@ -332,10 +333,15 @@ const publishCmd = Command.make(
             publishConfig: {
               executableFiles: [...RESOURCE_MONITOR_EXECUTABLE_FILES],
             },
-            dependencies: resolveCatalogDependencies(
-              serverPackageJson.dependencies,
-              workspaceCatalog,
-              "apps/server",
+            // dist/bin.mjs bundles every dependency except the runtime
+            // externals, so the published package declares only those. The
+            // bundled workspace packages (@t3tools/*) are not on npm.
+            dependencies: selectCliRuntimeExternalDependencies(
+              resolveCatalogDependencies(
+                serverPackageJson.dependencies,
+                workspaceCatalog,
+                "apps/server",
+              ),
             ),
             overrides: resolveCatalogDependencies(
               workspaceOverrides,
