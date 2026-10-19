@@ -99,3 +99,26 @@ it.effect(
       assert.lengthOf(yield* sql`SELECT * FROM dulli_projection_transcript`, 1);
     }).pipe(Effect.provide(Sqlite.layerMemory)),
 );
+
+// REVIEW: the no-Pi fast path still installs the schema without rewriting an
+// upstream-only event history or native subagent, including on a retry.
+it.effect("upstream-only installs create empty Dulli tables and preserve native history", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const payload = json({ id: "native-agent", driver: "codex", origin: "provider_native" });
+    yield* sql`INSERT INTO orchestration_v2_projection_subagents
+      (subagent_id, thread_id, parent_node_id, provider, driver, origin, status, updated_at, payload_json)
+      VALUES ('native-agent', 'thread', 'root', 'codex', 'codex', 'provider_native', 'running', ${at}, ${payload})`;
+    yield* sql`INSERT INTO orchestration_events
+      (event_id,aggregate_kind,stream_id,stream_version,event_type,occurred_at,actor_kind,payload_json,metadata_json,application_event_version)
+      VALUES ('native-event','thread','thread',1,'subagent.updated',${at},'provider',${payload},'{}',2)`;
+    const before = yield* sql`SELECT * FROM orchestration_events`;
+    const agents = yield* sql`SELECT * FROM orchestration_v2_projection_subagents`;
+    yield* sql.withTransaction(migration);
+    yield* sql.withTransaction(migration);
+    assert.deepEqual(yield* sql`SELECT * FROM orchestration_events`, before);
+    assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_projection_subagents`, agents);
+    assert.lengthOf(yield* sql`SELECT * FROM dulli_projection_runs`, 0);
+    assert.lengthOf(yield* sql`SELECT * FROM dulli_projection_transcript`, 0);
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
+);

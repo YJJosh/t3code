@@ -35,6 +35,10 @@ export default Effect.gen(function* () {
     yield* sql`INSERT OR IGNORE INTO dulli_projection_runs(id, thread_id, native_run_id, payload_json)
       VALUES (${row.subagent_id}, ${row.thread_id}, ${row.native_id}, ${row.payload_json})`;
   }
+  // REVIEW: upstream/non-fork installs have no Pi bridge records. Avoid three
+  // full event-log scans (and JSON decoding) when there is nothing to isolate.
+  if (!(yield* sql`SELECT 1 FROM dulli_projection_runs LIMIT 1`).length) return;
+
   yield* sql`INSERT OR IGNORE INTO dulli_projection_transcript(id, thread_id, run_id, ordinal, payload_json)
     SELECT turn_item_id, thread_id, node_id, ordinal, payload_json
     FROM orchestration_v2_projection_turn_items
