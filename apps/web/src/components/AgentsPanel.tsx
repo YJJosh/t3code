@@ -109,9 +109,7 @@ export function AgentsPanel({
                 Back to agents
               </Button>
             </div>
-            <h2 className="truncate font-semibold" title={selected.title || undefined}>
-              {selected.title || "Agent"}
-            </h2>
+            <h2 className="truncate font-semibold">{selected.title || "Agent"}</h2>
             <p className="my-2 text-xs text-muted-foreground">
               {selected.status} · {selected.model ?? "Provider default"}
               {selected.modelSelection?.options?.find((option) => option.id === "reasoning")?.value
