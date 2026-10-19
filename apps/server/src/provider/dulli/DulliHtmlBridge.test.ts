@@ -123,7 +123,7 @@ it.effect(
 );
 
 it.effect(
-  "rejects invalid envelopes, missing/invalid sources, and oversized source bytes without publishing",
+  "rejects invalid envelopes without a row, and shows unpublishable sources as failed",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -133,8 +133,6 @@ it.effect(
           { ...h.envelope, contractVersion: 2 },
           { ...h.envelope, path: "relative.html" },
           { ...h.envelope, path: "/invalid\0.html" },
-          { ...h.envelope, path: h.directory },
-          { ...h.envelope, path: h.paths.join(h.directory, "missing.html") },
           { ...h.envelope, title: " " },
           { ...h.envelope, title: "x".repeat(201) },
           { ...h.envelope, height: 79 },
@@ -146,13 +144,31 @@ it.effect(
         yield* h.notify({ ...h.envelope, toolCallId: "" });
         yield* h.bridge.notify![0]!.handle("not json", {});
         yield* h.bridge.notify![0]!.handle("x".repeat(8193), {});
+        expect(h.emitted).toEqual([]);
+        // The native html_show row is title-only, so these must not vanish silently.
+        yield* h.notify({ ...h.envelope, path: h.directory, toolCallId: "directory" });
+        yield* h.notify({
+          ...h.envelope,
+          path: h.paths.join(h.directory, "missing.html"),
+          toolCallId: "missing",
+        });
         for (const [index, source] of ["x".repeat(512_001), "é".repeat(256_001), " "].entries()) {
           yield* h.fs.writeFileString(h.path, source);
           yield* h.notify({ ...h.envelope, toolCallId: `bad-source-${index}` });
         }
         yield* h.fs.writeFile(h.path, new Uint8Array([0xff, 0xfe]));
         yield* h.notify({ ...h.envelope, toolCallId: "invalid-utf8" });
-        expect(h.emitted).toEqual([]);
+        expect(h.emitted).toHaveLength(6);
+        for (const event of h.emitted) {
+          if (event.type !== "turn_item.updated" || event.turnItem.type !== "dynamic_tool")
+            throw new Error("Expected an html_render row");
+          expect(event.turnItem.status).toBe("failed");
+          expect(htmlRenderFromToolItem(event.turnItem)).toBeUndefined();
+          expect(encode(event.turnItem.output)).toContain("T3 could not display this visual.");
+        }
+        const tooLarge = h.emitted[2]!;
+        if (tooLarge.type === "turn_item.updated" && tooLarge.turnItem.type === "dynamic_tool")
+          expect(encode(tooLarge.turnItem.output)).toContain("512,000-byte limit");
         const config = yield* ServerConfig.ServerConfig;
         expect(yield* h.fs.readDirectory(config.attachmentsDir)).toEqual([]);
       }),
