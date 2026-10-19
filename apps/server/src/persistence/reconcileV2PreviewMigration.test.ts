@@ -46,6 +46,7 @@ describe("V2 preview upgrade", () => {
         [63, "ProjectionThreadMessagePhase"],
         [64, "DulliProviderIdentity"],
         [65, "PiSessionsSettlement"],
+        [66, "DulliRunIsolation"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -134,6 +135,7 @@ describe("V2 preview upgrade", () => {
         [63, "ProjectionThreadMessagePhase"],
         [64, "DulliProviderIdentity"],
         [65, "PiSessionsSettlement"],
+        [66, "DulliRunIsolation"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

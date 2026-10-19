@@ -41,6 +41,7 @@ import * as ThreadHistoryController from "./threadHistoryController.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   makeEnvironmentThreadState,
+  resolveThreadSyncPhase,
   type EnvironmentThreadState,
   type ThreadSnapshotLoadResult,
 } from "./threads.ts";
@@ -1903,6 +1904,14 @@ describe("EnvironmentThreads", () => {
 
       expect(Option.getOrThrow(state.data)).toEqual(BASE_PROJECTION);
       expect(Option.getOrThrow(state.error)).toBe("stream failed");
+      expect(
+        resolveThreadSyncPhase({
+          shellExists: true,
+          detailExists: Option.isSome(state.data),
+          status: state.status,
+          error: Option.getOrNull(state.error),
+        }),
+      ).toBe("failed");
       expect(yield* Ref.get(harness.retryCount)).toBe(0);
 
       yield* harness.replaceSession;
@@ -2027,6 +2036,13 @@ describe("EnvironmentThreads", () => {
           value.data.value.thread.title === "Caught-up title",
       );
       expect(catchingUp.status).toBe("synchronizing");
+      expect(
+        resolveThreadSyncPhase({
+          shellExists: true,
+          detailExists: true,
+          status: catchingUp.status,
+        }),
+      ).toBe("syncing");
 
       yield* Queue.offer(harness.inputs, synchronized());
       const live = yield* awaitThreadState(

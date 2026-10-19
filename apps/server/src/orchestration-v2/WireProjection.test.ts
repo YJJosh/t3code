@@ -50,6 +50,32 @@ const base = {
 };
 
 describe("orchestration V2 wire projection", () => {
+  it("sends only a Pi transcript revision over the socket, leaving upstream item transport unchanged", () => {
+    const item = decodeTurnItem({
+      ...base,
+      nodeId: NodeId.make("dulli:subagent:thread:run"),
+      type: "assistant_message",
+      messageId: MessageId.make("pi-message"),
+      text: "x".repeat(2 * 1024 * 1024),
+      streaming: true,
+    });
+    const event = {
+      id: EventId.make("pi-revision"),
+      type: "dulli-transcript.updated" as const,
+      threadId: base.threadId,
+      occurredAt: base.updatedAt,
+      payload: item,
+    };
+    expect(projectDomainEventForWire(event)).toEqual({
+      ...event,
+      type: "dulli-transcript.changed",
+      payload: { nodeId: item.nodeId },
+    });
+    expect(projectDomainEventForWire({ ...event, type: "turn-item.updated" }).payload).toEqual(
+      item,
+    );
+    expect(projectTurnItemForDetail(item)).toEqual(item);
+  });
   it.each(["commentary", "final_answer", undefined] as const)(
     "preserves optional assistant phase through wire and JSON codecs: %s",
     (phase) => {

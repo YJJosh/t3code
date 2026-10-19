@@ -7,7 +7,7 @@ import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connect
  */
 export type FloatingWorkingStatus =
   | { readonly kind: "working"; readonly startedAt: string }
-  | { readonly kind: "syncing"; readonly label: string }
+  | { readonly kind: "syncing"; readonly label: string; readonly active?: boolean }
   | { readonly kind: "compacting" }
   | {
       readonly kind: "child-input";

@@ -15,6 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as EventStore from "../EventStore.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
+import * as Maintenance from "../ProjectionMaintenance.ts";
 import * as EventSink from "../EventSink.ts";
 import * as Importer from "./LegacyV1ThreadImporter.ts";
 import * as DulliSubagents from "../../provider/dulli/DulliSubagents.ts";
@@ -29,7 +30,7 @@ const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer).pipe(
   Layer.provideMerge(database),
 );
 const sink = EventSink.layer.pipe(Layer.provideMerge(stores));
-const layer = Importer.layer.pipe(
+const layer = Layer.merge(Importer.layer, Maintenance.layer).pipe(
   Layer.provideMerge(sink),
   Layer.merge(IdAllocator.layer),
   Layer.merge(DulliSubagents.layer),
@@ -130,11 +131,25 @@ describe("Dulli legacy child history", () => {
         assert.equal(result.skippedRows, 1);
         const projections = yield* ProjectionStore.ProjectionStoreV2;
         const records = yield* projections.getThreadRecords(threadId, [
-          "subagents",
-          "turnItems",
+          "dulliRuns",
+          "dulliTranscript",
           "nodes",
         ]);
-        const child = records.subagents.find(
+        const upstream = yield* projections.getThreadRecords(threadId, [
+          "subagents",
+          "nodes",
+          "turnItems",
+        ]);
+        assert.lengthOf(upstream.subagents, 0);
+        assert.lengthOf(
+          upstream.nodes.filter((node) => node.id.startsWith("dulli:subagent")),
+          0,
+        );
+        assert.lengthOf(
+          upstream.turnItems.filter((item) => item.id.startsWith("dulli:subagent:")),
+          0,
+        );
+        const child = records.dulliRuns!.find(
           (agent) => agent.nativeTaskRef?.nativeId === "child/1",
         )!;
         assert.equal(child.id, "dulli:subagent:legacy%2Fparent:child%2F1");
@@ -144,19 +159,39 @@ describe("Dulli legacy child history", () => {
         assert.equal(child.usage?.totalTokens, 70);
         assert.equal(DateTime.formatIso(child.completedAt!), at(3));
         assert.equal(
-          records.subagents.find((agent) => agent.nativeTaskRef?.nativeId === "workflow")?.workflow
+          records.dulliRuns!.find((agent) => agent.nativeTaskRef?.nativeId === "workflow")?.workflow
             ?.agents[0]?.state,
           "failed",
         );
         for (const id of ["stopped", "orphan"])
           assert.equal(
-            records.subagents.find((agent) => agent.nativeTaskRef?.nativeId === id)?.status,
+            records.dulliRuns!.find((agent) => agent.nativeTaskRef?.nativeId === id)?.status,
             "interrupted",
           );
-        const text = records.turnItems.find((item) => item.type === "assistant_message");
+        const text = records.dulliTranscript!.find((item) => item.type === "assistant_message");
         assert.equal(text?.type === "assistant_message" ? text.text : null, "Findings");
         assert.equal(text?.nativeItemRef?.nativeId, "native-manager:2:assistant_message:");
         assert.equal(text?.nativeItemRef?.fingerprint, "native-manager:message:2:text");
+        const maintenance = yield* Maintenance.ProjectionMaintenanceV2;
+        assert.isTrue((yield* maintenance.rebuild).valid);
+        const rebuilt = yield* projections.getThreadRecords(threadId, [
+          "subagents",
+          "nodes",
+          "turnItems",
+          "dulliRuns",
+          "dulliTranscript",
+        ]);
+        assert.deepEqual(rebuilt.dulliRuns, records.dulliRuns);
+        assert.deepEqual(rebuilt.dulliTranscript, records.dulliTranscript);
+        assert.lengthOf(rebuilt.subagents, 0);
+        assert.lengthOf(
+          rebuilt.nodes.filter((node) => node.id.startsWith("dulli:subagent")),
+          0,
+        );
+        assert.lengthOf(
+          rebuilt.turnItems.filter((item) => item.id.startsWith("dulli:subagent:")),
+          0,
+        );
         const before = yield* sql`SELECT event_id FROM orchestration_events`;
         assert.deepStrictEqual(yield* importDulliLegacySubagentHistory(), {
           runs: 0,
@@ -169,7 +204,7 @@ describe("Dulli legacy child history", () => {
 
         const existingProjector = yield* makeDulliLegacyTaskProjector(
           yield* seedThread,
-          records.subagents,
+          records.dulliRuns!,
         );
         yield* existingProjector.accept({
           activity_id: "old-start",
@@ -184,17 +219,27 @@ describe("Dulli legacy child history", () => {
         // Reconnect to the actual live bridge with imported records: historical replay
         // cannot reopen the child or append a second transcript slot.
         const agents = new Map<string, OrchestrationV2Subagent>(
-          records.subagents.map((agent) => [agent.id, agent]),
+          records.dulliRuns!.map((agent) => [agent.id, agent]),
         );
         const items = new Map<string, OrchestrationV2TurnItem>(
-          records.turnItems.map((item) => [item.id, item]),
+          records.dulliTranscript!.map((item) => [item.id, item]),
         );
         const thread = yield* seedThread;
         const controls = yield* DulliSubagents.DulliSubagents;
         const ids = yield* IdAllocator.IdAllocatorV2;
         const bridge = yield* makeSubagentFactory({
           controls,
-          read: () => Effect.succeed(records),
+          read: () =>
+            Effect.succeed({
+              subagents: records.dulliRuns ?? [],
+              turnItems: records.dulliTranscript ?? [],
+            }),
+          write: (event) =>
+            Effect.sync(() => {
+              if (event.type === "dulli-run.updated") agents.set(event.payload.id, event.payload);
+              if (event.type === "dulli-transcript.updated")
+                items.set(event.payload.id, event.payload);
+            }),
         })({
           threadId,
           providerSessionId: ProviderSessionId.make("live"),
@@ -215,11 +260,7 @@ describe("Dulli legacy child history", () => {
           getProviderThread: () => null,
           getActiveTurn: () => null,
           rpc: { send: () => Effect.void, request: () => Effect.void },
-          emit: (event) =>
-            Effect.sync(() => {
-              if (event.type === "subagent.updated") agents.set(event.subagent.id, event.subagent);
-              if (event.type === "turn_item.updated") items.set(event.turnItem.id, event.turnItem);
-            }),
+          emit: () => Effect.die("Pi records must not reach upstream"),
         });
         yield* bridge.notify![0]!.handle(
           encode({
@@ -243,9 +284,9 @@ describe("Dulli legacy child history", () => {
           }),
           {},
         );
-        assert.equal(agents.size, records.subagents.length);
+        assert.equal(agents.size, records.dulliRuns!.length);
         assert.equal(agents.get(child.id)?.status, "failed");
-        assert.equal(items.size, records.turnItems.length);
+        assert.equal(items.size, records.dulliTranscript!.length);
       }).pipe(Effect.provide(layer), Effect.scoped),
   );
 
@@ -274,7 +315,7 @@ describe("Dulli legacy child history", () => {
       });
       const result = yield* projector.finish;
       const items = result.events.flatMap((event) =>
-        event.type === "turn-item.updated" && event.payload.type === "assistant_message"
+        event.type === "dulli-transcript.updated" && event.payload.type === "assistant_message"
           ? [event.payload]
           : [],
       );
@@ -311,7 +352,7 @@ describe("Dulli legacy child history", () => {
       });
       const result = yield* projector.finish;
       const items = result.events.flatMap((event) =>
-        event.type === "turn-item.updated" && event.payload.type === "assistant_message"
+        event.type === "dulli-transcript.updated" && event.payload.type === "assistant_message"
           ? [event.payload]
           : [],
       );
@@ -360,7 +401,7 @@ describe("Dulli legacy child history", () => {
       const result = yield* projector.finish;
       const items = new Map(
         result.events.flatMap((event) =>
-          event.type === "turn-item.updated" && event.payload.type === "assistant_message"
+          event.type === "dulli-transcript.updated" && event.payload.type === "assistant_message"
             ? [[event.payload.id, event.payload] as const]
             : [],
         ),
@@ -385,7 +426,7 @@ describe("Dulli legacy child history", () => {
         yield* importer.ensureTranscript(threadId);
         const projections = yield* ProjectionStore.ProjectionStoreV2;
         assert.equal(
-          (yield* projections.getThreadRecords(threadId, ["subagents"])).subagents.length,
+          (yield* projections.getThreadRecords(threadId, ["dulliRuns"])).dulliRuns?.length,
           1,
         );
       }).pipe(Effect.provide(layer)),
@@ -397,7 +438,7 @@ describe("Dulli legacy child history", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO dulli_fork_migrations VALUES('fork-detected')`;
       yield* sql`INSERT INTO projection_thread_messages(message_id,thread_id,role,text,is_streaming,created_at,updated_at) VALUES('m1',${threadId},'user','hello',0,${at(1)},${at(1)})`;
-      yield* sql`INSERT INTO orchestration_v2_projection_subagents(subagent_id,thread_id,parent_node_id,provider,origin,status,updated_at,payload_json) VALUES('broken',${threadId},'node','dulli','native','running',${at(1)},'{not json')`;
+      yield* sql`INSERT INTO dulli_projection_runs(id,thread_id,native_run_id,payload_json) VALUES('broken',${threadId},'broken','{not json')`;
       const importer = yield* Importer.LegacyV1ThreadImporter;
       assert.equal((yield* importer.ensureTranscript(threadId)).importedMessageCount, 1);
       assert.deepStrictEqual(yield* importer.importPendingTranscripts, {

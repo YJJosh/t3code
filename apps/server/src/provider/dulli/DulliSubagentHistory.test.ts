@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  EnvironmentId,
   EventId,
   MessageId,
   NodeId,
@@ -21,6 +22,15 @@ import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore
 import * as ServerSettings from "../../serverSettings.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { buildBoundedThreadProjection } from "../../orchestration-v2/threadHistoryPaging.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as McpService from "../../mcp/OrchestratorMcpService.ts";
+import * as ProviderRegistry from "../ProviderRegistry.ts";
+import * as AdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as Projects from "../../project/ProjectService.ts";
+import * as Schedules from "../../scheduledTasks/ScheduledTaskService.ts";
+import * as Secrets from "../../secrets/SecretRequests.ts";
+import * as Git from "../../vcs/GitVcsDriver.ts";
 
 it.effect.each([
   { name: "memory", storeLayer: ProjectionStore.layerMemory },
@@ -67,7 +77,7 @@ it.effect.each([
       });
       yield* store.apply({
         id: EventId.make("agent"),
-        type: "subagent.updated",
+        type: "dulli-run.updated",
         threadId,
         occurredAt: now,
         driver,
@@ -102,7 +112,7 @@ it.effect.each([
       ] as const) {
         yield* store.apply({
           id: EventId.make(`event:${id}`),
-          type: "turn-item.updated",
+          type: nodeId === subagentId ? "dulli-transcript.updated" : "turn-item.updated",
           threadId,
           occurredAt: now,
           payload: {
@@ -190,6 +200,51 @@ it.effect.each([
       assert.deepEqual(
         forkPage.items.map((row) => row.item.id),
         fork.visibleTurnItems.map((row) => row.item.id),
+      );
+      // Exercise the actual upstream MCP task lookup against the isolated store.
+      yield* Effect.gen(function* () {
+        const service = yield* McpService.OrchestratorMcpService;
+        const scope = {
+          environmentId: EnvironmentId.make("isolation"),
+          requestNamespace: "isolation",
+          thread: { threadId, providerSessionId: "session", providerInstanceId: instanceId },
+          client: undefined,
+          capabilities: new Set(["orchestration"] as const),
+          issuedAt: 1,
+        };
+        const status = yield* service.taskStatus(scope, subagentId).pipe(Effect.flip);
+        assert.equal(status.code, "task_not_found");
+        const cancel = yield* service.cancelTask(scope, { taskId: subagentId }).pipe(Effect.flip);
+        assert.equal(cancel.code, "task_not_found");
+      }).pipe(
+        Effect.provide(
+          McpService.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                NodeCrypto.layer,
+                Layer.mock(ThreadManagement.ThreadManagementService)({
+                  getThreadRecords: (id, fields, filter) =>
+                    store
+                      .getThreadRecords(id, fields, filter)
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new Orchestrator.OrchestratorProjectionError({ threadId: id, cause }),
+                        ),
+                      ),
+                }),
+                Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+                Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({}),
+                Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+                Layer.mock(Projects.ProjectService)({}),
+                Layer.mock(Schedules.ScheduledTaskService)({}),
+                Layer.mock(Secrets.SecretRequests)({}),
+                Layer.mock(Git.GitVcsDriver)({}),
+                ServerSettings.layerTest(),
+              ),
+            ),
+          ),
+        ),
       );
       const serviceLayer = ThreadManagement.layer.pipe(
         Layer.provide(

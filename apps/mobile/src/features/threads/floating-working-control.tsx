@@ -364,7 +364,11 @@ function FloatingStatusLabel(props: {
         className="gap-2"
         onLayout={props.onLayout}
       >
-        <AppActivityIndicator size="small" colorClassName="accent-icon-muted" />
+        {props.status.active === false ? (
+          <SymbolView name="exclamationmark.triangle" size={13} tintColorClassName="foreground" />
+        ) : (
+          <AppActivityIndicator size="small" colorClassName="accent-icon-muted" />
+        )}
         <Text className="shrink font-t3-medium text-xs text-foreground" numberOfLines={1}>
           {props.status.label}
         </Text>

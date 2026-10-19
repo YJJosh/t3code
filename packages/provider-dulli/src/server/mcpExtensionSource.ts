@@ -9,7 +9,6 @@
  * Do not import t3code modules from the string body. The Pi process resolves
  * `@earendil-works/pi-coding-agent` and `typebox` from the user's pi install.
  */
-import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 
 export const PI_T3_MCP_EXTENSION_FILENAME = "pi-t3-mcp-extension.ts";
 
@@ -24,6 +23,10 @@ export const T3_PI_MCP_EXTENSION_PATH_ENV = "T3_PI_MCP_EXTENSION_PATH";
  */
 export const PI_FILE_CHANGE_TOOLS = ["edit", "write"] as const;
 
+const DULLI_INSTRUCTIONS = `Pi is the agent harness. Use the user's Pi tools for child agents, new threads, browsers, and HTML.
+T3 Code tools manage projects, thread records, schedules, secrets, PR links, worktree handoff, devices, attachments, and environment settings. Keep T3 records separate from Pi-owned agent and session state.
+To show an image, embed it as a standalone markdown image with an absolute path, e.g. ![Screenshot](/abs/path.png), not only a link; never base64.`;
+
 export const PI_T3_MCP_EXTENSION_SOURCE = `\
 import { stripFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as NodeFSP from "node:fs/promises";
@@ -34,7 +37,16 @@ const URL_ENV = ${JSON.stringify(T3_MCP_URL_ENV)};
 const TOKEN_ENV = ${JSON.stringify(T3_MCP_BEARER_ENV)};
 const RUNTIME_MODE_ENV = ${JSON.stringify(T3_PI_RUNTIME_MODE_ENV)};
 const EXTENSION_PATH_ENV = ${JSON.stringify(T3_PI_MCP_EXTENSION_PATH_ENV)};
-const ORCHESTRATION_INSTRUCTIONS = ${JSON.stringify(T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim())};
+const DULLI_INSTRUCTIONS = ${JSON.stringify(DULLI_INSTRUCTIONS)};
+const T3_NAMESPACE = { name: "mcp__t3-code", description: "T3 Code" };
+// Pi extensions own these capabilities, including any future browser operations.
+const PI_OWNED_TOOLS = new Set([
+  "delegate_task", "task_status", "task_cancel", "t3_workflow_stop",
+  "create_threads", "html_render", "html_preview",
+]);
+const isT3OwnedTool = (tool: McpTool) =>
+  !PI_OWNED_TOOLS.has(tool.name) &&
+  !tool.name.startsWith("preview_") && !tool.name.startsWith("t3_preview_");
 const PROTOCOL = "2025-06-18";
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const FILE_CHANGE_TOOLS = new Set(${JSON.stringify(PI_FILE_CHANGE_TOOLS)});
@@ -355,7 +367,8 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
   // Tool exposure arrived with registerMcpServer in Pi 0.99. Keep the HTTP
   // bridge as the credential owner: mcp.json overrides native registrations.
   const supportsExposure = "registerMcpServer" in pi && typeof pi.registerMcpServer === "function";
-  const directTools = new Set(["orchestrator_capabilities", "delegate_task", "task_status"]);
+  // The provider/model catalog also serves retained thread and scheduling tools.
+  const directTools = new Set(["orchestrator_capabilities"]);
   let deferOptionalTools = supportsExposure;
   let catalog: ReadonlyArray<McpTool> = [];
 
@@ -376,6 +389,7 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
         pi.registerTool({
           name: \`\${prefix}\${name}\`,
           label: name,
+          namespace: T3_NAMESPACE,
           description: tool.description ?? name,
           parameters: jsonSchemaToTypebox(tool.inputSchema),
           ...(supportsExposure ? { outputSchema: mcpOutputSchema(tool) } : {}),
@@ -407,7 +421,7 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
     const attempt = (async () => {
       const signal = AbortSignal.timeout(10_000);
       await client.connect(signal);
-      catalog = await client.listTools(signal);
+      catalog = (await client.listTools(signal)).filter(isT3OwnedTool);
       registerTools();
     })();
     started = attempt;
@@ -455,12 +469,12 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
     }
   });
 
-  // Deliver orchestration guidance through pi's real system-prompt channel.
+  // Deliver Dulli guidance through Pi's real system-prompt channel.
   // Wrapping the first user message instead would stop it from starting
   // with "/" and silently break slash-command expansion.
   pi.on("before_agent_start", (event, ctx) => {
     reconcileDiscovery(ctx);
-    return { systemPrompt: event.systemPrompt + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS };
+    return { systemPrompt: event.systemPrompt + "\\n\\n" + DULLI_INSTRUCTIONS };
   });
 }
 `;

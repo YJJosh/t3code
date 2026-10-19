@@ -64,6 +64,20 @@ export const makeDulliLegacyTaskProjector = Effect.fn(function* (
   const managerIds = new Map<string, string>();
   const bridge = yield* makeSubagentFactory({
     controls,
+    write: (event) =>
+      Effect.sync(() => {
+        if (event.type !== "dulli-run.updated" && event.type !== "dulli-transcript.updated") return;
+        const payload = event.payload;
+        if (
+          existingIds.has(payload.id) ||
+          ("nodeId" in payload && payload.nodeId && existingIds.has(payload.nodeId))
+        )
+          return;
+        const id = EventId.make(`migration:dulli:history:${event.type}:${payload.id}`);
+        if (event.type === "dulli-run.updated")
+          agents.set(event.payload.nativeTaskRef!.nativeId!, event.payload);
+        events.set(id, { ...event, id });
+      }),
     read: () => Effect.succeed({ subagents: existing, turnItems: [] }),
   })({
     threadId: thread.id,
@@ -85,56 +99,7 @@ export const makeDulliLegacyTaskProjector = Effect.fn(function* (
     getProviderThread: () => null,
     getActiveTurn: () => null,
     rpc: { send: () => Effect.void, request: () => Effect.void },
-    emit: (event) =>
-      Effect.sync(() => {
-        const payload =
-          event.type === "subagent.updated"
-            ? event.subagent
-            : event.type === "node.updated"
-              ? event.node
-              : event.type === "turn_item.updated"
-                ? event.turnItem
-                : undefined;
-        if (
-          !payload ||
-          existingIds.has(payload.id) ||
-          ("nodeId" in payload && payload.nodeId && existingIds.has(payload.nodeId))
-        )
-          return;
-        const type = event.type === "turn_item.updated" ? "turn-item.updated" : event.type;
-        const id = EventId.make(`migration:dulli:history:${type}:${payload.id}`);
-        const occurredAt =
-          "updatedAt" in payload
-            ? payload.updatedAt
-            : (payload.completedAt ?? payload.startedAt ?? thread.updatedAt);
-        // Narrowing each payload separately keeps the domain event union correlated.
-        if (event.type === "subagent.updated") {
-          agents.set(event.subagent.nativeTaskRef!.nativeId!, event.subagent);
-          events.set(id, {
-            id,
-            type: "subagent.updated",
-            threadId: thread.id,
-            occurredAt,
-            payload: event.subagent,
-          });
-        } else if (event.type === "node.updated") {
-          events.set(id, {
-            id,
-            type: "node.updated",
-            threadId: thread.id,
-            occurredAt,
-            payload: event.node,
-          });
-        } else if (event.type === "turn_item.updated") {
-          events.set(id, {
-            id,
-            type: "turn-item.updated",
-            threadId: thread.id,
-            occurredAt,
-            payload: event.turnItem,
-          });
-        }
-      }),
+    emit: () => Effect.void,
   });
   const notify = (value: unknown) => bridge.notify![0]!.handle(encodeJson(value), {});
   const accept = (row: DulliLegacyTaskRow) =>
@@ -300,7 +265,7 @@ export const importDulliLegacySubagentHistory = (threadId?: ThreadId) =>
     const totals = { runs: 0, transcriptItems: 0, acceptedRows: 0, skippedRows: 0 };
     for (const row of threads) {
       const stored = yield* sql<{ payload_json: string }>`SELECT payload_json
-        FROM orchestration_v2_projection_subagents WHERE thread_id = ${row.thread_id}`;
+        FROM dulli_projection_runs WHERE thread_id = ${row.thread_id}`;
       const current = yield* decodeThread(row.payload_json);
       const instanceId = ProviderInstanceId.make(row.instance_id);
       const thread = {
@@ -336,9 +301,9 @@ export const importDulliLegacySubagentHistory = (threadId?: ThreadId) =>
             return;
           // A live replay or first-open import may have won while the background
           // fold yielded. Never replace its newer state (or import the run twice).
-          const live = yield* sql<{ subagent_id: string }>`SELECT subagent_id
-          FROM orchestration_v2_projection_subagents WHERE thread_id = ${row.thread_id}`;
-          const liveIds = new Set<string>(live.map((agent) => agent.subagent_id));
+          const live = yield* sql<{ id: string }>`SELECT id
+          FROM dulli_projection_runs WHERE thread_id = ${row.thread_id}`;
+          const liveIds = new Set<string>(live.map((agent) => agent.id));
           const events = result.events.filter(
             (event) =>
               !(
@@ -356,12 +321,13 @@ export const importDulliLegacySubagentHistory = (threadId?: ThreadId) =>
             yield* sink.write({ events: events.slice(index, index + 100) });
           }
           yield* sql`INSERT OR IGNORE INTO dulli_fork_migrations(name) VALUES (${marker(row.thread_id)})`;
-          totals.runs += events.filter((event) => event.type === "subagent.updated").length;
+          totals.runs += events.filter((event) => event.type === "dulli-run.updated").length;
           totals.acceptedRows += result.acceptedRows;
           totals.skippedRows += result.skippedRows;
           totals.transcriptItems += events.filter(
             (event) =>
-              event.type === "turn-item.updated" && event.payload.id.includes(":transcript:"),
+              event.type === "dulli-transcript.updated" &&
+              event.payload.id.includes(":transcript:"),
           ).length;
         }),
       );

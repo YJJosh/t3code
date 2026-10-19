@@ -38,6 +38,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { PiRpcError } from "../../../../packages/provider-dulli/src/server/rpc.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
@@ -877,6 +878,27 @@ effectIt.effect("fails a starting run when its last start attempt cannot load th
           class: "provider_error",
           message: "Pi RPC read failed: pi process exited with code 1.",
         },
+      },
+    ]);
+  }),
+);
+
+effectIt.effect("persists the shared Pi command and native error on registration failure", () =>
+  Effect.gen(function* () {
+    const nativeError =
+      "Unknown command: new_session (not available in a chat shared with the terminal)";
+    const error = new PiRpcError({
+      operation: "daemon-request",
+      detail: `new_session: ${nativeError}`,
+      cause: nativeError,
+    });
+    const harness = makeLocalCommandHarness({ text: "Continue", ensureThreadFailure: error });
+    yield* harness.start;
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(harness.projection().turnItems).toMatchObject([
+      {
+        type: "error",
+        failure: { class: "provider_error", message: error.message },
       },
     ]);
   }),

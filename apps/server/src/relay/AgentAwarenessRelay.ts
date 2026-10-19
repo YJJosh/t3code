@@ -130,6 +130,9 @@ export function shouldPublishAgentAwarenessEvent(
     case "provider-turn.updated":
     case "turn-item.updated":
       return isTurnItemPayload(event.payload) && turnItemUpdateCanEndBackgroundWork(event.payload);
+    case "dulli-run.updated":
+    case "dulli-transcript.updated":
+    case "dulli-transcript.changed":
     case "message.updated":
     case "plan.updated":
     case "checkpoint-scope.created":

@@ -241,6 +241,7 @@ export function projectThreadProjectionForWire(
   };
   return {
     ...projection,
+    dulliTranscript: [],
     contextHandoffs: projection.contextHandoffs.map(projectContextHandoffForWire),
     turnItems: projection.turnItems.map(project),
     visibleTurnItems: projection.visibleTurnItems.map((row) => ({
@@ -253,6 +254,13 @@ export function projectThreadProjectionForWire(
 export function projectDomainEventForWire(
   event: OrchestrationV2DomainEvent,
 ): OrchestrationV2DomainEvent {
+  if (event.type === "dulli-transcript.updated") {
+    return {
+      ...event,
+      type: "dulli-transcript.changed",
+      payload: { nodeId: event.payload.nodeId! },
+    };
+  }
   return event.type === "turn-item.updated"
     ? { ...event, payload: projectTurnItemForWire(event.payload) }
     : event.type === "context-handoff.updated"

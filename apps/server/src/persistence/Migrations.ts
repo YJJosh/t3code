@@ -1,4 +1,3 @@
-import Migration0065 from "./Migrations/065_PiSessionsSettlement.ts";
 /**
  * Migration runner with an inline loader.
  *
@@ -82,6 +81,8 @@ import Migration0064, {
   detectDulliFork,
   hasForkPiSettings,
 } from "./Migrations/064_DulliProviderIdentity.ts";
+import Migration0065 from "./Migrations/065_PiSessionsSettlement.ts";
+import Migration0066 from "./Migrations/066_DulliRunIsolation.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -165,6 +166,7 @@ export const migrationEntries = [
   [63, "ProjectionThreadMessagePhase", Migration0063],
   [64, "DulliProviderIdentity", Migration0064],
   [65, "PiSessionsSettlement", Migration0065],
+  [66, "DulliRunIsolation", Migration0066],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

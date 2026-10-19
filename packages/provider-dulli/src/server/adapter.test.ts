@@ -2209,7 +2209,9 @@ describe("DulliAdapterV2", () => {
           const bridge = yield* Effect.promise(() =>
             loadMcpBridge({ modern: true, result: { content, structuredContent: metadata } }),
           );
-          const tool = bridge.tools.find((tool) => tool.name === "mcp__t3-code__preview_snapshot")!;
+          const tool = bridge.tools.find(
+            (tool) => tool.name === "mcp__t3-code__device_screenshot",
+          )!;
           const result = yield* Effect.promise(() => tool.execute("screenshot", {}));
           assert.deepEqual(result.structuredContent, { content, structuredContent: metadata });
           yield* fake.emit(
@@ -4379,7 +4381,6 @@ describe("Dulli fork policy", () => {
       for (const key of [
         "PI_SUBAGENTS_RPC_BRIDGE",
         "PI_BACKGROUND_TERMINALS_RPC_BRIDGE",
-        "PI_BACKGROUND_THREADS_RPC_BRIDGE",
         "CLAUDE_AGENT_SDK_RPC_BRIDGE",
       ])
         assert.equal(fake.lastSpawn().env[key], "1");

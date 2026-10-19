@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   deriveDulliAgentInspector,
   dulliTranscriptText,
-} from "@t3tools/client-runtime/state/subagentRuntime";
+} from "@t3tools/client-runtime/state/dulliSubagents";
 import type {
   EnvironmentId,
   OrchestrationV2Subagent,
@@ -18,7 +18,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { useEnvironmentQuery } from "~/state/query";
 
-/** The fork's roster/detail inspector, backed by durable v2 subagents and items. */
+/** The fork's roster/detail inspector, backed by Pi-owned runs and lazy transcripts. */
 export function AgentsPanel({
   environmentId,
   projection,
@@ -33,7 +33,11 @@ export function AgentsPanel({
     selected
       ? orchestrationEnvironment.subagentTranscript({
           environmentId,
-          input: { threadId: projection.thread.id, subagentId: selected.id },
+          input: {
+            threadId: projection.thread.id,
+            subagentId: selected.id,
+            revision: projection.dulliTranscriptRevision,
+          },
         })
       : null,
   );

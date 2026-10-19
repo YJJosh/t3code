@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  OrchestrationV2DomainEvent,
   ProviderInstanceId,
   ProviderSessionId,
   ThreadId,
@@ -9,7 +10,6 @@ import {
 } from "@t3tools/contracts";
 import type { DulliBridgeContext } from "@t3tools/provider-dulli/server";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -19,7 +19,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { makeSubagentFactory, SUBAGENT_PREFIX } from "./DulliSubagentBridge.ts";
 import * as DulliSubagents from "./DulliSubagents.ts";
 
-const decodeAdapterEvent = Schema.decodeUnknownEffect(ProviderAdapter.ProviderAdapterV2Event);
+const decodeAdapterEvent = Schema.decodeUnknownEffect(OrchestrationV2DomainEvent);
 const THREAD = ThreadId.make("dulli-parent");
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decode = Schema.decodeUnknownSync(
@@ -45,7 +45,7 @@ const setup = Effect.fnUntraced(function* () {
   const controls = yield* DulliSubagents.DulliSubagents;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const requests = yield* Queue.unbounded<Record<string, unknown>>();
-  const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
+  const events: Array<OrchestrationV2DomainEvent> = [];
   const agents = new Map<string, OrchestrationV2Subagent>();
   const items = new Map<string, OrchestrationV2TurnItem>();
   let commands = ["subagents-rpc"];
@@ -78,20 +78,22 @@ const setup = Effect.fnUntraced(function* () {
             : undefined;
         }),
     },
-    emit: (event) =>
+    emit: () => Effect.die("Pi runs must never emit upstream provider events"),
+  };
+  const factory = makeSubagentFactory({
+    controls,
+    write: (event) =>
       decodeAdapterEvent(event).pipe(
         Effect.orDie,
         Effect.andThen(
           Effect.sync(() => {
             events.push(event);
-            if (event.type === "subagent.updated") agents.set(event.subagent.id, event.subagent);
-            if (event.type === "turn_item.updated") items.set(event.turnItem.id, event.turnItem);
+            if (event.type === "dulli-run.updated") agents.set(event.payload.id, event.payload);
+            if (event.type === "dulli-transcript.updated")
+              items.set(event.payload.id, event.payload);
           }),
         ),
       ),
-  };
-  const factory = makeSubagentFactory({
-    controls,
     read: () => Effect.succeed({ subagents: [...agents.values()], turnItems: [...items.values()] }),
   });
   const bridge = yield* factory(context);
@@ -130,6 +132,8 @@ describe("Dulli pi-subagents v2 bridge", () => {
       Effect.gen(function* () {
         const h = yield* setup();
         assert.equal(h.bridge.notify![0]!.prefix, SUBAGENT_PREFIX);
+        assert.isUndefined(h.bridge.hasPendingBackgroundWork);
+        assert.isUndefined(h.bridge.stopSubagent);
         yield* h.notify(
           envelope({
             view: {
@@ -215,8 +219,8 @@ describe("Dulli pi-subagents v2 bridge", () => {
           );
           assert.isTrue(
             h.events
-              .filter((event) => event.type === "subagent.updated")
-              .every((event) => event.subagent.status === "completed"),
+              .filter((event) => event.type === "dulli-run.updated")
+              .every((event) => event.payload.status === "completed"),
           );
           assert.isTrue(
             [...h.items.values()].some(
@@ -265,12 +269,12 @@ describe("Dulli pi-subagents v2 bridge", () => {
             );
           }
           const messages = h.events.flatMap((event) =>
-            event.type === "turn_item.updated" && event.turnItem.type === "assistant_message"
-              ? [event.turnItem.text]
+            event.type === "dulli-transcript.updated" && event.payload.type === "assistant_message"
+              ? [event.payload.text]
               : [],
           );
           assert.deepEqual(messages, ["a", "abc"]);
-          assert.equal(h.events.filter((event) => event.type === "subagent.updated").length, 0);
+          assert.equal(h.events.filter((event) => event.type === "dulli-run.updated").length, 0);
           yield* h.notify(
             envelope({
               sequence: 5,

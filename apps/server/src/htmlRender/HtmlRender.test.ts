@@ -200,6 +200,38 @@ describe("HtmlRender", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
+  it.effect("publishes a bounded UTF-8 source file and reports typed source failures", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const htmlRender = yield* HtmlRender.HtmlRender;
+        const directory = yield* fileSystem.makeTempDirectoryScoped({ prefix: "html-source-" });
+        const source = path.join(directory, "page.html");
+        const input = {
+          threadId: ThreadId.make("thread-html-file"),
+          path: source,
+          title: "Source",
+          height: 600,
+        };
+        const missing = yield* htmlRender.publishFile(input).pipe(Effect.flip);
+        expect(missing).toBeInstanceOf(HtmlRender.HtmlRenderSourceError);
+        expect(missing._tag === "HtmlRenderSourceError" && missing.reason).toBe("unreadable");
+        yield* fileSystem.writeFileString(source, "x".repeat(512_001));
+        const oversized = yield* htmlRender.publishFile(input).pipe(Effect.flip);
+        expect(oversized._tag === "HtmlRenderSourceError" && oversized.reason).toBe("too_large");
+        yield* fileSystem.writeFile(source, new Uint8Array([0xff]));
+        const invalid = yield* htmlRender.publishFile(input).pipe(Effect.flip);
+        expect(invalid._tag === "HtmlRenderSourceError" && invalid.reason).toBe("invalid");
+        yield* fileSystem.writeFileString(source, "x".repeat(512_000));
+        expect(yield* htmlRender.publishFile(input)).toMatchObject({
+          title: "Source",
+          height: 600,
+        });
+      }),
+    ).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect("removes the page when publishing is interrupted", () =>
     Effect.gen(function* () {
       const measuring = yield* Deferred.make<void>();

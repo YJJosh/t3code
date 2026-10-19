@@ -135,6 +135,14 @@ export function useThreadStatus(ref: ScopedThreadRef | null): EnvironmentThreadS
   );
 }
 
+const EMPTY_THREAD_ERROR_ATOM = Atom.make<string | null>(null);
+
+export function useThreadStreamError(ref: ScopedThreadRef | null): string | null {
+  return useAtomValue(
+    ref === null ? EMPTY_THREAD_ERROR_ATOM : environmentThreadDetails.errorAtom(ref),
+  );
+}
+
 export function useThreadHistory(ref: ScopedThreadRef | null): ThreadHistoryMeta {
   return useAtomValue(
     ref === null ? EMPTY_THREAD_HISTORY_ATOM : environmentThreadDetails.historyAtom(ref),

@@ -91,7 +91,6 @@ import * as ProviderAdapterRegistry from "./orchestration-v2/ProviderAdapterRegi
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
 import * as DulliBackgroundTerminals from "./provider/dulli/DulliBackgroundTerminals.ts";
 import * as DulliSubagents from "./provider/dulli/DulliSubagents.ts";
-import * as DulliBackgroundThreads from "./provider/dulli/DulliBackgroundThreads.ts";
 import * as DulliBridges from "./provider/dulli/DulliBridges.ts";
 import * as ProviderUsageLimitsIngestion from "./provider/ProviderUsageLimitsIngestion.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
@@ -581,7 +580,6 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   DulliSharedSessions.layerBinding,
-  DulliBackgroundThreads.layerBinding,
   StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
   layerThreadPullRequestWorker,
   Layer.effectDiscard(
@@ -656,9 +654,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
-  Layer.provideMerge(DulliBackgroundThreads.layer),
   Layer.provideMerge(DulliSubagents.layer),
   Layer.provideMerge(DulliBackgroundTerminals.layer),
+  Layer.provideMerge(RuntimeLayer.layerEventSink.pipe(Layer.provide(layerPersistence))),
   Layer.provideMerge(ProjectionStoreV2.layer.pipe(Layer.provide(layerPersistence))),
   Layer.provideMerge(layerPtyAdapter),
   // Search, prepare, status inspection, and turn launch share one registry

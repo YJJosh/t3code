@@ -1752,6 +1752,22 @@ const OrchestrationV2EventBase = Schema.Struct({
 });
 
 export const OrchestrationV2DomainEvent = Schema.Union([
+  // Pi owns these records. They are not execution nodes or T3 subagents.
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("dulli-run.updated"),
+    payload: OrchestrationV2Subagent,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("dulli-transcript.updated"),
+    payload: OrchestrationV2TurnItem,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("dulli-transcript.changed"),
+    payload: Schema.Struct({ nodeId: NodeId }),
+  }),
   Schema.Struct({
     ...OrchestrationV2EventBase.fields,
     type: Schema.Literal("thread.created"),
@@ -1902,6 +1918,9 @@ export const OrchestrationV2ThreadProjection = Schema.Struct({
   attempts: Schema.Array(OrchestrationV2RunAttempt),
   nodes: Schema.Array(OrchestrationV2ExecutionNode),
   subagents: Schema.Array(OrchestrationV2Subagent),
+  dulliRuns: Schema.optional(Schema.Array(OrchestrationV2Subagent)),
+  dulliTranscript: Schema.optional(Schema.Array(OrchestrationV2TurnItem)),
+  dulliTranscriptRevision: Schema.optional(Schema.String),
   providerSessions: Schema.Array(OrchestrationV2ProviderSession),
   providerThreads: Schema.Array(OrchestrationV2ProviderThread),
   providerTurns: Schema.Array(OrchestrationV2ProviderTurn),
@@ -2492,6 +2511,8 @@ export const OrchestrationV2ThreadProjectionJson = OrchestrationV2ThreadProjecti
     attempts: Schema.Array(OrchestrationV2RunAttemptJson),
     nodes: Schema.Array(OrchestrationV2ExecutionNodeJson),
     subagents: Schema.Array(OrchestrationV2SubagentJson),
+    dulliRuns: Schema.optional(Schema.Array(OrchestrationV2SubagentJson)),
+    dulliTranscript: Schema.optional(Schema.Array(OrchestrationV2TurnItemJson)),
     providerSessions: Schema.Array(OrchestrationV2ProviderSessionJson),
     providerThreads: Schema.Array(OrchestrationV2ProviderThreadJson),
     providerTurns: Schema.Array(OrchestrationV2ProviderTurnJson),
@@ -2586,6 +2607,22 @@ export const OrchestrationV2RawProviderEventJson = OrchestrationV2RawProviderEve
 export type OrchestrationV2RawProviderEventJson = typeof OrchestrationV2RawProviderEventJson.Type;
 
 export const OrchestrationV2DomainEventJson = Schema.Union([
+  // Pi owns these records. They are not execution nodes or T3 subagents.
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("dulli-run.updated"),
+    payload: OrchestrationV2SubagentJson,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("dulli-transcript.updated"),
+    payload: OrchestrationV2TurnItemJson,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("dulli-transcript.changed"),
+    payload: Schema.Struct({ nodeId: NodeId }),
+  }),
   Schema.Struct({
     ...OrchestrationV2JsonEventBaseFields,
     type: Schema.Literal("thread.created"),
@@ -3688,6 +3725,7 @@ export class OrchestrationWorkflowFileError extends Schema.TaggedError<Orchestra
 }
 
 export const OrchestrationV2GetSubagentTranscriptInput = Schema.Struct({
+  revision: Schema.optional(Schema.String),
   threadId: ThreadId,
   subagentId: NodeId,
 });

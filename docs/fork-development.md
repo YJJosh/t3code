@@ -44,7 +44,21 @@ The desktop build stages Dulli icons for macOS, Windows, Linux, and the bundled 
 
 ## Fork settings
 
-**Settings → General → Fork features** keeps Dulli-owned workspace and branch-naming controls separate from upstream General settings. It contains Workler workspace creation, the `t3code/` generated-branch prefix, and conventional generated-branch prefixes. Dulli defaults new threads to Workler-backed workspaces created from origin, omits the `t3code/` namespace, and uses conventional category prefixes. Provider-specific Pi configuration remains under **Settings → Providers**.
+**Settings → General → Fork features** holds Dulli-only workspace controls. It contains Workler workspace creation; new threads default to Workler-backed workspaces created from origin. Generated branch names use upstream's branch naming setting, which Dulli defaults to semantic (conventional category prefixes, no `t3code/` namespace). Dulli provider configuration lives under **Settings → Providers**.
+
+## Dulli provider and Pi extensions
+
+`dulli` drives the user's own Pi next to upstream's untouched `pi` provider. Pi is the harness (see `AGENTS.md`), so each agent feature belongs to one Pi extension, and T3 hides its own overlapping MCP tools for Dulli:
+
+| Capability                         | Owner (works without T3) | T3 side                               | Hidden T3 tools                                                   |
+| ---------------------------------- | ------------------------ | ------------------------------------- | ----------------------------------------------------------------- |
+| Child agents, workflows            | pi-subagents             | Agents & workflows panel, own records | `delegate_task`, `task_status`, `task_cancel`, `t3_workflow_stop` |
+| Shared terminal chats, new threads | pi-sessions              | Import and sync of daemon threads     | `create_threads`                                                  |
+| Background terminals               | pi-background-terminals  | Shared terminals panel                | —                                                                 |
+| Browser                            | Playwright MCP           | —                                     | `preview_*`, `t3_preview_*`                                       |
+| HTML output                        | Pi HTML tool             | Inline render bridge                  | `html_render`, `html_preview`                                     |
+
+The remaining T3 tools (projects, thread records, schedules, PRs, secrets, attachments, worktree handoff, devices) have no Pi equivalent and stay available. T3 bridges are opt-in through environment variables the Dulli adapter sets, so the extensions behave the same in a terminal.
 
 ## Local development with Portler
 
