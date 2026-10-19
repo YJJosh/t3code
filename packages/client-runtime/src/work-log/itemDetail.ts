@@ -94,7 +94,7 @@ export function toolCallLines(input: {
   readonly args: ReadonlyArray<readonly [string, string]> | null;
   readonly argsText: string | null;
 } {
-  // REVIEW: failed html_show calls may expand for their error, never their visual sources.
+  // Failed html_show calls may expand for their error, never their visual sources.
   if (input.toolName === "html_show") return { command: null, args: null, argsText: null };
   if (input.command !== undefined) {
     // The row title truncates to its width, so the body always has the full command.
@@ -254,7 +254,7 @@ export function turnItemHasDetail(item: OrchestrationV2TurnItem): boolean {
     case "web_search":
       return (item.results?.length ?? 0) > 0 || (item.patterns?.length ?? 0) > 0;
     case "dynamic_tool":
-      // REVIEW: successful visuals stay title-only, but failures must retain their cause.
+      // Successful visuals stay title-only, but failures must retain their cause.
       return item.toolName === "html_show"
         ? item.status === "failed" &&
             (item.outputOmitted === true || turnItemOutputText(item) !== null)

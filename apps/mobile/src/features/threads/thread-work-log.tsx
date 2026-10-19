@@ -996,7 +996,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
     expanded && !isRead && shownItem.type === "command_execution"
       ? toolCallLines({ command: shownItem.input })
       : expanded && !isRead && shownItem.type === "dynamic_tool"
-        ? // REVIEW: match web: failed visuals may show errors, but never raw source arguments.
+        ? // Match web: failed visuals may show errors, but never raw source arguments.
           toolCallLines({ args: shownItem.input, toolName: shownItem.toolName })
         : expanded && shownItem.type === "file_search"
           ? toolCallLines({ args: { pattern: shownItem.pattern } })

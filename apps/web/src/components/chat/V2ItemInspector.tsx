@@ -210,7 +210,7 @@ function ToolCallBody(
     readonly exitCode?: number | undefined;
   },
 ) {
-  // REVIEW: failed visuals show their error output without dumping either source version.
+  // Failed visuals show their error output without dumping either source version.
   const call = toolCallLines({
     command: props.command,
     args: props.args,
