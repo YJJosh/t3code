@@ -59,6 +59,9 @@ export const makeDulliLegacyTaskProjector = Effect.fn(function* (
   const existingRuns = new Set(dulli.map((agent) => agent.nativeTaskRef?.nativeId));
   let skippedRows = 0;
   let acceptedRows = 0;
+  // REVIEW: synthetic run events reuse the run's native manager id. The bridge's
+  // terminal flush keys the pending reply by manager; "legacy" projected it twice.
+  const managerIds = new Map<string, string>();
   const bridge = yield* makeSubagentFactory({
     controls,
     read: () => Effect.succeed({ subagents: existing, turnItems: [] }),
@@ -185,12 +188,14 @@ export const makeDulliLegacyTaskProjector = Effect.fn(function* (
           ? String(payload.endedAt)
           : row.created_at;
       const transcript = record(payload.transcriptEvent);
+      const transcriptManager = transcript.activity ? string(transcript.managerId) : undefined;
+      if (transcriptManager) managerIds.set(runId, transcriptManager);
       // Transcript rows repeat the same (sometimes multi-KiB) run metadata.
       // Project it only when discovering the run, not once per tool output.
       if (!old || !transcript.activity)
         yield* notify({
           contractVersion: 1,
-          managerId: "legacy",
+          managerId: managerIds.get(runId) ?? "legacy",
           sequence: acceptedRows,
           timestamp: at,
           runId,
@@ -259,7 +264,7 @@ export const makeDulliLegacyTaskProjector = Effect.fn(function* (
       if (terminal(agent.status)) continue;
       yield* notify({
         contractVersion: 1,
-        managerId: "legacy",
+        managerId: managerIds.get(runId) ?? "legacy",
         sequence: acceptedRows + 1,
         timestamp: DateTime.formatIso(agent.updatedAt),
         runId,

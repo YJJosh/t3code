@@ -760,7 +760,7 @@ export const makeSubagentFactory =
             yield* emitItem(`user:${sequence}`, {
               type: "user_message",
               text: text(content),
-              messageId: MessageId.make(`${agent.id}:user:${sequence}`),
+              messageId: MessageId.make(`${agent.id}:user:${event.managerId}:${sequence}`),
               attachments: [],
               createdBy: "agent",
               creationSource: "provider",
@@ -778,7 +778,9 @@ export const makeSubagentFactory =
                 type: "assistant_message",
                 text: text(parts.text),
                 streaming: type === "message_update" && !terminal(agent.status),
-                messageId: MessageId.make(`${agent.id}:message:${sequence % 500}`),
+                // REVIEW: ids match the transcript fingerprint. `sequence % 500` collided
+                // inside the 1000-slot window, and native sequences restart per manager.
+                messageId: MessageId.make(`${agent.id}:message:${event.managerId}:${sequence}`),
               });
             for (const part of Array.isArray(message.content) ? message.content.map(record) : []) {
               if (part.type !== "toolCall") continue;

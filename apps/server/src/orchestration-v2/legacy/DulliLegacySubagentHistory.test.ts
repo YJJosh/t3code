@@ -317,9 +317,58 @@ describe("Dulli legacy child history", () => {
       );
       assert.equal(items.length, 1000);
       assert.equal(new Set(items.map((item) => item.nativeItemRef?.nativeId)).size, 1000);
+      // Clients key transcript rows by message id.
+      assert.equal(new Set(items.map((item) => item.messageId)).size, 1000);
       assert.isTrue(items.some((item) => item.text === "entry-1005"));
       assert.isFalse(items.some((item) => item.text === "entry-1"));
       assert.isTrue(items.every((item) => !item.streaming));
+    }).pipe(Effect.provide(layer), Effect.scoped),
+  );
+
+  it.effect("projects an unfinished reply stream once when its run completes", () =>
+    Effect.gen(function* () {
+      const thread = yield* seed;
+      const projector = yield* makeDulliLegacyTaskProjector(thread);
+      yield* projector.accept({
+        activity_id: "start",
+        kind: "task.started",
+        created_at: at(1),
+        payload_json: encode(payload()),
+      });
+      yield* projector.accept({
+        activity_id: "update",
+        kind: "task.progress",
+        created_at: at(2),
+        payload_json: encode(
+          payload({
+            transcriptEvent: {
+              ...transcript(2, ""),
+              activity: {
+                type: "message_update",
+                data: { message: { role: "assistant", content: [{ type: "text", text: "Done" }] } },
+              },
+            },
+          }),
+        ),
+      });
+      yield* projector.accept({
+        activity_id: "done",
+        kind: "task.completed",
+        created_at: at(3),
+        payload_json: encode(payload({ status: "completed", summary: "Done" })),
+      });
+      const result = yield* projector.finish;
+      const items = new Map(
+        result.events.flatMap((event) =>
+          event.type === "turn-item.updated" && event.payload.type === "assistant_message"
+            ? [[event.payload.id, event.payload] as const]
+            : [],
+        ),
+      );
+      assert.deepEqual(
+        [...items.values()].map((item) => [item.text, item.streaming]),
+        [["Done", false]],
+      );
     }).pipe(Effect.provide(layer), Effect.scoped),
   );
 
