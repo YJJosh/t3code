@@ -119,22 +119,29 @@ jobs:
             packages/contracts/src/settings.test.ts \
             packages/contracts/src/provider.test.ts \
             packages/client-runtime/src/state/subagentRuntime.test.ts \
-            packages/provider-pi/src/server/driver.test.ts \
-            packages/provider-pi/src/server/adapter.test.ts \
-            packages/provider-pi/src/server/status.test.ts \
-            packages/provider-pi/src/server/mcpInjection.test.ts \
-            packages/provider-pi/src/server/thinkingCapabilities.test.ts \
-            apps/server/scripts/cli.test.ts \
-            apps/server/src/vcs/GitVcsDriver.test.ts \
-            apps/server/src/vcs/GitVcsDriverCore.test.ts \
-            apps/server/src/vcs/WorklerWorkspaceService.test.ts \
-            apps/server/src/vcs/WorklerWorkspaceService.bundle.test.ts \
+            packages/provider-dulli/src/server/adapter.test.ts \
+            packages/provider-dulli/src/server/status.test.ts \
+            packages/provider-dulli/src/server/mcpInjection.test.ts \
+            packages/provider-dulli/src/server/piRpcProtocol.test.ts \
+            packages/provider-dulli/src/server/commands.test.ts \
             apps/web/src/branding.test.ts \
             apps/web/src/components/settings/ProviderSettingsForm.test.ts \
             apps/mobile/plugins/withAndroidReleaseSigning.test.ts \
             apps/mobile/scripts/dulli-fork-version.test.ts \
             apps/mobile/src/lib/modelOptions.test.ts \
             packages/client-runtime/src/state/subagentDisplay.test.ts
+
+      # Server tests need apps/server's vite config: its setup file pins git
+      # behaviour (filemode, autocrlf, signing) for the repositories they create.
+      - name: Test release server integrations
+        working-directory: apps/server
+        run: |
+          vp test --retry=1 \
+            scripts/cli.test.ts \
+            src/vcs/GitVcsDriver.test.ts \
+            src/vcs/GitVcsDriverCore.test.ts \
+            src/vcs/WorklerWorkspaceService.test.ts \
+            src/vcs/WorklerWorkspaceService.bundle.test.ts
 
   build_bundle:
     name: Build branded JS bundle
