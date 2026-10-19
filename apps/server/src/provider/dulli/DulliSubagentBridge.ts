@@ -897,6 +897,9 @@ export const makeSubagentFactory =
                 });
             }
           }),
+        // Keeps T3 from idle-releasing (and so shutting down) the Pi process
+        // while its children still run; Pi's shutdown stops every child.
+        hasPendingBackgroundWork: () => [...agents.values()].some((agent) => !terminal(agent.status)),
       };
     });
 
@@ -906,7 +909,14 @@ export const makeFactory = Effect.gen(function* () {
   const sink = yield* EventSink.EventSinkV2;
   return makeSubagentFactory({
     controls,
-    write: (event) => sink.write({ events: [event] }).pipe(Effect.asVoid, Effect.orDie),
+    // A failed record write must not end the Pi session that runs the notify pump.
+    write: (event) =>
+      sink.write({ events: [event] }).pipe(
+        Effect.asVoid,
+        Effect.catch((cause) =>
+          Effect.logWarning("dulli.subagents.record-write-failed", { type: event.type, cause }),
+        ),
+      ),
     read: (threadId) =>
       projections.getThreadRecords(threadId, ["dulliRuns", "dulliTranscript"]).pipe(
         Effect.map(({ dulliRuns, dulliTranscript }) => ({

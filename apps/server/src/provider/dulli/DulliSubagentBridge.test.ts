@@ -132,7 +132,6 @@ describe("Dulli pi-subagents v2 bridge", () => {
       Effect.gen(function* () {
         const h = yield* setup();
         assert.equal(h.bridge.notify![0]!.prefix, SUBAGENT_PREFIX);
-        assert.isUndefined(h.bridge.hasPendingBackgroundWork);
         assert.isUndefined(h.bridge.stopSubagent);
         yield* h.notify(
           envelope({
@@ -175,6 +174,21 @@ describe("Dulli pi-subagents v2 bridge", () => {
         );
         assert.equal(h.agents.get(child.id)?.status, "completed");
         assert.equal(h.agents.get(child.id)?.result, "Found it");
+      }),
+    ),
+  );
+
+  it.effect("keeps the Pi process from idle release only while a child still runs", () =>
+    provide(
+      Effect.gen(function* () {
+        const h = yield* setup();
+        assert.isFalse(h.bridge.hasPendingBackgroundWork!());
+        yield* h.notify(envelope());
+        assert.isTrue(h.bridge.hasPendingBackgroundWork!());
+        yield* h.notify(
+          envelope({ sequence: 2, kind: "terminal", view: { ...envelope().view, state: "done" } }),
+        );
+        assert.isFalse(h.bridge.hasPendingBackgroundWork!());
       }),
     ),
   );
