@@ -82,9 +82,11 @@ it("keeps the legacy importer out of reach of new code", () => {
     .toSorted();
   // Startup imports pending transcripts, the V2 runtime wires the importer, and
   // thread and project services hydrate a V1 transcript before they act on it.
+  // Dulli session sync recovers legacy fork session cursors once it knows the Pi homes.
   assert.deepEqual(importers, [
     "orchestration-v2/ThreadManagementService.ts",
     "orchestration-v2/runtimeLayer.ts",
+    "project/PiSessionsSync.ts",
     "project/ProjectService.ts",
     "serverRuntimeStartup.ts",
   ]);

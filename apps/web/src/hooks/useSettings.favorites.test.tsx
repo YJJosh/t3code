@@ -18,13 +18,18 @@ const state = vi.hoisted(() => ({
   persist: vi.fn(),
 }));
 
-vi.mock("~/state/server", () => ({
-  serverEnvironment: {
-    settingsValueAtom: (id: EnvironmentId) => state.settings.get(id)!,
-    updateSettings: Symbol("updateSettings"),
-  },
-  primaryServerSettingsAtom: undefined,
-}));
+vi.mock("~/state/server", async () => {
+  const { Atom } = await import("effect/reactivity");
+  const config = Atom.make(null);
+  return {
+    serverEnvironment: {
+      settingsValueAtom: (id: EnvironmentId) => state.settings.get(id)!,
+      configValueAtom: () => config,
+      updateSettings: Symbol("updateSettings"),
+    },
+    primaryServerSettingsAtom: undefined,
+  };
+});
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => state.persist }));
 vi.mock("~/localApi", () => ({
   ensureLocalApi: () => ({ persistence: { getClientSettings: async () => null } }),

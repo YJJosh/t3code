@@ -336,6 +336,41 @@ function SurfaceMenuItem(props: {
  * focused. The highlight only appears on hover or arrow use. Unavailable
  * surfaces stay visible with a one-line reason.
  */
+/** Dulli-only surfaces, listed last and only in Dulli threads so other threads keep upstream's menu. */
+function dulliSurfaceActions(props: {
+  agentsAvailable?: boolean | undefined;
+  onAddAgents?: (() => void) | undefined;
+  terminalsAvailable?: boolean | undefined;
+  onAddTerminals?: (() => void) | undefined;
+}) {
+  return [
+    ...(props.agentsAvailable
+      ? [
+          {
+            label: "Agents & workflows",
+            icon: Users,
+            shortcut: "A",
+            available: true,
+            disabledReason: "Available in Dulli threads.",
+            onClick: () => props.onAddAgents?.(),
+          },
+        ]
+      : []),
+    ...(props.terminalsAvailable
+      ? [
+          {
+            label: "Shared terminals",
+            icon: TerminalSquare,
+            shortcut: "S",
+            available: true,
+            disabledReason: "Available in live Dulli threads.",
+            onClick: () => props.onAddTerminals?.(),
+          },
+        ]
+      : []),
+  ];
+}
+
 function RightPanelEmptyState(props: {
   onAddBrowser: () => void;
   onAddBrowserInProfile: (profileId: string) => void;
@@ -362,22 +397,6 @@ function RightPanelEmptyState(props: {
   const [highlight, setHighlight] = useState(-1);
 
   const actions = [
-    {
-      label: "Agents & workflows",
-      icon: Users,
-      shortcut: "A",
-      available: props.agentsAvailable ?? false,
-      disabledReason: "Available in Dulli threads.",
-      onClick: () => props.onAddAgents?.(),
-    },
-    {
-      label: "Shared terminals",
-      icon: TerminalSquare,
-      shortcut: "S",
-      available: props.terminalsAvailable ?? false,
-      disabledReason: "Available in live Dulli threads.",
-      onClick: () => props.onAddTerminals?.(),
-    },
     {
       label: "Browser",
       icon: Globe2,
@@ -435,6 +454,7 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.device,
       onClick: props.onAddDevice,
     },
+    ...dulliSurfaceActions(props),
   ] as const;
 
   type SurfaceAction = (typeof actions)[number];
@@ -968,22 +988,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
 
   const addSurfaceActions = [
     {
-      label: "Agents & workflows",
-      icon: Users,
-      shortcut: "A",
-      available: props.agentsAvailable ?? false,
-      disabledReason: "Available in Dulli threads.",
-      onClick: () => props.onAddAgents?.(),
-    },
-    {
-      label: "Shared terminals",
-      icon: TerminalSquare,
-      shortcut: "S",
-      available: props.terminalsAvailable ?? false,
-      disabledReason: "Available in live Dulli threads.",
-      onClick: () => props.onAddTerminals?.(),
-    },
-    {
       label: "Browser",
       icon: Globe2,
       shortcut: "B",
@@ -1039,6 +1043,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       disabledReason: SURFACE_DISABLED_REASONS.device,
       onClick: props.onAddDevice,
     },
+    ...dulliSurfaceActions(props),
   ] as const;
 
   const handleAddSurfaceMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {

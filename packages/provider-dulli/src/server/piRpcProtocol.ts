@@ -90,9 +90,7 @@ export type PiExtensionUiResponse =
 const DEFAULT_PI_BINARY = "pi";
 export const DEFAULT_PI_PROFILE = "coder";
 const PI_SUBAGENTS_RPC_BRIDGE_ENV = "PI_SUBAGENTS_RPC_BRIDGE";
-export const PI_SUBAGENTS_RPC_EVENT_PREFIX = "pi-subagents:event:v1:";
 const PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV = "PI_BACKGROUND_TERMINALS_RPC_BRIDGE";
-export const PI_BACKGROUND_TERMINALS_RPC_EVENT_PREFIX = "pi-background-terminals:event:v1:";
 
 export const PI_THINKING_LEVELS = [
   "off",
@@ -168,16 +166,6 @@ export function buildPiRpcArgs(config: PiSettings, options: PiSpawnOptions = {})
   return args;
 }
 
-/** pi-sessions is loaded in T3's Pi (the default). */
-export function piSessionsEnabled(config: PiSettings): boolean {
-  return config.piSessions !== false;
-}
-
-/** T3's Pi chats run in the pi-sessions daemon, shared with the terminal. */
-export function piSharingEnabled(config: PiSettings): boolean {
-  return piSessionsEnabled(config) && config.shareWithTerminal !== false;
-}
-
 export function resolvePiBinary(config: PiSettings): string {
   return config.binaryPath?.trim() || DEFAULT_PI_BINARY;
 }
@@ -210,7 +198,7 @@ export function buildPiRpcEnv(
 }
 
 /** Joins Pi content blocks as separate Markdown paragraphs. */
-export function joinPiContentBlocks(parts: ReadonlyArray<string>): string {
+function joinPiContentBlocks(parts: ReadonlyArray<string>): string {
   let result = "";
   for (const part of parts) {
     if (!result) {

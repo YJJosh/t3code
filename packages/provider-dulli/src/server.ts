@@ -5,11 +5,7 @@
  * @module provider-dulli/server
  */
 export { DulliDriver, type DulliDriverEnv } from "./server/driver.ts";
-export {
-  DULLI_PROVIDER,
-  DulliAdapterV2Driver,
-  type DulliAdapterV2DriverEnv,
-} from "./server/adapter.ts";
+export { DulliAdapterV2Driver, type DulliAdapterV2DriverEnv } from "./server/adapter.ts";
 
 export {
   DulliBridgeRegistry,
