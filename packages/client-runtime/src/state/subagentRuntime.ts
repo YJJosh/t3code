@@ -327,6 +327,12 @@ export function deriveWorkflowGroups(
   });
 }
 
+// REVIEW: App-owned Dulli delegations have their own T3 thread and must keep
+// the normal child-thread navigation; only native extension runs use this inspector.
+export function isDulliNativeSubagent(agent: Pick<OrchestrationV2Subagent, "driver" | "origin">) {
+  return agent.driver === "dulli" && agent.origin === "provider_native";
+}
+
 /** Dulli's inspector reads durable v2 nodes/items, never legacy task activities. */
 export function deriveDulliAgentInspector(
   projection: Pick<OrchestrationV2ThreadProjection, "subagents" | "turnItems" | "messages"> & {
@@ -345,7 +351,7 @@ export function deriveDulliAgentInspector(
     return latest !== undefined && ["ready", "running", "waiting"].includes(latest.status);
   };
   const candidates = projection.subagents
-    .filter((agent) => agent.driver === "dulli")
+    .filter(isDulliNativeSubagent)
     .map((agent) =>
       isOrchestrationV2WorkActive(agent.status) && !sessionIsLive(agent.providerInstanceId)
         ? { ...agent, status: "interrupted" as const }

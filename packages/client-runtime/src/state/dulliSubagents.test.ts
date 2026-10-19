@@ -14,6 +14,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import {
   deriveDulliAgentInspector,
+  isDulliNativeSubagent,
   dulliTranscriptText,
   projectedSubagentsToRuntime,
 } from "./subagentRuntime.ts";
@@ -90,6 +91,24 @@ const item = (nodeId: NodeId, id: string, ordinal: number): OrchestrationV2TurnI
 });
 
 describe("Dulli v2 inspector", () => {
+  it("leaves app-owned Dulli delegations in the ordinary navigable child population", () => {
+    const native = agent("native");
+    const delegated = agent("delegated", {
+      origin: "app_owned",
+      childThreadId: ThreadId.make("delegated-thread"),
+      nativeTaskRef: null,
+    });
+    const agents = [native, delegated];
+    const model = deriveDulliAgentInspector({
+      subagents: agents,
+      messages: [],
+      turnItems: [],
+      providerSessions: [session],
+    });
+    expect(model.agents).toEqual([native]);
+    expect(agents.filter((candidate) => !isDulliNativeSubagent(candidate))).toEqual([delegated]);
+  });
+
   it("groups workflow roots by parent prompt, selects actual child data, and excludes unrelated transcript items", () => {
     const root = agent("workflow", {
       model: "coordinator-model",
