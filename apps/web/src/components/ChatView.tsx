@@ -449,6 +449,7 @@ import {
   useProjects,
   useThreadProjection,
   useThreadStatus,
+  useThreadStreamError,
   useThreadHistory,
   useThreadShell,
   useChildThreadInputs,
@@ -1838,10 +1839,12 @@ export default function ChatView(props: ChatViewProps) {
     ? deriveReportedModelSelection(serverProjection)
     : null;
   const threadStatus = useThreadStatus(routeThreadDetailRef);
+  const threadStreamError = useThreadStreamError(routeThreadDetailRef);
   const threadSyncPhase = resolveThreadSyncPhase({
     detailExists: serverProjection !== null,
     shellExists: serverThread !== null,
     status: threadStatus,
+    error: threadStreamError,
   });
   const threadDetailLoading = threadSyncPhase === "loading";
   // Latest provider-reported context usage (#8144): the newest report wins;
@@ -2300,7 +2303,7 @@ export default function ChatView(props: ChatViewProps) {
     [parentSubagentThread?.title, parentSubagentThreadRef],
   );
   const threadError = isServerThread
-    ? (localServerError ?? serverRuntime?.lastError ?? null)
+    ? (threadStreamError ?? localServerError ?? serverRuntime?.lastError ?? null)
     : localDraftError;
   // Dismissals can only mask the shown error, never clear it: a server thread
   // keeps its error in session.lastError, so clearing the local shadow would
@@ -4105,7 +4108,9 @@ export default function ChatView(props: ChatViewProps) {
     [timelineEntries],
   );
   const displayedTimeline = resolveThreadSwitchTimeline({
-    loading: timelineEntries.length === 0 && threadSyncPhase !== null,
+    loading:
+      timelineEntries.length === 0 &&
+      (threadSyncPhase === "loading" || threadSyncPhase === "syncing"),
     activeThreadKey,
     nextEntries: timelineEntries,
     rememberedForActive: peekRememberedThreadTimeline<typeof timelineEntries>(activeThreadKey),

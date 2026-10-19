@@ -233,6 +233,27 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   };
   if (resumeCache?.owner === owner) resumeCache.snapshot = committed;
   const awaitingCompletion = yield* Ref.make(false);
+  const logStreamState = (reason: string) =>
+    Effect.gen(function* () {
+      const current = yield* SubscriptionRef.get(state);
+      yield* Effect.logDebug("Thread message stream", {
+        threadId,
+        environmentId,
+        reason,
+        status: current.status,
+        lastSequence: yield* SubscriptionRef.get(lastSequence),
+        awaitingCompletion: yield* Ref.get(awaitingCompletion),
+        error: Option.getOrNull(current.error),
+      });
+    });
+  // Status transitions only, not message/token updates. Completion arrival is
+  // logged separately so a missing replay barrier can be distinguished from loss.
+  yield* SubscriptionRef.changes(state).pipe(
+    Stream.map((current) => ({ status: current.status, error: Option.getOrNull(current.error) })),
+    Stream.changesWith((a, b) => a.status === b.status && a.error === b.error),
+    Stream.runForEach(() => logStreamState("status")),
+    Effect.forkScoped,
+  );
   const applyLock = yield* Semaphore.make(1);
   // Save only completed data/cursor updates. A canceled scope must not cache
   // a cursor whose event has not reached the data yet.
@@ -572,6 +593,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     item: OrchestrationV2ThreadStreamItem,
   ) {
     if (item.kind === "synchronized") {
+      yield* logStreamState("completion-marker-arrived");
       yield* Ref.set(awaitingCompletion, false);
       yield* SubscriptionRef.update(state, (current) =>
         Option.isSome(current.data) && current.status !== "deleted" && Option.isNone(current.error)
@@ -811,6 +833,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         );
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* markSynchronizing;
+        yield* logStreamState("subscribe");
         yield* Ref.set(resumingLive, false);
 
         if (Option.isNone(current.data)) {

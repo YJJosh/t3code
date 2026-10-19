@@ -8,6 +8,10 @@ interface RegisteredTool {
   readonly name: string;
   readonly description: string;
   readonly parameters: unknown;
+  readonly namespace?: {
+    readonly name: string;
+    readonly description: string;
+  };
   readonly outputSchema?: unknown;
   readonly exposure?: string;
   readonly promptSnippet?: string;
@@ -63,13 +67,26 @@ export async function loadMcpBridge(
       description: "Discover available providers and models.",
       annotations: { readOnlyHint: true },
     },
-    { name: "delegate_task", description: "Delegate work to another agent." },
+    { name: "schedule_task", description: "Schedule work." },
     {
-      name: "task_status",
-      description: "Check delegated work.",
+      name: "t3_thread_read",
+      description: "Read a thread record.",
       annotations: { readOnlyHint: false },
     },
-    { name: "preview_snapshot", description: "Inspect the collaborative browser." },
+    { name: "device_screenshot", description: "Capture a device image." },
+    ...[
+      "delegate_task",
+      "task_status",
+      "task_cancel",
+      "t3_workflow_stop",
+      "create_threads",
+      "preview_snapshot",
+      "preview_future_operation",
+      "t3_preview_list",
+      "t3_preview_future_operation",
+      "html_render",
+      "html_preview",
+    ].map((name) => ({ name, description: "Pi-owned capability." })),
   ].map((tool) => ({
     ...tool,
     inputSchema: { type: "object", properties: {} },
@@ -113,7 +130,7 @@ export async function loadMcpBridge(
         request.method === "tools/list"
           ? { tools: catalog }
           : request.method === "tools/call"
-            ? (options.result ?? { content: [{ type: "text", text: "browser snapshot" }] })
+            ? (options.result ?? { content: [{ type: "text", text: "device screenshot" }] })
             : {};
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }), {
         headers: { "content-type": "application/json" },

@@ -341,7 +341,7 @@ const isSettledLeafNode = (node: ProjectionNode, runs: ReadonlyArray<ProjectionR
   !runs.some((run) => run.id === node.runId && activeRunStatuses.has(run.status));
 export type ProjectionRecordField = Exclude<
   keyof OrchestrationV2ThreadProjection,
-  "thread" | "updatedAt" | "visibleTurnItems"
+  "thread" | "updatedAt" | "visibleTurnItems" | "dulliTranscriptRevisions"
 >;
 export type ProjectionRecords<K extends ProjectionRecordField> = Pick<
   OrchestrationV2ThreadProjection,
@@ -837,6 +837,25 @@ export function applyToProjection(
       return {
         ...base,
         nodes: upsertById(base.nodes, event.payload),
+      };
+    case "dulli-run.updated":
+      return { ...base, dulliRuns: upsertById(base.dulliRuns ?? [], event.payload) };
+    case "dulli-transcript.updated":
+      return {
+        ...base,
+        dulliTranscript: upsertById(base.dulliTranscript ?? [], event.payload),
+        dulliTranscriptRevisions: {
+          ...base.dulliTranscriptRevisions,
+          [event.payload.nodeId!]: event.id,
+        },
+      };
+    case "dulli-transcript.changed":
+      return {
+        ...base,
+        dulliTranscriptRevisions: {
+          ...base.dulliTranscriptRevisions,
+          [event.payload.nodeId]: event.id,
+        },
       };
     case "subagent.updated":
       return {
@@ -2123,6 +2142,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             `;
             break;
           }
+          case "dulli-run.updated": {
+            const payload = yield* encodeSubagentPayload(event.payload);
+            yield* sql`INSERT INTO dulli_projection_runs (id, thread_id, native_run_id, payload_json)
+              VALUES (${event.payload.id}, ${event.threadId}, ${event.payload.nativeTaskRef?.nativeId ?? event.payload.id}, ${payload})
+              ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json`;
+            break;
+          }
+          case "dulli-transcript.updated": {
+            const payload = yield* encodeTurnItemPayload(event.payload);
+            yield* sql`INSERT INTO dulli_projection_transcript (id, thread_id, run_id, ordinal, payload_json)
+              VALUES (${event.payload.id}, ${event.threadId}, ${event.payload.nodeId}, ${event.payload.ordinal}, ${payload})
+              ON CONFLICT(id) DO UPDATE SET ordinal = excluded.ordinal, payload_json = excluded.payload_json`;
+            break;
+          }
+          case "dulli-transcript.changed":
+            break;
           case "subagent.updated": {
             const payloadJson = yield* encodeSubagentPayload(event.payload);
             const payload = parseEncodedPayload(payloadJson);
@@ -3399,7 +3434,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           for (const row of rows) messageOrdinals.set(row.message_id, row.ordinal);
         }
         const orderedMessages = sortMessagesByTurnItemOrder(messages, turnItems, messageOrdinals);
+        const dulliRuns =
+          fields === undefined || fields.includes("dulliRuns")
+            ? yield* sql<PayloadRow>`SELECT payload_json FROM dulli_projection_runs WHERE thread_id = ${threadId} ORDER BY id`.pipe(
+                Effect.flatMap(decodeRows(decodeSubagentPayload, threadId)),
+              )
+            : [];
+        const dulliTranscript = fields?.includes("dulliTranscript")
+          ? yield* sql<PayloadRow>`SELECT payload_json FROM dulli_projection_transcript WHERE thread_id = ${threadId}
+              ${filter?.turnItemNodeIds === undefined ? sql`` : sql`AND run_id IN (SELECT value FROM json_each(${encodeIdList(filter.turnItemNodeIds)}))`}
+              ORDER BY ordinal, id`.pipe(
+              Effect.flatMap(decodeRows(decodeTurnItemPayload, threadId)),
+            )
+          : [];
         const projection = {
+          dulliRuns,
+          dulliTranscript,
           thread,
           runs,
           attempts,
@@ -6468,6 +6518,12 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
               filter?.runIds === undefined
                 ? projection.runs
                 : projection.runs.filter((row) => filter.runIds!.includes(row.id)),
+            dulliRuns: projection.dulliRuns ?? [],
+            dulliTranscript: (projection.dulliTranscript ?? []).filter(
+              (row) =>
+                filter?.turnItemNodeIds === undefined ||
+                (row.nodeId !== null && filter.turnItemNodeIds.includes(row.nodeId)),
+            ),
             turnItems: projection.turnItems.filter(
               (row) =>
                 (filter?.turnItemRunIds === undefined ||

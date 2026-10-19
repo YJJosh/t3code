@@ -1,13 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  EnvironmentId,
-  ProviderInstanceId,
-  ProviderSessionId,
-  ThreadId,
-  ProjectId,
-  type OrchestrationV2ServerCommand,
-} from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import { DulliAdapterV2Driver } from "@t3tools/provider-dulli/server";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -25,10 +18,11 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as ProviderInstanceRegistry from "../ProviderInstanceRegistry.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
-import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import * as ServerConfig from "../../config.ts";
+import * as HttpClient from "effect/http/HttpClient";
 import * as DulliBridges from "./DulliBridges.ts";
-import * as BackgroundThreads from "./DulliBackgroundThreads.ts";
 import * as BackgroundTerminals from "./DulliBackgroundTerminals.ts";
 import * as Subagents from "./DulliSubagents.ts";
 import * as SharedSessions from "./DulliSharedSessions.ts";
@@ -42,7 +36,7 @@ const threadId = ThreadId.make("parent-wiring");
 const selection = { instanceId, model: "default" };
 
 it.effect(
-  "production bridge registry is captured by the canonical adapter and thread_spawn reaches the late-bound v2 service",
+  "production bridge registry is captured by the canonical adapter and Pi subagent controls reach the live session",
   () =>
     Effect.gen(function* () {
       const stdout = yield* Queue.unbounded<Uint8Array>();
@@ -102,7 +96,6 @@ it.effect(
           }),
         ),
       );
-      const commands: OrchestrationV2ServerCommand[] = [];
       const instances = Layer.effect(
         ProviderInstanceRegistry.ProviderInstanceRegistry,
         Effect.gen(function* () {
@@ -144,31 +137,10 @@ it.effect(
       const facade = ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
         Layer.provideMerge(instances),
       );
-      const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
-        getThreadShell: () =>
-          Effect.succeed({
-            id: threadId,
-            projectId: ProjectId.make("project"),
-            branch: "feature",
-            worktreePath: "/fake/worktree",
-            modelSelection: selection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-          } as never),
-        dispatch: (command) =>
-          Effect.sync(() => {
-            commands.push(command);
-            return { storedEvents: [] } as never;
-          }),
-      }).pipe(Layer.provideMerge(facade));
-      // Use the actual production registry and early/late layers, not a test-only
-      // factory list. Like server.ts, the port is outside hydration and its binding
-      // is downstream of ThreadManagement; both share one memoized port instance.
-      const graph = BackgroundThreads.layerBinding.pipe(
-        Layer.provideMerge(threads),
-        Layer.provideMerge(BackgroundThreads.layer),
+      // Hydration captures the production factory registry, not a test-only list.
+      const graph = facade.pipe(
         Layer.provide(BackgroundTerminals.layer),
-        Layer.provide(Subagents.layer),
+        Layer.provideMerge(Subagents.layer),
         Layer.provide(SharedSessions.layer),
         Layer.provide(
           Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
@@ -177,14 +149,22 @@ it.effect(
         ),
         Layer.provide(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getThreadRecords: () => Effect.succeed({ subagents: [], turnItems: [] } as never),
+            getThreadRecords: () => Effect.succeed({ dulliRuns: [], dulliTranscript: [] } as never),
           }),
         ),
+        Layer.provide(Layer.mock(EventSink.EventSinkV2)({ write: () => Effect.succeed([]) })),
         Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
         Layer.provide(Layer.succeed(HostProcess.Environment, { HOME: "/fake" })),
         Layer.provide(IdAllocator.layer),
         Layer.provide(McpProviderSessions.layer),
         Layer.provide(TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer))),
+        Layer.provide(
+          Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make(() => Effect.die("This registry test must not access the network.")),
+          ),
+        ),
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "dulli-bridges-" })),
         Layer.provide(NodeServices.layer),
       );
       yield* Effect.gen(function* () {
@@ -203,40 +183,29 @@ it.effect(
           modelSelection: selection,
           runtimePolicy: policy,
         });
-        const providerThread = yield* runtime.ensureThread({
+        yield* runtime.ensureThread({
           threadId,
           modelSelection: selection,
           runtimePolicy: policy,
         });
-        const stopError = yield* runtime.stopSubagent!({
-          providerThread,
-          nativeTaskId: "unknown-child",
-        }).pipe(Effect.flip);
+        const controls = yield* Subagents.DulliSubagents;
+        const stopError = yield* controls
+          .control({
+            threadId,
+            taskId: "unknown-child",
+            action: "stop",
+          })
+          .pipe(Effect.flip);
         assert.match(stopError.message, /subagent control extension is not installed/);
-        yield* emit({
-          type: "extension_ui_request",
-          method: "input",
-          id: "spawn-request",
-          title:
-            'pi-background-threads:request:v1:{"contractVersion":1,"requestId":"child-request","prompt":"Investigate"}',
-        });
-        while (true) {
-          const response = yield* Queue.take(requests);
-          if (response.type !== "extension_ui_response") continue;
-          assert.equal(response.id, "spawn-request");
-          const result = yield* decode(response.value);
-          assert.equal(result.status, "queued");
-          assert.equal(result.requestId, "child-request");
-          break;
+        // The bridge checked the installed Pi commands, rather than treating a
+        // missing child as a missing live session or sending a model prompt.
+        let commandQueries = 0;
+        while ((yield* Queue.size(requests)) > 0) {
+          const request = yield* Queue.take(requests);
+          if (request.type === "get_commands") commandQueries++;
+          assert.notEqual(request.type, "prompt");
         }
-        assert.deepEqual(
-          commands.map((command) => command.type),
-          ["thread.create", "message.dispatch"],
-        );
-        assert.equal(
-          commands[0]?.type === "thread.create" && commands[0].worktreePath,
-          "/fake/worktree",
-        );
+        assert.isAbove(commandQueries, 0);
       }).pipe(Effect.provide(graph));
     }).pipe(Effect.scoped),
 );

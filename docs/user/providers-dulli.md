@@ -35,9 +35,17 @@ Dulli stores Pi's absolute session-file path to resume the native conversation. 
 
 Without shared terminal chats, Dulli owns one Pi RPC process per active thread. Do not open that same session file in another writer while it is active.
 
+## Agent tools
+
+Pi is Dulli's agent harness. Use your Pi extensions for child agents, new threads, browsers, and HTML; Dulli does not register T3's duplicate delegation, thread-creation, browser-preview, or HTML tools. New Pi threads use `pi-sessions`: its `session_spawn` tool is only there while the **pi-sessions** setting is on, because T3 imports new threads through it. With sharing off, an agent can still start a T3 thread with `t3_thread_launch`.
+
+The **T3 Code** tool group remains available for projects, thread records, schedules, secrets, PR links, attachments, worktree handoff, devices, and environment settings. Its provider/model catalog remains available too. To show an image in chat, the agent should embed a standalone Markdown image using an absolute path, such as `![Screenshot](/absolute/path.png)`, rather than only linking the file; never use base64.
+
 ## Shared terminal chats
 
 Install the native `pi-sessions` extension on the environment machine and leave **pi-sessions** and **Share with terminal** enabled in Dulli's provider settings. Dulli and the terminal can then use the same live Pi conversation. If sharing is unavailable, new connections fall back to a private RPC process; a session already open elsewhere is never opened as a second writer. Closing a shared connection detaches T3 rather than killing Pi.
+
+A shared connection stays bound to its native Pi conversation file. Resuming the same chat keeps its native history; opening another chat detaches and reconnects through `pi-sessions`. Shared chats do not support T3's native conversation rollback or fork, and `/compact` must be run in the terminal. Model and thinking changes, messages, and conversation snapshots remain available.
 
 Terminal chats appear automatically in an existing project with the same working directory, including that project's `.worktrees/<name>` directories. Discovery never creates projects and skips ambiguous provider-home or project matches. Initial imports keep up to 200 text messages. Reconnecting an already-linked chat resumes live events but does not backfill completed turns missed while disconnected; terminal-only images appear as placeholders.
 
@@ -53,7 +61,7 @@ Interactive terminals support **Take control** and **Release control**, includin
 
 ## Subagents and workflows
 
-With the optional `pi-subagents` extension installed, Dulli's child agents appear in thread history and in **Agents & workflows**. Type `/subagents` or `/workflows` to open the inspector. Web and desktop also offer it in the right-panel menu; on mobile, tap a child row above the composer.
+With the optional `pi-subagents` extension installed, Pi's child agents and workflows appear in **Agents & workflows**, separately from T3's own subagents and chat timeline. Type `/subagents` or `/workflows` to open the inspector. Web and desktop also offer it in the right-panel menu; on mobile, tap a child row above the composer.
 
 Select a workflow phase or child to read its prompt, model and effort, thinking, tool output, result, and usage. Transcripts are retained with the thread, including after a reload; each child retains up to 1,000 transcript items and 2 MiB of content. **Steer**, **Reply** (when the child is waiting), and **Stop agent** act on the running child without stopping its parent. Controls require the original live Dulli session and the subagent extension; opening history never restarts a child.
 

@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./state/dulliSubagents": {
+      "types": "./src/state/dulliSubagents.ts",
+      "default": "./src/state/dulliSubagents.ts"
+    },
     "./dulli-migration": {
       "types": "./src/dulliMigration.ts",
       "default": "./src/dulliMigration.ts"

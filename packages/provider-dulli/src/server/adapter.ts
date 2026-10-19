@@ -118,6 +118,8 @@ import {
   piRecordNumber as recordNumber,
   piRecordString as recordString,
   type PiRpcRecord,
+  type PiRpcConnection,
+  PiRpcError,
 } from "./rpc.ts";
 import { buildPiRpcLaunch, materializePiT3McpExtension } from "./mcpInjection.ts";
 import { PI_FILE_CHANGE_TOOLS } from "./mcpExtensionSource.ts";
@@ -242,6 +244,36 @@ const PiProviderCapabilitiesV2 = {
     nativeTurnIds: "weak",
     nativeItemIds: "strong",
     nativeRequestIds: "strong",
+  },
+} satisfies OrchestrationV2ProviderCapabilities;
+
+// pi-sessions/src/rpc-host.ts deliberately exposes less than standalone RPC.
+const PI_SHARED_COMMANDS = new Set([
+  "prompt",
+  "steer",
+  "follow_up",
+  "abort",
+  "get_state",
+  "get_messages",
+  "get_available_models",
+  "get_commands",
+  "set_model",
+  "set_thinking_level",
+  "set_session_name",
+  "extension_ui_response",
+]);
+const PiSharedProviderCapabilitiesV2 = {
+  ...PiProviderCapabilitiesV2,
+  threads: {
+    ...PiProviderCapabilitiesV2.threads,
+    canRollbackThread: false,
+    canForkThread: false,
+    canForkFromTurn: false,
+  },
+  checkpointing: {
+    ...PiProviderCapabilitiesV2.checkpointing,
+    providerCanRollbackConversation: false,
+    providerRollbackReturnsSnapshot: false,
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
@@ -545,7 +577,12 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: options.instanceId,
     driver: DULLI_PROVIDER,
-    getCapabilities: () => Effect.succeed(PiProviderCapabilitiesV2),
+    getCapabilities: () =>
+      Effect.succeed(
+        options.settings.piSessions && options.settings.shareWithTerminal
+          ? PiSharedProviderCapabilitiesV2
+          : PiProviderCapabilitiesV2,
+      ),
     planSelectionTransition: ({ current, target }) =>
       Effect.succeed(
         ["profile", "configSet"].some(
@@ -624,6 +661,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         environment: {
           ...nativeEnvironment,
           CLAUDE_AGENT_SDK_RPC_BRIDGE: "1",
+          PI_HTML_SHOW_RPC_BRIDGE: "1",
           ...(options.settings.piSessions
             ? {
                 PI_SESSIONS_T3_THREAD: input.threadId,
@@ -665,7 +703,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         return yield* protocolError("Shared sessions are disabled");
       const daemonScope = yield* Scope.make();
       yield* Scope.addFinalizer(scope, Scope.close(daemonScope, Exit.void));
-      const opened = yield* (
+      let opened = yield* (
         options.settings.piSessions &&
         options.settings.shareWithTerminal &&
         (input.attachOnly || !(yield* isPiDaemonSkipped(daemonKey)))
@@ -707,7 +745,49 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             }),
         ),
       );
-      const connection = opened.connection;
+      // Keep one adapter event stream across daemon detach/rpc-open. A shared
+      // host owns one native file; it cannot switch_session or new_session.
+      const rpcEvents = yield* Queue.unbounded<PiRpcRecord, PiRpcError>();
+      let binding = 0;
+      let sharedNeedsOpen = false;
+      const forwardConnection = (source: PiRpcConnection, generation: number) =>
+        Effect.gen(function* () {
+          while (true) {
+            const event = yield* Queue.take(source.events);
+            if (generation === binding)
+              yield* Queue.offer(rpcEvents, { ...event, t3BindingGeneration: generation });
+          }
+        }).pipe(
+          Effect.catchCause((cause) =>
+            generation === binding ? Queue.failCause(rpcEvents, cause) : Effect.void,
+          ),
+          Effect.forkIn(scope),
+        );
+      if (opened.shared) yield* forwardConnection(opened.connection, binding);
+      const sharedCommand = (record: PiRpcRecord) =>
+        !opened.shared || PI_SHARED_COMMANDS.has(String(record.type))
+          ? Effect.void
+          : Effect.fail(
+              new PiRpcError({
+                operation: String(record.type),
+                detail: `Unknown command: ${String(record.type)} (not available in a chat shared with the terminal)`,
+              }),
+            );
+      const connection: PiRpcConnection = !opened.shared
+        ? opened.connection
+        : {
+            events: rpcEvents,
+            exited: Effect.suspend(() => opened.connection.exited),
+            request: (record, timeoutMs) =>
+              sharedCommand(record).pipe(
+                Effect.andThen(Effect.suspend(() => opened.connection.request(record, timeoutMs))),
+              ),
+            send: (record) =>
+              sharedCommand(record).pipe(
+                Effect.andThen(Effect.suspend(() => opened.connection.send(record))),
+              ),
+            terminate: Effect.suspend(() => opened.connection.terminate),
+          };
       const startupEvents: PiRpcRecord[] = [];
       let externalUserOrdinal = 0;
       let sharedReady = !opened.shared;
@@ -719,7 +799,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         status: "ready",
         cwd,
         model: input.modelSelection.model,
-        capabilities: PiProviderCapabilitiesV2,
+        capabilities: opened.shared ? PiSharedProviderCapabilitiesV2 : PiProviderCapabilitiesV2,
         createdAt: now,
         updatedAt: now,
         lastError: null,
@@ -990,10 +1070,12 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
        * keeps the meter on the last turn that had one.
        */
       const readTokenUsage = (fallbackUsedTokens: number | null, updatedAt: DateTime.Utc) =>
-        request({ type: "get_session_stats" }, 2_000).pipe(
-          Effect.map((stats) => tokenUsageFromStats(stats, fallbackUsedTokens, updatedAt)),
-          Effect.orElseSucceed(() => undefined),
-        );
+        opened.shared
+          ? Effect.void
+          : request({ type: "get_session_stats" }, 2_000).pipe(
+              Effect.map((stats) => tokenUsageFromStats(stats, fallbackUsedTokens, updatedAt)),
+              Effect.orElseSucceed(() => undefined),
+            );
 
       /**
        * Pi attaches the current message's cumulative usage to every streaming
@@ -1918,16 +2000,18 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
 
       /** One `get_entries` listing, or null when the request failed or named no leaf. */
       const listSessionEntries = (since: string | null, timeoutMs: number) =>
-        request({ type: "get_entries", ...(since === null ? {} : { since }) }, timeoutMs).pipe(
-          Effect.map((data) => {
-            const leafId = recordField(data, "leafId");
-            const entries = piSessionEntries(recordField(data, "entries"));
-            return entries !== null && (typeof leafId === "string" || leafId === null)
-              ? { entries, leafId }
-              : null;
-          }),
-          Effect.orElseSucceed(() => null),
-        );
+        opened.shared
+          ? Effect.succeed(null)
+          : request({ type: "get_entries", ...(since === null ? {} : { since }) }, timeoutMs).pipe(
+              Effect.map((data) => {
+                const leafId = recordField(data, "leafId");
+                const entries = piSessionEntries(recordField(data, "entries"));
+                return entries !== null && (typeof leafId === "string" || leafId === null)
+                  ? { entries, leafId }
+                  : null;
+              }),
+              Effect.orElseSucceed(() => null),
+            );
 
       /**
        * Locate this turn's first user entry and the new leaf in pi's session
@@ -2813,8 +2897,17 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
 
       yield* Effect.gen(function* () {
         while (true) {
-          const event = yield* Queue.take(connection.events);
-          yield* sessionEventPermit.withPermits(1)(handleSessionEvent(event));
+          const queued = yield* Queue.take(connection.events);
+          yield* sessionEventPermit.withPermits(1)(
+            Effect.suspend(() => {
+              const { t3BindingGeneration, ...event } = queued;
+              // Frames already queued by a detached host must not mutate the
+              // replacement thread after rpc-open.
+              return t3BindingGeneration !== undefined && t3BindingGeneration !== binding
+                ? Effect.void
+                : handleSessionEvent(event);
+            }),
+          );
         }
       }).pipe(
         Effect.catchCause((cause) =>
@@ -2910,11 +3003,30 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             resumeDropped = true;
           }
         }
-        const alreadyOpened =
-          opened.shared && !registrationAttempted && resumeId === input.initialNativeThreadId;
+        // A shared resume is an identity check, not a lifecycle command. Do
+        // this on every registration (including retries and daemon imports).
+        let sharedState =
+          opened.shared && !sharedNeedsOpen ? yield* request({ type: "get_state" }) : undefined;
         const needsNewSession = resumeId == null && registrationAttempted;
-        registrationAttempted = true;
-        if ((resumeId != null && !alreadyOpened) || needsNewSession) {
+        const previousNativeId =
+          recordString(sharedState, "sessionFile") ??
+          lastNativeThreadId ??
+          input.initialNativeThreadId;
+        let sameSharedFile = resumeId != null && previousNativeId === resumeId;
+        if (opened.shared && resumeId != null && previousNativeId != null && !sameSharedFile) {
+          const [actual, expected] = yield* Effect.all([
+            fileSystem
+              .realPath(previousNativeId)
+              .pipe(Effect.orElseSucceed(() => previousNativeId)),
+            fileSystem.realPath(resumeId),
+          ]);
+          sameSharedFile = actual === expected;
+        }
+        const reopenShared =
+          opened.shared &&
+          (sharedNeedsOpen || needsNewSession || (resumeId != null && !sameSharedFile));
+        if (!opened.shared) registrationAttempted = true;
+        if (reopenShared || (!opened.shared && (resumeId != null || needsNewSession))) {
           lastNativeThreadId = resumeId ?? lastNativeThreadId;
           // Even a failed lifecycle operation can change Pi's native session.
           // Never leave the old app binding or model defaults usable afterward.
@@ -2927,16 +3039,37 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           baselineModel = null;
           baselineThinking = null;
           contextWindow = null;
-          const result = yield* lifecycleRequest(
-            resumeId != null
-              ? { type: "switch_session", sessionPath: resumeId }
-              : { type: "new_session" },
-          );
-          if (recordField(result, "cancelled") === true) {
-            return yield* protocolError("A Pi extension cancelled the session switch");
+          if (opened.shared) {
+            sharedNeedsOpen = true;
+            sharedReady = false;
+            startupEvents.splice(0);
+            binding++;
+            yield* opened.connection.terminate;
+            // Never fall back to an owned process here: rpc-open is the
+            // single-writer arbiter, including a failed/retried registration.
+            const next = yield* makePiDaemonConnection(
+              { ...spawnOptions, threadId: threadInput.threadId },
+              resumeId == null ? {} : { sessionFile: resumeId },
+            ).pipe(
+              Effect.provideService(Path.Path, paths),
+              Effect.provideService(Scope.Scope, daemonScope),
+            );
+            opened = { ...next, shared: true };
+            sharedState = undefined;
+            sharedNeedsOpen = false;
+            yield* forwardConnection(opened.connection, binding);
+          } else {
+            const result = yield* lifecycleRequest(
+              resumeId != null
+                ? { type: "switch_session", sessionPath: resumeId }
+                : { type: "new_session" },
+            );
+            if (recordField(result, "cancelled") === true) {
+              return yield* protocolError("A Pi extension cancelled the session switch");
+            }
           }
         }
-        const stateData = yield* request({ type: "get_state" });
+        const stateData = sharedState ?? (yield* request({ type: "get_state" }));
         if (!modelsDiscovered) {
           const modelsData = yield* request({ type: "get_available_models" }).pipe(
             Effect.orElseSucceed(() => undefined),
@@ -2972,7 +3105,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         }
         if (!paths.isAbsolute(nativeId))
           return yield* protocolError("Pi returned a non-absolute sessionFile");
-        if (alreadyOpened && resumeId != null && nativeId !== resumeId) {
+        if (opened.shared && resumeId != null && nativeId !== resumeId) {
           const [actual, expected] = yield* Effect.all([
             fileSystem.realPath(nativeId),
             fileSystem.realPath(resumeId),
@@ -3026,9 +3159,9 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         }
         // Baseline the session-tree leaf so the first turn's user entry can
         // be located with a `since` cursor instead of a full entry scan.
-        const baselineEntries = yield* request({ type: "get_entries" }).pipe(
-          Effect.orElseSucceed(() => undefined),
-        );
+        const baselineEntries = opened.shared
+          ? undefined
+          : yield* request({ type: "get_entries" }).pipe(Effect.orElseSucceed(() => undefined));
         lastKnownLeaf = recordString(baselineEntries, "leafId") ?? null;
         // A successful full baseline makes the cursor trustworthy again. Only
         // a failed one leaves it stale, so a recovered session does not keep
@@ -3067,6 +3200,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             }
           }
         }
+        registrationAttempted = true;
         return providerThread;
       });
 
@@ -3321,6 +3455,10 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             const compactCommand = continuation
               ? null
               : parsePiCompactCommand(turnInput.message.text);
+            if (opened.shared && compactCommand !== null)
+              return yield* protocolError(
+                "Compact is not available in a chat shared with the terminal. Run /compact in the terminal instead.",
+              );
             const payload =
               !continuation && compactCommand === null
                 ? yield* resolvePromptPayload(turnInput.message.text, turnInput.message.attachments)
@@ -3478,6 +3616,10 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
               return yield* protocolError(`Pi turn ${steerInput.providerTurnId} is not active`);
             }
             const compactCommand = parsePiCompactCommand(steerInput.message.text);
+            if (opened.shared && compactCommand !== null)
+              return yield* protocolError(
+                "Compact is not available in a chat shared with the terminal. Run /compact in the terminal instead.",
+              );
             const payload =
               compactCommand === null
                 ? yield* resolvePromptPayload(
@@ -3728,6 +3870,10 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           ),
         rollbackThread: (rollbackInput) =>
           Effect.gen(function* () {
+            if (opened.shared)
+              return yield* protocolError(
+                "Rollback is not available in a chat shared with the terminal.",
+              );
             const state = threadState;
             if (state === null) {
               return yield* protocolError("Pi session has no registered thread");
@@ -3855,6 +4001,10 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           ),
         forkThread: (forkInput) =>
           Effect.gen(function* () {
+            if (opened.shared)
+              return yield* protocolError(
+                "Fork is not available in a chat shared with the terminal.",
+              );
             if (threadState?.activeTurn != null) {
               return yield* protocolError("Cannot fork while a Pi turn is active");
             }

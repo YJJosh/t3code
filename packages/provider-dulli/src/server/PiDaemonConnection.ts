@@ -94,14 +94,17 @@ export const makePiDaemonConnection = Effect.fn(function* (
     });
   const events = yield* Queue.unbounded<PiRpcRecord, PiRpcError>();
   const exited = yield* Deferred.make<number, PiRpcError>();
-  const pending = new Map<string, Deferred.Deferred<unknown, PiRpcError>>();
+  const pending = new Map<
+    string,
+    { command: string; waiter: Deferred.Deferred<unknown, PiRpcError> }
+  >();
   let sequence = 0;
   let failure: PiRpcError | undefined;
   const fail = (error: PiRpcError, code = -1) =>
     Effect.gen(function* () {
       if (failure) return;
       failure = error;
-      for (const waiter of pending.values()) yield* Deferred.fail(waiter, error);
+      for (const { waiter } of pending.values()) yield* Deferred.fail(waiter, error);
       pending.clear();
       yield* Deferred.succeed(exited, code);
       yield* Queue.fail(events, error);
@@ -119,14 +122,19 @@ export const makePiDaemonConnection = Effect.fn(function* (
       if (frame.type !== "rpc-out" || !isRecord(frame.message)) continue;
       const message = frame.message;
       if (message.type === "response" && typeof message.id === "string") {
-        const waiter = pending.get(message.id);
-        if (waiter) {
+        const entry = pending.get(message.id);
+        if (entry) {
+          const { waiter, command } = entry;
           pending.delete(message.id);
           yield* message.success === true
             ? Deferred.succeed(waiter, message.data)
             : Deferred.fail(
                 waiter,
-                new PiRpcError({ operation: "daemon-request", cause: message.error }),
+                new PiRpcError({
+                  operation: "daemon-request",
+                  detail: `${command}: ${String(message.error ?? "Pi rejected the command")}`,
+                  cause: message.error,
+                }),
               );
           continue;
         }
@@ -146,7 +154,7 @@ export const makePiDaemonConnection = Effect.fn(function* (
     Effect.gen(function* () {
       const id = `t3-${input.threadId}-${++sequence}`;
       const waiter = yield* Deferred.make<unknown, PiRpcError>();
-      pending.set(id, waiter);
+      pending.set(id, { command: String(record.type), waiter });
       return yield* send({ ...record, id }).pipe(
         Effect.andThen(Deferred.await(waiter)),
         Effect.timeoutOrElse({

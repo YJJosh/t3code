@@ -53,15 +53,22 @@ const fixture = Effect.fn(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const home = yield* fs.makeTempDirectoryScoped({ prefix: "pi-share-" });
+  yield* fs.writeFileString(`${home}/native.jsonl`, "");
+  const rejections = new Map<string, string>();
   const requests = yield* Queue.unbounded<PiRpcRecord>();
   const closed = yield* Deferred.make<void>();
   const sockets = new Set<NodeNet.Socket>();
   let rpc: NodeNet.Socket | undefined;
+  let created = 0;
+  const writers = new Map<string, NodeNet.Socket>();
+  let maxWriters = 0;
   const server = NodeNet.createServer((socket) => {
     rpc = socket;
     sockets.add(socket);
     socket.on("error", () => {});
+    let sessionFile = "";
     socket.on("close", () => {
+      if (writers.get(sessionFile) === socket) writers.delete(sessionFile);
       sockets.delete(socket);
       Deferred.doneUnsafe(closed, Effect.void);
     });
@@ -83,59 +90,73 @@ const fixture = Effect.fn(function* (
             }),
           );
         if (request.type === "rpc-open") {
+          sessionFile =
+            typeof request.sessionFile === "string"
+              ? request.sessionFile
+              : `${home}/${created++ === 0 ? "native" : `native-${created}`}.jsonl`;
+          if (request.sessionFile === `${home}/native.jsonl` && created === 0) created = 1;
+          const error =
+            openError ?? (writers.has(sessionFile) ? "Session is open elsewhere" : undefined);
+          if (!error) {
+            writers.set(sessionFile, socket);
+            maxWriters = Math.max(maxWriters, writers.size);
+          }
           socket.write(
             frame({
               type: "response",
               id: request.id,
-              ok: !openError,
-              ...(openError
-                ? { error: openError }
-                : { result: { pid: 43, sessionId: "native", started: false } }),
+              ok: !error,
+              ...(error ? { error } : { result: { pid: 43, sessionId: "native", started: false } }),
             }),
           );
-          if (!openError) socket.write(frame({ type: "rpc-out", message: startup }));
+          if (!error) socket.write(frame({ type: "rpc-out", message: startup }));
         }
         if (request.type === "rpc-in") {
           const message = request.message as PiRpcRecord;
-          if (message.type === "get_state")
-            socket.write(
-              frame({
-                type: "rpc-out",
-                message: {
-                  type: "response",
-                  id: message.id,
-                  command: message.type,
-                  success: true,
-                  data: { sessionFile: `${home}/native.jsonl` },
-                },
-              }),
-            );
-          if (message.type !== "get_state" && message.type !== "fail")
-            socket.write(
-              frame({
-                type: "rpc-out",
-                message: {
-                  type: "response",
-                  id: message.id,
-                  command: message.type,
-                  success: true,
-                  data: {},
-                },
-              }),
-            );
-          if (message.type === "fail")
-            socket.write(
-              frame({
-                type: "rpc-out",
-                message: {
-                  type: "response",
-                  id: message.id,
-                  command: message.type,
-                  success: false,
-                  error: "rejected",
-                },
-              }),
-            );
+          const command = String(message.type);
+          // Independent copy of the terminal host's public command surface.
+          // Unsupported RPC must fail, not silently mimic standalone Pi.
+          const supported = [
+            "prompt",
+            "steer",
+            "follow_up",
+            "abort",
+            "get_state",
+            "get_messages",
+            "get_available_models",
+            "get_commands",
+            "set_model",
+            "set_thinking_level",
+            "set_session_name",
+          ];
+          if (command === "extension_ui_response") continue;
+          const error =
+            rejections.get(command) ??
+            (supported.includes(command)
+              ? undefined
+              : `Unknown command: ${command} (not available in a chat shared with the terminal)`);
+          rejections.delete(command);
+          socket.write(
+            frame({
+              type: "rpc-out",
+              message: {
+                type: "response",
+                id: message.id,
+                command,
+                success: !error,
+                ...(error
+                  ? { error }
+                  : {
+                      data:
+                        command === "get_state"
+                          ? { sessionFile }
+                          : command === "get_messages"
+                            ? { messages: [{ role: "user", content: "Native history" }] }
+                            : {},
+                    }),
+              },
+            }),
+          );
         }
       }
     });
@@ -167,6 +188,9 @@ const fixture = Effect.fn(function* (
     input,
     requests,
     closed,
+    maxWriters: () => maxWriters,
+    rejectNext: (command: string, error: string) =>
+      Effect.sync(() => rejections.set(command, error)),
     push: (message: PiRpcRecord) => Effect.sync(() => rpc!.write(frame(message))),
   };
 });
@@ -218,9 +242,21 @@ it.layer(NodeServices.layer)("PiDaemonConnection", (it) => {
     Effect.gen(function* () {
       const f = yield* fixture();
       const { connection } = yield* makePiDaemonConnection(f.input);
-      expect(
-        (yield* Effect.flip(connection.request({ type: "fail" }).pipe(Effect.asVoid)))._tag,
-      ).toBe("PiRpcError");
+      for (const command of [
+        "new_session",
+        "switch_session",
+        "get_entries",
+        "get_session_stats",
+        "compact",
+        "fork",
+      ]) {
+        const error = yield* Effect.flip(connection.request({ type: command }).pipe(Effect.asVoid));
+        expect(error).toMatchObject({
+          _tag: "PiRpcError",
+          detail: `${command}: Unknown command: ${command} (not available in a chat shared with the terminal)`,
+        });
+        expect(error.message).toContain(`Unknown command: ${command}`);
+      }
       yield* f.push({ type: "rpc-exit", code: 4 });
       expect(yield* connection.exited).toBe(4);
       expect((yield* Effect.flip(connection.send({ type: "get_state" }))).operation).toBe(
@@ -315,6 +351,15 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
             initialNativeThreadId: `${f.home}/native.jsonl`,
           });
           expect(seen).toHaveLength(0);
+          yield* f.rejectNext("get_state", "Pi is not ready yet");
+          const failed = yield* Effect.flip(
+            runtime.ensureThread({
+              threadId: ThreadId.make("shared"),
+              modelSelection: selection,
+              runtimePolicy,
+            }),
+          );
+          expect(String(failed.cause)).toContain("get_state: Pi is not ready yet");
           const thread = yield* runtime.ensureThread({
             threadId: ThreadId.make("shared"),
             modelSelection: selection,
@@ -326,11 +371,26 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
             model: { provider: "native", id: "terminal" },
             thinkingLevel: "high",
           });
+          // PiSessionsSync attaches/resumes first; ProviderTurnStart resumes
+          // the same runtime again. Neither operation changes native history.
+          for (let i = 0; i < 2; i++) {
+            const resumed = yield* runtime.resumeThread({ providerThread: thread });
+            expect(resumed.nativeThreadRef).toEqual(thread.nativeThreadRef);
+          }
+          const snapshot = yield* runtime.readThreadSnapshot({ providerThread: thread });
+          expect(snapshot.messages[0]?.text).toBe("Native history");
           expect(yield* runtime.hasPendingBackgroundWork!).toBe(true);
         }).pipe(Effect.scoped);
         yield* Deferred.await(f.closed);
         expect(stopReasons).toEqual(["detached"]);
+        expect(f.maxWriters()).toBe(1);
         const requests = yield* Queue.takeAll(f.requests);
+        expect(requests.filter((request) => request.type === "rpc-open")).toHaveLength(1);
+        const commands = requests
+          .filter((request) => request.type === "rpc-in")
+          .map((request) => (request.message as PiRpcRecord).type);
+        for (const command of ["switch_session", "new_session", "get_entries", "get_session_stats"])
+          expect(commands).not.toContain(command);
         expect(
           requests
             .filter((request) => request.type === "rpc-in")
@@ -343,9 +403,9 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
         ).not.toContain("abort");
       }).pipe(Effect.scoped),
   );
-  it.effect(
-    "terminal-origin messages and native aborts enter the live turn without echoing another prompt",
-    () =>
+  it.effect.each([false, true])(
+    "completes then resumes a later shared run (daemon attach: %s), without echoing terminal prompts",
+    (attachOnly) =>
       Effect.gen(function* () {
         const f = yield* fixture(undefined, {
           type: "pi_sessions_state",
@@ -382,6 +442,9 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           providerSessionId: ProviderSessionId.make("live-session"),
           modelSelection: selection,
           runtimePolicy,
+          ...(attachOnly
+            ? { attachOnly: true, initialNativeThreadId: `${f.home}/native.jsonl` }
+            : {}),
         });
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         yield* runtime.events.pipe(
@@ -412,7 +475,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           break;
         }
         const now = yield* DateTime.now;
-        yield* runtime.startTurn({
+        const turnInput: ProviderAdapter.ProviderAdapterV2TurnInput = {
           appThread: {
             id: threadId,
             projectId: ProjectId.make("project"),
@@ -452,7 +515,27 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           },
           modelSelection: selection,
           runtimePolicy,
+        };
+        expect(runtime.providerSession.capabilities.threads).toMatchObject({
+          canRollbackThread: false,
+          canForkThread: false,
+          canForkFromTurn: false,
         });
+        expect((yield* adapter.getCapabilities()).threads.canRollbackThread).toBe(false);
+        const compactError = yield* Effect.flip(runtime.compactThread!(turnInput));
+        expect(String(compactError.cause)).toContain("Run /compact in the terminal instead");
+        yield* f.rejectNext("set_model", "Model not found: native/missing");
+        const modelError = yield* Effect.flip(
+          runtime.startTurn({
+            ...turnInput,
+            modelSelection: { ...selection, model: "native/missing" },
+          }),
+        );
+        expect(String(modelError.cause)).toContain("set_model: Model not found: native/missing");
+        // Rejected model/compact requests must not leave an active turn or
+        // pretend the model changed. A normal run can still start afterward.
+        expect(runtime.providerSession.model).toBe("native/terminal");
+        yield* runtime.startTurn(turnInput);
         yield* f.push({
           type: "rpc-out",
           message: {
@@ -461,7 +544,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
             message: { role: "user", content: "Terminal follow-up" },
           },
         });
-        yield* f.push({ type: "rpc-out", message: { type: "agent_settled", aborted: true } });
+        yield* f.push({ type: "rpc-out", message: { type: "agent_settled" } });
         const observed: ProviderAdapter.ProviderAdapterV2Event[] = [];
         while (true) {
           const event = yield* Queue.take(events);
@@ -478,14 +561,120 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
             }),
           }),
         );
-        expect(observed.at(-1)).toMatchObject({ type: "turn.terminal", status: "interrupted" });
+        expect(observed.at(-1)).toMatchObject({ type: "turn.terminal", status: "completed" });
+        const resumed = yield* runtime.resumeThread({ providerThread });
+        yield* runtime.startTurn({
+          ...turnInput,
+          providerThread: resumed,
+          runId: RunId.make("run-2"),
+          runOrdinal: 2,
+          providerTurnOrdinal: 2,
+          attemptId: RunAttemptId.make("attempt-2"),
+        });
+        yield* f.push({ type: "rpc-out", message: { type: "agent_settled", aborted: true } });
+        while (true) {
+          const event = yield* Queue.take(events);
+          if (event.type !== "turn.terminal") continue;
+          expect(event.status).toBe("interrupted");
+          break;
+        }
+        expect(f.maxWriters()).toBe(1);
         const requests = yield* Queue.takeAll(f.requests);
+        expect(requests.filter((request) => request.type === "rpc-open")).toHaveLength(1);
+        const commands = requests
+          .filter((request) => request.type === "rpc-in")
+          .map((request) => (request.message as PiRpcRecord).type);
+        for (const command of ["switch_session", "new_session", "get_entries", "get_session_stats"])
+          expect(commands).not.toContain(command);
         const prompts = requests.filter(
           (request) =>
             request.type === "rpc-in" && (request.message as PiRpcRecord).type === "prompt",
         );
-        expect(prompts).toHaveLength(1);
+        expect(prompts).toHaveLength(2);
       }).pipe(Effect.scoped),
+  );
+  it.effect("detaches and rpc-opens a different file or new chat without another writer", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(undefined, { type: "pi_sessions_state" });
+      const instanceId = ProviderInstanceId.make("dulli");
+      const threadId = ThreadId.make("rebind");
+      const selection = { instanceId, model: "default" };
+      const runtimePolicy = {
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        cwd: f.home,
+      };
+      const adapter = yield* makeDulliAdapterV2({
+        instanceId,
+        settings: {
+          enabled: true,
+          binaryPath: "pi",
+          profile: "coder",
+          agentDir: f.home,
+          piSessions: true,
+          shareWithTerminal: true,
+          customModels: [],
+        },
+        environment: f.input.env,
+      }).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.die("must not spawn another writer")),
+        ),
+      );
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("rebind"),
+        modelSelection: selection,
+        runtimePolicy,
+        initialNativeThreadId: `${f.home}/native.jsonl`,
+      });
+      const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+      yield* runtime.events.pipe(
+        Stream.runForEach((event) => Queue.offer(events, event)),
+        Effect.forkScoped,
+      );
+      const original = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: selection,
+        runtimePolicy,
+      });
+      const fs = yield* FileSystem.FileSystem;
+      const otherFile = `${f.home}/other.jsonl`;
+      yield* fs.writeFileString(otherFile, "");
+      const different = yield* runtime.resumeThread({
+        providerThread: {
+          ...original,
+          nativeThreadRef: { ...original.nativeThreadRef!, nativeId: otherFile },
+        },
+      });
+      expect(different.nativeThreadRef?.nativeId).toBe(otherFile);
+      const fresh = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: selection,
+        runtimePolicy,
+      });
+      expect(fresh.nativeThreadRef?.nativeId).not.toBe(otherFile);
+      expect(fresh.nativeThreadRef?.nativeId).not.toBe(original.nativeThreadRef?.nativeId);
+      const snapshot = yield* runtime.readThreadSnapshot({ providerThread: fresh });
+      expect(snapshot.messages[0]?.text).toBe("Native history");
+      // Draining through the snapshot proves the replacement event pump works.
+      while (true) {
+        const event = yield* Queue.take(events);
+        if (event.type === "provider_thread.updated" && event.providerThread.id === fresh.id) break;
+      }
+      expect(f.maxWriters()).toBe(1);
+      const requests = yield* Queue.takeAll(f.requests);
+      const opens = requests.filter((request) => request.type === "rpc-open");
+      expect(opens).toHaveLength(3);
+      expect(opens[1]?.sessionFile).toBe(otherFile);
+      expect(opens[2]).not.toHaveProperty("sessionFile");
+      const commands = requests
+        .filter((request) => request.type === "rpc-in")
+        .map((request) => (request.message as PiRpcRecord).type);
+      expect(commands).not.toContain("switch_session");
+      expect(commands).not.toContain("new_session");
+    }).pipe(Effect.scoped),
   );
   it.effect.each([
     { error: "Session is open elsewhere", expectedSpawns: 0 },

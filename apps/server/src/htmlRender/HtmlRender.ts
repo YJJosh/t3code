@@ -76,6 +76,20 @@ export class HtmlRenderStoreError extends Schema.TaggedError<HtmlRenderStoreErro
   }
 }
 
+export class HtmlRenderSourceError extends Schema.TaggedError<HtmlRenderSourceError>()(
+  "HtmlRenderSourceError",
+  {
+    reason: Schema.Literals(["unreadable", "invalid", "too_large"]),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.reason === "too_large"
+      ? "The HTML source exceeds the 512,000-byte limit."
+      : "The HTML source must be a readable, nonempty UTF-8 file.";
+  }
+}
+
 export type HtmlRenderPrepareError =
   | HtmlRenderImagesNotFoundError
   | HtmlRenderImageTooLargeError
@@ -109,6 +123,16 @@ export class HtmlRender extends Context.Service<
       readonly title: string;
       readonly height: number;
     }) => Effect.Effect<HtmlRenderReference, HtmlRenderPrepareError | HtmlRenderStoreError>;
+    /** Publishes a local artifact without transporting the HTML over provider RPC. */
+    readonly publishFile: (input: {
+      readonly threadId: ThreadId;
+      readonly path: string;
+      readonly title: string;
+      readonly height: number;
+    }) => Effect.Effect<
+      HtmlRenderReference,
+      HtmlRenderSourceError | HtmlRenderPrepareError | HtmlRenderStoreError
+    >;
     /** Screenshots a page in headless Chrome, tolerating unreadable local images. */
     readonly preview: (input: {
       readonly html: string;
@@ -481,7 +505,52 @@ const make = Effect.gen(function* () {
     } satisfies HtmlPreview;
   });
 
-  return HtmlRender.of({ prepare, publish, preview });
+  const publishFile = Effect.fn("HtmlRender.publishFile")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly path: string;
+    readonly title: string;
+    readonly height: number;
+  }) {
+    const limit = 512_000;
+    const html = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const source = yield* fileSystem.stat(input.path);
+        if (source.type !== "File") return yield* new HtmlRenderSourceError({ reason: "invalid" });
+        const file = yield* fileSystem.open(input.path);
+        const stat = yield* file.stat;
+        if (stat.type !== "File") return yield* new HtmlRenderSourceError({ reason: "invalid" });
+        if (stat.size > limit) return yield* new HtmlRenderSourceError({ reason: "too_large" });
+        // Bound the read too: a file can grow after stat. Never allocate its full size.
+        const bytes = new Uint8Array(limit + 1);
+        let length = 0;
+        while (length < bytes.length) {
+          const count = yield* file.read(bytes.subarray(length));
+          if (count === 0) break;
+          length += count;
+        }
+        if (length > limit) return yield* new HtmlRenderSourceError({ reason: "too_large" });
+        const text = yield* Effect.try({
+          try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)),
+          catch: (cause) => new HtmlRenderSourceError({ reason: "invalid", cause }),
+        });
+        if (!text.trim()) return yield* new HtmlRenderSourceError({ reason: "invalid" });
+        return text;
+      }),
+    ).pipe(
+      Effect.catchTags({
+        PlatformError: (cause) =>
+          Effect.fail(new HtmlRenderSourceError({ reason: "unreadable", cause })),
+      }),
+    );
+    return yield* publish({
+      threadId: input.threadId,
+      html,
+      title: input.title,
+      height: input.height,
+    });
+  });
+
+  return HtmlRender.of({ prepare, publish, publishFile, preview });
 });
 
 export const layer = Layer.effect(HtmlRender, make);

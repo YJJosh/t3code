@@ -333,13 +333,28 @@ const make = Effect.gen(function* () {
               initialNativeThreadId: file,
               attachOnly: true,
             });
+            yield* runtime
+              .resumeThread({
+                threadId: bound.appThreadId,
+                providerThread: bound,
+                modelSelection: shell.modelSelection,
+                runtimePolicy,
+              })
+              .pipe(
+                // A live but unregistered runtime would suppress every later
+                // attach attempt. Closing its scope only detaches from shared Pi.
+                Effect.onError(() =>
+                  sessions.close(providerSessionId).pipe(
+                    Effect.catch((cause) =>
+                      Effect.logWarning("Dulli failed attach cleanup failed", {
+                        providerSessionId,
+                        cause,
+                      }),
+                    ),
+                  ),
+                ),
+              );
             attachedSessions.set(bound.appThreadId, providerSessionId);
-            yield* runtime.resumeThread({
-              threadId: bound.appThreadId,
-              providerThread: bound,
-              modelSelection: shell.modelSelection,
-              runtimePolicy,
-            });
           }
           return;
         }

@@ -184,7 +184,6 @@ export function buildPiRpcEnv(
     // the client inspectors.
     [PI_SUBAGENTS_RPC_BRIDGE_ENV]: "1",
     [PI_BACKGROUND_TERMINALS_RPC_BRIDGE_ENV]: "1",
-    PI_BACKGROUND_THREADS_RPC_BRIDGE: "1",
     PI_CODING_AGENT_DIR: configSet?.directory ?? agentDir,
     ...(configSet
       ? {

@@ -3,7 +3,7 @@ import { useNavigation } from "@react-navigation/native";
 import {
   deriveDulliAgentInspector,
   dulliTranscriptText,
-} from "@t3tools/client-runtime/state/subagentRuntime";
+} from "@t3tools/client-runtime/state/dulliSubagents";
 import type { EnvironmentId, ThreadId, OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { AsyncResult } from "effect/reactivity";
@@ -64,7 +64,11 @@ export function DulliAgentsInspector({
     selected
       ? orchestrationEnvironment.subagentTranscript({
           environmentId: target.environmentId,
-          input: { threadId: target.threadId, subagentId: selected.id },
+          input: {
+            threadId: target.threadId,
+            subagentId: selected.id,
+            revision: inspector?.revision(selected.id),
+          },
         })
       : null,
   );

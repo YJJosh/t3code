@@ -12,12 +12,8 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import {
-  deriveDulliAgentInspector,
-  isDulliNativeSubagent,
-  dulliTranscriptText,
-  projectedSubagentsToRuntime,
-} from "./subagentRuntime.ts";
+import { deriveDulliAgentInspector, dulliTranscriptText } from "./dulliSubagents.ts";
+import { projectedSubagentsToRuntime } from "./subagentRuntime.ts";
 
 const now = DateTime.makeUnsafe("2026-01-01T00:00:00Z");
 const instanceId = ProviderInstanceId.make("dulli-custom");
@@ -98,15 +94,14 @@ describe("Dulli v2 inspector", () => {
       childThreadId: ThreadId.make("delegated-thread"),
       nativeTaskRef: null,
     });
-    const agents = [native, delegated];
     const model = deriveDulliAgentInspector({
-      subagents: agents,
+      dulliRuns: [native],
       messages: [],
-      turnItems: [],
+      dulliTranscript: [],
       providerSessions: [session],
     });
     expect(model.agents).toEqual([native]);
-    expect(agents.filter((candidate) => !isDulliNativeSubagent(candidate))).toEqual([delegated]);
+    expect(projectedSubagentsToRuntime([delegated])[0]?.childThreadId).toEqual("delegated-thread");
   });
 
   it("groups workflow roots by parent prompt, selects actual child data, and excludes unrelated transcript items", () => {
@@ -120,10 +115,10 @@ describe("Dulli v2 inspector", () => {
     });
     const child = agent("child", { parentNodeId: root.id, usage: { totalTokens: 42 } });
     const model = deriveDulliAgentInspector({
-      subagents: [root, child, agent("upstream-pi", { driver: ProviderDriverKind.make("pi") })],
+      dulliRuns: [root, child],
       messages: [prompt],
       providerSessions: [session],
-      turnItems: [
+      dulliTranscript: [
         item(child.id, "second", 2),
         item(NodeId.make("other"), "unrelated", 0),
         item(child.id, "first", 1),
@@ -144,9 +139,9 @@ describe("Dulli v2 inspector", () => {
   it("does not expose controls or a running label after the latest session stops, including custom instances", () => {
     const child = agent("child");
     const model = deriveDulliAgentInspector({
-      subagents: [child],
+      dulliRuns: [child],
       messages: [],
-      turnItems: [],
+      dulliTranscript: [],
       providerSessions: [
         session,
         { ...session, status: "stopped", updatedAt: DateTime.makeUnsafe("2026-01-01T00:01:00Z") },
@@ -162,10 +157,10 @@ describe("Dulli v2 inspector", () => {
       nativeTaskRef: { driver, nativeId: "workflow", strength: "weak" },
     });
     const model = deriveDulliAgentInspector({
-      subagents: [child, ...Array.from({ length: 150 }, (_, i) => agent(`other-${i}`))],
+      dulliRuns: [child, ...Array.from({ length: 150 }, (_, i) => agent(`other-${i}`))],
       messages: [],
       providerSessions: [session],
-      turnItems: Array.from({ length: 1100 }, (_, i) => item(child.id, String(i), i)),
+      dulliTranscript: Array.from({ length: 1100 }, (_, i) => item(child.id, String(i), i)),
     });
     expect(model.agents).toHaveLength(100);
     expect(model.transcript(child)).toHaveLength(1000);

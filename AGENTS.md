@@ -162,3 +162,14 @@ Architecture and its constraints: `docs/internals/overview.md`. Glossary: `docs/
 
 - Don't verify with browsers or computer use unless the user explicitly agrees or requests it.
 - Security is important, but should not be over-indexed on, especially for dev mode/maintainer-only features.
+
+## T3 Dulli fork: Pi is the harness
+
+This fork's `dulli` provider (`packages/provider-dulli`, `apps/server/src/provider/dulli`) drives the user's own Pi. For Dulli, Pi is the harness and T3 is a client:
+
+- Every agent capability is a Pi extension that works in a plain terminal Pi without T3. Visuals may differ; tools and behavior may not.
+- Inside T3, Dulli only shows and transports what Pi does. Do not add a second agent loop, approval policy, or a T3 copy of a tool a Pi extension owns. Hide the T3 MCP tool instead (see `mcpExtensionSource.ts`).
+- Keep the user's pi-subagents separate from upstream T3 subagents, in data and in UI. Never store one as the other.
+- T3-only integrations are opt-in bridges (notify prefix plus an env opt-in set by the Dulli adapter), so the extension still works without them.
+
+Details and the extension list: `docs/fork-development.md`.

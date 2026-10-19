@@ -1,4 +1,6 @@
 import {
+  EventId,
+  type OrchestrationV2DomainEvent,
   MessageId,
   NodeId,
   TurnItemId,
@@ -9,7 +11,6 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import type { DulliBridgeContext, DulliBridgeFactory } from "@t3tools/provider-dulli/server";
-import { ProviderAdapterProtocolError } from "@t3tools/provider-core/server/ProviderAdapter";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
@@ -17,6 +18,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import { DulliSubagents } from "./DulliSubagents.ts";
 
@@ -159,6 +161,7 @@ const assistantParts = (message: unknown) => {
 export const makeSubagentFactory =
   (dependencies: {
     readonly controls: DulliSubagents["Service"];
+    readonly write: (event: OrchestrationV2DomainEvent) => Effect.Effect<void>;
     readonly read: (threadId: DulliBridgeContext["threadId"]) => Effect.Effect<{
       readonly subagents: ReadonlyArray<OrchestrationV2Subagent>;
       readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
@@ -167,7 +170,26 @@ export const makeSubagentFactory =
   (context) =>
     Effect.gen(function* () {
       const stored = yield* dependencies.read(context.threadId);
-      let fallbackRootPublished = false;
+      const emitRun = (agent: OrchestrationV2Subagent) =>
+        Effect.gen(function* () {
+          yield* dependencies.write({
+            id: EventId.make(yield* randomUuidV4),
+            type: "dulli-run.updated",
+            threadId: context.threadId,
+            occurredAt: agent.updatedAt,
+            payload: agent,
+          });
+        });
+      const persistItem = (item: OrchestrationV2TurnItem) =>
+        Effect.gen(function* () {
+          yield* dependencies.write({
+            id: EventId.make(yield* randomUuidV4),
+            type: "dulli-transcript.updated",
+            threadId: context.threadId,
+            occurredAt: item.updatedAt,
+            payload: item,
+          });
+        });
       const agents = new Map(
         stored.subagents
           .filter((agent) => agent.driver === DRIVER)
@@ -245,37 +267,8 @@ export const makeSubagentFactory =
           const run = active?.input.runId === agent.runId ? active : null;
           const previousTask = items.get(itemId(agent.id));
           const providerTurnId = previousTask?.providerTurnId ?? run?.providerTurn.id ?? null;
-          let rootNodeId = agent.parentNodeId;
-          const seen = new Set<NodeId>([agent.id]);
-          while (!seen.has(rootNodeId)) {
-            seen.add(rootNodeId);
-            const parent = [...agents.values()].find((candidate) => candidate.id === rootNodeId);
-            if (!parent) break;
-            rootNodeId = parent.parentNodeId;
-          }
           agents.set(agent.nativeTaskRef!.nativeId!, agent);
-          yield* context.emit({
-            type: "node.updated",
-            driver: DRIVER,
-            node: {
-              id: agent.id,
-              threadId: agent.threadId,
-              runId: agent.runId,
-              parentNodeId: agent.parentNodeId,
-              rootNodeId,
-              kind: "subagent",
-              status: agent.status,
-              countsForRun: false,
-              providerThreadId: agent.providerThreadId,
-              providerTurnId,
-              nativeItemRef: agent.nativeTaskRef,
-              runtimeRequestId: null,
-              checkpointScopeId: null,
-              startedAt: agent.startedAt,
-              completedAt: agent.completedAt,
-            },
-          });
-          yield* context.emit({ type: "subagent.updated", driver: DRIVER, subagent: agent });
+          yield* emitRun(agent);
           const taskItem: OrchestrationV2TurnItem = {
             id: itemId(agent.id),
             threadId: agent.threadId,
@@ -302,7 +295,7 @@ export const makeSubagentFactory =
             ...(agent.progress === undefined ? {} : { progress: agent.progress }),
           };
           items.set(taskItem.id, taskItem);
-          yield* context.emit({ type: "turn_item.updated", driver: DRIVER, turnItem: taskItem });
+          yield* persistItem(taskItem);
           if (terminal(agent.status)) {
             for (const [id, item] of items) {
               if (
@@ -320,7 +313,7 @@ export const makeSubagentFactory =
                   : {}),
               };
               items.set(id, ended);
-              yield* context.emit({ type: "turn_item.updated", driver: DRIVER, turnItem: ended });
+              yield* persistItem(ended);
             }
           }
         });
@@ -383,30 +376,6 @@ export const makeSubagentFactory =
               : (old?.parentNodeId ??
                 turn?.input.rootNodeId ??
                 NodeId.make(`dulli:subagent-root:${context.threadId}`));
-          if (!old && !turn && !parentRun && !fallbackRootPublished) {
-            fallbackRootPublished = true;
-            yield* context.emit({
-              type: "node.updated",
-              driver: DRIVER,
-              node: {
-                id: parentNodeId,
-                threadId: context.threadId,
-                runId: null,
-                parentNodeId: null,
-                rootNodeId: parentNodeId,
-                kind: "root_turn",
-                status: "completed",
-                countsForRun: false,
-                providerThreadId: context.getProviderThread()?.id ?? null,
-                providerTurnId: null,
-                nativeItemRef: null,
-                runtimeRequestId: null,
-                checkpointScopeId: null,
-                startedAt: now,
-                completedAt: now,
-              },
-            });
-          }
           const usage = usageOf(view) ?? old?.usage;
           const proposedStatus =
             forceCurrent || lifecycle.has(event.kind) || !old
@@ -740,14 +709,10 @@ export const makeSubagentFactory =
                         ? { ...previous, text: "" }
                         : previous;
                 items.set(previous.id, cleared);
-                yield* context.emit({
-                  type: "turn_item.updated",
-                  driver: DRIVER,
-                  turnItem: cleared,
-                });
+                yield* persistItem(cleared);
               }
               items.set(id, item);
-              yield* context.emit({ type: "turn_item.updated", driver: DRIVER, turnItem: item });
+              yield* persistItem(item);
             });
           if (type === "message_end" && message.role === "user") {
             const content = Array.isArray(message.content)
@@ -778,7 +743,7 @@ export const makeSubagentFactory =
                 type: "assistant_message",
                 text: text(parts.text),
                 streaming: type === "message_update" && !terminal(agent.status),
-                // REVIEW: ids match the transcript fingerprint. `sequence % 500` collided
+                // Ids match the transcript fingerprint. `sequence % 500` collided
                 // inside the 1000-slot window, and native sequences restart per manager.
                 messageId: MessageId.make(`${agent.id}:message:${event.managerId}:${sequence}`),
               });
@@ -932,53 +897,34 @@ export const makeSubagentFactory =
                 });
             }
           }),
+        // Keeps T3 from idle-releasing (and so shutting down) the Pi process
+        // while its children still run; Pi's shutdown stops every child.
         hasPendingBackgroundWork: () =>
-          [...agents.values()].some((agent) =>
-            ["pending", "running", "waiting"].includes(agent.status),
-          ),
-        stopSubagent: (input) =>
-          Effect.gen(function* () {
-            const agent = agents.get(input.nativeTaskId);
-            if (agent && terminal(agent.status)) return;
-            if (
-              input.requestedAt &&
-              agent?.startedAt &&
-              DateTime.toEpochMillis(agent.startedAt) > DateTime.toEpochMillis(input.requestedAt)
-            )
-              return;
-            yield* control(
-              {
-                threadId: context.threadId,
-                taskId: input.nativeTaskId,
-                action: "stop",
-              },
-              input.requestedAt,
-            );
-          }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapterProtocolError({ driver: DRIVER, detail: cause.message, cause }),
-            ),
-          ),
+          [...agents.values()].some((agent) => !terminal(agent.status)),
       };
     });
 
 export const makeFactory = Effect.gen(function* () {
   const controls = yield* DulliSubagents;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const sink = yield* EventSink.EventSinkV2;
   return makeSubagentFactory({
     controls,
+    // A failed record write must not end the Pi session that runs the notify pump.
+    write: (event) =>
+      sink.write({ events: [event] }).pipe(
+        Effect.asVoid,
+        Effect.catch((cause) =>
+          Effect.logWarning("dulli.subagents.record-write-failed", { type: event.type, cause }),
+        ),
+      ),
     read: (threadId) =>
-      Effect.gen(function* () {
-        const { subagents } = yield* projections.getThreadRecords(threadId, ["subagents"]);
-        const nodeIds = subagents
-          .filter((agent) => agent.driver === DRIVER && agent.id.startsWith("dulli:subagent:"))
-          .map((agent) => agent.id);
-        if (nodeIds.length === 0) return { subagents, turnItems: [] };
-        const { turnItems } = yield* projections.getThreadRecords(threadId, ["turnItems"], {
-          turnItemNodeIds: nodeIds,
-        });
-        return { subagents, turnItems };
-      }).pipe(Effect.orElseSucceed(() => ({ subagents: [], turnItems: [] }))),
+      projections.getThreadRecords(threadId, ["dulliRuns", "dulliTranscript"]).pipe(
+        Effect.map(({ dulliRuns, dulliTranscript }) => ({
+          subagents: dulliRuns ?? [],
+          turnItems: dulliTranscript ?? [],
+        })),
+        Effect.orElseSucceed(() => ({ subagents: [], turnItems: [] })),
+      ),
   });
 });

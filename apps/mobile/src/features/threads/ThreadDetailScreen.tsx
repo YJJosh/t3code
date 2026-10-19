@@ -9,6 +9,8 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import type { HandoffEndpoints } from "@t3tools/client-runtime/handoff";
 import {
   childThreadInputsTitle,
+  resolveThreadSyncPhase,
+  threadSyncLabel as formatThreadSyncLabel,
   type CodexFeedbackSubmission,
   type EnvironmentThreadStatus,
 } from "@t3tools/client-runtime/state/threads";
@@ -205,6 +207,7 @@ export interface ThreadDetailScreenProps {
   readonly connectionStateLabel: EnvironmentConnectionPhase;
   /** Message sync status for the selected thread (drives the composer status pill). */
   readonly threadSyncStatus?: EnvironmentThreadStatus;
+  readonly threadSyncError?: string | null;
   /** Progressive history controls for oversized mobile thread opens. */
   readonly historyControls?: ThreadFeedHistoryControls;
   readonly activeThreadBusy: boolean;
@@ -465,25 +468,26 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     ? 0
     : Math.max(insets.bottom, 12);
   const contentPresentationKind = props.contentPresentation.kind;
-  // The raw sync status enters "synchronizing" on every full fetch, cached or
-  // not. Whether messages are already on screen decides the pill label: no
-  // data yet → "Loading messages", cached data reconciling → "Syncing".
-  const realThreadSyncLabel = (() => {
-    switch (props.threadSyncStatus) {
-      case "empty":
-      case "cached":
-      case "synchronizing":
-        if (contentPresentationKind === "ready") {
-          return "Syncing messages...";
-        }
-        return contentPresentationKind === "loading" ? "Loading messages..." : null;
-      default:
-        return null;
-    }
-  })();
+  const syncPhase = resolveThreadSyncPhase({
+    shellExists: true,
+    detailExists: contentPresentationKind === "ready",
+    status: props.threadSyncStatus ?? "empty",
+    error: props.threadSyncError,
+  });
+  const realThreadSyncLabel =
+    syncPhase === null
+      ? null
+      : syncPhase === "failed" && props.threadSyncError
+        ? `Message sync failed: ${props.threadSyncError}`
+        : formatThreadSyncLabel(syncPhase);
   // Opening a running thread resyncs for a few frames. The pill shows the
   // sync label only when the sync lasts, so it does not flash before the timer.
-  const threadSyncLabel = useDelayedStatus(selectedThreadKey, realThreadSyncLabel);
+  const activelySyncing = syncPhase === "loading" || syncPhase === "syncing";
+  const delayedSyncLabel = useDelayedStatus(
+    selectedThreadKey,
+    activelySyncing ? realThreadSyncLabel : null,
+  );
+  const threadSyncLabel = activelySyncing ? delayedSyncLabel : realThreadSyncLabel;
   // One floating pill above the composer: it reads the connection phase while
   // disconnected, the sync state while messages load, then the working timer
   // once the feed is settled.
@@ -516,7 +520,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       return null;
     }
     if (threadSyncLabel !== null) {
-      return { kind: "syncing", label: threadSyncLabel };
+      return {
+        kind: "syncing",
+        label: threadSyncLabel,
+        active: syncPhase === "loading" || syncPhase === "syncing",
+      };
     }
     const childInput = childThreadInputs[0];
     if (childInput && contentPresentationKind === "ready") {

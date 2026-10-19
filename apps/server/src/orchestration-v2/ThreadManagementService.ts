@@ -1203,17 +1203,22 @@ const make = Effect.gen(function* () {
       ),
     getSubagentTranscript: (input) =>
       Effect.gen(function* () {
-        const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
-        const agent = subagents.find((entry) => entry.id === input.subagentId);
-        // Dulli owns a bounded node transcript, not a resumable native child
-        // thread. Fetch it on selection; never inflate the parent chat snapshot.
-        if (agent?.driver !== "dulli" || !agent.id.startsWith("dulli:subagent:"))
-          return { items: [] };
-        const { turnItems } = yield* orchestrator.getThreadRecords(input.threadId, ["turnItems"], {
-          turnItemNodeIds: [agent.id],
-          turnItemTypes: ["user_message", "assistant_message", "reasoning", "dynamic_tool"],
-        });
-        return { items: turnItems.slice(-1000).map(projectTurnItemForDetail) };
+        const { dulliRuns } = yield* orchestrator.getThreadRecords(input.threadId, ["dulliRuns"]);
+        const agent = dulliRuns?.find((entry) => entry.id === input.subagentId);
+        if (!agent) return { items: [] };
+        const { dulliTranscript } = yield* orchestrator.getThreadRecords(
+          input.threadId,
+          ["dulliTranscript"],
+          {
+            turnItemNodeIds: [agent.id],
+          },
+        );
+        return {
+          items: (dulliTranscript ?? [])
+            .filter((item) => item.type !== "subagent")
+            .slice(-1000)
+            .map(projectTurnItemForDetail),
+        };
       }),
     getTurnItem: (input) =>
       ensureProjectionTranscript(input.threadId).pipe(

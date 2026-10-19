@@ -1,6 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { ThreadTurnSubagents } from "@t3tools/client-runtime/state/thread-subagents";
-import { isDulliNativeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   isOrchestrationV2WorkActive,
   type EnvironmentId,
@@ -55,8 +54,8 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const theme = useUniwindTheme();
   const turn = useThreadTurnSubagents(target);
   const detail = useAtomValue(environmentThreadDetails.threadAtom(target));
-  const hasDulliAgents = detail?.projection.subagents.some(isDulliNativeSubagent) ?? false;
-  const subagents = turn?.subagents.filter((agent) => !isDulliNativeSubagent(agent)) ?? [];
+  const hasDulliAgents = (detail?.projection.dulliRuns?.length ?? 0) > 0;
+  const subagents = turn?.subagents ?? [];
   const hasLiveAgent = subagents.some((agent) => isOrchestrationV2WorkActive(agent.status));
 
   const openChildThread = (childThreadId: ThreadId) => {

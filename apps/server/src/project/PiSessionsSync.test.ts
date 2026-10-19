@@ -13,6 +13,7 @@ import {
   type ProviderInstanceConfig,
 } from "@t3tools/contracts";
 import { PiSessionsClient, type PiSessionInfo } from "@t3tools/provider-dulli/server";
+import { PiRpcError } from "../../../../packages/provider-dulli/src/server/rpc.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -147,6 +148,8 @@ const fixture = Effect.gen(function* () {
     Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["open"]>[0]
   > = [];
   let live = false;
+  let failResume = false;
+  let closes = 0;
   const links: string[] = [];
   const imports: Array<AgentSessionScanner.AgentSessionRecentThread> = [];
   const register = Effect.gen(function* () {
@@ -186,11 +189,25 @@ const fixture = Effect.gen(function* () {
         Layer.mock(EventSink.EventSinkV2)({ latestSequence: () => Effect.sync(() => sequence) }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           isLive: () => Effect.sync(() => live),
+          close: () =>
+            Effect.sync(() => {
+              live = false;
+              closes++;
+            }),
           open: (input) =>
             Effect.sync(() => {
               opens.push(input);
               live = true;
-              return { resumeThread: () => Effect.succeed(binding) } as never;
+              return {
+                resumeThread: () =>
+                  Effect.suspend(() => {
+                    if (!failResume) return Effect.succeed(binding);
+                    failResume = false;
+                    return Effect.fail(
+                      new PiRpcError({ operation: "get_state", detail: "Pi is not ready yet" }),
+                    );
+                  }),
+              } as never;
             }),
         }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
@@ -272,6 +289,10 @@ const fixture = Effect.gen(function* () {
       providerInstances = instances;
     },
     opens,
+    closes: () => closes,
+    failNextResume: () => {
+      failResume = true;
+    },
     store,
     link,
     register,
@@ -380,6 +401,22 @@ it.layer(layer)("PiSessionsSync", (it) => {
         attachOnly: true,
         initialNativeThreadId: `${f.cwd}/native.jsonl`,
       });
+    }).pipe(Effect.scoped),
+  );
+  it.effect("detaches a failed registration so the next refresh can retry attachment", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.register;
+      f.updateRecord({ live: true, t3: { thread: threadId, environment: "env" } });
+      f.failNextResume();
+      yield* f.service.refresh;
+      expect(f.opens).toHaveLength(1);
+      expect(f.closes()).toBe(1);
+      yield* f.service.refresh;
+      yield* f.service.refresh;
+      expect(f.opens).toHaveLength(2);
+      expect(f.closes()).toBe(1);
+      expect(f.opens.every((open) => open.attachOnly)).toBe(true);
     }).pipe(Effect.scoped),
   );
   it.effect("skips archived and foreign-environment links", () =>
