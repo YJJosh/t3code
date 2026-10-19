@@ -1,18 +1,17 @@
 import type {
-  PiBackgroundTerminalControlInput,
-  PiBackgroundTerminalEvent,
-  PiBackgroundTerminalOutputDelta,
-  PiBackgroundTerminalOutputView,
-  PiBackgroundTerminalStatus,
-  PiBackgroundTerminalScreen,
-  PiBackgroundTerminalView,
+  DulliBackgroundTerminalControlInput,
+  DulliBackgroundTerminalEvent,
+  DulliBackgroundTerminalOutputDelta,
+  DulliBackgroundTerminalOutputView,
+  DulliBackgroundTerminalStatus,
+  DulliBackgroundTerminalScreen,
+  DulliBackgroundTerminalView,
 } from "@t3tools/contracts";
 
 /**
- * Pure client-side state model for Pi background-terminal events. Mirrors the
- * shape of `subagentRuntime.ts` for the analogous subagent stream, but
- * background terminals have no discrete per-event activity log to replay: each
- * `PiBackgroundTerminalView` already carries the *full* current stdout/stderr
+ * Pure client-side state model for Dulli shared-terminal events. Background
+ * terminals have no discrete per-event activity log to replay: each
+ * `DulliBackgroundTerminalView` already carries the *full* current stdout/stderr
  * text for that terminal, so a `terminal_upsert` (or a `snapshot`) can always
  * rebuild a terminal's output from scratch. `terminal_output` events instead
  * carry small incremental deltas so the common case (a running process
@@ -46,8 +45,8 @@ export interface BackgroundTerminalOutputBuffer {
 }
 
 export interface BackgroundTerminalEntry {
-  readonly view: PiBackgroundTerminalView;
-  readonly screen?: PiBackgroundTerminalScreen | undefined;
+  readonly view: DulliBackgroundTerminalView;
+  readonly screen?: DulliBackgroundTerminalScreen | undefined;
   readonly stdout: BackgroundTerminalOutputBuffer;
   readonly stderr: BackgroundTerminalOutputBuffer;
   readonly lastSequence: number;
@@ -56,7 +55,7 @@ export interface BackgroundTerminalEntry {
 
 export interface BackgroundTerminalControlEntry {
   readonly requestId?: string | undefined;
-  readonly action: PiBackgroundTerminalControlInput["action"];
+  readonly action: DulliBackgroundTerminalControlInput["action"];
   readonly success: boolean;
   readonly error?: string | undefined;
   /** Present on successful `start` results: the terminal that was created. */
@@ -95,11 +94,11 @@ export const EMPTY_BACKGROUND_TERMINAL_RUNTIME_STATE: BackgroundTerminalRuntimeS
     version: 0,
   });
 
-export function isBackgroundTerminalActive(status: PiBackgroundTerminalStatus): boolean {
+export function isBackgroundTerminalActive(status: DulliBackgroundTerminalStatus): boolean {
   return status === "running";
 }
 
-export function isBackgroundTerminalTerminal(status: PiBackgroundTerminalStatus): boolean {
+export function isBackgroundTerminalTerminal(status: DulliBackgroundTerminalStatus): boolean {
   return !isBackgroundTerminalActive(status);
 }
 
@@ -138,7 +137,7 @@ export function isBackgroundTerminalOutputTruncated(
 }
 
 function initOutputBuffer(
-  output: PiBackgroundTerminalOutputView,
+  output: DulliBackgroundTerminalOutputView,
   maxBytes: number,
 ): BackgroundTerminalOutputBuffer {
   const { text, trimmedBytes } = trimToUtf8ByteBudget(output.text, maxBytes);
@@ -175,7 +174,7 @@ function suffixPrefixOverlap(current: string, tail: string) {
 
 function reconcileOutputBuffer(
   current: BackgroundTerminalOutputBuffer | undefined,
-  output: PiBackgroundTerminalOutputView,
+  output: DulliBackgroundTerminalOutputView,
   maxBytes: number,
 ): BackgroundTerminalOutputBuffer {
   if (current === undefined || output.totalBytes < current.totalBytes) {
@@ -227,7 +226,7 @@ function reconcileOutputBuffer(
 
 function appendOrReplaceOutput(
   buffer: BackgroundTerminalOutputBuffer,
-  delta: PiBackgroundTerminalOutputDelta,
+  delta: DulliBackgroundTerminalOutputDelta,
   maxBytes: number,
 ): BackgroundTerminalOutputBuffer {
   if (delta.replace) {
@@ -269,7 +268,7 @@ function isStaleSequence(
 
 function upsertTerminal(
   terminals: ReadonlyMap<string, BackgroundTerminalEntry>,
-  view: PiBackgroundTerminalView,
+  view: DulliBackgroundTerminalView,
   sequence: number,
   timestamp: string,
   maxOutputBytes: number,
@@ -302,7 +301,7 @@ function removeTerminal(
 function applyOutputDelta(
   terminals: ReadonlyMap<string, BackgroundTerminalEntry>,
   terminalId: string,
-  delta: PiBackgroundTerminalOutputDelta,
+  delta: DulliBackgroundTerminalOutputDelta,
   sequence: number,
   timestamp: string,
   maxOutputBytes: number,
@@ -347,8 +346,8 @@ function appendControlResult(
 
 function applySnapshot(
   state: BackgroundTerminalRuntimeState,
-  event: PiBackgroundTerminalEvent,
-  terminalViews: ReadonlyArray<PiBackgroundTerminalView>,
+  event: DulliBackgroundTerminalEvent,
+  terminalViews: ReadonlyArray<DulliBackgroundTerminalView>,
   maxOutputBytes: number,
 ): BackgroundTerminalRuntimeState {
   // The snapshot is authoritative: rebuild the terminal set from scratch. A
@@ -389,7 +388,7 @@ function applySnapshot(
  */
 export function applyBackgroundTerminalEvent(
   state: BackgroundTerminalRuntimeState,
-  event: PiBackgroundTerminalEvent,
+  event: DulliBackgroundTerminalEvent,
   options: ApplyBackgroundTerminalEventOptions = {},
 ): BackgroundTerminalRuntimeState {
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_BACKGROUND_TERMINAL_OUTPUT_BYTES;

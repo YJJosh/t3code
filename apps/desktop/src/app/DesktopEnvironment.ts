@@ -89,8 +89,6 @@ export class DesktopEnvironment extends Context.Service<
     readonly appImagePath: Option.Option<string>;
     readonly isDulli: boolean;
     readonly allowsPrereleaseUpdates: boolean;
-    readonly userDataDirName: string;
-    readonly legacyUserDataDirName: string;
     readonly defaultDesktopSettings: DesktopAppSettings.DesktopSettings;
     readonly runtimeInfo: DesktopRuntimeInfo;
     readonly resolvePickFolderDefaultPath: (rawOptions: unknown) => Option.Option<string>;
@@ -109,7 +107,7 @@ function resolveDesktopAppStageLabel(input: {
     return "Dev";
   }
 
-  return isNightlyDesktopVersion(input.appVersion) ? "Nightly" : "Alpha";
+  return isNightlyDesktopVersion(input.appVersion) ? "Nightly" : "Beta";
 }
 
 export function resolveDesktopAppBranding(input: {
@@ -197,12 +195,6 @@ const make = Effect.fn("desktop.environment.make")(function* (
     joinPath: path.join,
     t3Home: config.t3Home,
   });
-  const userDataDirName = isDevelopment ? "t3code-dev" : isDulli ? "t3-dulli" : "t3code";
-  const legacyUserDataDirName = isDevelopment
-    ? "T3 Code (Dev)"
-    : isDulli
-      ? userDataDirName
-      : "T3 Code (Alpha)";
   const linuxApplicationsDir = path.join(
     Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
     "applications",
@@ -265,8 +257,6 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appImagePath: config.appImagePath,
     isDulli,
     allowsPrereleaseUpdates: isDulli,
-    userDataDirName,
-    legacyUserDataDirName,
     defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),
     runtimeInfo: resolveDesktopRuntimeInfo({
       platform: input.platform,

@@ -11,7 +11,7 @@ export interface UseBackgroundTerminalRuntimeInput {
   readonly environmentId: EnvironmentId | null;
   readonly threadId: ThreadId | null;
   /**
-   * Only subscribe when the active provider/session can support Pi
+   * Only subscribe when the active provider/session can support Dulli
    * background terminals. When disabled the hook mounts nothing and returns
    * the empty state so no rows or controls render.
    */

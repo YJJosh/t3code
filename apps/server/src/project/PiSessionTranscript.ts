@@ -7,8 +7,8 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import type { PiSessionInfo } from "../provider/PiSessionsClient.ts";
-import { joinPiContentBlocks } from "../provider/pi/piRpcProtocol.ts";
+import type { PiSessionInfo } from "@t3tools/provider-dulli/server";
+const joinPiContentBlocks = (blocks: ReadonlyArray<string>) => blocks.join("\n\n");
 import type { AgentSessionRecentThread, AgentSessionThreadMessage } from "./AgentSessionScanner.ts";
 
 const Header = Schema.Struct({
@@ -142,7 +142,7 @@ const make = Effect.gen(function* () {
         return {
           _tag: "Importable",
           thread: {
-            source: "pi",
+            source: "dulli",
             providerInstanceId: instanceId,
             providerSessionId: record.sessionId,
             title: (record.title?.trim() || title || firstUser.text.trim().split("\n")[0]!).slice(
@@ -155,7 +155,7 @@ const make = Effect.gen(function* () {
             messages: retained,
           },
           source: {
-            provider: "pi",
+            provider: "dulli",
             providerInstanceId: instanceId,
             providerSessionId: record.sessionId,
             filePath,

@@ -1,5 +1,6 @@
 import {
   type ModelCapabilities,
+  type ModelSelection,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderOptionSelection,
@@ -16,7 +17,6 @@ import {
 import type { ReactNode } from "react";
 
 import type { DraftId } from "../../composerDraftStore";
-import { keepsUnavailableModelOptions } from "../../providerInstances";
 import { getProviderModelCapabilities } from "../../providerModels";
 import type { ComposerControlSize } from "./ComposerControl";
 import {
@@ -47,6 +47,7 @@ export type ComposerProviderState = {
 };
 
 type TraitsRenderInput = {
+  descriptorScope?: TraitsDescriptorScope;
   provider: ProviderDriverKind;
   instanceId?: ProviderInstanceId;
   threadRef?: ScopedThreadRef;
@@ -54,10 +55,10 @@ type TraitsRenderInput = {
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
+  reportedModelSelection?: ModelSelection | null | undefined;
   prompt: string;
   onPromptChange: (prompt: string) => void;
   planModeEnabled: boolean;
-  descriptorScope?: TraitsDescriptorScope;
   size?: ComposerControlSize;
   hidden?: boolean;
   triggerClassName?: string;
@@ -66,10 +67,6 @@ type TraitsRenderInput = {
 
 export function getComposerPromptInjectionState(prompt: string): ComposerPromptInjectionState {
   return isClaudeUltrathinkPrompt(prompt) ? "ultrathink" : "none";
-}
-
-export function shouldShowRuntimeModeSelector(provider: ProviderDriverKind): boolean {
-  return provider !== "pi";
 }
 
 /**
@@ -119,7 +116,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     promptInjectionState = "none",
     planModeEnabled,
   } = input;
-  if (keepsUnavailableModelOptions(provider)) {
+  if (provider === "opencode" || provider === "dulli") {
     const normalizedModel = normalizeModelSlug(model, provider);
     const modelIsInCatalog = models.some((candidate) => candidate.slug === normalizedModel);
     if (!modelIsInCatalog) {
@@ -181,14 +178,15 @@ function renderTraitsControl(
     model,
     models,
     modelOptions,
+    reportedModelSelection,
     prompt,
     onPromptChange,
     planModeEnabled,
-    descriptorScope = "all",
     size,
     hidden,
     triggerClassName,
     isComposerOwned,
+    descriptorScope = "all",
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
   const { selections: resolvedModelOptions } = resolveComposerOptionSelections(
@@ -215,16 +213,17 @@ function renderTraitsControl(
   return (
     <Component
       provider={provider}
+      descriptorScope={descriptorScope}
       {...(instanceId ? { instanceId } : {})}
       models={models}
       {...(threadRef ? { threadRef } : {})}
       {...(draftId ? { draftId } : {})}
       model={model}
       modelOptions={resolvedModelOptions}
+      reportedModelSelection={reportedModelSelection}
       prompt={prompt}
       onPromptChange={onPromptChange}
       planModeEnabled={planModeEnabled}
-      descriptorScope={descriptorScope}
       {...(size !== undefined ? { size } : {})}
       {...(hidden !== undefined ? { hidden } : {})}
       {...(triggerClassName !== undefined ? { triggerClassName } : {})}

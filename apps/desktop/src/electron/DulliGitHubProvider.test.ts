@@ -1,6 +1,6 @@
 import * as NodeAssert from "node:assert";
 import { AppUpdater } from "electron-updater";
-import { describe, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, it, vi } from "vite-plus/test";
 
 import { checkForUpdatesWithDulliTransition, makeDulliGitHubFeedUrl } from "./ElectronUpdater.ts";
 
@@ -68,7 +68,7 @@ class TestAppUpdater extends AppUpdater {
       onQuit: () => undefined,
     });
     Reflect.set(this, "httpExecutor", executor);
-    Reflect.set(this, "_testOnlyOptions", { platform });
+    Reflect.set(this, "_testOnlyOptions", { platform, arch: "x64" });
     Reflect.set(this, "stagingUserIdPromise", { value: Promise.resolve(STAGING_USER_ID) });
     this.autoDownload = false;
     this.logger = null;
@@ -113,6 +113,9 @@ function versionManifest(version: string, extra = ""): string {
 }
 
 describe("DulliGitHubProvider", () => {
+  beforeEach(() => vi.stubEnv("TEST_UPDATER_ARCH", "x64"));
+  afterEach(() => vi.unstubAllEnvs());
+
   it("selects the approved Pi then Dulli release sequence", async () => {
     const first = makeFixtureUpdater({
       currentVersion: "0.0.36-pi.2",
@@ -204,6 +207,8 @@ describe("DulliGitHubProvider", () => {
       ["0.0.40-pi.1", "0.0.40-dulli.1"],
       ["0.0.40-pi.1", "0.0.39-dulli.99"],
       ["0.0.40-dulli.2", "0.0.40-dulli.1"],
+      ["0.1.0-dulli.1", "0.0.45-dulli.99"],
+      ["0.1.0-pi.2", "0.1.0-dulli.1"],
     ] as const) {
       const fixture = makeFixtureUpdater({
         currentVersion,
@@ -245,6 +250,10 @@ describe("DulliGitHubProvider", () => {
     for (const [currentVersion, candidateVersion] of [
       ["0.0.40-pi.1", "0.0.41-dulli.1"],
       ["0.0.40-dulli.2", "0.0.40-dulli.3"],
+      ["0.0.45-dulli.9", "0.1.0-dulli.1"],
+      ["0.0.45-pi.9", "0.1.0-dulli.1"],
+      ["0.1.0-dulli.1", "0.1.1-dulli.0"],
+      ["0.1.1-dulli.0", "0.2.0-dulli.0"],
     ] as const) {
       const fixture = makeFixtureUpdater({
         currentVersion,

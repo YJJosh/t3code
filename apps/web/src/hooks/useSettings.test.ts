@@ -23,8 +23,10 @@ import {
   mergeEnvironmentSettings,
   persistClientSettingsPatch,
   persistClientSettingsUpdate,
+  prepareModelPreferencesPatch,
   resolveEnvironmentIdentificationMode,
 } from "./useSettings";
+import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
 beforeEach(() => {
   persistenceMocks.getClientSettings.mockReset().mockResolvedValue(null);
@@ -44,6 +46,71 @@ describe("client settings hydration", () => {
   };
   const onboardingCompletedAt = "2026-09-05T12:00:00.000Z";
   const complete = (current: ClientSettings) => ({ ...current, onboardingCompletedAt });
+
+  it("waits for saved model preferences before applying the first server edit", async () => {
+    const provider = ProviderInstanceId.make("codex_work");
+    let finishRead!: (settings: ClientSettings) => void;
+    persistenceMocks.getClientSettings.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishRead = resolve;
+      }),
+    );
+    const patch = prepareModelPreferencesPatch(DEFAULT_SERVER_SETTINGS, {
+      setModelFavorites: [{ provider, model: "new", favorite: true }],
+      setModelsHidden: [{ provider, model: "new", hidden: true }],
+    });
+    expect(getClientSettings()).toBe(DEFAULT_CLIENT_SETTINGS);
+    finishRead({
+      ...savedSettings,
+      providerModelPreferences: {
+        [provider]: { hiddenModels: ["saved-hidden"], modelOrder: ["saved-order"] },
+      },
+    });
+    const edited = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, await patch);
+    expect(edited.favorites).toEqual([...savedSettings.favorites, { provider, model: "new" }]);
+    expect(edited.providerModelPreferences?.[provider]).toEqual({
+      hiddenModels: ["saved-hidden", "new"],
+      modelOrder: ["saved-order"],
+    });
+  });
+
+  it("imports retired Pi favorites/options as Dulli only for a migrated environment, without rewriting the global legacy blob", async () => {
+    const pi = ProviderInstanceId.make("pi");
+    const dulli = ProviderInstanceId.make("dulli");
+    persistenceMocks.getClientSettings.mockResolvedValue({
+      ...DEFAULT_CLIENT_SETTINGS,
+      favorites: [{ provider: pi, model: "native/model" }],
+      providerModelPreferences: {
+        [pi]: { hiddenModels: ["hidden"], modelOrder: ["native/model"] },
+      },
+    });
+    const migrated = applyServerSettingsPatch(
+      DEFAULT_SERVER_SETTINGS,
+      await prepareModelPreferencesPatch(DEFAULT_SERVER_SETTINGS, {}, true),
+    );
+    expect(migrated.favorites).toEqual([{ provider: dulli, model: "native/model" }]);
+    expect(migrated.providerModelPreferences?.[dulli]).toEqual({
+      hiddenModels: ["hidden"],
+      modelOrder: ["native/model"],
+    });
+    const upstream = applyServerSettingsPatch(
+      DEFAULT_SERVER_SETTINGS,
+      await prepareModelPreferencesPatch(DEFAULT_SERVER_SETTINGS, {}, false),
+    );
+    expect(upstream.favorites).toEqual([{ provider: pi, model: "native/model" }]);
+    expect(getClientSettings().favorites).toEqual([{ provider: pi, model: "native/model" }]);
+  });
+
+  it("does not prepare a model preference write after a failed legacy read", async () => {
+    const failure = new Error("storage unavailable");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    persistenceMocks.getClientSettings.mockRejectedValueOnce(failure);
+    await expect(
+      prepareModelPreferencesPatch(DEFAULT_SERVER_SETTINGS, {
+        setProviderModelOrder: { provider: ProviderInstanceId.make("codex_work"), modelOrder: [] },
+      }),
+    ).rejects.toBe(failure);
+  });
 
   it("rejects completion after a failed read and preserves saved preferences on retry", async () => {
     const failure = new Error("storage unavailable");
@@ -450,4 +517,21 @@ describe("onboarding completion persistence", () => {
     expect(getClientSettings()).toEqual(completedSettings);
     expect(persist).toHaveBeenLastCalledWith(completedSettings);
   });
+});
+
+it("uses the environment's model preferences after migration, including empty lists", () => {
+  const client = {
+    ...DEFAULT_CLIENT_SETTINGS,
+    favorites: [{ provider: ProviderInstanceId.make("codex_work"), model: "old" }],
+    providerModelPreferences: { codex_work: { hiddenModels: ["old"], modelOrder: [] } },
+  };
+  expect(mergeEnvironmentSettings(DEFAULT_SERVER_SETTINGS, client).favorites).toEqual(
+    client.favorites,
+  );
+  const merged = mergeEnvironmentSettings(
+    { ...DEFAULT_SERVER_SETTINGS, favorites: [], providerModelPreferences: {} },
+    client,
+  );
+  expect(merged.favorites).toEqual([]);
+  expect(merged.providerModelPreferences).toEqual({});
 });

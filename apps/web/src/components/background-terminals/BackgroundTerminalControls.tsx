@@ -6,8 +6,13 @@ import {
   isBackgroundTerminalActive,
   type BackgroundTerminalEntry,
 } from "@t3tools/client-runtime/state/background-terminals";
-import type { EnvironmentId, PiBackgroundTerminalControlInput, ThreadId } from "@t3tools/contracts";
-import { useCallback, useId, useRef, useState } from "react";
+import type {
+  EnvironmentId,
+  DulliBackgroundTerminalControlInput,
+  ThreadId,
+} from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import { useId, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
@@ -29,12 +34,8 @@ function controlErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-/**
- * Kill-only control surface for a background terminal. There is no
- * start/restart/stdin path here by design — background terminals are
- * spawned by Pi, not by the client, so the only lifecycle action available
- * from this UI is stopping a still-running one.
- */
+/** Stops a running shared terminal. Starting and interactive ownership live
+ * in the panel and PTY controls, not in this small lifecycle action. */
 export function BackgroundTerminalControls({
   environmentId,
   threadId,
@@ -49,14 +50,17 @@ export function BackgroundTerminalControls({
   const requestFieldId = useId();
   const requestSequenceRef = useRef(0);
 
+  const permitted = useAtomValue(
+    backgroundTerminalEnvironment.control.permissionAtom(environmentId),
+  );
   const terminalId = terminal.view.id;
   const canKill = isBackgroundTerminalActive(terminal.view.status);
 
-  const kill = useCallback(async () => {
+  const kill = async () => {
     setPending(true);
     setError(null);
     try {
-      const input: PiBackgroundTerminalControlInput = {
+      const input: DulliBackgroundTerminalControlInput = {
         threadId,
         action: "kill",
         terminalId,
@@ -70,7 +74,7 @@ export function BackgroundTerminalControls({
     } finally {
       setPending(false);
     }
-  }, [environmentId, managerId, requestFieldId, runControl, terminalId, threadId]);
+  };
 
   if (!canKill) {
     return null;
@@ -83,7 +87,7 @@ export function BackgroundTerminalControls({
           type="button"
           size="sm"
           variant="destructive-outline"
-          disabled={pending}
+          disabled={pending || !permitted}
           onClick={() => void kill()}
         >
           {pending ? <Spinner /> : null}

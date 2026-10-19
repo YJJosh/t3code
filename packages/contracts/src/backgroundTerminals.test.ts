@@ -2,14 +2,14 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import {
-  PiBackgroundTerminalControlInput,
-  PiBackgroundTerminalEvent,
-  PI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION,
+  DulliBackgroundTerminalControlInput,
+  DulliBackgroundTerminalEvent,
+  DULLI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION,
 } from "./backgroundTerminals.ts";
-import { PiBackgroundTerminalEvent as ExportedPiBackgroundTerminalEvent } from "./index.ts";
+import { DulliBackgroundTerminalEvent as ExportedDulliBackgroundTerminalEvent } from "./index.ts";
 
-const decodeEvent = Schema.decodeUnknownSync(PiBackgroundTerminalEvent);
-const decodeControl = Schema.decodeUnknownSync(PiBackgroundTerminalControlInput);
+const decodeEvent = Schema.decodeUnknownSync(DulliBackgroundTerminalEvent);
+const decodeControl = Schema.decodeUnknownSync(DulliBackgroundTerminalControlInput);
 
 const terminal = {
   id: "bt-1",
@@ -23,15 +23,15 @@ const terminal = {
   stderr: { text: "", totalBytes: 0, truncatedBytes: 0 },
 } as const;
 
-describe("PiBackgroundTerminalEvent", () => {
+describe("DulliBackgroundTerminalEvent", () => {
   it("is exported from the public contracts entrypoint", () => {
-    expect(ExportedPiBackgroundTerminalEvent).toBe(PiBackgroundTerminalEvent);
+    expect(ExportedDulliBackgroundTerminalEvent).toBe(DulliBackgroundTerminalEvent);
   });
 
   it("decodes the v1 snapshot envelope", () => {
     expect(
       decodeEvent({
-        contractVersion: PI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION,
+        contractVersion: DULLI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION,
         managerId: "pi-background-terminals:test",
         sequence: 1,
         timestamp: "2026-07-09T12:00:00.000Z",
@@ -96,7 +96,7 @@ describe("PiBackgroundTerminalEvent", () => {
   });
 });
 
-describe("PiBackgroundTerminalControlInput", () => {
+describe("DulliBackgroundTerminalControlInput", () => {
   it("replays the authoritative full set and requires a valid terminal for kill", () => {
     const threadId = "11111111-1111-4111-8111-111111111111";
     expect(decodeControl({ threadId, action: "replay" })).toMatchObject({ action: "replay" });

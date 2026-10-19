@@ -20,7 +20,7 @@ const defaultInput = {
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
-const makeEnvironmentLayer = (
+const layerEnvironment = (
   overrides: Partial<DesktopEnvironment.MakeDesktopEnvironmentInput> = {},
   env: Record<string, string | undefined> = {},
 ) =>
@@ -36,8 +36,7 @@ const makeEnvironmentLayer = (
 const makeEnvironment = (
   overrides: Partial<DesktopEnvironment.MakeDesktopEnvironmentInput> = {},
   env: Record<string, string | undefined> = {},
-) =>
-  DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
+) => DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(layerEnvironment(overrides, env)));
 
 describe("DesktopEnvironment", () => {
   it.effect("derives state paths and development identity inside Effect", () =>
@@ -133,7 +132,6 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.displayName, "T3 Dulli");
       assert.equal(environment.baseDir, "/Users/alice/.t3-dulli");
       assert.equal(environment.stateDir, "/Users/alice/.t3-dulli/userdata");
-      assert.equal(environment.userDataDirName, "t3-dulli");
       assert.equal(environment.appUserModelId, "com.yjjosh.t3dulli");
       assert.equal(environment.linuxDesktopEntryName, "t3-dulli-clean.desktop");
       assert.equal(environment.linuxWmClass, "t3-dulli");

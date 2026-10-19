@@ -4,8 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlSchema from "effect/sql/SqlSchema";
 
 const Link = Schema.Struct({
   environmentId: EnvironmentId,
@@ -44,18 +44,6 @@ export class PiSessionsSettlement extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  // Created here rather than in Migrations.ts: the migrator skips every ID at or
-  // below the newest applied one, so a fork-only migration ID hides upstream's
-  // migration with the same ID (see forgetLegacyForkMigration50).
-  yield* sql`
-    CREATE TABLE IF NOT EXISTS pi_sessions_settlement (
-      environment_id TEXT NOT NULL,
-      thread_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      baseline_json TEXT NOT NULL,
-      PRIMARY KEY (environment_id, thread_id, session_id)
-    ) WITHOUT ROWID
-  `;
   const get = SqlSchema.findOneOption({
     Request: Link,
     Result: Schema.Struct({ baseline: Schema.fromJsonString(Baseline) }),

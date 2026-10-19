@@ -16,7 +16,8 @@ export {
 
 export interface EnvironmentOption {
   environmentId: EnvironmentId;
-  projectId: ProjectId;
+  /** Null when the machine's "No project" folder is not created yet. */
+  projectId: ProjectId | null;
   label: string;
   isPrimary: boolean;
   machine: EnvironmentMachineKind;
@@ -64,6 +65,8 @@ export function shouldShowEnvironmentIndicator(input: {
 }
 
 export function shouldShowComposerContextStrip(input: {
+  isDraftHeroState: boolean;
+  persistInActiveThreads: boolean;
   hasActiveProject: boolean;
   /** The project can switch between local and new-worktree runs. */
   hasWorkspaceControls: boolean;
@@ -73,6 +76,7 @@ export function shouldShowComposerContextStrip(input: {
 }): boolean {
   return (
     input.hasActiveProject &&
+    (input.isDraftHeroState || input.persistInActiveThreads) &&
     (input.hasWorkspaceControls ||
       input.showEnvironmentIndicator ||
       input.hostsRestingComposerControls)

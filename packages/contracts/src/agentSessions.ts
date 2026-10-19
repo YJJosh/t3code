@@ -3,7 +3,7 @@ import { IsoDateTime, NonNegativeInt, ProjectId, TrimmedNonEmptyString } from ".
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 /** Coding agent home directories the scanner knows how to read. */
-export const AgentSessionSource = Schema.Literals(["claudeAgent", "codex", "pi"]);
+export const AgentSessionSource = Schema.Literals(["claudeAgent", "codex", "pi", "dulli"]);
 export type AgentSessionSource = typeof AgentSessionSource.Type;
 
 /** File identity saved with an imported session so bounded retries can skip unchanged history. */
@@ -19,11 +19,6 @@ export const AgentSessionImportSource = Schema.Struct({
   birthtimeMs: Schema.NullOr(Schema.Number),
 });
 export type AgentSessionImportSource = typeof AgentSessionImportSource.Type;
-
-/** Imported message ids retain their origin after event metadata is projected into SQLite. */
-export function isImportedAgentSessionMessageId(messageId: string): boolean {
-  return messageId.startsWith("import:");
-}
 
 /**
  * Empty for now. Kept as a struct so future scan options (source filters,

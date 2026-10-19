@@ -740,6 +740,44 @@ describe("mergeUsage", () => {
     expect(merged.costQuality.cacheSavingsUsd).toBe(4);
   });
 
+  it("derives model token shares independently of their cost shares", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({ costUsd: 90 }),
+              bucket({
+                provider: "codex",
+                model: "gpt-5.6-sol",
+                costUsd: 10,
+                totals: {
+                  uncachedInputTokens: 3 * 1160,
+                  cachedInputTokens: 0,
+                  cacheCreationTokens: 0,
+                  outputTokens: 0,
+                  reasoningTokens: 0,
+                },
+              }),
+            ],
+            [
+              { provider: "claude", hostId: "mac", homePath: "/a/.claude" },
+              { provider: "codex", hostId: "mac", homePath: "/a/.codex" },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    const byModel = Object.fromEntries(merged.models.map((model) => [model.model, model]));
+    expect(byModel["claude-fable-5"]?.costShare).toBeCloseTo(0.9, 5);
+    expect(byModel["claude-fable-5"]?.tokenShare).toBeCloseTo(0.25, 5);
+    expect(byModel["gpt-5.6-sol"]?.costShare).toBeCloseTo(0.1, 5);
+    expect(byModel["gpt-5.6-sol"]?.tokenShare).toBeCloseTo(0.75, 5);
+  });
+
   it("marks a model with no known rates as unpriced rather than free", () => {
     const merged = mergeUsage(
       [
@@ -769,6 +807,67 @@ describe("mergeUsage", () => {
     expect(merged.models.find((model) => model.model === "unknown-model")?.unpricedRecords).toBe(5);
     expect(merged.models.filter(isModelCostUnknown).map((model) => model.model)).toEqual([
       "unknown-model",
+    ]);
+  });
+
+  it("splits cost by category and speed, counting older servers as unsplit standard cost", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({
+                costUsd: 10,
+                categoryCostUsd: { input: 1, cacheRead: 2, cacheWrite: 3, output: 4 },
+                fastCostUsd: 6,
+                speedPremiumUsd: 3,
+              }),
+              bucket({
+                provider: "codex",
+                model: "unknown-model",
+                costUsd: 0,
+                costSource: "unpriced",
+                unpricedRecords: 5,
+              }),
+              // Reported cost on one record, no rates for the other four.
+              bucket({
+                provider: "codex",
+                model: "partly-reported",
+                costUsd: 0,
+                unpricedRecords: 4,
+              }),
+            ],
+            [
+              { provider: "claude", hostId: "mac", homePath: "/a/.claude" },
+              { provider: "codex", hostId: "mac", homePath: "/a/.codex" },
+            ],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ costUsd: 5 })],
+            [{ provider: "claude", hostId: "linux", homePath: "/b/.claude" }],
+            USAGE_MERGE_COMPATIBLE_SINCE,
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.categoryCost).toEqual({
+      input: 1,
+      cacheRead: 2,
+      cacheWrite: 3,
+      output: 4,
+      unsplit: 5,
+    });
+    expect(merged.speedCost).toEqual({ standard: 9, fast: 6, ultrafast: 0, premium: 3 });
+    expect(merged.models.map(({ model, unpricedTokens }) => [model, unpricedTokens])).toEqual([
+      ["claude-fable-5", 0],
+      ["unknown-model", 1160],
+      ["partly-reported", 928],
     ]);
   });
 
@@ -930,4 +1029,79 @@ describe("mergeUsage", () => {
     expect(merged.daily).toHaveLength(1);
     expect(merged.daily[0]?.costUsd).toBe(10);
   });
+});
+
+describe("physical scan containment", () => {
+  it.each([
+    {
+      name: "unbounded recursive readers",
+      parentStatus: "ok",
+      parentPattern: "jsonl",
+      parentDepth: Number.MAX_SAFE_INTEGER,
+      childDepth: Number.MAX_SAFE_INTEGER,
+      ancestorId: "root-inode",
+      expected: 10,
+    },
+    {
+      name: "matching paths but unrelated physical roots",
+      parentStatus: "ok",
+      parentPattern: "jsonl",
+      parentDepth: 3,
+      childDepth: 1,
+      ancestorId: "other-inode",
+      expected: 20,
+    },
+    {
+      name: "partial parents cannot hide complete descendants",
+      parentStatus: "partial",
+      parentPattern: "jsonl",
+      parentDepth: 3,
+      childDepth: 1,
+      ancestorId: "root-inode",
+      expected: 20,
+    },
+    {
+      name: "run-session filters cannot cover arbitrary descendants",
+      parentStatus: "ok",
+      parentPattern: "pi-subagent-session",
+      parentDepth: 3,
+      childDepth: 1,
+      ancestorId: "root-inode",
+      expected: 20,
+    },
+  ] as const)(
+    "$name",
+    ({ parentStatus, parentPattern, parentDepth, childDepth, ancestorId, expected }) => {
+      const parent = summary(
+        [bucket({ sourceIndex: 0, sourcePath: "/sessions" })],
+        [
+          {
+            provider: "claude",
+            hostId: "host",
+            homePath: "/sessions",
+            volumeId: "root-inode",
+            status: parentStatus,
+            scan: { maxDepth: parentDepth, filePattern: parentPattern },
+          },
+        ],
+      );
+      const child = summary(
+        [bucket({ sourceIndex: 0, sourcePath: "/sessions/project" })],
+        [
+          {
+            provider: "claude",
+            hostId: "host",
+            homePath: "/sessions/project",
+            volumeId: "child-inode",
+            ancestorVolumeIds: [ancestorId],
+            scan: { maxDepth: childDepth, filePattern: "jsonl" },
+          },
+        ],
+      );
+      expect(
+        mergeUsage([environment("a", parent), environment("b", child)], USAGE_CONTRACT_VERSION)
+          .costUsd,
+      ).toBe(expected);
+    },
+  );
 });

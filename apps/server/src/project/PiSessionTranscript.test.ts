@@ -106,7 +106,7 @@ it.layer(NodeServices.layer)("PiSessionTranscript", (it) => {
             { role: "assistant", text: "answer" },
           ],
         },
-        source: { provider: "pi", providerSessionId: "session" },
+        source: { provider: "dulli", providerSessionId: "session" },
       });
       expect(yield* f.read({ title: "Daemon title" })).toMatchObject({
         thread: { title: "Daemon title" },
@@ -180,8 +180,9 @@ it.layer(NodeServices.layer)("PiSessionTranscript", (it) => {
     }).pipe(Effect.scoped, Effect.provide(PiSessionTranscript.layer)),
   );
 
-  for (const mode of ["id", "cwd", "duplicate", "timestamp", "version", "partial"] as const) {
-    it.effect(`rejects corrupt ${mode}`, () =>
+  it.effect.each(["id", "cwd", "duplicate", "timestamp", "version", "partial"] as const)(
+    "rejects corrupt %s",
+    (mode) =>
       Effect.gen(function* () {
         const f = yield* fixture;
         yield* f.write([
@@ -204,8 +205,7 @@ it.layer(NodeServices.layer)("PiSessionTranscript", (it) => {
           yield* f.fs.writeFileString(f.record.sessionFile, "{", { flag: "a" });
         expect(yield* f.read()).toBeNull();
       }).pipe(Effect.scoped, Effect.provide(PiSessionTranscript.layer)),
-    );
-  }
+  );
 
   it.effect("retains first user plus recent history, and bounds file reads", () =>
     Effect.gen(function* () {

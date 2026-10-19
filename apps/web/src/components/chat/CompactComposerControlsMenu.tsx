@@ -16,10 +16,13 @@ import { useComposerMenuState } from "./useComposerMenuState";
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
-  showRuntimeMode: boolean;
+  runtimeModeOptions: ReadonlyArray<{
+    readonly mode: RuntimeMode;
+    readonly label: string;
+  }>;
   showInteractionModeToggle: boolean;
+  showRuntimeModeToggle?: boolean;
   traitsMenuContent?: ReactNode;
-  profileMenuContent?: ReactNode;
   size?: "sm" | "xs";
   /**
    * The resting strip keeps this menu mounted out of flow while every block
@@ -54,11 +57,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
         {props.traitsMenuContent ? (
           <>
             {props.traitsMenuContent}
-            {props.showInteractionModeToggle ||
-            props.profileMenuContent ||
-            props.showRuntimeMode ? (
-              <MenuDivider />
-            ) : null}
+            <MenuDivider />
           </>
         ) : null}
         {props.showInteractionModeToggle ? (
@@ -74,16 +73,10 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
               <MenuRadioItem value="default">Chat</MenuRadioItem>
               <MenuRadioItem value="plan">Plan</MenuRadioItem>
             </MenuRadioGroup>
-            {props.profileMenuContent || props.showRuntimeMode ? <MenuDivider /> : null}
+            <MenuDivider />
           </>
         ) : null}
-        {props.profileMenuContent ? (
-          <>
-            {props.profileMenuContent}
-            {props.showRuntimeMode ? <MenuDivider /> : null}
-          </>
-        ) : null}
-        {props.showRuntimeMode ? (
+        {props.showRuntimeModeToggle !== false ? (
           <>
             <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
             <MenuRadioGroup
@@ -93,10 +86,11 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
                 props.onRuntimeModeChange(value as RuntimeMode);
               }}
             >
-              <MenuRadioItem value="approval-required">Supervised</MenuRadioItem>
-              <MenuRadioItem value="auto-accept-edits">Auto-accept edits</MenuRadioItem>
-              <MenuRadioItem value="auto">Auto</MenuRadioItem>
-              <MenuRadioItem value="full-access">Full access</MenuRadioItem>
+              {props.runtimeModeOptions.map((option) => (
+                <MenuRadioItem key={option.mode} value={option.mode}>
+                  {option.label}
+                </MenuRadioItem>
+              ))}
             </MenuRadioGroup>
           </>
         ) : null}

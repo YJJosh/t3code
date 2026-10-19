@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import type {
-  PiBackgroundTerminalEvent,
-  PiBackgroundTerminalOutputView,
-  PiBackgroundTerminalStatus,
-  PiBackgroundTerminalView,
+  DulliBackgroundTerminalEvent,
+  DulliBackgroundTerminalOutputView,
+  DulliBackgroundTerminalStatus,
+  DulliBackgroundTerminalView,
 } from "@t3tools/contracts";
 
 import {
@@ -25,8 +25,8 @@ import {
 
 function outputView(
   text: string,
-  overrides: Partial<PiBackgroundTerminalOutputView> = {},
-): PiBackgroundTerminalOutputView {
+  overrides: Partial<DulliBackgroundTerminalOutputView> = {},
+): DulliBackgroundTerminalOutputView {
   return {
     text,
     totalBytes: text.length,
@@ -38,8 +38,8 @@ function outputView(
 const EMPTY_OUTPUT = outputView("");
 
 function view(
-  overrides: Partial<PiBackgroundTerminalView> & { id: string },
-): PiBackgroundTerminalView {
+  overrides: Partial<DulliBackgroundTerminalView> & { id: string },
+): DulliBackgroundTerminalView {
   return {
     command: "npm run build",
     title: `Terminal ${overrides.id}`,
@@ -53,14 +53,14 @@ function view(
 }
 
 function event(
-  overrides: Partial<PiBackgroundTerminalEvent> & { sequence: number },
-): PiBackgroundTerminalEvent {
+  overrides: Partial<DulliBackgroundTerminalEvent> & { sequence: number },
+): DulliBackgroundTerminalEvent {
   return {
     managerId: "manager-1",
     timestamp: `2026-04-01T00:00:${String(overrides.sequence).padStart(2, "0")}.000Z`,
     kind: "terminal_upsert",
     ...overrides,
-  } as PiBackgroundTerminalEvent;
+  } as DulliBackgroundTerminalEvent;
 }
 
 describe("trimToUtf8ByteBudget", () => {
@@ -612,18 +612,16 @@ describe("applyBackgroundTerminalEvent", () => {
 });
 
 describe("background terminal status predicates", () => {
-  const cases: ReadonlyArray<[PiBackgroundTerminalStatus, boolean]> = [
+  const cases: ReadonlyArray<[DulliBackgroundTerminalStatus, boolean]> = [
     ["running", true],
     ["done", false],
     ["failed", false],
     ["killed", false],
   ];
-  for (const [status, active] of cases) {
-    it(`classifies ${status}`, () => {
-      expect(isBackgroundTerminalActive(status)).toBe(active);
-      expect(isBackgroundTerminalTerminal(status)).toBe(!active);
-    });
-  }
+  it.each(cases)("classifies %s", (status, active) => {
+    expect(isBackgroundTerminalActive(status)).toBe(active);
+    expect(isBackgroundTerminalTerminal(status)).toBe(!active);
+  });
 });
 
 it("exposes the default client byte budget for output retention", () => {

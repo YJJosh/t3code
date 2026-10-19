@@ -63,4 +63,16 @@ done
   "$asset_dir/dulli-windows.ico"
 cp "$asset_dir/dulli-windows.ico" "$asset_dir/dulli-web-favicon.ico"
 
+# Android adaptive and themed icons mask a 108dp layer down to its centre, so the
+# glyph-only mark must sit inside the 66dp safe zone instead of the full tile.
+render_mark() {
+  local width="$1"
+  local canvas="$2"
+  local output="$3"
+  "${imagemagick[@]}" -background none -density 600 "$asset_dir/mark.svg" -resize "${width}x" \
+    -gravity center -extent "${canvas}x${canvas}" -depth 8 "PNG32:$output"
+}
+render_mark 208 432 "$asset_dir/dulli-android-mark-432.png"
+render_mark 68 96 "$asset_dir/dulli-android-notification-96.png"
+
 echo "Regenerated T3 Dulli assets in $asset_dir"

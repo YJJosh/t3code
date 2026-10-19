@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import {
-  classifyTaskAgentKind,
-  ItemLifecyclePayload,
-  ProviderRuntimeEvent,
-} from "./providerRuntime.ts";
+import { ProviderRuntimeEvent } from "./providerRuntime.ts";
 
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 
@@ -231,32 +227,4 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.usage.maxTokens).toBe(200000);
     expect(parsed.payload.usage.usedTokens).toBe(31251);
   });
-});
-
-describe("classifyTaskAgentKind", () => {
-  it("classifies agent-flavored, watch-loop, and inert types", () => {
-    expect(classifyTaskAgentKind({ taskType: "local_agent" })).toBe("agent");
-    expect(classifyTaskAgentKind({ taskType: "local_workflow" })).toBe("agent");
-    expect(classifyTaskAgentKind({ taskType: undefined })).toBe("agent");
-    expect(classifyTaskAgentKind({ taskType: "brand_new_agent_type" })).toBe("agent");
-    expect(classifyTaskAgentKind({ taskType: "local_bash" })).toBe("background");
-    expect(classifyTaskAgentKind({ taskType: "monitor" })).toBe("background");
-    expect(classifyTaskAgentKind({ taskType: "plan" })).toBe("background");
-  });
-
-  it("agent-owned tasks are background unless themselves agent-flavored", () => {
-    expect(classifyTaskAgentKind({ taskType: "local_bash", agentId: "owner" })).toBe("background");
-    expect(classifyTaskAgentKind({ taskType: undefined, agentId: "owner" })).toBe("background");
-    // Nested agent: outlives its parent, stays in the roster.
-    expect(classifyTaskAgentKind({ taskType: "local_agent", agentId: "owner" })).toBe("agent");
-  });
-});
-
-it("preserves optional item lifecycle phases without classifying legacy items", () => {
-  const decode = Schema.decodeUnknownSync(ItemLifecyclePayload);
-  for (const phase of ["commentary", "final_answer"] as const) {
-    expect(decode({ itemType: "assistant_message", phase }).phase).toBe(phase);
-  }
-  expect(decode({ itemType: "assistant_message" })).not.toHaveProperty("phase");
-  expect(() => decode({ itemType: "assistant_message", phase: "unknown" })).toThrow();
 });

@@ -1,38 +1,47 @@
+import { forkParked } from "../serverActivation.ts";
+import { recoverDulliUuidCursors } from "../orchestration-v2/legacy/DulliNativeContinuity.ts";
 import {
   CommandId,
-  PiSettings,
-  ProviderDriverKind,
   ProviderInstanceId,
+  ProviderDriverKind,
+  type ProviderInstanceConfig,
+  type ProviderSessionId,
   ThreadId,
+  OrchestrationV2ProviderThreadJson,
   resolveProviderInstanceEnabled,
   type AgentSessionImportResult,
 } from "@t3tools/contracts";
+import { DulliSettings } from "@t3tools/provider-dulli/settings";
+import {
+  PiSessionsClient,
+  resolvePiAgentDir,
+  type PiSessionInfo,
+} from "@t3tools/provider-dulli/server";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import * as Cause from "effect/Cause";
-import * as Crypto from "effect/Crypto";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Stream from "effect/Stream";
-import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 import type * as Scope from "effect/Scope";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
+import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as PiSessionsSettlement from "../persistence/PiSessionsSettlement.ts";
-import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ProviderService } from "../provider/Services/ProviderService.ts";
-import * as PiSessionsClient from "../provider/PiSessionsClient.ts";
-import * as ProviderSessionDirectory from "../provider/Services/ProviderSessionDirectory.ts";
-import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
-import { resolvePiAgentDir } from "../provider/pi/piPaths.ts";
-import { piSharingEnabled } from "../provider/pi/piRpcProtocol.ts";
-import { forkParked } from "../serverActivation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { importPreparedAgentThreads } from "./AgentSessionImporter.ts";
+import * as AgentSessionImporter from "./AgentSessionImporter.ts";
 import * as PiSessionTranscript from "./PiSessionTranscript.ts";
 
 export class PiSessionsSync extends Context.Service<
@@ -43,183 +52,83 @@ export class PiSessionsSync extends Context.Service<
     readonly drain: Effect.Effect<void>;
   }
 >()("t3/project/PiSessionsSync") {}
-
-const decodeConfig = Schema.decodeUnknownOption(PiSettings);
-const decodeCursor = Schema.decodeUnknownOption(
-  Schema.Struct({
-    piSessionId: Schema.optional(Schema.String),
-    piSessionFile: Schema.optional(Schema.String),
-  }),
+const decodeConfig = Schema.decodeUnknownOption(DulliSettings);
+const decodeBinding = Schema.decodeUnknownOption(
+  Schema.fromJsonString(OrchestrationV2ProviderThreadJson),
 );
+
+/** Concurrent disagreement keeps unfinished work visible, including daemon revision cycles. */
+export function settlementTarget(input: {
+  readonly baseline: {
+    readonly daemonRev: number;
+    readonly daemonSettled: boolean;
+    readonly t3Settled: boolean;
+  } | null;
+  readonly daemonRev: number;
+  readonly daemonSettled: boolean;
+  readonly t3Settled: boolean;
+  readonly imported: boolean;
+}): boolean | null {
+  const b = input.baseline;
+  if (b && b.daemonRev > input.daemonRev) return null;
+  if (!b) return input.imported ? input.daemonSettled : input.t3Settled;
+  const daemonChanged = b.daemonRev !== input.daemonRev || b.daemonSettled !== input.daemonSettled;
+  return daemonChanged
+    ? b.t3Settled !== input.t3Settled
+      ? input.daemonSettled && input.t3Settled
+      : input.daemonSettled
+    : input.t3Settled;
+}
+
 const make = Effect.gen(function* () {
-  const provider = yield* ProviderService;
   const client = yield* PiSessionsClient.PiSessionsClient;
+  const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+  const policies = yield* RuntimePolicy.RuntimePolicyV2;
+  const ids = yield* IdAllocator.IdAllocatorV2;
   const baselines = yield* PiSessionsSettlement.PiSessionsSettlement;
-  const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const projects = yield* ProjectStore.ProjectStoreV2;
+  const sink = yield* EventSink.EventSinkV2;
+  const sql = yield* SqlClient.SqlClient;
   const crypto = yield* Crypto.Crypto;
   const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const environmentId = yield* environment.getEnvironmentId;
+  const importer = yield* AgentSessionImporter.AgentSessionImporter;
   const transcripts = yield* PiSessionTranscript.PiSessionTranscript;
-  const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
-  const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const settings = yield* ServerSettingsService;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  // Capture the importer dependencies once; transports never acquire their own import runtime.
-  const services =
-    yield* Effect.context<Effect.Services<ReturnType<typeof importPreparedAgentThreads>>>();
+  const hostEnv = yield* HostProcess.Environment;
   const identity = (value: string) => fs.realPath(value).pipe(Effect.orElseSucceed(() => null));
-  let offset = 0;
-  let result: AgentSessionImportResult = { importedCount: 0, skippedCount: 0 };
-  let queued = false;
-  const importListed = Effect.fn(function* (listed: ReadonlyArray<PiSessionsClient.PiSessionInfo>) {
-    const records = listed.filter(
-      (record) =>
-        record.owner !== "t3" &&
-        !record.t3 &&
-        record.sessionFile !== undefined &&
-        path.isAbsolute(record.sessionFile) &&
-        record.agentDir !== undefined &&
-        path.isAbsolute(record.agentDir) &&
-        path.isAbsolute(record.cwd),
-    );
-    if (!records?.length) return;
+  const enabledInstances = Effect.gen(function* () {
     const config = yield* settings.getSettings;
-    const projects = yield* snapshots.getProjectShells();
-    const projectRoots = yield* Effect.forEach(projects, (project) =>
-      identity(project.workspaceRoot).pipe(Effect.map((root) => ({ project, root }))),
-    );
-    const instances = Object.entries(config.providerInstances).filter(
-      ([, instance]) => instance.driver === "pi" && resolveProviderInstanceEnabled(instance),
-    );
-    if (!Object.hasOwn(config.providerInstances, "pi") && config.providers.pi.enabled)
-      instances.push([
-        "pi",
-        { driver: ProviderDriverKind.make("pi"), config: config.providers.pi },
-      ]);
-    const homes = yield* Effect.forEach(instances, ([id, instance]) =>
-      Effect.gen(function* () {
-        const pi = decodeConfig(instance.config ?? {});
-        if (Option.isNone(pi) || !piSharingEnabled(pi.value)) return null;
-        const home = yield* identity(
-          resolvePiAgentDir(path, {
-            agentDir: pi.value.agentDir,
-            environment: mergeProviderInstanceEnvironment(instance.environment),
-          }),
-        );
-        return home === null ? null : { id: ProviderInstanceId.make(id), home };
-      }),
-    );
-    const bindings = yield* directory.listBindings();
-    const boundIds = new Map<string, Set<ThreadId>>();
-    const boundFiles = new Map<string, Set<ThreadId>>();
-    const bind = (map: Map<string, Set<ThreadId>>, key: string, threadId: ThreadId) => {
-      const ids = map.get(key) ?? new Set<ThreadId>();
-      ids.add(threadId);
-      map.set(key, ids);
+    // REVIEW: The registry enables an unconfigured default Dulli instance too.
+    // Keep sharing/import and UUID recovery available without a saved settings slot;
+    // an explicitly occupied or disabled slot still wins, exactly as in the registry.
+    const instances: Record<string, ProviderInstanceConfig> = {
+      dulli: { driver: ProviderDriverKind.make("dulli"), config: {} },
+      ...config.providerInstances,
     };
-    const completedByProject = new Map<string, Set<ThreadId>>();
-    for (const binding of bindings) {
-      if (binding.provider !== "pi") continue;
-      const cursor = decodeCursor(binding.resumeCursor);
-      if (Option.isNone(cursor)) continue;
-      if (cursor.value.piSessionId) bind(boundIds, cursor.value.piSessionId, binding.threadId);
-      if (cursor.value.piSessionFile) {
-        const file = yield* identity(cursor.value.piSessionFile);
-        if (file) bind(boundFiles, file, binding.threadId);
-      }
-    }
-    // Rotate the bounded window even when a corrupt/unknown session cannot be imported.
-    const count = Math.min(records.length, 100);
-    const start = offset % records.length;
-    offset = (start + count) % records.length;
-    for (let index = 0; index < count; index++) {
-      const record = records[(start + index) % records.length]!;
-      const file = yield* identity(record.sessionFile!);
-      if (!file) continue;
-      // Resolve the instance before deciding whether a stopped import cursor is a retry.
-      const root = yield* identity(record.cwd);
-      if (root === null) continue;
-      let matches = projectRoots.filter((entry) => entry.root === root);
-      // A Workler workspace (`<project>/.worktrees/<name>`, e.g. from `/workler`) belongs to its
-      // project, exactly like the workspaces T3 creates itself.
-      const inWorkspace =
-        matches.length === 0 && path.basename(path.dirname(root)) === ".worktrees";
-      if (inWorkspace) {
-        const parent = path.dirname(path.dirname(root));
-        matches = projectRoots.filter((entry) => entry.root === parent);
-      }
-      if (matches.length !== 1) continue;
-      const home = yield* identity(record.agentDir!);
-      const owners = homes.filter(
-        (entry) => entry !== null && home !== null && entry.home === home,
-      );
-      if (owners.length !== 1 || !owners[0]) continue;
-      const project = matches[0]!.project;
-      const threadId = ThreadId.make(`import:${owners[0].id}:${record.sessionId}`);
-      const bound = [...(boundIds.get(record.sessionId) ?? []), ...(boundFiles.get(file) ?? [])];
-      if (bound.some((id) => id !== threadId)) continue;
-      let completed = completedByProject.get(project.id);
-      if (!completed) {
-        completed = new Set(
-          (yield* snapshots.getImportedAgentSessionSources(project.id)).map(
-            (entry) => entry.threadId,
-          ),
-        );
-        completedByProject.set(project.id, completed);
-      }
-      if (completed.has(threadId)) {
-        yield* client.link({
-          sessionId: record.sessionId,
-          t3: { thread: threadId, environment: environmentId },
-        });
-        continue;
-      }
-      if (bound.length > 0) {
-        if (bindings.find((binding) => binding.threadId === threadId)?.status !== "stopped")
-          continue;
-        // A previous import may have installed its stopped cursor before crashing.
-        // The importer checks for real activity and never resurrects archived/deleted threads.
-      }
-      const read = yield* transcripts.read(record, owners[0].id, root);
-      if (!read) {
-        result = { ...result, skippedCount: result.skippedCount + 1 };
-        continue;
-      }
-      const outcome =
-        inWorkspace && read._tag === "Importable"
-          ? {
-              ...read,
-              thread: {
-                ...read.thread,
-                worktree: {
-                  path: path.join(project.workspaceRoot, ".worktrees", path.basename(root)),
-                  branch: record.branch ?? null,
-                },
+    return Object.entries(instances).flatMap(([id, instance]) => {
+      if (instance.driver !== "dulli" || !resolveProviderInstanceEnabled(instance)) return [];
+      const parsed = decodeConfig(instance.config ?? {});
+      return Option.isSome(parsed) && parsed.value.enabled
+        ? [
+            {
+              id: ProviderInstanceId.make(id),
+              config: parsed.value,
+              env: {
+                ...hostEnv,
+                ...Object.fromEntries(
+                  (instance.environment ?? []).map((entry) => [entry.name, entry.value]),
+                ),
               },
-            }
-          : read;
-      const imported = yield* importPreparedAgentThreads(
-        { projectId: project.id, expectedWorkspaceRoot: project.workspaceRoot },
-        [outcome],
-      ).pipe(Effect.provideContext(services));
-      result = {
-        importedCount: result.importedCount + imported.importedCount,
-        skippedCount: result.skippedCount + imported.skippedCount,
-      };
-      if (imported.importedCount > 0) {
-        bind(boundIds, record.sessionId, threadId);
-        bind(boundFiles, file, threadId);
-        completed.add(threadId);
-        yield* client.link({
-          sessionId: record.sessionId,
-          t3: { thread: threadId, environment: environmentId },
-        });
-      }
-    }
+            },
+          ]
+        : [];
+    });
   });
-  // The branch a workspace has checked out, read from its HEAD (`.git` is a folder in a Workler
-  // clone and a `gitdir:` file in a git worktree).
   const headBranch = (dir: string) =>
     Effect.gen(function* () {
       const dotGit = path.join(dir, ".git");
@@ -230,188 +139,278 @@ const make = Effect.gen(function* () {
         if (!pointer) return null;
         gitDir = path.resolve(dir, pointer);
       }
-      const head = yield* fs.readFileString(path.join(gitDir, "HEAD"));
-      return /^ref: refs\/heads\/(.+)$/m.exec(head)?.[1]?.trim() ?? null;
-    }).pipe(Effect.orElseSucceed(() => null));
-  // A branch renamed in the terminal (the agent does this after `/workler`) follows into T3.
-  // The workspace's HEAD is the truth, and `expectedBranch` keeps a rename T3 made meanwhile:
-  // a stale record must never undo T3's own first-turn rename.
-  const followBranch = Effect.fn(function* (
-    record: PiSessionsClient.PiSessionInfo,
-    threadId: ThreadId,
-    shell: { readonly branch: string | null; readonly worktreePath: string | null },
-  ) {
-    if (!record.branch || !shell.worktreePath || record.branch === shell.branch) return;
-    const dir = yield* identity(shell.worktreePath);
-    if (dir === null || dir !== (yield* identity(record.cwd))) return;
-    if ((yield* headBranch(dir)) !== record.branch) return;
-    yield* engine.dispatch({
-      type: "thread.meta.update",
-      commandId: CommandId.make(`pi-sessions:branch:${yield* crypto.randomUUIDv4}`),
-      threadId,
-      branch: record.branch,
-      expectedBranch: shell.branch,
-    });
-  });
-  // Imports and settlement share the same list and worker, but independent rotating budgets.
-  let settleOffset = 0;
-  const reconcile = Effect.fn(function* (
-    record: PiSessionsClient.PiSessionInfo,
-    threadId: ThreadId,
-    imported: boolean,
-  ) {
-    if (record.settleRev === undefined) return;
-    const link = { environmentId, threadId, sessionId: record.sessionId };
-    const saved = yield* baselines.get(link);
-    const baseline = Option.getOrNull(saved);
-    if (baseline !== null && baseline.daemonRev > record.settleRev) return;
-    // Capture before reading the shell. Dispatch checks this aggregate inside its serialized
-    // queue, so even a user change queued during the daemon round trip cannot be overwritten.
-    const sequence = yield* engine.latestSequence;
-    const shell = yield* snapshots.getThreadShellById(threadId);
-    if (Option.isNone(shell)) return;
-    // The clients classify persisted settled state by this override (not turn completion).
-    const t3Settled = shell.value.settledOverride === "settled";
-    const daemonSettled = record.settledAt !== undefined;
-    const daemonChanged =
-      baseline !== null &&
-      (record.settleRev !== baseline.daemonRev || daemonSettled !== baseline.daemonSettled);
-    const t3Changed = baseline !== null && t3Settled !== baseline.t3Settled;
-    let target = t3Settled;
-    if (baseline === null) {
-      if (imported) target = daemonSettled;
-    } else if (daemonChanged) {
-      // Concurrent disagreement keeps work visible. A daemon revision also detects
-      // settle/unsettle cycles whose final boolean equals the previous baseline.
-      target = t3Changed ? daemonSettled && t3Settled : daemonSettled;
-    }
-    let revision = record.settleRev;
-    if (daemonSettled !== target || t3Settled !== target) {
-      // Also confirm inbound changes with an idempotent CAS. A stale list must not undo
-      // a newer daemon change while we were importing or waiting in the worker.
-      const updated = yield* client.settle({
-        sessionId: record.sessionId,
-        settled: target,
-        ifRev: revision,
-      });
-      if (updated?.settleRev === undefined) return;
-      if (daemonSettled === target && updated.settleRev !== revision) return;
-      revision = updated.settleRev;
-    }
-    if (t3Settled !== target) {
-      const commandId = CommandId.make(`pi-sessions:settle:${yield* crypto.randomUUIDv4}`);
-      yield* engine.dispatch(
-        target
-          ? { type: "thread.settle", commandId, threadId }
-          : { type: "thread.unsettle", commandId, threadId, reason: "user" },
-        { expectedSequence: sequence },
+      return (
+        /^ref: refs\/heads\/(.+)$/m
+          .exec(yield* fs.readFileString(path.join(gitDir, "HEAD")))?.[1]
+          ?.trim() ?? null
       );
-    }
-    // Acknowledge only the state we applied/read, never a later reread: an edit during
-    // the request or baseline write must remain a change for the next round.
-    if (
-      baseline?.daemonRev !== revision ||
-      baseline.daemonSettled !== target ||
-      baseline.t3Settled !== target
-    ) {
-      yield* baselines.set(link, { daemonRev: revision, daemonSettled: target, t3Settled: target });
-    }
-  });
-  const isolate = <A, E>(effect: Effect.Effect<A, E>) =>
-    effect.pipe(
-      Effect.catchCauseIf(
-        (cause) => !Cause.hasInterruptsOnly(cause),
-        (cause) => Effect.logWarning("Pi session sync skipped", { cause: Cause.pretty(cause) }),
-      ),
-    );
-  let latest: ReadonlyArray<PiSessionsClient.PiSessionInfo> | null = null;
-  const sweep = Effect.gen(function* () {
-    const listed = latest;
-    if (!listed?.length) return;
-    yield* isolate(importListed(listed));
-    const bindings = (yield* directory.listBindings()).filter(
-      (binding) => binding.provider === "pi",
-    );
-    const byThread = new Map(bindings.map((binding) => [binding.threadId, binding]));
-    const bySession = new Map<string, typeof bindings>();
-    for (const binding of bindings) {
-      const cursor = decodeCursor(binding.resumeCursor);
-      if (Option.isSome(cursor) && cursor.value.piSessionId) {
-        const sessionId = cursor.value.piSessionId;
-        bySession.set(sessionId, [...(bySession.get(sessionId) ?? []), binding]);
-      }
-    }
-    const count = Math.min(listed.length, 100);
-    const start = settleOffset % listed.length;
-    settleOffset = (start + count) % listed.length;
-    const importedByProject = new Map<string, Set<ThreadId>>();
-    for (let index = 0; index < count; index++) {
-      const record = listed[(start + index) % listed.length]!;
-      // Explicit links must name this environment. Never settle another environment's thread.
-      if (record.t3 && record.t3.environment !== environmentId) continue;
-      const candidates = record.t3
-        ? [byThread.get(ThreadId.make(record.t3.thread))].filter((binding) => binding !== undefined)
-        : (bySession.get(record.sessionId) ?? []);
-      if (candidates.length !== 1) continue;
-      const binding = candidates[0]!;
-      const cursor = decodeCursor(binding.resumeCursor);
-      if (
-        Option.isSome(cursor) &&
-        cursor.value.piSessionId &&
-        cursor.value.piSessionId !== record.sessionId
-      )
-        continue;
-      yield* isolate(
-        Effect.gen(function* () {
-          const shell = yield* snapshots.getThreadShellById(binding.threadId);
-          if (Option.isNone(shell) || shell.value.archivedAt !== null) return;
-          let imported = importedByProject.get(shell.value.projectId);
-          if (!imported) {
-            imported = new Set(
-              (yield* snapshots.getImportedAgentSessionSources(shell.value.projectId))
-                .filter((entry) => entry.source.provider === "pi")
-                .map((entry) => entry.threadId),
-            );
-            importedByProject.set(shell.value.projectId, imported);
-          }
-          if (!record.t3 && !imported.has(binding.threadId)) return;
-          const config = yield* settings.getSettings;
-          const instance =
-            binding.providerInstanceId && config.providerInstances[binding.providerInstanceId];
-          const pi = decodeConfig(instance ? (instance.config ?? {}) : config.providers.pi);
+    }).pipe(Effect.orElseSucceed(() => null));
+  const reconcile = (record: PiSessionInfo, threadId: ThreadId) =>
+    Effect.gen(function* () {
+      // Capture before reading the shell; the serialized orchestrator checks all thread events.
+      const sequence = yield* sink.latestSequence({ threadId });
+      const shell = yield* projections.getThread(threadId);
+      if (shell.archivedAt !== null || shell.deletedAt !== null) return;
+      if (record.settleRev !== undefined) {
+        const link = { environmentId, threadId, sessionId: record.sessionId };
+        const baseline = Option.getOrNull(yield* baselines.get(link));
+        const t3Settled = shell.settledOverride === "settled";
+        const daemonSettled = record.settledAt !== undefined;
+        const target = settlementTarget({
+          baseline,
+          daemonRev: record.settleRev,
+          daemonSettled,
+          t3Settled,
+          imported: shell.historyOrigin === "v1_import",
+        });
+        if (target === null) return;
+        let revision = record.settleRev;
+        if (daemonSettled !== target || t3Settled !== target) {
+          const updated = yield* client.settle({
+            sessionId: record.sessionId,
+            settled: target,
+            ifRev: revision,
+          });
           if (
-            Option.isNone(pi) ||
-            !piSharingEnabled(pi.value) ||
-            (instance && !resolveProviderInstanceEnabled(instance))
+            updated?.settleRev === undefined ||
+            (daemonSettled === target && updated.settleRev !== revision)
           )
             return;
-          yield* reconcile(record, binding.threadId, imported.has(binding.threadId));
-          yield* followBranch(record, binding.threadId, shell.value);
+          revision = updated.settleRev;
+        }
+        if (t3Settled !== target) {
+          const commandId = CommandId.make(`pi-sessions:settle:${yield* crypto.randomUUIDv4()}`);
+          yield* orchestrator.dispatch(
+            target
+              ? { type: "thread.settle", commandId, threadId, expectedSequence: sequence }
+              : {
+                  type: "thread.unsettle",
+                  commandId,
+                  threadId,
+                  reason: "user",
+                  expectedSequence: sequence,
+                },
+          );
+        }
+        if (
+          baseline?.daemonRev !== revision ||
+          baseline.daemonSettled !== target ||
+          baseline.t3Settled !== target
+        )
+          yield* baselines.set(link, {
+            daemonRev: revision,
+            daemonSettled: target,
+            t3Settled: target,
+          });
+      }
+      if (record.branch && shell.worktreePath && record.branch !== shell.branch) {
+        const dir = yield* identity(shell.worktreePath);
+        if (
+          dir === null ||
+          dir !== (yield* identity(record.cwd)) ||
+          (yield* headBranch(dir)) !== record.branch
+        )
+          return;
+        // Re-read after our own settlement dispatch, but retain the originally observed branch.
+        const branchSequence = yield* sink.latestSequence({ threadId });
+        const current = yield* projections.getThread(threadId);
+        if (current.branch !== shell.branch || current.worktreePath !== shell.worktreePath) return;
+        yield* orchestrator.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`pi-sessions:branch:${yield* crypto.randomUUIDv4()}`),
+          threadId,
+          branch: record.branch,
+          expectedSequence: branchSequence,
+        });
+      }
+    });
+  let latest: ReadonlyArray<PiSessionInfo> | null = null;
+  let offset = 0;
+  let recoveredHomes = "";
+  const attachedSessions = new Map<ThreadId, ProviderSessionId>();
+  let result: AgentSessionImportResult = { importedCount: 0, skippedCount: 0 };
+  const sweep = Effect.gen(function* () {
+    const instances = yield* enabledInstances;
+    if (!instances.length) return;
+    const homes = yield* Effect.forEach(instances, (instance) =>
+      identity(
+        resolvePiAgentDir(path, { agentDir: instance.config.agentDir, environment: instance.env }),
+      ).pipe(Effect.map((home) => ({ ...instance, home }))),
+    );
+    const homePaths = homes.flatMap((entry) => (entry.home === null ? [] : [entry.home]));
+    const homesKey = homePaths.slice().sort().join("\0");
+    if (homesKey !== recoveredHomes) {
+      recoveredHomes = homesKey;
+      yield* recoverDulliUuidCursors(homePaths).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Legacy Dulli native continuity recovery skipped", { cause }),
+        ),
+      );
+    }
+    if (!latest?.length) return;
+    const sharingInstances = instances.filter(
+      (instance) => instance.config.piSessions && instance.config.shareWithTerminal,
+    );
+    const sharingHomes = homes.filter(
+      (instance) => instance.config.piSessions && instance.config.shareWithTerminal,
+    );
+    if (!sharingInstances.length) return;
+    const roots = yield* Effect.forEach(yield* projects.listShells(), (project) =>
+      identity(project.workspaceRoot).pipe(Effect.map((root) => ({ project, root }))),
+    );
+    // Read only native bindings, not message histories or full shell snapshots.
+    const rows = yield* sql<{
+      payload_json: string;
+    }>`SELECT p.payload_json FROM orchestration_v2_projection_provider_threads p JOIN orchestration_v2_projection_threads t ON t.thread_id = p.thread_id WHERE p.driver = 'dulli' AND json_extract(t.payload_json, '$.activeProviderThreadId') = p.provider_thread_id`;
+    const bindings = rows.flatMap((row) => {
+      const decoded = decodeBinding(row.payload_json);
+      return Option.isSome(decoded) ? [decoded.value] : [];
+    });
+    const files = yield* Effect.forEach(bindings, (binding) =>
+      (binding.nativeThreadRef?.driver === "dulli" &&
+      binding.nativeThreadRef.nativeId !== null &&
+      path.isAbsolute(binding.nativeThreadRef.nativeId)
+        ? identity(binding.nativeThreadRef.nativeId)
+        : Effect.succeed(null)
+      ).pipe(Effect.map((file) => ({ binding, file }))),
+    );
+    const listed = latest;
+    const count = Math.min(listed.length, 100);
+    const start = offset % listed.length;
+    offset = (start + count) % listed.length;
+    for (let n = 0; n < count; n++) {
+      const record = listed[(start + n) % listed.length]!;
+      yield* Effect.gen(function* () {
+        if (record.t3 && record.t3.environment !== environmentId) return;
+        if (
+          !record.sessionFile ||
+          !path.isAbsolute(record.sessionFile) ||
+          !path.isAbsolute(record.cwd)
+        )
+          return;
+        const file = yield* identity(record.sessionFile);
+        if (!file) return;
+        const matching = files.filter(
+          (entry) => entry.file === file && entry.binding.appThreadId !== null,
+        );
+        if (matching.length > 1) return;
+        const bound = matching[0]?.binding;
+        if (bound?.appThreadId) {
+          if (!sharingInstances.some((instance) => instance.id === bound.providerInstanceId))
+            return;
+          if (record.t3 && record.t3.thread !== bound.appThreadId) return;
+          const shell = yield* projections.getThread(bound.appThreadId);
+          if (shell.archivedAt !== null || shell.deletedAt !== null) return;
+          if (!record.t3 && shell.historyOrigin !== "v1_import") return;
+          if (!record.t3)
+            yield* client.link({
+              sessionId: record.sessionId,
+              t3: { thread: bound.appThreadId, environment: environmentId },
+            });
+          yield* reconcile(record, bound.appThreadId);
+          const knownSessionId = bound.providerSessionId ?? attachedSessions.get(bound.appThreadId);
           if (
             record.live &&
             record.owner === "daemon" &&
-            record.t3?.environment === environmentId
+            record.t3?.environment === environmentId &&
+            (knownSessionId === undefined || !(yield* sessions.isLive(knownSessionId)))
           ) {
-            const sessions = yield* provider.listSessions();
-            if (!sessions.some((session) => session.threadId === binding.threadId)) {
-              yield* provider.startSession(binding.threadId, {
-                threadId: binding.threadId,
-                provider: ProviderDriverKind.make("pi"),
-                providerInstanceId: binding.providerInstanceId,
-                cwd: record.cwd,
-                runtimeMode: binding.runtimeMode ?? "full-access",
-                resumeCursor: {
-                  piSessionId: record.sessionId,
-                  piSessionFile: record.sessionFile,
-                  piSessionsAttach: true,
-                },
-              });
-            }
+            const runtimePolicy = yield* policies.resolve({
+              thread: shell,
+              modelSelection: shell.modelSelection,
+            });
+            const providerSessionId =
+              knownSessionId ??
+              (yield* ids.allocate.providerSession({
+                providerInstanceId: bound.providerInstanceId,
+                threadId: bound.appThreadId,
+              }));
+            const runtime = yield* sessions.open({
+              threadId: bound.appThreadId,
+              providerSessionId,
+              modelSelection: shell.modelSelection,
+              runtimePolicy,
+              initialNativeThreadId: file,
+              attachOnly: true,
+            });
+            attachedSessions.set(bound.appThreadId, providerSessionId);
+            yield* runtime.resumeThread({
+              threadId: bound.appThreadId,
+              providerThread: bound,
+              modelSelection: shell.modelSelection,
+              runtimePolicy,
+            });
           }
-        }),
+          return;
+        }
+        if (
+          record.owner === "t3" ||
+          record.t3 ||
+          !record.agentDir ||
+          !path.isAbsolute(record.agentDir)
+        )
+          return;
+        const home = yield* identity(record.agentDir);
+        const owners = sharingHomes.filter((entry) => entry.home !== null && entry.home === home);
+        if (owners.length !== 1) return;
+        const root = yield* identity(record.cwd);
+        if (root === null) return;
+        let matches = roots.filter((entry) => entry.root === root);
+        const inWorkspace =
+          matches.length === 0 && path.basename(path.dirname(root)) === ".worktrees";
+        if (inWorkspace)
+          matches = roots.filter((entry) => entry.root === path.dirname(path.dirname(root)));
+        if (matches.length !== 1) return;
+        const project = matches[0]!.project;
+        const read = yield* transcripts.read(record, owners[0]!.id, root);
+        if (!read) {
+          result = { importedCount: result.importedCount, skippedCount: result.skippedCount + 1 };
+          return;
+        }
+        const outcome =
+          read._tag === "Importable" && inWorkspace
+            ? {
+                ...read,
+                thread: {
+                  ...read.thread,
+                  worktree: {
+                    path: root,
+                    branch:
+                      (yield* headBranch(root)) === record.branch ? (record.branch ?? null) : null,
+                  },
+                },
+              }
+            : read;
+        const imported = yield* importer.importPreparedAgentThreads(
+          { projectId: project.id, expectedWorkspaceRoot: project.workspaceRoot },
+          [outcome],
+        );
+        result = {
+          importedCount: result.importedCount + imported.importedCount,
+          skippedCount: result.skippedCount + imported.skippedCount,
+        };
+        if (imported.importedCount) {
+          const legacyId = ThreadId.make(`import:pi:${record.sessionId}`);
+          const legacy =
+            owners[0]!.id === "dulli"
+              ? yield* projections.getThread(legacyId).pipe(Effect.option)
+              : Option.none();
+          const threadId =
+            Option.isSome(legacy) && legacy.value.providerInstanceId === owners[0]!.id
+              ? legacyId
+              : ThreadId.make(`import:${owners[0]!.id}:${record.sessionId}`);
+          yield* client.link({
+            sessionId: record.sessionId,
+            t3: { thread: threadId, environment: environmentId },
+          });
+          yield* reconcile(record, threadId);
+        }
+      }).pipe(
+        Effect.catch((cause) => Effect.logWarning("Dulli shared session sync skipped", { cause })),
       );
     }
   });
+  let queued = false;
   const worker = yield* makeDrainableWorker(() =>
     Effect.gen(function* () {
       queued = false;
@@ -419,10 +418,7 @@ const make = Effect.gen(function* () {
       const rounds = Math.max(1, Math.ceil((latest?.length ?? 0) / 100));
       for (let n = 0; n < rounds; n++) yield* sweep;
     }).pipe(
-      Effect.catchCauseIf(
-        (cause) => !Cause.hasInterruptsOnly(cause),
-        (cause) => Effect.logWarning("Pi session sync skipped", { cause: Cause.pretty(cause) }),
-      ),
+      Effect.catch((cause) => Effect.logWarning("Dulli shared sessions sweep failed", { cause })),
     ),
   );
   const enqueue = Effect.uninterruptible(
@@ -443,22 +439,12 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if (started) return;
       started = true;
-      const events = yield* engine.subscribeDomainEvents;
       const changes = yield* settings.subscribeChanges;
       let watching: Fiber.Fiber<void> | undefined;
       const configure = Effect.gen(function* () {
-        const config = yield* settings.getSettings;
-        const configs = Object.values(config.providerInstances)
-          .filter(
-            (instance) => instance.driver === "pi" && resolveProviderInstanceEnabled(instance),
-          )
-          .map((instance) => instance.config ?? {});
-        if (!Object.hasOwn(config.providerInstances, "pi") && config.providers.pi.enabled)
-          configs.push(config.providers.pi);
-        const enabled = configs.some((value) => {
-          const pi = decodeConfig(value);
-          return Option.isSome(pi) && piSharingEnabled(pi.value);
-        });
+        const enabled = (yield* enabledInstances).some(
+          (instance) => instance.config.piSessions && instance.config.shareWithTerminal,
+        );
         if (!enabled && watching) {
           yield* Fiber.interrupt(watching);
           watching = undefined;
@@ -466,32 +452,32 @@ const make = Effect.gen(function* () {
         }
         if (enabled && !watching)
           watching = yield* client
-            .watch((threads) =>
+            .watch((records) =>
               Effect.gen(function* () {
-                latest = threads;
+                latest = records;
                 yield* enqueue;
               }),
             )
             .pipe(Effect.forkScoped);
-        if (enabled && latest) yield* enqueue;
+        yield* enqueue;
       });
       yield* forkParked(
         Effect.gen(function* () {
-          yield* configure;
-          yield* Stream.runForEach(changes, () => configure);
+          yield* configure.pipe(Effect.ignore);
+          yield* Stream.runForEach(changes, () => configure.pipe(Effect.ignore));
         }),
       );
-      yield* forkParked(
-        Stream.runForEach(events, (event) =>
-          event.type === "thread.settled" ||
-          event.type === "thread.unsettled" ||
-          event.type === "thread.session-set"
-            ? enqueue
-            : Effect.void,
-        ),
+      yield* Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
+        ["thread.settled", "thread.unsettled", "provider-session.detached"].includes(event.type)
+          ? enqueue
+          : Effect.void,
+      ).pipe(Effect.ignore, Effect.forkScoped);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          started = false;
+        }),
       );
     });
   return PiSessionsSync.of({ refresh, start, drain: worker.drain });
 });
-
 export const layer = Layer.effect(PiSessionsSync, make);

@@ -20,8 +20,8 @@ describe("mobile branding", () => {
   it.each([
     ["development", "Dev"],
     ["preview", "Nightly"],
-    ["production", "Alpha"],
-    [undefined, "Alpha"],
+    ["production", "Beta"],
+    [undefined, "Beta"],
   ])("maps %s builds to %s", (appVariant, expected) => {
     expect(resolveMobileStageLabel(appVariant)).toBe(expected);
   });

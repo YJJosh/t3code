@@ -465,7 +465,7 @@ export const make = Effect.gen(function* () {
   const run: WorklerRunner = (method, args) =>
     libraryPath.pipe(
       Effect.flatMap((path) => runInWorker(path, method, args)),
-      Effect.catchTag("WorklerWorkerUnavailable", () => inProcess(method, args)),
+      Effect.catchTags({ WorklerWorkerUnavailable: () => inProcess(method, args) }),
     ) as Effect.Effect<ReturnType<WorklerLibrary[typeof method]>, WorklerCallFailure>;
   return makeFromRunner(run);
 });

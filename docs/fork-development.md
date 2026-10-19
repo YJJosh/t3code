@@ -4,7 +4,7 @@ T3 Dulli is the branded distribution maintained in `YJJosh/t3code`. This reposit
 
 ## Upstream baseline
 
-The current upstream baseline is stable **v0.0.40**, not a nightly or preview release. Upstream updates retain the fork's Pi provider, subagent/workflow inspector, background-terminal controls, Workler defaults, and Dulli identities and release channels. Resolve overlapping changes at their integration boundaries rather than replacing fork-owned features with upstream equivalents.
+The current upstream baseline is stable **v0.1.0**, not a nightly or preview release. Upstream updates retain the fork's Pi provider, subagent/workflow inspector, background-terminal controls, Workler defaults, and Dulli identities and release channels. Resolve overlapping changes at their integration boundaries rather than replacing fork-owned features with upstream equivalents.
 
 ## Identity and coexistence
 
@@ -70,7 +70,7 @@ Example unsigned Linux artifact:
   --platform linux \
   --target AppImage \
   --arch x64 \
-  --build-version 0.0.40-pi.1
+  --build-version 0.1.0-dulli.1
 ```
 
 `T3CODE_DESKTOP_BRAND=dulli` is the environment equivalent. Dulli package metadata always defaults its updater to prereleases from `YJJosh/t3code`; `T3CODE_DESKTOP_UPDATE_REPOSITORY` remains available for an explicit test feed override.
@@ -81,14 +81,14 @@ Install the newest x86_64 Dulli prerelease, or provide a tag:
 
 ```sh
 scripts/dulli/install-linux-appimage.sh
-scripts/dulli/install-linux-appimage.sh v0.0.40-pi.1
+scripts/dulli/install-linux-appimage.sh v0.1.0-dulli.1
 ```
 
 The helper downloads only a `T3-Dulli-*-x86_64.AppImage` prerelease, installs an isolated launcher and icon, and writes `t3-dulli-clean.desktop`. Future updates use the app's built-in updater. There is intentionally no restart helper that finds or kills processes by pattern.
 
 ## Releases
 
-`.github/workflows/fork-desktop-release.yml` is the only Dulli publisher. It is manual-only and accepts the `0.0.<patch>-dulli.<build>` sequence plus the one-time `0.0.40-pi.1` migration release. The suffix identifies the distribution; Pi remains the provider's name. For one version it:
+`.github/workflows/fork-desktop-release.yml` is the only Dulli publisher. It is manual-only and accepts the `0.<minor>.<patch>-dulli.<build>` sequence plus the one-time `0.0.40-pi.1` migration release. The suffix identifies the distribution; Pi remains the provider's name. For one version it:
 
 - runs release checks on GitHub-hosted runners;
 - builds branded macOS arm64/x64, Linux x64, and Windows x64 desktop artifacts;
@@ -97,9 +97,18 @@ The helper downloads only a `T3-Dulli-*-x86_64.AppImage` prerelease, installs an
 - publishes the GitHub prerelease and updater manifests; and
 - publishes the same server and web client as `@yjosh/t3` through npm trusted publishing.
 
-Publish `0.0.40-pi.1` with the migration-aware updater first. Existing `0.0.36-pi.2` desktop installs only discover the `pi` channel, so they must install this release before they can discover `dulli`. After a later change, publish `0.0.40-dulli.2`, then continue with `0.0.40-dulli.3`, or reset the build counter when the upstream patch increases.
+The first release on upstream v0.1.0 is `0.1.0-dulli.1`. Increase the build counter for
+fork changes; reset it when the upstream minor or patch increases. Normal SemVer ordering
+upgrades `0.0.45-dulli.N` installs to `0.1.0-dulli.1`.
 
-SemVer sorts `dulli` before `pi`. The migration-aware desktop updater makes a narrow exception for a same-patch `pi` → `dulli` transition with a strictly higher build number; unrelated downgrades remain blocked. Android uses the same numeric build slots for both suffixes, so the sequence increases versionCode from `400001` to `400002`. Do not reuse build slots across suffixes. Existing `-pi` tags remain unchanged and installable; retain the `0.0.40-pi.1` release and its assets so older installs can still migrate.
+Retain `0.0.40-pi.1` and its assets: older `0.0.36-pi.2` installs discover only the `pi`
+channel and need that migration-aware release before discovering `dulli`. Its updater permits
+only a same-base `pi` → `dulli` transition with a higher build number; unrelated downgrades
+remain blocked. Do not reuse build slots across suffixes.
+
+Android uses `(minor * 1000 + patch) * 10000 + build`, with major 0, patch at most 999,
+build at most 9999, and versionCode at most 2,100,000,000. Existing `0.0.x` codes stay
+unchanged; `0.1.0-dulli.1` uses `10,000,001`.
 
 The workflow deliberately does not deploy a relay, invoke EAS, submit to an app store, publish the upstream `t3` package, deploy hosted web infrastructure, or mark a Dulli prerelease as GitHub's latest stable release.
 

@@ -15,13 +15,39 @@
  * @module usageScanCache
  */
 import type { UsageProviderKind } from "@t3tools/contracts";
+import type {
+  TranscriptUsageFormat,
+  UsageRecord,
+  UsageSpeed,
+} from "@t3tools/provider-core/server/usage";
+import * as Schema from "effect/Schema";
 
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
-import type { CodexScanState, PiScanState, UsageRecord } from "./usageTranscripts.ts";
 
-// v5 combines Pi reducer/project metadata and Claude fast pricing. Both branches
-// used v4 for different layouts; neither can safely serve these warm entries.
-const USAGE_SCAN_CACHE_VERSION = 5 as const;
+// v2: Codex fork-copy suppression changed what a file parses to, so v1
+// entries would keep serving double-counted records forever.
+// v3: entries carry the parse position and reducer state so a grown file
+// re-parses only its appended bytes instead of starting over.
+// v4: records carry Claude fast mode, which v3 rows never captured.
+// v5: Codex records carry their service tier. v4 rows store speed the same
+// way, so v4 entries still load; see `decodeScanCache` for v4 stateful entries.
+// v6 gives the fork and upstream's unrelated v5 layouts a single unambiguous
+// destination. Legacy fork Pi parser state is not upstream Pi parser state.
+const USAGE_SCAN_CACHE_VERSION = 6 as const;
+const SPEED_COMPATIBLE_SINCE_VERSION = 4;
+
+/**
+ * Each cache version writes its own file in the state directory. An older
+ * server sharing that directory cannot read a newer cache and would replace
+ * it, dropping saved usage for deleted transcripts. Separate files keep both.
+ * A v6 server imports upstream v5 or the legacy file when its own is missing.
+ */
+export const SCAN_CACHE_FILE_NAME = "usage-scan-cache-v6.json";
+export const PREVIOUS_SCAN_CACHE_FILE_NAME = "usage-scan-cache-v5.json";
+export const LEGACY_SCAN_CACHE_FILE_NAME = "usage-scan-cache.json";
+
+/** Serialised as the index into this list. */
+const SPEEDS: readonly UsageSpeed[] = ["standard", "fast", "ultrafast"];
 
 export interface CachedFile {
   readonly size: number;
@@ -29,8 +55,6 @@ export interface CachedFile {
   readonly provider: UsageProviderKind;
   /** Records from newline-terminated lines, up to `position.resumeOffset`. */
   readonly records: readonly UsageRecord[];
-  /** Pi project paths used to discover child sessions even on a warm scan. */
-  readonly projectPaths: readonly string[];
   /**
    * Records from a trailing segment the writer had not newline-terminated at
    * parse time. Kept apart from `records` because an incremental parse
@@ -58,14 +82,15 @@ type SerializedRecord = readonly [
   reasoningTokens: number,
   dedupeKey: string | null,
   reportedCostUsd: number | null,
-  fast: 0 | 1,
+  speed: number,
+  /** Optional trailing field keeps existing cache rows readable. */
+  rateModelIndex?: number | null,
 ];
 
 interface SerializedFile {
   readonly s: number;
   readonly m: number;
   readonly p: UsageProviderKind;
-  readonly d: readonly string[];
   readonly r: readonly SerializedRecord[];
   /** Tail records; see `CachedFile.tailRecords`. */
   readonly t: readonly SerializedRecord[];
@@ -73,9 +98,8 @@ interface SerializedFile {
   readonly o: number;
   readonly gl: number;
   readonly gh: number;
-  /** Codex reducer state at `o`; `null` for other providers. */
-  readonly cs: CodexScanState | null;
-  readonly ps: PiScanState | null;
+  /** The format's encoded reducer state at `o`; `null` for stateless formats. */
+  readonly cs: unknown;
 }
 
 interface SerializedCache {
@@ -85,26 +109,32 @@ interface SerializedCache {
   readonly files: Readonly<Record<string, SerializedFile>>;
 }
 
-/** Serialises the cache, interning the repeated model and session strings. */
-export function encodeScanCache(cache: ScanCache): SerializedCache {
-  const models: string[] = [];
-  const sessions: string[] = [];
-  const modelIndex = new Map<string, number>();
-  const sessionIndex = new Map<string, number>();
+/** Model and session strings, each stored once and referenced by index. */
+interface InternTables {
+  readonly models: string[];
+  readonly sessions: string[];
+  readonly modelIndex: Map<string, number>;
+  readonly sessionIndex: Map<string, number>;
+}
 
-  const intern = (table: string[], index: Map<string, number>, value: string): number => {
-    const existing = index.get(value);
-    if (existing !== undefined) return existing;
-    const next = table.length;
-    table.push(value);
-    index.set(value, next);
-    return next;
-  };
+function makeInternTables(): InternTables {
+  return { models: [], sessions: [], modelIndex: new Map(), sessionIndex: new Map() };
+}
 
+function intern(table: string[], index: Map<string, number>, value: string): number {
+  const existing = index.get(value);
+  if (existing !== undefined) return existing;
+  const next = table.length;
+  table.push(value);
+  index.set(value, next);
+  return next;
+}
+
+function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile {
   const serializeRecord = (record: UsageRecord): SerializedRecord => [
     record.timestampMs,
-    intern(models, modelIndex, record.model),
-    intern(sessions, sessionIndex, record.sessionId),
+    intern(tables.models, tables.modelIndex, record.model),
+    intern(tables.sessions, tables.sessionIndex, record.sessionId),
     record.totals.uncachedInputTokens,
     record.totals.cachedInputTokens,
     record.totals.cacheCreationTokens,
@@ -112,27 +142,73 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
     record.totals.reasoningTokens,
     record.dedupeKey,
     record.reportedCostUsd,
-    record.fast ? 1 : 0,
+    SPEEDS.indexOf(record.speed),
+    record.rateModel === undefined
+      ? null
+      : intern(tables.models, tables.modelIndex, record.rateModel),
   ];
+  return {
+    s: entry.size,
+    m: entry.mtimeMs,
+    p: entry.provider,
+    r: entry.records.map(serializeRecord),
+    t: entry.tailRecords.map(serializeRecord),
+    o: entry.position.resumeOffset,
+    gl: entry.position.guardLength,
+    gh: entry.position.guardHash,
+    cs: entry.position.state,
+  };
+}
 
+/** Serialises the cache, interning the repeated model and session strings. */
+export function encodeScanCache(cache: ScanCache): SerializedCache {
+  const tables = makeInternTables();
   const files: Record<string, SerializedFile> = {};
-  for (const [path, entry] of cache) {
-    files[path] = {
-      s: entry.size,
-      m: entry.mtimeMs,
-      p: entry.provider,
-      d: entry.projectPaths,
-      r: entry.records.map(serializeRecord),
-      t: entry.tailRecords.map(serializeRecord),
-      o: entry.position.resumeOffset,
-      gl: entry.position.guardLength,
-      gh: entry.position.guardHash,
-      cs: entry.position.codexState,
-      ps: entry.position.piState,
-    };
-  }
+  for (const [path, entry] of cache) files[path] = serializeFile(entry, tables);
+  return {
+    version: USAGE_SCAN_CACHE_VERSION,
+    models: tables.models,
+    sessions: tables.sessions,
+    files,
+  };
+}
 
-  return { version: USAGE_SCAN_CACHE_VERSION, models, sessions, files };
+/**
+ * Returns a function that serialises the cache to JSON text, re-encoding only
+ * the entries that changed since its last call. Call it once per persist.
+ *
+ * Writes the same document as `encodeScanCache`. Most entries never change
+ * between scans, and encoding all of them made each persist cost close to a
+ * second on a large cache. Entries are replaced, never mutated, when their file
+ * changes, so an entry's JSON is memoised by identity. The intern tables only
+ * grow, so a memoised entry's indexes stay valid; a pruned entry can leave an
+ * unused string behind until the next process start.
+ */
+export function makeScanCacheWriter(): (
+  cache: ScanCache,
+  extra: Readonly<Record<string, unknown>>,
+) => string {
+  const tables = makeInternTables();
+  const fragments = new WeakMap<CachedFile, string>();
+  return (cache, extra) => {
+    const files: string[] = [];
+    for (const [path, entry] of cache) {
+      let fragment = fragments.get(entry);
+      if (fragment === undefined) {
+        fragment = JSON.stringify(serializeFile(entry, tables));
+        fragments.set(entry, fragment);
+      }
+      files.push(`${JSON.stringify(path)}:${fragment}`);
+    }
+    // Encoded after the files, which may have added to the intern tables.
+    const head = JSON.stringify({
+      ...extra,
+      version: USAGE_SCAN_CACHE_VERSION,
+      models: tables.models,
+      sessions: tables.sessions,
+    });
+    return `${head.slice(0, -1)},"files":{${files.join(",")}}}`;
+  };
 }
 
 function isRecordArray(value: unknown): value is readonly unknown[] {
@@ -143,14 +219,26 @@ function isRecordArray(value: unknown): value is readonly unknown[] {
  * Rebuilds the cache from a parsed document.
  *
  * Anything malformed yields an empty cache rather than an error: a corrupt
- * cache should cost one cold scan, never a broken page.
+ * cache should cost one cold scan, never a broken page. Entries of a provider
+ * without a transcript format in `formats` are dropped.
  */
-export function decodeScanCache(document: unknown): ScanCache {
+export function decodeScanCache(
+  document: unknown,
+  formats: ReadonlyMap<UsageProviderKind, TranscriptUsageFormat<unknown>>,
+): ScanCache {
   const cache: ScanCache = new Map();
+  const isValidState = makeStateValidators(formats);
   if (typeof document !== "object" || document === null) return cache;
 
   const root = document as Partial<SerializedCache>;
-  if (root.version !== USAGE_SCAN_CACHE_VERSION) return cache;
+  const version = root.version;
+  if (
+    typeof version !== "number" ||
+    version < SPEED_COMPATIBLE_SINCE_VERSION ||
+    version > USAGE_SCAN_CACHE_VERSION
+  ) {
+    return cache;
+  }
   if (!isRecordArray(root.models) || !isRecordArray(root.sessions)) return cache;
   if (typeof root.files !== "object" || root.files === null) return cache;
 
@@ -183,20 +271,24 @@ export function decodeScanCache(document: unknown): ScanCache {
         reasoning,
         dedupeKey,
         reportedCostUsd,
-        fast,
+        speedIndex,
+        rateModelIndex,
       ] = row as SerializedRecord;
+      const speed = typeof speedIndex === "number" ? SPEEDS[speedIndex] : undefined;
 
       const model = typeof modelIndex === "number" ? models[modelIndex] : undefined;
+      const rateModel = typeof rateModelIndex === "number" ? models[rateModelIndex] : undefined;
       if (
         typeof timestampMs !== "number" ||
         !Number.isFinite(timestampMs) ||
         model === undefined ||
+        (rateModelIndex != null && rateModel === undefined) ||
         !Number.isFinite(uncached) ||
         !Number.isFinite(cached) ||
         !Number.isFinite(cacheCreation) ||
         !Number.isFinite(output) ||
         !Number.isFinite(reasoning) ||
-        (fast !== 0 && fast !== 1)
+        speed === undefined
       ) {
         return null;
       }
@@ -205,6 +297,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         provider,
         timestampMs,
         model,
+        ...(rateModel === undefined ? {} : { rateModel }),
         sessionId: (typeof sessionIndex === "number" ? sessions[sessionIndex] : undefined) ?? "",
         totals: {
           uncachedInputTokens: uncached,
@@ -214,7 +307,7 @@ export function decodeScanCache(document: unknown): ScanCache {
           reasoningTokens: reasoning,
         },
         reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
-        fast: fast === 1,
+        speed,
         dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
       });
     }
@@ -225,9 +318,13 @@ export function decodeScanCache(document: unknown): ScanCache {
     if (typeof raw !== "object" || raw === null) continue;
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
-    if (entry.p !== "claude" && entry.p !== "codex" && entry.p !== "grok" && entry.p !== "pi")
-      continue;
-    if (!isRecordArray(entry.d) || !entry.d.every((value) => typeof value === "string")) continue;
+    if (entry.p === undefined) continue;
+    const forkLayout = version === 5 && ("ps" in entry || "d" in entry);
+    // The fork Pi reader is deferred to Dulli; never reuse its records/state
+    // as an unchanged warm hit for upstream's independent Pi reader.
+    if (forkLayout && entry.p === "pi") continue;
+    const format = formats.get(entry.p);
+    if (format === undefined) continue;
     if (!isRecordArray(entry.r) || !isRecordArray(entry.t)) continue;
     // Position fields feed byte offsets and a Buffer allocation in the reader,
     // so anything outside their real ranges must reject the entry: a bogus
@@ -247,30 +344,34 @@ export function decodeScanCache(document: unknown): ScanCache {
     ) {
       continue;
     }
-    const codexState = decodeCodexState(entry.cs);
-    if (codexState === undefined) continue;
-    const piState = decodePiState(entry.ps);
-    if (piState === undefined) continue;
+    // v4 records of stateful formats (Codex) predate service tiers, so they
+    // all priced as standard. Keep them, because the rollout may be gone, but
+    // make a live rollout re-parse whole: no file has size -1, and a zero
+    // position cannot resume.
+    const legacy = format.state !== undefined && (version < 5 || forkLayout);
+    // A corrupt state disqualifies the entry: resuming with it would attach
+    // appended usage to the wrong model or replay fork-copied history.
+    if (!legacy && !isValidState.get(entry.p)?.(entry.cs)) continue;
 
-    const provider: UsageProviderKind = entry.p;
+    const provider = entry.p;
     const records = decodeRecords(entry.r, provider);
     const tailRecords = decodeRecords(entry.t, provider);
     if (records === null || tailRecords === null) continue;
 
     cache.set(path, {
-      size: entry.s,
+      size: legacy ? -1 : entry.s,
       mtimeMs: entry.m,
       provider,
       records,
-      projectPaths: entry.d,
       tailRecords,
-      position: {
-        resumeOffset: entry.o,
-        guardLength: entry.gl,
-        guardHash: entry.gh,
-        codexState,
-        piState,
-      },
+      position: legacy
+        ? { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null }
+        : {
+            resumeOffset: entry.o,
+            guardLength: entry.gl,
+            guardHash: entry.gh,
+            state: entry.cs,
+          },
     });
   }
 
@@ -278,53 +379,21 @@ export function decodeScanCache(document: unknown): ScanCache {
 }
 
 /**
- * Validates a persisted Codex reducer state. Returns `undefined` for a corrupt
- * value, which disqualifies the entry: resuming with a bad state would attach
- * appended usage to the wrong model or replay fork-copied history.
+ * Per provider, whether a persisted state is valid: `null`, or one the
+ * format's schema accepts.
  */
-function decodeCodexState(value: unknown): CodexScanState | null | undefined {
-  if (value === null) return null;
-  if (typeof value !== "object") return undefined;
-  const state = value as Partial<CodexScanState>;
-  if (
-    typeof state.model !== "string" ||
-    typeof state.sessionId !== "string" ||
-    (state.lastUsageSignature !== null && typeof state.lastUsageSignature !== "string") ||
-    typeof state.sawSessionMeta !== "boolean" ||
-    typeof state.suppressingForkCopies !== "boolean" ||
-    typeof state.forkCopyAnchorMs !== "number" ||
-    !Number.isFinite(state.forkCopyAnchorMs)
-  ) {
-    return undefined;
-  }
-  return {
-    model: state.model,
-    sessionId: state.sessionId,
-    lastUsageSignature: state.lastUsageSignature ?? null,
-    sawSessionMeta: state.sawSessionMeta,
-    suppressingForkCopies: state.suppressingForkCopies,
-    forkCopyAnchorMs: state.forkCopyAnchorMs,
-  };
-}
-
-/** Invalid Pi state must cold parse rather than lose appended session/model attribution. */
-function decodePiState(value: unknown): PiScanState | null | undefined {
-  if (value === null) return null;
-  if (typeof value !== "object") return undefined;
-  const state = value as Partial<PiScanState>;
-  if (
-    typeof state.sessionId !== "string" ||
-    typeof state.projectPath !== "string" ||
-    typeof state.provider !== "string" ||
-    typeof state.model !== "string"
-  )
-    return undefined;
-  return {
-    sessionId: state.sessionId,
-    projectPath: state.projectPath,
-    provider: state.provider,
-    model: state.model,
-  };
+function makeStateValidators(
+  formats: ReadonlyMap<UsageProviderKind, TranscriptUsageFormat<unknown>>,
+): ReadonlyMap<UsageProviderKind, (value: unknown) => boolean> {
+  return new Map(
+    [...formats].map(([provider, format]) => {
+      const isState = format.state === undefined ? undefined : Schema.is(format.state.schema);
+      return [
+        provider,
+        (value: unknown) => value === null || (isState !== undefined && isState(value)),
+      ] as const;
+    }),
+  );
 }
 
 /** Keeps saved usage after transcript cleanup, until the reporting retention expires. */

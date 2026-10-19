@@ -2,7 +2,12 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, PiBackgroundTerminalControlInput, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  DulliBackgroundTerminalControlInput,
+  ThreadId,
+} from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useRef } from "react";
 
 import { backgroundTerminalEnvironment } from "../../state/backgroundTerminals";
@@ -22,10 +27,10 @@ export type StartBackgroundTerminalResult =
   | { readonly error: string };
 
 export const BACKGROUND_TERMINAL_START_UNAVAILABLE =
-  "Pi is not running in this thread yet. Send a message first, then start a terminal.";
+  "Dulli is not running in this thread yet. Send a message first, then start a terminal.";
 
 /**
- * Starts a shared terminal inside the thread's live Pi session through the
+ * Starts a shared terminal inside the thread's live Dulli session through the
  * background-terminal control channel. The server only acknowledges the
  * control; the new terminal's id arrives in the runtime state as a
  * `control_result` carrying the returned request id, which callers use to
@@ -40,12 +45,20 @@ export function useStartBackgroundTerminal(input: {
   const runControl = useAtomCommand(backgroundTerminalEnvironment.control, {
     reportFailure: false,
   });
+  const permitted = useAtomValue(
+    backgroundTerminalEnvironment.control.permissionAtom(environmentId),
+  );
   const sequenceRef = useRef(0);
-  const available = environmentId !== null && threadId !== null && managerId !== null;
+  const available =
+    environmentId !== null &&
+    threadId !== null &&
+    managerId !== null &&
+    permitted &&
+    !managerId.startsWith("dulli-session-");
 
   const start = useCallback(
     async (options: StartBackgroundTerminalOptions): Promise<StartBackgroundTerminalResult> => {
-      if (environmentId === null || threadId === null || managerId === null) {
+      if (!available || environmentId === null || threadId === null || managerId === null) {
         return { error: BACKGROUND_TERMINAL_START_UNAVAILABLE };
       }
       const command = options.command.trim();
@@ -55,7 +68,7 @@ export function useStartBackgroundTerminal(input: {
       sequenceRef.current += 1;
       const requestId = `start:${Date.now().toString(36)}:${sequenceRef.current}`;
       const title = options.title?.trim();
-      const control: PiBackgroundTerminalControlInput = {
+      const control: DulliBackgroundTerminalControlInput = {
         threadId,
         action: "start",
         managerId,
@@ -80,7 +93,7 @@ export function useStartBackgroundTerminal(input: {
       }
       return { requestId };
     },
-    [environmentId, managerId, runControl, threadId],
+    [available, environmentId, managerId, runControl, threadId],
   );
 
   return { start, available };

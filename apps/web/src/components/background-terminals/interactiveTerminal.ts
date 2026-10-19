@@ -1,7 +1,7 @@
-import type { PiBackgroundTerminalScreen } from "@t3tools/contracts";
+import type { DulliBackgroundTerminalScreen } from "@t3tools/contracts";
 
 /** A full repaint, never replay raw PTY output (which may contain terminal queries). */
-export function screenToVt(screen: PiBackgroundTerminalScreen): string {
+export function screenToVt(screen: DulliBackgroundTerminalScreen): string {
   const mode = (id: number, enabled: boolean) => `\x1b[?${id}${enabled ? "h" : "l"}`;
   return (
     "\x1b[?7l\x1b[0m\x1b[2J" +

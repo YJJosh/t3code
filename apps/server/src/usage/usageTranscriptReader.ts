@@ -19,25 +19,16 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeStringDecoder from "node:string_decoder";
 
-import type { UsageProviderKind } from "@t3tools/contracts";
+import type { UsageSourceScan } from "@t3tools/contracts";
+import type {
+  SelectedFields,
+  TranscriptUsageFormat,
+  UsageRecord,
+} from "@t3tools/provider-core/server/usage";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { createTranscriptJsonReader } from "../project/AgentSessionJson.ts";
-
-import {
-  initialCodexScanState,
-  initialPiScanState,
-  mightCarryUsage,
-  parseClaudeLine,
-  parseClaudeRecord,
-  parseCodexLine,
-  parseCodexRecord,
-  parseGrokLine,
-  parsePiLine,
-  type PiScanState,
-  parseGrokRecord,
-  type CodexScanState,
-  type UsageRecord,
-} from "./usageTranscripts.ts";
 
 export interface TranscriptFile {
   readonly path: string;
@@ -45,22 +36,33 @@ export interface TranscriptFile {
   readonly mtimeMs: number;
 }
 
-export interface TranscriptFileListing {
-  readonly files: readonly TranscriptFile[];
-  /** Directories that existed but could not be enumerated during this walk. */
-  readonly unreadableDirectories: number;
+export interface TranscriptFileOptions {
+  readonly fileName?: string;
+  /** Maximum number of directories below the source root; omitted means recursive. */
+  readonly maxDepth?: number;
+  readonly filePattern?: UsageSourceScan["filePattern"];
 }
 
-export interface TranscriptFileOptions {
-  /** Restricts the walk to one basename (Grok's `updates.jsonl`). */
-  readonly fileName?: string;
-  /** Maximum directory depth below the root to descend into. */
-  readonly maxDepth?: number;
-  /**
-   * Restricts a Pi subagent runs root to `runs/<run>/session/*.jsonl`.
-   * This deliberately excludes the sibling event journal and workflow logs.
-   */
-  readonly piSubagentSessionsOnly?: boolean;
+/** The same selection applies to live files and retained cache entries. */
+export function transcriptPathIncluded(
+  root: string,
+  file: string,
+  options?: TranscriptFileOptions,
+): boolean {
+  const relative = NodePath.relative(root, file);
+  if (
+    NodePath.isAbsolute(relative) ||
+    relative === ".." ||
+    relative.startsWith(`..${NodePath.sep}`)
+  )
+    return false;
+  const parts = relative.split(NodePath.sep);
+  const depth = parts.length - 1;
+  if (options?.maxDepth !== undefined && depth > options.maxDepth) return false;
+  if (options?.filePattern === "pi-subagent-session" && (depth !== 2 || parts[1] !== "session"))
+    return false;
+  const name = parts.at(-1)!;
+  return options?.fileName === undefined ? name.endsWith(".jsonl") : name === options.fileName;
 }
 
 /**
@@ -81,15 +83,14 @@ export interface TranscriptParsePosition {
   readonly guardLength: number;
   /** FNV-1a hash of that window. */
   readonly guardHash: number;
-  /** Codex reducer state as of `resumeOffset`; `null` for other providers. */
-  readonly codexState: CodexScanState | null;
-  /** Pi session, project and model state as of `resumeOffset`. */
-  readonly piState: PiScanState | null;
+  /**
+   * The format's reducer state as of `resumeOffset`, encoded by its schema;
+   * `null` for stateless formats.
+   */
+  readonly state: unknown;
 }
 
 export interface TranscriptParseResult {
-  /** Project roots declared by Pi headers, including an unterminated tail header. */
-  readonly projectPaths: readonly string[];
   /** Records from newline-terminated lines at or after the parse start. */
   readonly records: readonly UsageRecord[];
   /**
@@ -110,61 +111,11 @@ export const GUARD_LENGTH = 64;
 // readers; it never discards a record because of its size.
 const STREAMING_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const NEWLINE = 0x0a;
+/** `stat` calls one transcript walk keeps in flight. The libuv pool has 4 threads. */
+const STAT_CONCURRENCY = 32;
 const CARRIAGE_RETURN = 0x0d;
 
-type SelectedFields = { readonly [key: string]: true | SelectedFields };
-
-// Keep the fields consumed by usageTranscripts, including reducer state and
-// dedupe/cost metadata. A selected subtree (usage) keeps future token fields.
-const USAGE_FIELDS: Record<"claude" | "codex" | "grok" | "pi", SelectedFields> = {
-  pi: {
-    type: true,
-    id: true,
-    timestamp: true,
-    cwd: true,
-    provider: true,
-    modelId: true,
-    role: true,
-    model: true,
-    usage: true,
-    message: { role: true, provider: true, model: true, usage: true, timestamp: true },
-  },
-  claude: {
-    type: true,
-    timestamp: true,
-    requestId: true,
-    sessionId: true,
-    costUSD: true,
-    message: { id: true, model: true, usage: true },
-  },
-  codex: {
-    type: true,
-    timestamp: true,
-    payload: {
-      type: true,
-      id: true,
-      session_id: true,
-      model: true,
-      forked_from_id: true,
-      source: { subagent: { thread_spawn: { parent_thread_id: true } } },
-      info: { last_token_usage: true },
-    },
-  },
-  grok: {
-    timestamp: true,
-    params: {
-      sessionId: true,
-      _meta: { agentTimestampMs: true },
-      update: { sessionUpdate: true, prompt_id: true, usage: true },
-    },
-  },
-};
-
-function selectUsageFields(provider: UsageProviderKind) {
-  const fields =
-    USAGE_FIELDS[
-      provider === "codex" || provider === "grok" || provider === "pi" ? provider : "claude"
-    ];
+function selectUsageFields(fields: SelectedFields) {
   return (path: ReadonlyArray<string | number | null>): boolean => {
     let selected: true | SelectedFields = fields;
     for (const key of path) {
@@ -188,67 +139,77 @@ function fnv1a(buffer: Buffer): number {
 /**
  * Lists `.jsonl` transcripts under `root` last modified at or after `sinceMs`.
  *
- * Vanished individual entries are skipped because sessions can rotate during
- * the walk. Unreadable directories are counted so callers can report partial
- * coverage and avoid pruning cache entries from an incomplete listing.
+ * Unreadable directories and files are counted in `failedPaths` rather than
+ * failing the page, so the source can report incomplete usage. Files that
+ * vanish between `readdir` and `stat` are ordinary rotation and not counted.
  *
  * `fileName` restricts the walk to a single basename (Grok's `updates.jsonl`).
  * Grok sessions also ship multi-megabyte `chat_history` and `events` logs that
  * never carry usage, so the basename filter keeps a cold scan off those files.
  *
- * Pi's normal session root is at most `<sessions>/<project>/<file>`. Its
- * subagent extension stores transcripts at `runs/<run>/session/<file>` beside
- * large event journals. Callers bound both walks to those layouts rather than
- * recursively treating arbitrary JSONL files as Pi sessions.
+ * Directories are listed depth-first, one at a time, then the candidates are
+ * stat'd by a fixed pool of workers: a warm scan stats thousands of files, and
+ * one at a time each waits its own trip through the thread pool. Results keep
+ * `readdir` order, which the aggregator's first-seen dedupe relies on.
  */
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
   options?: TranscriptFileOptions,
-): Promise<TranscriptFileListing> {
-  const found: TranscriptFile[] = [];
+): Promise<{
+  readonly files: readonly TranscriptFile[];
+  readonly failedPaths: number;
+  readonly unreadableDirectories: number;
+}> {
+  const candidates: string[] = [];
+  let failedPaths = 0;
   let unreadableDirectories = 0;
-  const fileName = options?.fileName;
-
   const walk = async (dir: string, depth: number): Promise<void> => {
     let entries;
     try {
       entries = await NodeFSP.readdir(dir, { withFileTypes: true });
     } catch {
+      failedPaths += 1;
       unreadableDirectories += 1;
       return;
     }
     for (const entry of entries) {
       const child = NodePath.join(dir, entry.name);
       if (entry.isDirectory()) {
-        const isPiSubagentSessionDirectory = depth === 1 && entry.name === "session";
-        const mayDescendForPiSubagents =
-          !options?.piSubagentSessionsOnly || depth === 0 || isPiSubagentSessionDirectory;
-        const mayDescendForDepth = options?.maxDepth === undefined || depth < options.maxDepth;
-        if (mayDescendForPiSubagents && mayDescendForDepth) await walk(child, depth + 1);
-        continue;
-      }
-      // A Pi subagent's only transcript is directly inside its run's `session`
-      // directory; journals such as `events.v1.jsonl` must never reach the parser.
-      if (options?.piSubagentSessionsOnly && depth !== 2) continue;
-      if (fileName !== undefined) {
-        if (entry.name !== fileName) continue;
-      } else if (!entry.name.endsWith(".jsonl")) {
-        continue;
-      }
-      try {
-        const stats = await NodeFSP.stat(child);
-        if (stats.mtimeMs >= sinceMs) {
-          found.push({ path: child, size: stats.size, mtimeMs: stats.mtimeMs });
-        }
-      } catch {
-        // Vanished between readdir and stat.
+        const withinDepth = options?.maxDepth === undefined || depth < options.maxDepth;
+        const withinPattern =
+          options?.filePattern !== "pi-subagent-session" ||
+          depth === 0 ||
+          (depth === 1 && entry.name === "session");
+        if (withinDepth && withinPattern) await walk(child, depth + 1);
+      } else if (transcriptPathIncluded(root, child, options)) {
+        candidates.push(child);
       }
     }
   };
-
   await walk(root, 0);
-  return { files: found, unreadableDirectories };
+
+  const found: Array<TranscriptFile | undefined> = Array.from({ length: candidates.length });
+  // Each worker pulls the next candidate from one shared iterator.
+  const queue = candidates.entries();
+  const statQueued = async (): Promise<void> => {
+    for (const [index, path] of queue) {
+      try {
+        const stats = await NodeFSP.stat(path);
+        if (stats.mtimeMs >= sinceMs) {
+          found[index] = { path, size: stats.size, mtimeMs: stats.mtimeMs };
+        }
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+          failedPaths += 1;
+        }
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(STAT_CONCURRENCY, candidates.length) }, statQueued),
+  );
+  return { files: found.filter((file) => file !== undefined), failedPaths, unreadableDirectories };
 }
 
 /**
@@ -265,6 +226,19 @@ export async function readDirectoryVolumeId(path: string): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/** Parent identities nearest first, matching the portable containment proof on clients. */
+export async function readDirectoryAncestorVolumeIds(path: string): Promise<readonly string[]> {
+  const parents: string[] = [];
+  let current = NodePath.resolve(path);
+  while (true) {
+    const parent = NodePath.dirname(current);
+    if (parent === current) break;
+    parents.push(parent);
+    current = parent;
+  }
+  return Promise.all(parents.map(readDirectoryVolumeId));
 }
 
 async function guardMatches(
@@ -287,25 +261,44 @@ async function guardMatches(
 }
 
 /**
- * Streams one transcript and returns its usage records plus any Pi project
- * roots, or `null` when the file could not be read. The read-failure distinction
- * matters to the caller's cache: a genuinely empty transcript is a stable fact
- * worth memoising, while a transient read failure memoised under the same
- * `(size, mtime)` key would silently drop that file's usage until it next changes.
+ * Builds the byte-level test for a format's `usageMarkers`: whether a line
+ * contains any of them.
+ *
+ * One marker is a single `Buffer` search. Several would be one pass over the
+ * line each, so they are matched together as one alternation over the line's
+ * latin1 view instead: latin1 maps every byte to one character without
+ * validating it, so an ASCII marker matches exactly where its bytes do.
+ */
+export function transcriptLineGate(markers: readonly [string, ...string[]]) {
+  if (markers.length === 1) {
+    const marker = Buffer.from(markers[0]);
+    return (line: Buffer) => line.includes(marker);
+  }
+  const pattern = new RegExp(
+    markers.map((marker) => marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"),
+  );
+  return (line: Buffer) => pattern.test(line.toString("latin1"));
+}
+
+/**
+ * Streams one transcript and returns the usage records it contains, or `null`
+ * when the file could not be read.
+ *
+ * The distinction matters to the caller's cache: a genuinely empty transcript
+ * is a stable fact worth memoising, while a transient read failure memoised
+ * under the same `(size, mtime)` key would silently drop that file's usage
+ * until the file next changes.
  *
  * With `resumeFrom`, parsing continues from that position when its guard bytes
  * still match, so only appended lines are read; otherwise the whole file is
  * re-parsed from the start and `resumed` reports `false`.
  *
- * Codex carries the active model on `turn_context` lines that hold no usage of
- * their own, and Pi carries session identity and the active model on `session`
- * and `model_change` lines, so those still have to pass through the reducer to
- * keep attribution correct. Pi candidate files are constrained by the caller;
- * do not relax that filter to parse subagent event journals.
+ * A stateful format resumes with the state saved at that position; a saved
+ * state its schema rejects re-parses the file whole.
  */
-export async function readTranscriptRecords(
+export async function readTranscriptRecords<State>(
   filePath: string,
-  provider: UsageProviderKind,
+  format: TranscriptUsageFormat<State>,
   resumeFrom?: TranscriptParsePosition,
   options?: { readonly streamingThresholdBytes?: number },
 ): Promise<TranscriptParseResult | null> {
@@ -318,62 +311,27 @@ export async function readTranscriptRecords(
   }
 
   try {
-    let codexState = initialCodexScanState();
-    let piState = initialPiScanState();
+    const codec = format.state;
+    const decodeState = codec === undefined ? undefined : Schema.decodeUnknownOption(codec.schema);
+    const encodeState = codec === undefined ? undefined : Schema.encodeSync(codec.schema);
+    // Stateless formats never read their state argument.
+    let state = codec === undefined ? (undefined as State) : codec.initial();
     let resumed = false;
     let start = 0;
+    const savedState =
+      resumeFrom === undefined || decodeState === undefined || resumeFrom.state === null
+        ? Option.none()
+        : decodeState(resumeFrom.state);
     if (
       resumeFrom !== undefined &&
       resumeFrom.resumeOffset > 0 &&
-      (provider !== "codex" || resumeFrom.codexState !== null) &&
-      (provider !== "pi" || resumeFrom.piState !== null) &&
+      (codec === undefined || Option.isSome(savedState)) &&
       (await guardMatches(handle, resumeFrom))
     ) {
-      if (resumeFrom.codexState !== null) codexState = { ...resumeFrom.codexState };
-      if (resumeFrom.piState !== null) piState = { ...resumeFrom.piState };
+      if (Option.isSome(savedState)) state = savedState.value;
       start = resumeFrom.resumeOffset;
       resumed = true;
     }
-
-    const parseLine = (
-      line: string,
-      state: CodexScanState,
-      pi: PiScanState,
-      out: UsageRecord[],
-    ): void => {
-      if (provider === "codex") {
-        if (
-          !mightCarryUsage(line, provider) &&
-          !line.includes('"turn_context"') &&
-          !line.includes('"session_meta"')
-        ) {
-          return;
-        }
-        const record = parseCodexLine(line, state);
-        if (record !== null) out.push(record);
-        return;
-      }
-      if (provider === "pi") {
-        if (
-          !mightCarryUsage(line, provider) &&
-          !line.includes('"type":"session"') &&
-          !line.includes('"type": "session"') &&
-          !line.includes('"model_change"')
-        ) {
-          return;
-        }
-        const record = parsePiLine(line, pi);
-        if (record !== null) out.push(record);
-        return;
-      }
-      if (!mightCarryUsage(line, provider)) return;
-      if (provider === "grok") {
-        for (const grokRecord of parseGrokLine(line)) out.push(grokRecord);
-        return;
-      }
-      const record = parseClaudeLine(line);
-      if (record !== null) out.push(record);
-    };
 
     const toLineString = (lineBuffer: Buffer): string => {
       const content =
@@ -381,6 +339,14 @@ export async function readTranscriptRecords(
           ? lineBuffer.subarray(0, -1)
           : lineBuffer;
       return content.toString("utf8");
+    };
+
+    // Gate on the raw bytes so the lines that fail it, which is most of them,
+    // are never decoded.
+    const mightCarryUsage = transcriptLineGate(format.usageMarkers);
+    const parseLine = (lineBuffer: Buffer, lineState: State, out: UsageRecord[]): void => {
+      if (!mightCarryUsage(lineBuffer)) return;
+      for (const record of format.parseLine(toLineString(lineBuffer), lineState)) out.push(record);
     };
 
     const records: UsageRecord[] = [];
@@ -392,7 +358,7 @@ export async function readTranscriptRecords(
     let pendingBytes = 0;
     let streaming: ReturnType<typeof createTranscriptJsonReader> | undefined;
     let decoder: NodeStringDecoder.StringDecoder | undefined;
-    const selectPath = selectUsageFields(provider);
+    const selectPath = selectUsageFields(format.selectFields);
 
     const append = (segment: Buffer) => {
       if (!streaming && pendingBytes + segment.length <= streamingThresholdBytes) {
@@ -411,28 +377,17 @@ export async function readTranscriptRecords(
       }
       streaming.write(decoder!.write(segment));
     };
-    const finish = (state: CodexScanState, pi: PiScanState, out: UsageRecord[]) => {
+    const finish = (lineState: State, out: UsageRecord[]) => {
       if (streaming) {
         streaming.write(decoder!.end());
         const projected = streaming.finish();
-        if (provider === "pi") {
-          const record = parsePiLine(JSON.stringify(projected), pi);
-          if (record !== null) out.push(record);
-        } else if (provider === "grok") {
-          out.push(...parseGrokRecord(projected));
-        } else {
-          const record =
-            provider === "codex"
-              ? parseCodexRecord(projected, state)
-              : parseClaudeRecord(projected);
-          if (record !== null) out.push(record);
-        }
+        for (const record of format.parseProjected(projected, lineState)) out.push(record);
       } else if (pendingBytes > 0) {
         const line =
           pendingChunks.length === 1
             ? pendingChunks[0]!
             : Buffer.concat(pendingChunks, pendingBytes);
-        parseLine(toLineString(line), state, pi, out);
+        parseLine(line, lineState, out);
       }
       pendingChunks = [];
       pendingBytes = 0;
@@ -455,15 +410,10 @@ export async function readTranscriptRecords(
         // Most lines fit in the current chunk. Avoid buffering/streaming
         // machinery on this hot path.
         if (!streaming && pendingBytes === 0) {
-          parseLine(
-            toLineString(chunk.subarray(lineStart, newlineIndex)),
-            codexState,
-            piState,
-            records,
-          );
+          parseLine(chunk.subarray(lineStart, newlineIndex), state, records);
         } else {
           append(chunk.subarray(lineStart, newlineIndex));
-          finish(codexState, piState, records);
+          finish(state, records);
         }
         lineStart = newlineIndex + 1;
         resumeOffset = scanOffset + lineStart;
@@ -471,9 +421,14 @@ export async function readTranscriptRecords(
       scanOffset += chunk.length;
     }
 
+    // The unfinished tail parses against a copy, so the saved state stays at
+    // `resumeOffset` and the next scan replays the tail from it.
+    const encodedState = encodeState === undefined ? null : encodeState(state);
     const tailRecords: UsageRecord[] = [];
-    const tailPiState = { ...piState };
-    finish({ ...codexState }, tailPiState, tailRecords);
+    finish(
+      decodeState === undefined ? state : Option.getOrThrow(decodeState(encodedState)),
+      tailRecords,
+    );
 
     const guardLength = Math.min(GUARD_LENGTH, resumeOffset);
     let guardHash = 0;
@@ -485,14 +440,12 @@ export async function readTranscriptRecords(
 
     return {
       records,
-      projectPaths: [...new Set([piState.projectPath, tailPiState.projectPath].filter(Boolean))],
       tailRecords,
       position: {
         resumeOffset,
         guardLength,
         guardHash,
-        codexState: provider === "codex" ? codexState : null,
-        piState: provider === "pi" ? piState : null,
+        state: encodedState,
       },
       resumed,
     };

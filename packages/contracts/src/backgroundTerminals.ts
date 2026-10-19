@@ -9,36 +9,43 @@ import {
 } from "./baseSchemas.ts";
 
 /** Version of the Pi background-terminal extension event envelope. */
-export const PI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION = 1 as const;
+export const DULLI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION = 1 as const;
 const NonNegativeNumber = Schema.Number.check(Schema.isGreaterThanOrEqualTo(0));
 const MAX_OUTPUT_CHARS = 16 * 1024;
 const MAX_SNAPSHOT_TERMINALS = 32;
 
-export const PiBackgroundTerminalId = TrimmedNonEmptyString.check(
+export const DulliBackgroundTerminalId = TrimmedNonEmptyString.check(
   Schema.isMaxLength(128),
   Schema.isPattern(/^bt-[1-9][0-9]*$/),
 );
-export type PiBackgroundTerminalId = typeof PiBackgroundTerminalId.Type;
-const PiBackgroundTerminalRequestId = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
-export const PiBackgroundTerminalManagerId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
-export type PiBackgroundTerminalManagerId = typeof PiBackgroundTerminalManagerId.Type;
+export type DulliBackgroundTerminalId = typeof DulliBackgroundTerminalId.Type;
+const DulliBackgroundTerminalRequestId = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
+export const DulliBackgroundTerminalManagerId = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(128),
+);
+export type DulliBackgroundTerminalManagerId = typeof DulliBackgroundTerminalManagerId.Type;
 
-export const PiBackgroundTerminalStatus = Schema.Literals(["running", "done", "failed", "killed"]);
-export type PiBackgroundTerminalStatus = typeof PiBackgroundTerminalStatus.Type;
+export const DulliBackgroundTerminalStatus = Schema.Literals([
+  "running",
+  "done",
+  "failed",
+  "killed",
+]);
+export type DulliBackgroundTerminalStatus = typeof DulliBackgroundTerminalStatus.Type;
 
-export const PiBackgroundTerminalOutputView = Schema.Struct({
+export const DulliBackgroundTerminalOutputView = Schema.Struct({
   text: Schema.String.check(Schema.isMaxLength(MAX_OUTPUT_CHARS)),
   totalBytes: NonNegativeInt,
   truncatedBytes: NonNegativeInt,
 });
-export type PiBackgroundTerminalOutputView = typeof PiBackgroundTerminalOutputView.Type;
+export type DulliBackgroundTerminalOutputView = typeof DulliBackgroundTerminalOutputView.Type;
 
 const TerminalCols = Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 500 }));
 const TerminalRows = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }));
 const TerminalClientId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 
 /** Printable cells and locally generated SGR only; never terminal queries or OSC/DCS. */
-export const PiBackgroundTerminalScreen = Schema.Struct({
+export const DulliBackgroundTerminalScreen = Schema.Struct({
   cols: TerminalCols,
   rows: TerminalRows,
   lines: Schema.Array(
@@ -64,15 +71,15 @@ export const PiBackgroundTerminalScreen = Schema.Struct({
       "Invalid or oversized terminal screen",
   ),
 );
-export type PiBackgroundTerminalScreen = typeof PiBackgroundTerminalScreen.Type;
+export type DulliBackgroundTerminalScreen = typeof DulliBackgroundTerminalScreen.Type;
 
-export const PiBackgroundTerminalView = Schema.Struct({
-  id: PiBackgroundTerminalId,
+export const DulliBackgroundTerminalView = Schema.Struct({
+  id: DulliBackgroundTerminalId,
   command: Schema.String.check(Schema.isMaxLength(16_384)),
   title: Schema.String.check(Schema.isMaxLength(200)),
   cwd: Schema.String.check(Schema.isMaxLength(4_096)),
   pid: Schema.optional(PositiveInt),
-  status: PiBackgroundTerminalStatus,
+  status: DulliBackgroundTerminalStatus,
   createdAt: NonNegativeNumber,
   settledAt: Schema.optional(NonNegativeNumber),
   exitCode: Schema.optional(Schema.Int),
@@ -84,12 +91,12 @@ export const PiBackgroundTerminalView = Schema.Struct({
   rows: Schema.optional(TerminalRows),
   attached: Schema.optional(Schema.Boolean),
   controller: Schema.optional(TerminalClientId),
-  stdout: PiBackgroundTerminalOutputView,
-  stderr: PiBackgroundTerminalOutputView,
+  stdout: DulliBackgroundTerminalOutputView,
+  stderr: DulliBackgroundTerminalOutputView,
 });
-export type PiBackgroundTerminalView = typeof PiBackgroundTerminalView.Type;
+export type DulliBackgroundTerminalView = typeof DulliBackgroundTerminalView.Type;
 
-export const PiBackgroundTerminalEventKind = Schema.Literals([
+export const DulliBackgroundTerminalEventKind = Schema.Literals([
   "terminal_upsert",
   "terminal_output",
   "terminal_screen",
@@ -97,19 +104,19 @@ export const PiBackgroundTerminalEventKind = Schema.Literals([
   "control_result",
   "snapshot",
 ]);
-export type PiBackgroundTerminalEventKind = typeof PiBackgroundTerminalEventKind.Type;
+export type DulliBackgroundTerminalEventKind = typeof DulliBackgroundTerminalEventKind.Type;
 
-export const PiBackgroundTerminalOutputDelta = Schema.Struct({
-  terminalId: PiBackgroundTerminalId,
+export const DulliBackgroundTerminalOutputDelta = Schema.Struct({
+  terminalId: DulliBackgroundTerminalId,
   stream: Schema.Literals(["stdout", "stderr"]),
   text: Schema.String.check(Schema.isMaxLength(MAX_OUTPUT_CHARS)),
   replace: Schema.Boolean,
   totalBytes: NonNegativeInt,
   truncatedBytes: NonNegativeInt,
 });
-export type PiBackgroundTerminalOutputDelta = typeof PiBackgroundTerminalOutputDelta.Type;
+export type DulliBackgroundTerminalOutputDelta = typeof DulliBackgroundTerminalOutputDelta.Type;
 
-export const PiBackgroundTerminalControlAction = Schema.Literals([
+export const DulliBackgroundTerminalControlAction = Schema.Literals([
   "replay",
   "kill",
   "watch",
@@ -120,50 +127,50 @@ export const PiBackgroundTerminalControlAction = Schema.Literals([
   "resize",
   "start",
 ]);
-export type PiBackgroundTerminalControlAction = typeof PiBackgroundTerminalControlAction.Type;
+export type DulliBackgroundTerminalControlAction = typeof DulliBackgroundTerminalControlAction.Type;
 
-export const PiBackgroundTerminalControlResult = Schema.Struct({
-  requestId: Schema.optional(PiBackgroundTerminalRequestId),
-  action: PiBackgroundTerminalControlAction,
+export const DulliBackgroundTerminalControlResult = Schema.Struct({
+  requestId: Schema.optional(DulliBackgroundTerminalRequestId),
+  action: DulliBackgroundTerminalControlAction,
   success: Schema.Boolean,
   error: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
   /** Successful `start` results name the terminal that was created. */
-  terminalId: Schema.optional(PiBackgroundTerminalId),
+  terminalId: Schema.optional(DulliBackgroundTerminalId),
 });
-export type PiBackgroundTerminalControlResult = typeof PiBackgroundTerminalControlResult.Type;
+export type DulliBackgroundTerminalControlResult = typeof DulliBackgroundTerminalControlResult.Type;
 
-export const PiBackgroundTerminalSnapshot = Schema.Struct({
-  terminals: Schema.Array(PiBackgroundTerminalView).check(
+export const DulliBackgroundTerminalSnapshot = Schema.Struct({
+  terminals: Schema.Array(DulliBackgroundTerminalView).check(
     Schema.isMaxLength(MAX_SNAPSHOT_TERMINALS),
   ),
-  requestId: Schema.optional(PiBackgroundTerminalRequestId),
+  requestId: Schema.optional(DulliBackgroundTerminalRequestId),
   replay: Schema.optional(Schema.Boolean),
 });
-export type PiBackgroundTerminalSnapshot = typeof PiBackgroundTerminalSnapshot.Type;
+export type DulliBackgroundTerminalSnapshot = typeof DulliBackgroundTerminalSnapshot.Type;
 
-const PiBackgroundTerminalEventBase = {
-  contractVersion: Schema.Literal(PI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION),
-  managerId: PiBackgroundTerminalManagerId,
+const DulliBackgroundTerminalEventBase = {
+  contractVersion: Schema.Literal(DULLI_BACKGROUND_TERMINAL_EVENT_CONTRACT_VERSION),
+  managerId: DulliBackgroundTerminalManagerId,
   sequence: PositiveInt,
   timestamp: IsoDateTime,
 } as const;
 
-const PiBackgroundTerminalUpsertEvent = Schema.Struct({
-  ...PiBackgroundTerminalEventBase,
+const DulliBackgroundTerminalUpsertEvent = Schema.Struct({
+  ...DulliBackgroundTerminalEventBase,
   kind: Schema.Literal("terminal_upsert"),
-  terminalId: PiBackgroundTerminalId,
-  view: PiBackgroundTerminalView,
+  terminalId: DulliBackgroundTerminalId,
+  view: DulliBackgroundTerminalView,
 }).check(
   Schema.makeFilter(
     (event) => event.terminalId === event.view.id || "terminalId must match the upsert view id",
   ),
 );
 
-const PiBackgroundTerminalOutputEvent = Schema.Struct({
-  ...PiBackgroundTerminalEventBase,
+const DulliBackgroundTerminalOutputEvent = Schema.Struct({
+  ...DulliBackgroundTerminalEventBase,
   kind: Schema.Literal("terminal_output"),
-  terminalId: PiBackgroundTerminalId,
-  output: PiBackgroundTerminalOutputDelta,
+  terminalId: DulliBackgroundTerminalId,
+  output: DulliBackgroundTerminalOutputDelta,
 }).check(
   Schema.makeFilter(
     (event) =>
@@ -172,47 +179,47 @@ const PiBackgroundTerminalOutputEvent = Schema.Struct({
   ),
 );
 
-export const PiBackgroundTerminalEvent = Schema.Union([
-  PiBackgroundTerminalUpsertEvent,
-  PiBackgroundTerminalOutputEvent,
+export const DulliBackgroundTerminalEvent = Schema.Union([
+  DulliBackgroundTerminalUpsertEvent,
+  DulliBackgroundTerminalOutputEvent,
   Schema.Struct({
-    ...PiBackgroundTerminalEventBase,
+    ...DulliBackgroundTerminalEventBase,
     kind: Schema.Literal("terminal_screen"),
-    terminalId: PiBackgroundTerminalId,
-    screen: PiBackgroundTerminalScreen,
+    terminalId: DulliBackgroundTerminalId,
+    screen: DulliBackgroundTerminalScreen,
   }),
   Schema.Struct({
-    ...PiBackgroundTerminalEventBase,
+    ...DulliBackgroundTerminalEventBase,
     kind: Schema.Literal("terminal_removed"),
-    terminalId: PiBackgroundTerminalId,
+    terminalId: DulliBackgroundTerminalId,
   }),
   Schema.Struct({
-    ...PiBackgroundTerminalEventBase,
+    ...DulliBackgroundTerminalEventBase,
     kind: Schema.Literal("control_result"),
-    control: PiBackgroundTerminalControlResult,
+    control: DulliBackgroundTerminalControlResult,
   }),
   Schema.Struct({
-    ...PiBackgroundTerminalEventBase,
+    ...DulliBackgroundTerminalEventBase,
     kind: Schema.Literal("snapshot"),
-    snapshot: PiBackgroundTerminalSnapshot,
+    snapshot: DulliBackgroundTerminalSnapshot,
   }),
 ]);
-export type PiBackgroundTerminalEvent = typeof PiBackgroundTerminalEvent.Type;
+export type DulliBackgroundTerminalEvent = typeof DulliBackgroundTerminalEvent.Type;
 
-const PiBackgroundTerminalControlBase = {
+const DulliBackgroundTerminalControlBase = {
   threadId: ThreadId,
-  requestId: Schema.optional(PiBackgroundTerminalRequestId),
+  requestId: Schema.optional(DulliBackgroundTerminalRequestId),
 } as const;
 
 const InteractiveControlBase = {
-  ...PiBackgroundTerminalControlBase,
-  terminalId: PiBackgroundTerminalId,
-  managerId: PiBackgroundTerminalManagerId,
+  ...DulliBackgroundTerminalControlBase,
+  terminalId: DulliBackgroundTerminalId,
+  managerId: DulliBackgroundTerminalManagerId,
   clientId: TerminalClientId,
 } as const;
 
 /** All controls use the extension's private command; process epochs guard reused ids. */
-export const PiBackgroundTerminalControlInput = Schema.Union([
+export const DulliBackgroundTerminalControlInput = Schema.Union([
   Schema.Struct({
     ...InteractiveControlBase,
     action: Schema.Literals(["watch", "unwatch", "attach", "release"]),
@@ -235,10 +242,10 @@ export const PiBackgroundTerminalControlInput = Schema.Union([
     rows: TerminalRows,
   }),
   Schema.Struct({
-    ...PiBackgroundTerminalControlBase,
+    ...DulliBackgroundTerminalControlBase,
     action: Schema.Literal("start"),
     /** Process epoch of the live Pi session the terminal starts in (its cwd). */
-    managerId: PiBackgroundTerminalManagerId,
+    managerId: DulliBackgroundTerminalManagerId,
     command: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16_384)),
     title: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
     interactive: Schema.optional(Schema.Boolean),
@@ -247,23 +254,24 @@ export const PiBackgroundTerminalControlInput = Schema.Union([
     rows: Schema.optional(TerminalRows),
   }),
   Schema.Struct({
-    ...PiBackgroundTerminalControlBase,
+    ...DulliBackgroundTerminalControlBase,
     action: Schema.Literal("replay"),
   }),
   Schema.Struct({
-    ...PiBackgroundTerminalControlBase,
+    ...DulliBackgroundTerminalControlBase,
     action: Schema.Literal("kill"),
-    terminalId: PiBackgroundTerminalId,
+    terminalId: DulliBackgroundTerminalId,
     /** Process epoch shown by the client; prevents stale rows from killing a reused terminal id. */
-    managerId: PiBackgroundTerminalManagerId,
+    managerId: DulliBackgroundTerminalManagerId,
   }),
 ]);
-export type PiBackgroundTerminalControlInput = typeof PiBackgroundTerminalControlInput.Type;
+export type DulliBackgroundTerminalControlInput = typeof DulliBackgroundTerminalControlInput.Type;
 
-export const PiBackgroundTerminalSubscribeInput = Schema.Struct({ threadId: ThreadId });
-export type PiBackgroundTerminalSubscribeInput = typeof PiBackgroundTerminalSubscribeInput.Type;
+export const DulliBackgroundTerminalSubscribeInput = Schema.Struct({ threadId: ThreadId });
+export type DulliBackgroundTerminalSubscribeInput =
+  typeof DulliBackgroundTerminalSubscribeInput.Type;
 
-export class PiBackgroundTerminalControlError extends Schema.TaggedError<PiBackgroundTerminalControlError>()(
-  "PiBackgroundTerminalControlError",
+export class DulliBackgroundTerminalControlError extends Schema.TaggedError<DulliBackgroundTerminalControlError>()(
+  "DulliBackgroundTerminalControlError",
   { message: Schema.String },
 ) {}

@@ -59,44 +59,6 @@ describe("deriveAgentSpawnSummary", () => {
     ).toMatchObject({ live: true, status: "working", tone: "working" });
   });
 
-  it("settles Pi's synthetic coordinator from its members without hiding failures", () => {
-    expect(
-      deriveAgentSpawnSummary({
-        agents: [agent("completed")],
-        agentCount: 1,
-        coordinatorStatus: "running",
-        workflowMembersAuthoritative: true,
-      }),
-    ).toMatchObject({ live: false, status: "✓ completed", tone: "completed" });
-    expect(
-      deriveAgentSpawnSummary({
-        agents: [agent("failed")],
-        agentCount: 1,
-        coordinatorStatus: "running",
-        workflowMembersAuthoritative: true,
-      }),
-    ).toMatchObject({ live: false, status: "1 failed", tone: "failed" });
-  });
-
-  it("keeps Pi workflows active while a member is waiting or has not settled", () => {
-    expect(
-      deriveAgentSpawnSummary({
-        agents: [agent("completed"), agent("waiting")],
-        agentCount: 2,
-        coordinatorStatus: "running",
-        workflowMembersAuthoritative: true,
-      }),
-    ).toMatchObject({ live: true, status: "1 working" });
-    expect(
-      deriveAgentSpawnSummary({
-        agents: [],
-        agentCount: 1,
-        coordinatorStatus: "running",
-        workflowMembersAuthoritative: true,
-      }),
-    ).toMatchObject({ live: true });
-  });
-
   it.each([
     ["failed", "Workflow failed", "failed"],
     ["cancelled", "Workflow stopped", "inactive"],

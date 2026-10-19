@@ -10,19 +10,28 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProjectId as ProjectIdSchema,
   ProviderInteractionMode as ProviderInteractionModeSchema,
+  ProviderOptionSelection as ProviderOptionSelectionSchema,
   RuntimeMode as RuntimeModeSchema,
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
   type ProviderInteractionMode,
+  type ProviderOptionSelection,
   type RuntimeMode,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { useEffect } from "react";
-import { Atom } from "effect/unstable/reactivity";
+import {
+  isDulliCutover,
+  migrateForkPiMap,
+  migrateForkPiSelection,
+} from "@t3tools/client-runtime/dulli-migration";
+import type { DulliMigrationConfig } from "@t3tools/client-runtime/dulli-migration";
+import { Atom } from "effect/reactivity";
 
 import { writeFileAtomically } from "../lib/atomic-file";
 import { createComposerContextHistory, referencedComposerContext } from "../lib/composerContext";
+import { isQueuedEditDraftKey } from "./queued-edit-draft-key";
 import {
   collectComposerContextReferences,
   formatComposerContextReference,
@@ -356,6 +365,8 @@ export interface ComposerDraftWorkspaceSelection {
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin?: boolean;
+  /** Resolve and check out this PR when the queued task is sent. */
+  readonly pullRequestReference?: string;
 }
 
 export type ComposerDraftSettingsUpdate = Pick<
@@ -368,6 +379,7 @@ const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   startFromOrigin: Schema.optional(Schema.Boolean),
+  pullRequestReference: Schema.optional(Schema.String),
 });
 
 const ComposerDraftProjectSchema = Schema.Struct({
@@ -397,8 +409,15 @@ const ComposerDraftSchema = Schema.Struct({
 
 const PersistedComposerDraftsSchema = Schema.Struct({
   schemaVersion: Schema.Literal(COMPOSER_DRAFTS_SCHEMA_VERSION),
+  dulliMigrationChecked: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   drafts: Schema.Record(Schema.String, ComposerDraftSchema),
   stickyModelSelection: Schema.optional(ModelSelectionSchema),
+  modelOptionMemory: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Record(Schema.String, Schema.Array(ProviderOptionSelectionSchema)),
+    ),
+  ),
   cloudAccountId: Schema.optional(Schema.String),
   signedOutDrafts: Schema.optional(
     Schema.Record(
@@ -428,6 +447,17 @@ export const composerDraftsAtom = Atom.make<Record<string, ComposerDraft>>({}).p
 export const stickyComposerModelSelectionAtom = Atom.make<ModelSelection | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("mobile:sticky-composer-model-selection"),
+);
+
+export type ModelOptionMemoryState = Readonly<
+  Record<string, Readonly<Record<string, ReadonlyArray<ProviderOptionSelection>>>>
+>;
+
+const dulliMigrationCheckedAtom = Atom.make<Record<string, boolean>>({}).pipe(Atom.keepAlive);
+
+export const modelOptionMemoryAtom = Atom.make<ModelOptionMemoryState>({}).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("mobile:model-option-memory"),
 );
 
 interface SignedOutDrafts {
@@ -608,11 +638,16 @@ export function migrateLegacyNewTaskDraft(
 export function decodePersistedComposerState(value: unknown): {
   readonly drafts: Record<string, ComposerDraft>;
   readonly stickyModelSelection: ModelSelection | null;
+  readonly modelOptionMemory: ModelOptionMemoryState;
   readonly cloudDrafts: ComposerCloudDraftState;
+  readonly dulliMigrationChecked?: Record<string, boolean>;
 } {
   const parsed = decodePersistedComposerDraftsDocument(value);
   const now = new Date().toISOString();
   return {
+    ...(parsed.dulliMigrationChecked
+      ? { dulliMigrationChecked: parsed.dulliMigrationChecked }
+      : {}),
     drafts: Object.fromEntries(
       Object.entries(parsed.drafts)
         .map(([key, draft]) =>
@@ -639,9 +674,14 @@ export function decodePersistedComposerState(value: unknown): {
         // importedShareIds are share-import receipts: a contentless draft
         // carrying one is not empty, or the same native share would be
         // re-imported after restart.
-        .filter(([, draft]) => !isEmptyDraft(draft) || (draft.importedShareIds?.length ?? 0) > 0),
+        .filter(([, draft]) => !isEmptyDraft(draft) || (draft.importedShareIds?.length ?? 0) > 0)
+        // Queued-message edits are in-memory sessions. Their draft outlives a
+        // restart on disk, but the edit record that says which run it belongs
+        // to does not, so the draft would be unreachable and invisible.
+        .filter(([key]) => !isQueuedEditDraftKey(key)),
     ),
     stickyModelSelection: parsed.stickyModelSelection ?? null,
+    modelOptionMemory: parsed.modelOptionMemory ?? {},
     cloudDrafts: {
       accountId: parsed.cloudAccountId ?? null,
       signedOut: Object.fromEntries(
@@ -680,6 +720,7 @@ async function loadPersistedComposerState(): Promise<
       return {
         drafts: {},
         stickyModelSelection: null,
+        modelOptionMemory: {},
         cloudDrafts: { accountId: null, signedOut: {} },
       };
     }
@@ -711,8 +752,14 @@ async function writePersistedComposerState(
     );
     const document = {
       schemaVersion: COMPOSER_DRAFTS_SCHEMA_VERSION,
+      ...(Object.keys(appAtomRegistry.get(dulliMigrationCheckedAtom)).length > 0
+        ? { dulliMigrationChecked: appAtomRegistry.get(dulliMigrationCheckedAtom) }
+        : {}),
       drafts: nonEmptyDrafts,
       ...(stickyModelSelection ? { stickyModelSelection } : {}),
+      ...(Object.keys(appAtomRegistry.get(modelOptionMemoryAtom)).length > 0
+        ? { modelOptionMemory: appAtomRegistry.get(modelOptionMemoryAtom) }
+        : {}),
       ...(cloudDrafts.accountId ? { cloudAccountId: cloudDrafts.accountId } : {}),
       ...(Object.keys(cloudDrafts.signedOut).length > 0
         ? {
@@ -969,7 +1016,7 @@ registerComposerAttachmentUnusedHandler((attachment) => {
   scheduleUnusedComposerAttachmentCleanup([attachment]);
 });
 
-function schedulePersistComposerState(): void {
+export function schedulePersistComposerState(): void {
   if (persistTimer !== null) {
     clearTimeout(persistTimer);
   }
@@ -1001,6 +1048,7 @@ export function ensureComposerDraftsLoaded(): void {
     return;
   }
   const loading = loadPersistedComposerState().then((persisted) => {
+    appAtomRegistry.set(dulliMigrationCheckedAtom, persisted.dulliMigrationChecked ?? {});
     appAtomRegistry.set(composerCloudDraftsAtom, persisted.cloudDrafts);
     if (Object.keys(persisted.drafts).length > 0) {
       const current = appAtomRegistry.get(composerDraftsAtom);
@@ -1014,6 +1062,18 @@ export function ensureComposerDraftsLoaded(): void {
       appAtomRegistry.get(stickyComposerModelSelectionAtom) === null
     ) {
       appAtomRegistry.set(stickyComposerModelSelectionAtom, persisted.stickyModelSelection);
+    }
+    if (Object.keys(persisted.modelOptionMemory).length > 0) {
+      const current = appAtomRegistry.get(modelOptionMemoryAtom);
+      appAtomRegistry.set(modelOptionMemoryAtom, {
+        ...persisted.modelOptionMemory,
+        ...Object.fromEntries(
+          Object.entries(current).map(([instanceId, models]) => [
+            instanceId,
+            { ...(persisted.modelOptionMemory[instanceId] ?? {}), ...models },
+          ]),
+        ),
+      });
     }
   });
   loadPromise = loading;
@@ -1033,6 +1093,68 @@ export function ensureComposerDraftsLoaded(): void {
           }),
     );
   });
+}
+
+/** One receipt per environment, atomically persisted with the transformed drafts.
+ * A later upstream Pi selection must never pass through this cutover again. */
+export async function migrateDulliComposerState(
+  environmentId: EnvironmentId,
+  config: DulliMigrationConfig,
+): Promise<void> {
+  await waitForComposerDraftsLoaded();
+  const checked = appAtomRegistry.get(dulliMigrationCheckedAtom);
+  if (config.legacyPiProviderMigrated === undefined || environmentId in checked) return;
+  const migrated = isDulliCutover(config);
+  const global = !("*" in checked);
+  if (migrated) {
+    const transform = (
+      drafts: Record<string, ComposerDraft>,
+      queued: ReadonlyArray<QueuedThreadMessage>,
+    ) =>
+      Object.fromEntries(
+        Object.entries(drafts).map(([key, draft]) => [
+          key,
+          composerDraftEnvironmentId(key, queued, draft) === environmentId && draft.modelSelection
+            ? { ...draft, modelSelection: migrateForkPiSelection(draft.modelSelection) }
+            : draft,
+        ]),
+      );
+    appAtomRegistry.set(composerDraftsAtom, transform(appAtomRegistry.get(composerDraftsAtom), []));
+    const cloud = appAtomRegistry.get(composerCloudDraftsAtom);
+    appAtomRegistry.set(composerCloudDraftsAtom, {
+      ...cloud,
+      signedOut: Object.fromEntries(
+        Object.entries(cloud.signedOut).map(([id, saved]) => [
+          id,
+          {
+            drafts: transform(saved.drafts, saved.queuedMessages),
+            queuedMessages: saved.queuedMessages.map((message) =>
+              message.environmentId === environmentId
+                ? { ...message, modelSelection: migrateForkPiSelection(message.modelSelection) }
+                : message,
+            ),
+          },
+        ]),
+      ),
+    });
+    if (global) {
+      appAtomRegistry.set(
+        stickyComposerModelSelectionAtom,
+        migrateForkPiSelection(appAtomRegistry.get(stickyComposerModelSelectionAtom)),
+      );
+      appAtomRegistry.set(
+        modelOptionMemoryAtom,
+        migrateForkPiMap(appAtomRegistry.get(modelOptionMemoryAtom)) as ModelOptionMemoryState,
+      );
+    }
+  }
+  appAtomRegistry.set(dulliMigrationCheckedAtom, {
+    ...checked,
+    [environmentId]: migrated,
+    ...(global ? { "*": migrated } : {}),
+  });
+  schedulePersistComposerState();
+  await flushComposerDrafts();
 }
 
 /** Wait until persisted drafts have been merged into the in-memory composer state. */
@@ -1155,6 +1277,8 @@ export async function removeDeliveredCloudQueuedMessage(
           (editor.workspaceSelection.mode !== message.creation?.workspaceMode ||
             editor.workspaceSelection.branch !== message.creation?.branch ||
             editor.workspaceSelection.worktreePath !== message.creation?.worktreePath ||
+            editor.workspaceSelection.pullRequestReference !==
+              message.creation?.pullRequestReference ||
             (editor.workspaceSelection.startFromOrigin ?? false) !==
               (message.creation?.startFromOrigin ?? false))))
     )

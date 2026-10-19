@@ -383,14 +383,14 @@ function BackgroundTerminalRosterGroupSection({
 export interface BackgroundTerminalRunsProps {
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
-  /** Whether the active provider/session can support Pi background terminals. */
+  /** Whether the active provider/session can support Dulli background terminals. */
   enabled: boolean;
   /** Opens the Shared terminals surface with this terminal selected. */
   onOpenTerminal: (terminalId: string) => void;
 }
 
 /**
- * Compact roster strip for a thread's Pi background terminals, rendered
+ * Compact roster strip for a thread's Dulli background terminals, rendered
  * directly above the composer: running and settled (done, failed, killed)
  * terminals each collapse behind a summary row with their count so they
  * don't permanently eat composer space. Selecting a row opens the Shared

@@ -13,7 +13,7 @@ import { Label } from "~/components/ui/label";
 import { Spinner } from "~/components/ui/spinner";
 
 import { useBackgroundTerminalRuntime } from "../../state/useBackgroundTerminalRuntime";
-import { useSplitInspectorLayout } from "../AgentsPanel";
+import { useSplitInspectorLayout } from "./useSplitInspectorLayout";
 import { BackgroundTerminalDetail, BackgroundTerminalRow } from "./BackgroundTerminalRuns";
 import {
   backgroundTerminalRosterSummaryLabel,
@@ -28,7 +28,7 @@ import {
 export interface BackgroundTerminalsPanelProps {
   environmentId: EnvironmentId;
   threadId: ThreadId;
-  /** Whether the active provider/session can support Pi background terminals. */
+  /** Whether the active provider/session can support Dulli background terminals. */
   enabled: boolean;
   /** Terminal preselected by whoever opened the surface (strip row, slash command). */
   selectedTerminalId: string | null;
@@ -95,7 +95,7 @@ function StartTerminalForm({
             checked={interactive}
             onCheckedChange={(checked) => setInteractive(checked === true)}
           />
-          <Label htmlFor={`${id}-interactive`}>Interactive (you and Pi can type)</Label>
+          <Label htmlFor={`${id}-interactive`}>Interactive (you and Dulli can type)</Label>
         </div>
         <div className="flex items-center gap-2">
           <Checkbox
@@ -126,10 +126,10 @@ function StartTerminalForm({
 }
 
 /**
- * Right-panel surface for a thread's shared (Pi background) terminals: a
+ * Right-panel surface for a thread's shared (Dulli background) terminals: a
  * roster of running and settled terminals, the selected terminal's detail
  * (live PTY screen or output tail plus controls), and a form that starts a
- * new terminal inside the live Pi session so both the user and Pi can use it.
+ * new terminal inside the live Dulli session so both the user and Dulli can use it.
  * Mirrors the Agents inspector: split roster/detail when wide, stacked when
  * narrow.
  */
@@ -164,7 +164,7 @@ export function BackgroundTerminalsPanel({
     if (selectedTerminalId !== null) setSelectedId(selectedTerminalId);
   }, [selectedTerminalId]);
 
-  // A terminal started here is selected as soon as Pi acknowledges it with an id.
+  // A terminal started here is selected as soon as Dulli acknowledges it with an id.
   useEffect(() => {
     if (pendingStartRequestId === null) return;
     const result = selectBackgroundTerminalControlResult(state, pendingStartRequestId);
@@ -174,7 +174,7 @@ export function BackgroundTerminalsPanel({
       setSelectedId(result.terminalId);
       setFormOpen(false);
     } else if (!result.success) {
-      setStartError(result.error ?? "Pi could not start the terminal.");
+      setStartError(result.error ?? "Dulli could not start the terminal.");
     }
   }, [pendingStartRequestId, state]);
 
@@ -199,9 +199,9 @@ export function BackgroundTerminalsPanel({
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <Terminal aria-hidden className="size-6 text-muted-foreground/60" />
-        <p className="text-sm font-medium">Shared terminals need the Pi provider</p>
+        <p className="text-sm font-medium">Shared terminals need the Dulli provider</p>
         <p className="max-w-64 text-xs text-muted-foreground">
-          Switch this thread to Pi to start terminals that you and the agent can both use.
+          Switch this thread to Dulli to start terminals that you and the agent can both use.
         </p>
       </div>
     );
@@ -227,7 +227,7 @@ export function BackgroundTerminalsPanel({
           <p className="text-sm font-medium">No shared terminals yet</p>
           <p className="max-w-64 text-xs text-muted-foreground">
             {starter.available
-              ? "Start one here, type /terminal <command> in the composer, or ask Pi to run bg_start with interactive on."
+              ? "Start one here, type /terminal <command> in the composer, or ask Dulli to run bg_start with interactive on."
               : BACKGROUND_TERMINAL_START_UNAVAILABLE}
           </p>
         </div>
@@ -352,7 +352,11 @@ export function BackgroundTerminalsPanel({
 
       <footer className="flex shrink-0 items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-2xs text-muted-foreground">
         <span>{runningCount > 0 ? `● ${runningCount} running` : `${settled.length} settled`}</span>
-        <span>{state.managerId === null ? "Pi not running" : "Pi session live"}</span>
+        <span>
+          {state.managerId === null || state.managerId.startsWith("dulli-session-")
+            ? "No shared-terminal session"
+            : "Dulli session live"}
+        </span>
       </footer>
     </div>
   );

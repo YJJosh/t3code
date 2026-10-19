@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "T3 Dulli version (first 0.0.40-pi.1, then 0.0.40-dulli.2)"
+        description: "T3 Dulli version (0.<minor>.<patch>-dulli.<build>, e.g. 0.1.0-dulli.1)"
         required: true
         type: string
 
@@ -51,12 +51,27 @@ jobs:
         run: |
           set -euo pipefail
           version="${RAW_VERSION#v}"
-          if [[ "$version" != "0.0.40-pi.1" && ! "$version" =~ ^0\.0\.(0|[1-9][0-9]*)-dulli\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Fork releases require the 0.0.<patch>-dulli.<build> sequence, or the one-time 0.0.40-pi.1 migration release." >&2
+          if [[ "$version" != "0.0.40-pi.1" && ! "$version" =~ ^0\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dulli\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Fork releases require the 0.<minor>.<patch>-dulli.<build> sequence, or the one-time 0.0.40-pi.1 migration release." >&2
             exit 1
           fi
           if [[ "$version" == "0.0.40-dulli.0" || "$version" == "0.0.40-dulli.1" ]]; then
             echo "The first Dulli-suffix release must be 0.0.40-dulli.2 or newer to upgrade 0.0.40-pi.1." >&2
+            exit 1
+          fi
+          # Android shares the release version and must never overflow or reuse a slot.
+          base="${version%-*}"
+          minor="${base#0.}"
+          minor="${minor%%.*}"
+          patch="${base##*.}"
+          build="${version##*.}"
+          if (( ${#minor} > 3 || ${#patch} > 3 || ${#build} > 4 )); then
+            echo "Release exceeds Android versionCode slots (patch <= 999, build <= 9999)." >&2
+            exit 1
+          fi
+          version_code=$(( (minor * 1000 + patch) * 10000 + build ))
+          if (( version_code > 2100000000 )); then
+            echo "Release exceeds Android's maximum versionCode of 2100000000." >&2
             exit 1
           fi
           tag="v$version"
@@ -104,11 +119,11 @@ jobs:
             packages/contracts/src/settings.test.ts \
             packages/contracts/src/provider.test.ts \
             packages/client-runtime/src/state/subagentRuntime.test.ts \
-            apps/server/src/provider/pi/piJsonl.test.ts \
-            apps/server/src/provider/pi/piModelDiscovery.test.ts \
-            apps/server/src/provider/pi/piModelDiscovery.bundle.test.ts \
-            apps/server/src/provider/pi/piRpcProtocol.test.ts \
-            apps/server/src/provider/Layers/PiAdapter.test.ts \
+            packages/provider-pi/src/server/driver.test.ts \
+            packages/provider-pi/src/server/adapter.test.ts \
+            packages/provider-pi/src/server/status.test.ts \
+            packages/provider-pi/src/server/mcpInjection.test.ts \
+            packages/provider-pi/src/server/thinkingCapabilities.test.ts \
             apps/server/scripts/cli.test.ts \
             apps/server/src/vcs/GitVcsDriver.test.ts \
             apps/server/src/vcs/GitVcsDriverCore.test.ts \
@@ -119,11 +134,47 @@ jobs:
             apps/mobile/plugins/withAndroidReleaseSigning.test.ts \
             apps/mobile/scripts/dulli-fork-version.test.ts \
             apps/mobile/src/lib/modelOptions.test.ts \
-            apps/mobile/src/features/threads/subagents/subagentPresentation.test.ts
+            packages/client-runtime/src/state/subagentDisplay.test.ts
+
+  build_bundle:
+    name: Build branded JS bundle
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VITE_DESKTOP_BUILD_BRAND: dulli
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Align package versions
+        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
+
+      - name: Build JS bundle
+        run: vp run build:desktop
+
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: dulli-js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
 
   build_wsl_runtime:
     name: Build WSL CLI runtime (linux-x64)
-    needs: preflight
+    needs: [preflight, build_bundle]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -151,11 +202,11 @@ jobs:
       - name: Align package versions
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
-      - name: Build web package
-        run: vp run --filter @t3tools/web build
-
-      - name: Build CLI package
-        run: vp run --filter t3 build
+      - name: Download JS bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: dulli-js-bundle
+          path: apps
 
       # CLI build applies development icons; npm publish normally replaces
       # them with --brand dulli, but this embedded archive is never published.
@@ -214,7 +265,7 @@ jobs:
   build:
     name: Build ${{ matrix.label }}
     # Matrix jobs share needs; only Windows downloads/embeds the Linux archive.
-    needs: [preflight, build_wsl_runtime]
+    needs: [preflight, build_bundle, build_wsl_runtime]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -403,6 +454,12 @@ jobs:
             sudo apt-get install -y imagemagick
           fi
 
+      - name: Download JS bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: dulli-js-bundle
+          path: apps
+
       - name: Build desktop artifact
         shell: bash
         run: |
@@ -413,6 +470,7 @@ jobs:
             --target "${{ matrix.target }}"
             --arch "${{ matrix.arch }}"
             --build-version "${{ needs.preflight.outputs.version }}"
+            --skip-build
             --verbose
           )
           if [[ "${{ matrix.platform }}" == "win" ]]; then
@@ -464,6 +522,7 @@ jobs:
             "release/*.dmg" \
             "release/*.zip" \
             "release/*.AppImage" \
+            "release/*.deb" \
             "release/*.exe" \
             "release/*.blockmap" \
             "release/*.yml"; do
@@ -496,6 +555,7 @@ jobs:
               ;;
             linux)
               test -s "release-publish/T3-Dulli-${version}-x86_64.AppImage"
+              compgen -G "release-publish/T3-Dulli-${version}-*.deb" >/dev/null
               test -s "release-publish/latest-linux.yml"
               ;;
             win)
@@ -640,6 +700,7 @@ jobs:
           run-install: |
             args:
               - --filter=@t3tools/mobile...
+              - --prod=false
 
       - name: Expose pnpm
         run: |
@@ -656,6 +717,7 @@ jobs:
           (cd apps/mobile && ./node_modules/.bin/expo config --json) > "$config_path"
           CONFIG_PATH="$config_path" node --input-type=module <<'NODE'
           import fs from "node:fs";
+          import { resolveDulliForkVersion } from "./apps/mobile/scripts/dulli-fork-version.ts";
 
           const config = JSON.parse(fs.readFileSync(process.env.CONFIG_PATH, "utf8"));
           const failures = [
@@ -663,6 +725,7 @@ jobs:
             [config.scheme === "t3dulli", "URL scheme"],
             [config.version === process.env.T3CODE_MOBILE_FORK_VERSION, "version name"],
             [config.android?.package === "com.yjjosh.t3dulli", "Android package"],
+            [config.android?.versionCode === resolveDulliForkVersion(process.env.T3CODE_MOBILE_FORK_VERSION).versionCode, "Android versionCode"],
             [config.updates?.enabled === false, "disabled OTA updates"],
             [config.extra?.appBrand === "dulli", "runtime app brand"],
             [config.owner === undefined, "omitted upstream EAS owner"],
@@ -729,6 +792,8 @@ jobs:
           badging="$("$build_tools/aapt2" dump badging "$apk")"
           printf '%s\n' "$badging" | grep -F "package: name='com.yjjosh.t3dulli'"
           printf '%s\n' "$badging" | grep -F "versionName='${{ needs.preflight.outputs.version }}'"
+          version_code="$(node --input-type=module -e 'import { resolveDulliForkVersion } from "./apps/mobile/scripts/dulli-fork-version.ts"; console.log(resolveDulliForkVersion(process.env.T3CODE_MOBILE_FORK_VERSION).versionCode)')"
+          printf '%s\n' "$badging" | grep -F "versionCode='$version_code'"
           certs="$("$build_tools/apksigner" verify --verbose --print-certs "$apk")"
           printf '%s\n' "$certs"
           actual_cert_sha256="$(
@@ -842,6 +907,7 @@ jobs:
             release-assets/*.dmg
             release-assets/*.zip
             release-assets/*.AppImage
+            release-assets/*.deb
             release-assets/*.exe
             release-assets/*.apk
             release-assets/*.blockmap

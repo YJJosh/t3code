@@ -3,38 +3,41 @@ import {
   type BackgroundTerminalEntry,
   type BackgroundTerminalOutputBuffer,
 } from "@t3tools/client-runtime/state/background-terminals";
-import type { PiBackgroundTerminalStatus, PiBackgroundTerminalView } from "@t3tools/contracts";
+import type {
+  DulliBackgroundTerminalStatus,
+  DulliBackgroundTerminalView,
+} from "@t3tools/contracts";
 
 import { formatElapsedDurationLabel } from "../../timestampFormat";
 
 export type BackgroundTerminalStatusTone = "info" | "warning" | "success" | "error";
 
-const STATUS_LABELS: Record<PiBackgroundTerminalStatus, string> = {
+const STATUS_LABELS: Record<DulliBackgroundTerminalStatus, string> = {
   running: "Running",
   done: "Done",
   failed: "Failed",
   killed: "Killed",
 };
 
-const STATUS_TONES: Record<PiBackgroundTerminalStatus, BackgroundTerminalStatusTone> = {
+const STATUS_TONES: Record<DulliBackgroundTerminalStatus, BackgroundTerminalStatusTone> = {
   running: "info",
   done: "success",
   failed: "error",
   killed: "warning",
 };
 
-export function backgroundTerminalStatusLabel(status: PiBackgroundTerminalStatus): string {
+export function backgroundTerminalStatusLabel(status: DulliBackgroundTerminalStatus): string {
   return STATUS_LABELS[status];
 }
 
 export function backgroundTerminalStatusTone(
-  status: PiBackgroundTerminalStatus,
+  status: DulliBackgroundTerminalStatus,
 ): BackgroundTerminalStatusTone {
   return STATUS_TONES[status];
 }
 
 /** Short, human title for a terminal row: prefer the title, then the command, then the id. */
-export function backgroundTerminalTitle(view: PiBackgroundTerminalView): string {
+export function backgroundTerminalTitle(view: DulliBackgroundTerminalView): string {
   const title = view.title.trim();
   if (title.length > 0) {
     return title;
@@ -44,7 +47,7 @@ export function backgroundTerminalTitle(view: PiBackgroundTerminalView): string 
 }
 
 /** Accessible status string, calling out failures explicitly. */
-export function backgroundTerminalAccessibleStatus(status: PiBackgroundTerminalStatus): string {
+export function backgroundTerminalAccessibleStatus(status: DulliBackgroundTerminalStatus): string {
   const label = backgroundTerminalStatusLabel(status);
   return status === "failed" ? `${label} — needs your attention` : label;
 }
@@ -82,7 +85,7 @@ export function backgroundTerminalRosterSummaryLabel(
 
 /** Elapsed duration from creation to settlement (or now, while still running). */
 export function backgroundTerminalElapsedLabel(
-  view: PiBackgroundTerminalView,
+  view: DulliBackgroundTerminalView,
   nowMs: number = Date.now(),
 ): string {
   const endMs = view.settledAt ?? nowMs;
@@ -91,7 +94,7 @@ export function backgroundTerminalElapsedLabel(
 }
 
 /** Human-readable outcome for a settled terminal, e.g. "Exit code 1" or "Signal SIGTERM". */
-export function backgroundTerminalExitSummary(view: PiBackgroundTerminalView): string | null {
+export function backgroundTerminalExitSummary(view: DulliBackgroundTerminalView): string | null {
   if (view.errorText !== undefined && view.errorText.trim().length > 0) {
     return view.errorText;
   }

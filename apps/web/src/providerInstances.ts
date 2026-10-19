@@ -15,8 +15,9 @@
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
-  resolveProviderInstanceEnabled,
+  resolveProjectProviderInstanceEnabled,
   type ModelSelection,
+  type ProjectId,
   type ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -53,6 +54,10 @@ export interface ProviderInstanceEntry {
   readonly driverKind: ProviderDriverKind;
   readonly displayName: string;
   readonly accentColor?: string | undefined;
+  /** Registry identity used to resolve the official icon for generic ACP instances. */
+  readonly acpRegistryAgentId?: string | undefined;
+  /** Catalog-advertised icon URL. The renderer still applies the official-CDN allowlist. */
+  readonly acpRegistryIconUrl?: string | undefined;
   readonly continuationGroupKey?: string | undefined;
   readonly enabled: boolean;
   readonly installed: boolean;
@@ -69,6 +74,24 @@ export interface ProviderInstanceEntry {
   readonly models: ReadonlyArray<ServerProviderModel>;
 }
 
+export type ProviderCatalogAvailability = "loading" | "ready" | "unavailable" | "unconfigured";
+
+/**
+ * Keep a provider catalogue that has not arrived yet distinct from a loaded
+ * catalogue with no usable entries. Environment config streams are reactive:
+ * treating their initial `null` as a final empty list strands otherwise
+ * recoverable threads behind a misleading "no providers" state.
+ */
+export function resolveProviderCatalogAvailability(input: {
+  readonly catalogLoaded: boolean;
+  readonly entries: ReadonlyArray<ProviderInstanceEntry>;
+  readonly selectedEntry: ProviderInstanceEntry | undefined;
+}): ProviderCatalogAvailability {
+  if (!input.catalogLoaded) return "loading";
+  if (input.selectedEntry !== undefined) return "ready";
+  return input.entries.length === 0 ? "unconfigured" : "unavailable";
+}
+
 /**
  * Whether an instance can currently contribute models to an interactive picker.
  *
@@ -77,26 +100,6 @@ export interface ProviderInstanceEntry {
  */
 export function isProviderInstancePickerReady(entry: ProviderInstanceEntry): boolean {
   return entry.enabled && entry.isAvailable && entry.status === "ready";
-}
-
-/**
- * Whether a driver's model catalog comes from the user's own setup, so a
- * thread's model can be missing from it. Pickers keep such a model and mark it
- * unavailable instead of silently switching to another one.
- */
-export function keepsUnavailableModelSelection(
-  driverKind: ProviderDriverKind | undefined,
-): boolean {
-  return driverKind === "opencode" || driverKind === "antigravity" || driverKind === "pi";
-}
-
-/**
- * Whether a missing model keeps its saved options. With no capabilities to
- * validate them against, the composer sends them unchanged and the traits
- * picker shows them read-only. Pi's include the thread's profile and config set.
- */
-export function keepsUnavailableModelOptions(driverKind: ProviderDriverKind | undefined): boolean {
-  return driverKind === "opencode" || driverKind === "pi";
 }
 
 /** Picker rails contain configured, enabled instances only. */
@@ -124,6 +127,9 @@ export function deriveProviderInstanceEntries(
       driverKind,
       displayName: resolveProviderInstanceDisplayName(snapshot),
       accentColor: normalizeProviderAccentColor(snapshot.accentColor),
+      ...(driverKind === "acpRegistry" && snapshot.iconUrl
+        ? { acpRegistryIconUrl: snapshot.iconUrl }
+        : {}),
       continuationGroupKey: snapshot.continuation?.groupKey,
       enabled: snapshot.enabled,
       installed: snapshot.installed,
@@ -147,17 +153,23 @@ export function deriveProviderInstanceEntries(
  * the thread's own environment.
  */
 export function deriveProviderEntriesByEnvironment(
-  providersByEnvironment: Iterable<readonly [string, ReadonlyArray<ServerProvider>]>,
+  providersByEnvironment: Iterable<
+    readonly [
+      string,
+      ReadonlyArray<ServerProvider>,
+      Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">?,
+    ]
+  >,
 ): ReadonlyMap<string, ReadonlyMap<string, ProviderInstanceEntry>> {
   const byEnvironment = new Map<string, ReadonlyMap<string, ProviderInstanceEntry>>();
-  for (const [environmentId, providers] of providersByEnvironment) {
+  for (const [environmentId, providers, settings] of providersByEnvironment) {
+    const derived = deriveProviderInstanceEntries(providers);
+    // One map per environment serves every project with a thread there, so
+    // there is no single project to scope `enabled` to; it stays machine-wide.
+    const entries = settings ? applyProviderInstanceSettings(derived, settings, null) : derived;
     byEnvironment.set(
       environmentId,
-      new Map(
-        deriveProviderInstanceEntries(providers).map(
-          (entry) => [entry.instanceId as string, entry] as const,
-        ),
-      ),
+      new Map(entries.map((entry) => [entry.instanceId as string, entry] as const)),
     );
   }
   return byEnvironment;
@@ -169,32 +181,51 @@ export function deriveProviderEntriesByEnvironment(
  * settings write, so picker visibility must follow settings rather than waiting
  * for probe reconciliation.
  *
- * Only built-in default instances have a legacy `providers` entry. Every
- * other instance exists through `providerInstances`; if it is absent there,
- * its streamed snapshot is stale (for example immediately after deletion)
- * and is treated as disabled.
+ * A built-in default instance without a `providerInstances` entry keeps its
+ * streamed state, since the server runs it with default config. Any other
+ * instance missing from `providerInstances` is stale (for example
+ * immediately after deletion) and is treated as disabled.
+ *
+ * `projectId` folds in that project's `providerInstances[id].enabled` override
+ * (enable or disable in either direction over the machine value); `null`
+ * resolves the machine value only. It has no default: a caller that renders
+ * for a single project but forgets to pass it would silently show the
+ * machine's enablement instead of that project's, so passing `null` for a
+ * surface that isn't project-aware must be a deliberate choice, not an
+ * omission.
  */
 export function applyProviderInstanceSettings(
   entries: ReadonlyArray<ProviderInstanceEntry>,
-  settings: Pick<ServerSettings, "providerInstances" | "providers">,
+  settings: Pick<ServerSettings, "providerInstances" | "projectSettingsOverrides">,
+  projectId: ProjectId | null,
 ): ReadonlyArray<ProviderInstanceEntry> {
-  const legacyProviders = settings.providers as Readonly<
-    Record<string, { readonly enabled?: boolean } | undefined>
-  >;
-
   return entries.map((entry) => {
     const explicitInstance = Object.hasOwn(settings.providerInstances, entry.instanceId)
       ? settings.providerInstances[entry.instanceId]
       : undefined;
-    const legacyProvider = Object.hasOwn(legacyProviders, entry.driverKind)
-      ? legacyProviders[entry.driverKind]
-      : undefined;
-    const enabled = explicitInstance
-      ? resolveProviderInstanceEnabled(explicitInstance)
-      : entry.isDefault && legacyProvider
-        ? (legacyProvider.enabled ?? entry.enabled)
-        : false;
-    return enabled === entry.enabled ? entry : { ...entry, enabled };
+    const enabled = resolveProjectProviderInstanceEnabled(settings, projectId, entry.instanceId);
+    if (entry.driverKind !== "acpRegistry" || explicitInstance === undefined) {
+      return enabled === entry.enabled ? entry : { ...entry, enabled };
+    }
+    const config =
+      explicitInstance.config !== null && typeof explicitInstance.config === "object"
+        ? (explicitInstance.config as Readonly<Record<string, unknown>>)
+        : null;
+    if (config?.source === "local") {
+      return { ...entry, enabled, acpRegistryAgentId: undefined, acpRegistryIconUrl: undefined };
+    }
+    const agentId = config?.agentId;
+    const iconUrl = config?.registryIconUrl;
+    return {
+      ...entry,
+      enabled,
+      ...(typeof agentId === "string" && agentId.trim()
+        ? { acpRegistryAgentId: agentId.trim() }
+        : {}),
+      ...(typeof iconUrl === "string" && iconUrl.trim()
+        ? { acpRegistryIconUrl: iconUrl.trim() }
+        : {}),
+    };
   });
 }
 
@@ -234,7 +265,7 @@ export function sortProviderInstanceEntries(
  * Look up a single instance entry by exact `instanceId`. Missing snapshots
  * are not inferred from driver kind in UI routing code.
  */
-function getProviderInstanceEntry(
+export function getProviderInstanceEntry(
   providers: ReadonlyArray<ServerProvider>,
   instanceId: ProviderInstanceId,
 ): ProviderInstanceEntry | undefined {

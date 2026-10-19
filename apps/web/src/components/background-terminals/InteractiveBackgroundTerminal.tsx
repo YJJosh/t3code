@@ -1,6 +1,11 @@
 import type { BackgroundTerminalEntry } from "@t3tools/client-runtime/state/background-terminals";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, PiBackgroundTerminalControlInput, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  DulliBackgroundTerminalControlInput,
+  ThreadId,
+} from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { randomUUID } from "../../lib/utils";
@@ -27,6 +32,9 @@ export function InteractiveBackgroundTerminal({
   managerId: string;
   terminal: BackgroundTerminalEntry;
 }) {
+  const permitted = useAtomValue(
+    backgroundTerminalEnvironment.control.permissionAtom(environmentId),
+  );
   const [clientId] = useState(() => randomUUID());
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -47,7 +55,8 @@ export function InteractiveBackgroundTerminal({
   const terminalId = terminal.view.id;
   const control = useCallback(
     async (command: Control) => {
-      const request: PiBackgroundTerminalControlInput = {
+      if (!permitted) throw new Error("Terminal control permission is required.");
+      const request: DulliBackgroundTerminalControlInput = {
         ...command,
         threadId,
         managerId,
@@ -57,7 +66,7 @@ export function InteractiveBackgroundTerminal({
       const result = await run({ environmentId, input: request });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
     },
-    [run, environmentId, threadId, managerId, terminalId, clientId],
+    [permitted, run, environmentId, threadId, managerId, terminalId, clientId],
   );
   const reportError = useCallback(
     (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
@@ -214,6 +223,7 @@ export function InteractiveBackgroundTerminal({
           variant="outline"
           disabled={
             pending ||
+            !permitted ||
             !watching ||
             terminal.view.status !== "running" ||
             (!controlling && terminal.view.attached)

@@ -1,5 +1,8 @@
 import type { BackgroundTerminalEntry } from "@t3tools/client-runtime/state/background-terminals";
-import type { PiBackgroundTerminalStatus, PiBackgroundTerminalView } from "@t3tools/contracts";
+import type {
+  DulliBackgroundTerminalStatus,
+  DulliBackgroundTerminalView,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -19,8 +22,8 @@ import {
 const EMPTY_OUTPUT = { text: "", totalBytes: 0, truncatedBytes: 0 } as const;
 
 function view(
-  overrides: Partial<PiBackgroundTerminalView> & { id: string },
-): PiBackgroundTerminalView {
+  overrides: Partial<DulliBackgroundTerminalView> & { id: string },
+): DulliBackgroundTerminalView {
   return {
     command: "npm run build",
     title: "",
@@ -34,7 +37,7 @@ function view(
 }
 
 function entry(
-  overrides: Partial<PiBackgroundTerminalView> & { id: string },
+  overrides: Partial<DulliBackgroundTerminalView> & { id: string },
 ): BackgroundTerminalEntry {
   return {
     view: view(overrides),
@@ -46,15 +49,16 @@ function entry(
 }
 
 describe("backgroundTerminalStatusLabel / tone", () => {
-  const cases: ReadonlyArray<PiBackgroundTerminalStatus> = ["running", "done", "failed", "killed"];
-  for (const status of cases) {
-    it(`has a label and tone for ${status}`, () => {
-      expect(backgroundTerminalStatusLabel(status).length).toBeGreaterThan(0);
-      expect(["info", "warning", "success", "error"]).toContain(
-        backgroundTerminalStatusTone(status),
-      );
-    });
-  }
+  const cases: ReadonlyArray<DulliBackgroundTerminalStatus> = [
+    "running",
+    "done",
+    "failed",
+    "killed",
+  ];
+  it.each(cases)("has a label and tone for %s", (status) => {
+    expect(backgroundTerminalStatusLabel(status).length).toBeGreaterThan(0);
+    expect(["info", "warning", "success", "error"]).toContain(backgroundTerminalStatusTone(status));
+  });
 
   it("calls out failed in the accessible status", () => {
     expect(backgroundTerminalAccessibleStatus("failed")).toContain("needs your attention");

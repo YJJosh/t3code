@@ -18,8 +18,14 @@ import {
   type VcsRemoveWorktreeInput,
 } from "@t3tools/contracts";
 
+import {
+  isTemporaryWorktreeBranch,
+  flattenTemporaryWorktreeBranchName,
+  WORKTREE_BRANCH_PREFIX,
+} from "@t3tools/shared/git";
+import { initializeWorkspaceSubmodules } from "./initializeWorkspaceSubmodules.ts";
 import * as ServerConfig from "../config.ts";
-import { expandHomePathWith } from "../pathExpansion.ts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import {
   keepWorklerCloneRefs,
@@ -84,6 +90,7 @@ export class MultiRepoWorkspaces extends Context.Service<
       readonly members: ReadonlyArray<string>;
       readonly oldBranch: string;
       readonly newBranch: string;
+      readonly exactName?: boolean;
     }) => Effect.Effect<{ readonly branch: string }, GitCommandError>;
   }
 >()("t3/vcs/MultiRepoWorkspaces") {}
@@ -229,7 +236,7 @@ export const make = Effect.gen(function* () {
   const inspectFolder: MultiRepoWorkspaces["Service"]["inspectFolder"] = Effect.fn(
     "MultiRepoWorkspaces.inspectFolder",
   )(function* (rawFolder) {
-    const folder = path.resolve(expandHomePathWith(rawFolder.trim(), path));
+    const folder = path.resolve(expandHomePath(rawFolder.trim(), NodeOS.homedir()));
     const result = (
       kind: ProjectInspectMultiRepoFolderResult["kind"],
       repositories: ReadonlyArray<string> = [],
@@ -302,7 +309,23 @@ export const make = Effect.gen(function* () {
   )(function* (input, options) {
     const root = path.resolve(input.cwd);
     const workspacesDir = path.join(root, WORKSPACES_DIR);
-    const branch = input.newRefName ?? input.refName;
+    let branch = input.newRefName ?? input.refName;
+    // Upstream's temporary namespace may be blocked in any member. Use one
+    // flattened name for the entire group rather than probing its non-Git root.
+    if (input.newRefName !== undefined && isTemporaryWorktreeBranch(branch)) {
+      for (const member of (yield* members(root)) ?? []) {
+        const existing = yield* git.execute({
+          operation: "MultiRepoWorkspaces.temporaryBranch",
+          cwd: path.join(root, member),
+          args: ["show-ref", "--verify", "--quiet", `refs/heads/${WORKTREE_BRANCH_PREFIX}`],
+          allowNonZeroExit: true,
+        });
+        if (existing.exitCode === 0) {
+          branch = flattenTemporaryWorktreeBranchName(branch);
+          break;
+        }
+      }
+    }
     let name: string | null = null;
     if (input.path !== null) {
       const requested = path.resolve(root, input.path);
@@ -381,6 +404,15 @@ export const make = Effect.gen(function* () {
       ),
       Effect.uninterruptible,
     );
+    for (const member of (yield* members(created.path)) ?? []) {
+      yield* initializeWorkspaceSubmodules({
+        cwd: path.join(created.path, member),
+        fileSystem,
+        path,
+        git,
+        options,
+      });
+    }
     return { worktree: { path: created.path, refName: created.branch ?? branch } };
   });
 
@@ -460,7 +492,7 @@ export const make = Effect.gen(function* () {
           .pipe(Effect.map((result) => result.exitCode === 0)),
       );
       if (!taken.some(Boolean)) break;
-      if (suffix === MAX_WORKSPACE_NAME_ATTEMPTS) {
+      if (input.exactName || suffix === MAX_WORKSPACE_NAME_ATTEMPTS) {
         return yield* new GitCommandError({
           operation: "MultiRepoWorkspaces.renameBranch",
           command: "git branch -m",

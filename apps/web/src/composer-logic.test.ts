@@ -1,3 +1,4 @@
+import { resolveComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import { filterComposerPullRequestMatches } from "@t3tools/shared/composerPullRequestMatches";
 import { EnvironmentId, MessageId, ThreadId, type AssistantCitation } from "@t3tools/contracts";
 import {
@@ -5,23 +6,41 @@ import {
   expandAssistantCitationsForProvider,
   serializeAssistantCitation,
 } from "@t3tools/shared/assistantCitations";
+import {
+  DEFAULT_RESOLVED_KEYBINDINGS,
+  compileResolvedKeybindingsConfig,
+  mergeWithDefaultKeybindings,
+} from "@t3tools/shared/keybindings";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   clampCollapsedComposerCursor,
+  parseDulliTerminalCommand,
+  isDulliAgentsPanelCommand,
   collapseExpandedComposerCursor,
+  composerSubmissionIntentForKey,
   composerStateAtPromptEnd,
-  composerSubmissionIntentForEnter,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
   formatAssistantCitationForComposer,
   isCollapsedCursorAdjacentToInlineToken,
-  parseClientSlashCommand,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
 } from "./composer-logic";
 import { carryDisplacedCustomAnswerIntoPrompt } from "./pendingUserInput";
 import { formatTerminalContextReference } from "./lib/terminalContext";
+
+it("only intercepts standalone Dulli inspector commands, not prompts or extension arguments", () => {
+  for (const value of ["/subagents", "/workflows", " /WORKFLOWS  "])
+    expect(isDulliAgentsPanelCommand(value)).toBe(true);
+  for (const value of [
+    "/subagents list",
+    "/workflows run review",
+    "Discuss /subagents",
+    "/subagents-rpc",
+  ])
+    expect(isDulliAgentsPanelCommand(value)).toBe(false);
+});
 
 const terminalReference = formatTerminalContextReference({
   id: "ctx-1",
@@ -63,7 +82,15 @@ describe("formatAssistantCitationForComposer", () => {
   });
 });
 
-describe("composerSubmissionIntentForEnter", () => {
+describe("composerSubmissionIntentForKey", () => {
+  const input = {
+    keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+    platform: "Linux",
+    isMobileViewport: false,
+    isDraftThread: false,
+  };
+  const enter = { key: "Enter", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false };
+
   it.each([
     ["enter", "one line", false, "foreground"],
     ["enter", "two\nlines", false, "foreground"],
@@ -72,100 +99,192 @@ describe("composerSubmissionIntentForEnter", () => {
     ["mod-enter-multiline", "two\nlines", true, "foreground"],
     ["mod-enter", "one line", false, null],
     ["mod-enter", "one line", true, "foreground"],
-  ] as const)("uses %s for %j with modifier=%s", (sendShortcut, prompt, modifierKey, expected) => {
+  ] as const)("honors %s for %j", (sendShortcut, prompt, ctrlKey, expected) => {
     expect(
-      composerSubmissionIntentForEnter({
-        isMobileViewport: false,
-        shiftKey: false,
-        modifierKey,
-        isDraftThread: false,
+      composerSubmissionIntentForKey({
+        ...input,
+        event: { ...enter, ctrlKey },
         sendShortcut,
         prompt,
       }),
     ).toBe(expected);
   });
 
-  it.each([
-    ["enter", false, "alternate"],
-    ["enter", true, null],
-    ["mod-enter-multiline", false, "foreground"],
-    ["mod-enter-multiline", true, "alternate"],
-    ["mod-enter", false, "foreground"],
-    ["mod-enter", true, "alternate"],
-  ] as const)(
-    "resolves running follow-ups with %s and shift=%s",
-    (sendShortcut, shiftKey, expected) => {
+  it.each(["MacIntel", "Win32", "Linux"])("uses the configured actions on %s", (platform) => {
+    const modEnter = {
+      ...enter,
+      metaKey: platform === "MacIntel",
+      ctrlKey: platform !== "MacIntel",
+    };
+    for (const sendShortcut of ["enter", "mod-enter", "mod-enter-multiline"] as const) {
+      const running = { ...input, platform, sendShortcut, prompt: "two\nlines", isRunning: true };
+      const intent = composerSubmissionIntentForKey({ ...running, event: modEnter });
+      expect(intent).toBe("alternate");
+      for (const activeTurnDefault of ["queue", "steer"] as const) {
+        expect(
+          resolveComposerDispatchMode({
+            running: true,
+            alternateModifier: intent === "alternate",
+            activeTurnDefault,
+          }),
+        ).toBe(activeTurnDefault === "queue" ? "steer" : "queue");
+      }
       expect(
-        composerSubmissionIntentForEnter({
-          isMobileViewport: false,
-          shiftKey,
-          modifierKey: true,
-          isDraftThread: false,
-          isRunning: true,
+        composerSubmissionIntentForKey({
+          ...input,
+          platform,
           sendShortcut,
-          prompt: "two\nlines",
+          isDraftThread: true,
+          event: { ...modEnter, altKey: true },
         }),
-      ).toBe(expected);
-    },
-  );
-
-  it("submits plain Enter on desktop", () => {
-    expect(
-      composerSubmissionIntentForEnter({
-        isMobileViewport: false,
-        shiftKey: false,
-        modifierKey: false,
-        isDraftThread: true,
-      }),
-    ).toBe("foreground");
+      ).toBe("background");
+      expect(
+        composerSubmissionIntentForKey({
+          ...input,
+          platform,
+          sendShortcut,
+          event: { ...modEnter, altKey: true },
+        }),
+      ).toBe("background");
+      expect(
+        composerSubmissionIntentForKey({
+          ...input,
+          platform,
+          sendShortcut,
+          isDraftThread: true,
+          event: modEnter,
+        }),
+      ).toBe("background");
+      expect(
+        composerSubmissionIntentForKey({ ...running, event: { ...enter, shiftKey: true } }),
+      ).toBeNull();
+    }
   });
 
-  it("inserts a newline for plain Enter on mobile", () => {
+  it("leaves queued-message steering on Mod+Shift+Enter outside a draft", () => {
     expect(
-      composerSubmissionIntentForEnter({
-        isMobileViewport: true,
-        shiftKey: false,
-        modifierKey: false,
-        isDraftThread: true,
-      }),
-    ).toBeNull();
-  });
-
-  it("inserts a newline for Shift+Enter", () => {
-    expect(
-      composerSubmissionIntentForEnter({
-        isMobileViewport: false,
-        shiftKey: true,
-        modifierKey: false,
-        isDraftThread: true,
+      composerSubmissionIntentForKey({
+        ...input,
+        isRunning: true,
+        event: { ...enter, ctrlKey: true, shiftKey: true },
       }),
     ).toBeNull();
   });
 
-  it("submits a new thread in the background with Mod+Enter", () => {
+  it("does not start a background thread with the queued-message shortcut", () => {
     expect(
-      composerSubmissionIntentForEnter({
-        isMobileViewport: false,
-        shiftKey: false,
-        modifierKey: true,
+      composerSubmissionIntentForKey({
+        ...input,
         isDraftThread: true,
+        event: { ...enter, ctrlKey: true, shiftKey: true },
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    ["mod+arrowup", { key: "ArrowUp", ctrlKey: true }],
+    ["shift+tab", { key: "Tab", shiftKey: true }],
+  ] as const)("accepts a remapped %s action", (key, event) => {
+    const keybindings = mergeWithDefaultKeybindings(
+      compileResolvedKeybindingsConfig([
+        { key, command: "composer.sendBackground", when: "composerFocus && draftThreadRoute" },
+      ]),
+    );
+    expect(
+      composerSubmissionIntentForKey({
+        ...input,
+        keybindings,
+        isDraftThread: true,
+        event: { ...enter, ...event },
       }),
     ).toBe("background");
   });
 
-  it("keeps Mod+Enter in the foreground for an active thread", () => {
+  it("uses remapped keys and removes the old action bindings", () => {
+    const keybindings = mergeWithDefaultKeybindings(
+      compileResolvedKeybindingsConfig([
+        {
+          key: "alt+q",
+          command: "composer.sendAlternate",
+          when: "composerFocus && turnRunning",
+        },
+        {
+          key: "alt+b",
+          command: "composer.sendBackground",
+          when: "composerFocus && draftThreadRoute",
+        },
+      ]),
+    );
+    const custom = { ...input, keybindings };
     expect(
-      composerSubmissionIntentForEnter({
-        isMobileViewport: false,
-        shiftKey: false,
-        modifierKey: true,
-        isDraftThread: false,
+      composerSubmissionIntentForKey({
+        ...custom,
+        isRunning: true,
+        event: { ...enter, key: "q", altKey: true },
+      }),
+    ).toBe("alternate");
+    expect(
+      composerSubmissionIntentForKey({
+        ...custom,
+        isDraftThread: true,
+        event: { ...enter, key: "b", altKey: true },
+      }),
+    ).toBe("background");
+    expect(
+      composerSubmissionIntentForKey({
+        ...custom,
+        isRunning: true,
+        event: { ...enter, ctrlKey: true },
       }),
     ).toBe("foreground");
+    expect(
+      composerSubmissionIntentForKey({
+        ...custom,
+        isDraftThread: true,
+        event: { ...enter, ctrlKey: true, shiftKey: true },
+      }),
+    ).toBeNull();
+    expect(
+      composerSubmissionIntentForKey({ ...custom, event: { ...enter, key: "b", altKey: true } }),
+    ).toBeNull();
+  });
+
+  it.each([
+    { isMobileViewport: true },
+    { event: { ...enter, isComposing: true } },
+    { event: { ...enter, keyCode: 229 } },
+    { event: { ...enter, repeat: true } },
+  ])("does not submit with %j", (override) => {
+    expect(composerSubmissionIntentForKey({ ...input, event: enter, ...override })).toBeNull();
   });
 });
 
 describe("detectComposerTrigger", () => {
+  it.each(["Use ", "Use\t", "Use\n  "])("detects inline slash skills after %j", (prefix) => {
+    const text = `${prefix}/skill:review later`;
+    const cursor = `${prefix}/skill:review`.length;
+    expect(detectComposerTrigger(text, cursor)).toEqual({
+      kind: "slash-command",
+      query: "skill:review",
+      rangeStart: prefix.length,
+      rangeEnd: cursor,
+    });
+  });
+
+  it.each(["Use /", "Use /review"])("detects the inline slash token in %j", (text) => {
+    expect(detectComposerTrigger(text, text.length)).toEqual({
+      kind: "slash-command",
+      query: text.slice(5),
+      rangeStart: 4,
+      rangeEnd: text.length,
+    });
+  });
+
+  it.each(["Use/review", "https://example.com/review", "Use /review "])(
+    "does not trigger for %j",
+    (text) => expect(detectComposerTrigger(text, text.length)).toBeNull(),
+  );
+
   it("detects @path trigger at cursor", () => {
     const text = "Please check @src/com";
     const trigger = detectComposerTrigger(text, text.length);
@@ -738,53 +857,68 @@ describe("parseStandaloneComposerSlashCommand", () => {
   });
 });
 
-describe("parseClientSlashCommand", () => {
-  it("maps Pi's picker commands to T3 surfaces", () => {
-    expect(parseClientSlashCommand(" /ps ")).toEqual({
-      kind: "open-surface",
-      surface: "terminals",
-    });
-    expect(parseClientSlashCommand("/subagents")).toEqual({
-      kind: "open-surface",
-      surface: "agents",
-    });
-    expect(parseClientSlashCommand("/Workflows")).toEqual({
-      kind: "open-surface",
-      surface: "agents",
-    });
+describe("literal editor answer cursor state", () => {
+  const prefill = "- [X] done $my-skill ";
+
+  it("keeps character positions after token-like text for inserted lines and replacements", () => {
+    for (const replacement of ["\n", "\t", "edited\n  "]) {
+      const next = replaceTextRange(prefill, prefill.length, prefill.length, replacement);
+      const cursor = collapseExpandedComposerCursor(next.text, next.cursor, true);
+      expect(next.text).toBe(prefill + replacement);
+      expect(cursor).toBe(next.text.length);
+      expect(expandCollapsedComposerCursor(next.text, cursor, true)).toBe(next.cursor);
+      expect(clampCollapsedComposerCursor(next.text, cursor, true)).toBe(next.cursor);
+    }
+    const replaced = replaceTextRange(prefill, 11, 20, "$another-skill");
+    const cursor = collapseExpandedComposerCursor(replaced.text, replaced.cursor, true);
+    expect(replaced.text).toBe("- [X] done $another-skill ");
+    expect(cursor).toBe(25);
+    expect(expandCollapsedComposerCursor(replaced.text, cursor, true)).toBe(25);
   });
 
-  it("parses /terminal with an optional keep-open flag", () => {
-    expect(parseClientSlashCommand("/terminal bash --norc -i")).toEqual({
-      kind: "start-terminal",
+  it("does not open a skill or path menu when restoring an editor answer", () => {
+    for (const value of ["- [X] done $my-skill", "Use @README", ""]) {
+      expect(composerStateAtPromptEnd(value, true)).toEqual({
+        cursor: value.length,
+        trigger: null,
+      });
+    }
+    expect(composerStateAtPromptEnd("Use $my").trigger?.kind).toBe("skill");
+  });
+});
+
+describe("Dulli terminal slash commands", () => {
+  it("opens terminal picker commands without sending them to the model", () => {
+    for (const command of [" /ps ", "/PS", "/terminal", "/terminal --keep-open"]) {
+      expect(parseDulliTerminalCommand(command)).toEqual({ kind: "terminals" });
+    }
+  });
+  it("preserves commands, flags, and multiline shell input", () => {
+    expect(parseDulliTerminalCommand("/terminal bash --norc -i")).toEqual({
+      kind: "terminal-start",
       command: "bash --norc -i",
       keepOpen: false,
     });
-    expect(parseClientSlashCommand("/terminal -k pnpm dev")).toEqual({
-      kind: "start-terminal",
-      command: "pnpm dev",
-      keepOpen: true,
-    });
-    expect(parseClientSlashCommand("/terminal --keep-open")).toEqual({
-      kind: "start-terminal",
-      command: "",
-      keepOpen: true,
-    });
-    expect(parseClientSlashCommand("/terminal")).toEqual({
-      kind: "start-terminal",
-      command: "",
-      keepOpen: false,
-    });
-    expect(parseClientSlashCommand("/terminal -kx")).toEqual({
-      kind: "start-terminal",
+    for (const flag of ["-k", "--keep-open"]) {
+      expect(parseDulliTerminalCommand(`/terminal ${flag} pnpm dev`)).toEqual({
+        kind: "terminal-start",
+        command: "pnpm dev",
+        keepOpen: true,
+      });
+    }
+    expect(parseDulliTerminalCommand("/terminal -kx")).toEqual({
+      kind: "terminal-start",
       command: "-kx",
       keepOpen: false,
     });
+    expect(parseDulliTerminalCommand("/terminal echo a\necho b")).toEqual({
+      kind: "terminal-start",
+      command: "echo a\necho b",
+      keepOpen: false,
+    });
   });
-
   it("leaves other commands and messages alone", () => {
-    expect(parseClientSlashCommand("/ps now")).toBeNull();
-    expect(parseClientSlashCommand("/pm")).toBeNull();
-    expect(parseClientSlashCommand("run /ps")).toBeNull();
+    for (const text of ["/ps now", "/terminalx foo", "run /ps", "/pm"])
+      expect(parseDulliTerminalCommand(text)).toBeNull();
   });
 });

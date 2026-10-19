@@ -360,11 +360,23 @@ it.layer(TestLayer)("MultiRepoWorkspaces", (it) => {
       yield* commit(path.join(kept.worktree.path, "api"), "kept work");
       yield* git(path.join(kept.worktree.path, "api"), ["tag", "v1"]);
       const work = yield* git(path.join(kept.worktree.path, "api"), ["rev-parse", "HEAD"]);
+      for (const ref of [
+        "refs/t3/checkpoints/legacy/1",
+        "refs/t3/orchestration-v2/checkpoints/scope/1",
+      ]) {
+        yield* git(path.join(kept.worktree.path, "api"), ["update-ref", ref, "HEAD"]);
+      }
       yield* workspaces.removeWorkspace({ cwd: group, path: kept.worktree.path, force: true });
       assert.isFalse(yield* fileSystem.exists(kept.worktree.path));
       const api = path.join(group, "api");
       assert.equal(yield* git(api, ["rev-parse", "refs/heads/feature/kept"]), work);
       assert.equal(yield* git(api, ["rev-parse", "refs/tags/v1^{commit}"]), work);
+      for (const ref of [
+        "refs/t3/checkpoints/legacy/1",
+        "refs/t3/orchestration-v2/checkpoints/scope/1",
+      ]) {
+        assert.equal(yield* git(api, ["rev-parse", ref]), work);
+      }
 
       // The project already has other commits on that branch name.
       const blocked = yield* workspaces.createWorkspace({
@@ -784,3 +796,55 @@ it.layer(TestLayer)("MultiRepoWorkspaces", (it) => {
     }).pipe(Effect.scoped),
   );
 });
+
+it.effect("uses the upstream flat temporary branch across all members when one blocks t3", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const workspaces = yield* MultiRepoWorkspaces.MultiRepoWorkspaces;
+    const group = yield* makeGroup;
+    yield* git(path.join(group, "web"), ["branch", "t3"]);
+    const created = yield* workspaces.createWorkspace({
+      cwd: group,
+      refName: "main",
+      newRefName: "t3/abcd1234",
+      path: null,
+    });
+    assert.equal(created.worktree.refName, "t3-abcd1234");
+    for (const member of ["api", "web"]) {
+      assert.equal(
+        yield* git(path.join(created.worktree.path, member), ["branch", "--show-current"]),
+        "t3-abcd1234",
+      );
+    }
+  }).pipe(Effect.provide(TestLayer), Effect.scoped),
+);
+
+it.effect("honors exact custom names without splitting a group on collision", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const workspaces = yield* MultiRepoWorkspaces.MultiRepoWorkspaces;
+    const group = yield* makeGroup;
+    const created = yield* workspaces.createWorkspace({
+      cwd: group,
+      refName: "main",
+      newRefName: "t3/abcd1234",
+      path: null,
+    });
+    yield* git(path.join(created.worktree.path, "web"), ["branch", "custom/name"]);
+    yield* workspaces
+      .renameBranch({
+        cwd: created.worktree.path,
+        members: ["api", "web"],
+        oldBranch: "t3/abcd1234",
+        newBranch: "custom/name",
+        exactName: true,
+      })
+      .pipe(Effect.flip);
+    for (const member of ["api", "web"]) {
+      assert.equal(
+        yield* git(path.join(created.worktree.path, member), ["branch", "--show-current"]),
+        "t3/abcd1234",
+      );
+    }
+  }).pipe(Effect.provide(TestLayer), Effect.scoped),
+);

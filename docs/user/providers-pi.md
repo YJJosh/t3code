@@ -1,81 +1,85 @@
-# Pi provider
+# Pi
 
-T3 Dulli can run [Pi](https://github.com/earendil-works/pi) as a built-in provider. Normal Pi profiles, extensions, skills, prompt templates, and project `.pi` resources remain available. With pi-sessions, the same chat can be used from T3 and the terminal at the same time.
+T3 Code can use your existing Pi coding agent installation while keeping Pi's models, auth,
+extensions, skills, context files, and native session history.
 
-## Configure Pi
+## Set Up Pi
 
-Open **Settings → Providers**, add or select **Pi**, and configure any overrides you need:
+1. Install [Pi](https://pi.dev) on the machine running the T3 Code server. Pi requires Node.js
+   22.19 or newer; its platform installers can install Node if needed. T3 Code supports Pi
+   0.80.5 or newer.
+2. Run `pi` in a terminal, then `/login` to connect your model provider or configure its API key.
+3. Open T3 Code Settings, enable Pi, and refresh the provider.
 
-- **Binary path** – defaults to `pi` on `PATH`.
-- **Profile** – defaults to `coder`.
-- **pi-sessions** – on by default. T3's Pi loads the pi-sessions extension from where it last ran on this computer (`~/.pi/pi-sessions/start.json`), so it does not need to be in your Pi config set. Off: T3's Pi runs without it (`PI_SESSIONS=off`), nothing is shared and nothing is reported to the daemon. Applies to new connections.
-- **Share Pi chats with the terminal** – on by default; needs **pi-sessions** on. Uses pi-sessions when its daemon is available; applies to new connections.
-- **Agent directory** – overrides Pi's configuration root. T3 Dulli also honors `PI_CODING_AGENT_DIR` and the legacy `TAU_CODING_AGENT_DIR` when no explicit value is set. Discovery, chat, and text generation use the same resolved directory, including `~` expansion.
+For an npm installation, use:
 
-Pi model names use `provider/model`, for example `openai-codex/gpt-6-astra`. Model discovery uses your installed Pi with its configured extensions and credentials, so the picker lists the same models as `pi` in your terminal. The picker also exposes profile, reasoning, context-window, and supported service-tier options. Fast is shown only for models supported by the loaded `/fast` extension; GPT-6 Astra does not currently expose it. Context-window sizes come from the loaded `/context` extension, so sizes it adds, such as GPT's opt-in windows up to 872K, appear after the next model refresh without a T3 update.
+```sh
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
 
-Pi sessions always run with full local access because T3 owns the surrounding runtime approval boundary, so the composer does not show an access-mode selector for Pi. Its place holds one menu for **Config set** and **Profile** (for example, `main · coder`); reasoning, context-window, and service-tier controls remain separate. On mobile both are in the thread's model options.
+If `pi` is not on the server's `PATH`, set Pi's binary path to the executable. Provider environment
+variables and launch arguments are also available for installations that need a custom agent
+directory, endpoint, or model configuration. `--provider` must be paired with `--model`. T3 Code
+rejects launch arguments that change Pi's execution mode or select a session because T3 owns those
+parts of the process lifecycle.
 
-Config sets are the Pi homes registered with Profile Manager. The set you choose applies to that thread only and never changes the global selection. Remote sets must already be mounted on the server machine. The set is hidden when fewer than two sets are registered. In T3-owned sessions, changing the set or profile restarts Pi before the next message and keeps the conversation; wait for the current turn to finish first. A profile must exist in the chosen set.
+On a remote or headless server, connect to that machine over SSH and run `pi`, then `/login`.
+Open the authorization URL on your own computer. If the callback cannot reach the server,
+paste the final redirect URL or authorization code back into Pi when prompted. You can also
+set your model provider's API-key environment variable in the Pi instance's settings; mark
+secret values as sensitive.
 
-When using T3’s own Pi process, extension menus, confirmations, and text prompts (for example `/pm`) appear as questions in chat on web, desktop, and mobile. Choose an answer or dismiss the question to cancel; T3 never picks a menu entry for you. Timed dialogs disappear when they expire.
+Update installer-managed Pi with `pi update`. If another package manager owns the installation,
+update it through that manager instead. For example, a Nix profile installation uses
+`nix profile upgrade pi`.
 
-## Shared chats with the terminal
+## What Carries Over
 
-Install and start **pi-sessions** on the same machine as your T3 environment, then leave **pi-sessions** and **Share Pi chats with the terminal** on in **Settings → Providers → Pi**. pi-sessions only has to have run once on this computer; it does not have to be in the config set T3's Pi uses. T3 joins the daemon’s interactive Pi instead of starting a second writer. Open the chat from Pi’s `/overview` to use its real terminal screen, including extension UIs. Messages, aborts, model changes and thinking-level changes work against the same chat from either side.
+T3 Code discovers the models reported by Pi and exposes their supported thinking levels. The
+thinking picker marks the discovered active model's configured level as its default without
+overriding it. Other models keep their Pi defaults when no level is selected. Threads
+use Pi's native session files for resume, rollback, and forks within the same Pi instance. Forks
+preserve the native conversation through the selected turn in the destination workspace.
+Switching providers uses portable conversation context. Extension
+dialogs appear in the T3 Code composer, and the composer context meter follows Pi's own usage
+reporting while a response streams and after it settles.
 
-Terminal chats appear automatically when their working directory exactly matches an existing T3 project root, or is a Workler workspace of one (`<project>/.worktrees/<name>`, for example from pi-sessions' `/workler`), and their agent directory matches one enabled, sharing-enabled Pi provider instance. Workspace chats keep their workspace and branch, and a branch the agent renames in the terminal is shown in T3 once the workspace's `HEAD` confirms it. T3 never creates projects for them. Discovery waits until Pi has written a session file; initial history keeps up to 200 text messages from the active conversation branch. Ambiguous provider homes are skipped.
+Pi skills appear in the composer's `$` menu. This includes user skills and project skills that Pi
+loads for the current workspace; selecting one uses Pi's native skill expansion.
 
-T3 receives changes as they happen; there is no refresh button or periodic session scan. Settle and unsettle synchronize in both directions. Newly discovered chats follow Pi’s settled state; existing T3 chats initially follow T3. If both sides change at once, unsettled wins so work stays visible.
+Pi loads its normal user and project extensions. Blocking `select`, `confirm`, `input`, and `editor`
+dialogs work in T3 Code. Notifications appear in the work log. Pi terminal decoration such as
+titles, status lines, and widgets does not have a T3 Code equivalent.
 
-In an existing shared chat, change the profile or config set in the terminal rather than restarting Pi from T3.
+## Permission Modes
 
-Extension dialogs are answered **only in the terminal**. T3 shows “Waiting for you in the terminal” until the dialog closes. Background terminals and subagent panels still work. In a shared chat, Claude Code’s own tool calls show as tool rows with their command or path, but without output.
+T3 Code applies the composer permission mode through Pi's blocking tool hook:
 
-Closing T3’s connection leaves the shared Pi running. If Pi exits or switches to another session in the terminal, T3 ends that connection. Sending another message reopens the original conversation. A session held by classic Pi or a separate T3 RPC process cannot be shared; T3 reports “open elsewhere” instead of starting a new conversation.
+- **Supervised** asks before commands, file changes, and extension tools. Read-only tools continue.
+- **Auto-accept edits** allows Pi's edit and write tools, but asks before commands and extension
+  tools.
+- **Full access** allows tools without T3 Code approval prompts.
 
-**Current limit:** initial discovery imports bounded history, but reconnecting an already-linked chat does not backfill completed turns missed while T3 was disconnected. Those messages remain in Pi’s session and terminal history; new live messages resume in T3. An in-progress assistant response is replayed on attach. Images sent from the terminal are not copied into T3 attachments; image-only prompts appear as a placeholder.
+The **Auto** option is not shown for Pi because Pi does not expose an AI approval reviewer.
+Threads that already stored Auto before Pi support was added behave and display as Supervised.
 
-When no daemon is running yet (for example after a restart, before any terminal ran `pi`), T3 starts it the way pi-sessions last started it, so the first chat is shared too. Without pi-sessions, when the daemon cannot be started, or with sharing turned off, T3 uses its own `pi --mode rpc` process as before. If pi-sessions has never run on this computer (no `start.json` yet), T3 cannot find it: run `pi` in a terminal once. If T3's Pi still does not load pi-sessions, a shared start fails after about 8 seconds and T3 then uses its own Pi for that Pi binary for 10 minutes. Background-terminal and subagent extensions continue to work without pi-sessions. Only the environment’s server talks to the local daemon, so web, desktop, mobile, and remote T3 connections use the same shared chat.
+Changing the mode restarts the Pi provider session and resumes the same native conversation. The
+policy covers Pi tool calls; it is not an operating-system sandbox, and code that a trusted Pi
+extension runs outside a tool call remains governed by Pi's own extension trust model.
 
-## Conversation display
+T3 Code's `delegate_task` tool creates durable child threads in the shared subagent UI. If the user
+installs Pi's example `subagent` extension, T3 Code also shows its task progress and results in that
+UI. Pi runs those children without a session, so they cannot be opened or resumed as T3 Code
+threads.
 
-Completed work folds intermediate commentary, tool activity, and routine subagent and workflow notification replies under **Worked for…**. The actual answer stays visible, even if a later subagent or workflow notification produces another reply. When a background terminal finishes, Pi's reply to it is shown as an answer. Expand the work log to review the progress messages. Pi text blocks render separately so headings, lists, and code blocks do not run into preceding text.
+## Troubleshooting
 
-Older saved Pi conversations may still show progress messages outside the fold because they did not record the distinction between commentary and answers. Ambiguous or partial replies also stay visible rather than risk hiding the only answer.
-
-Thinking rows show the reasoning summary or text supplied by the model and expand to reveal its available content. Models that do not expose reasoning have no reasoning text to display. Tool calls remain compact, expandable cards with action-specific icons and output previews.
-
-## Extension commands
-
-Registered extension commands such as `/ps` and `/subagents` run directly in Pi, including while an agent is working. Commands that do not start model work finish without leaving the thread's working indicator active. Private inspector-control commands are hidden from the slash menu.
-
-## Background threads
-
-With `pi-background-threads` installed, ask Pi to use `thread_spawn` with a task and optional title. The new thread appears in the same project, shares the parent’s branch and working directory, and inherits its provider instance, model options (including profile), and modes. Its first turn starts with the requested task. Open the new thread to follow, reply to, or stop it; the extension’s `thread_status` does not mirror T3 thread status. Both threads can edit the same files, so give parallel tasks non-overlapping scope.
-
-## Background terminals
-
-Background terminals started by Pi, and terminals you start yourself, live in the **Shared terminals** surface of the right panel. Open it from the panel's **+** menu, press **S** in the empty panel, or type `/ps` in the composer. The surface lists running and settled terminals; selecting one shows its command, directory, process details and output, and a running terminal can be stopped there. **Start terminal** runs a command in the thread's working directory inside the live Pi session, so Pi can see and use it too; `/terminal <command>` (or `/terminal -k <command>` to keep a shell open after the command exits) does the same from the composer. Both need Pi to be running in the thread, so send a message first in a brand-new thread. Running terminals also show in a compact strip above the composer that opens the surface. With an updated `pi-background-terminals` extension, interactive terminals open a live color screen in web and desktop. Choose **Take control** to type, paste, use arrow keys or Ctrl+C, and resize the terminal to the panel; **Release control** returns input to the agent. Only one person (including Pi’s terminal UI) can control a terminal at a time. Closing the panel releases it; a disconnected browser’s control expires within a minute. Ordinary background commands and mobile retain the read-only text view. `/subagents` and `/workflows` open the Agents surface the same way.
-
-Terminal state belongs to the active Pi process. T3 requests a replay when a client subscribes, ignores updates from an older manager after Pi restarts, and never sends a terminal control to a stale provider session.
-
-## Agents and workflows
-
-When the optional `pi-subagents` extension is installed, Pi mirrors its child runs and workflows into T3's normal `task.*` activity stream:
-
-- Web and desktop show them in an adaptive **Agents** inspector: a live roster and detail pane at wider panel widths, or a focused list/detail flow in compact layouts. Runs are separated by the prompt that introduced them. Each workflow occupies one roster row; selecting it opens a visual phase tree in the detail pane, where every nested agent shows its own model and can be selected.
-- Selecting a direct agent or workflow child opens the same live conversation view. It includes the originating prompt, streamed and persisted reasoning, assistant messages, tool calls and output, final results, status, model and effort, token/tool usage, and available controls. Durable child events are restored after a reconnect while bounded live deltas update in place.
-- Mobile shows compact agent-run rows above the composer and opens a detail sheet for each run.
-
-For a live Pi run, its details expose immediate controls:
-
-- **Steer** sends guidance between turns.
-- **Reply** answers a run waiting for input.
-- **Stop agent** terminates the selected child run.
-
-Controls wait for the extension's correlated result, so an accepted request is not reported as successful if the operation fails. They are routed through the active provider session and are never recovered against a stale Pi process. If `pi-subagents` is absent, T3 leaves the rest of the Pi provider usable and does not forward the private control command as a model prompt.
-
-## Usage history
-
-The Usage view includes bounded scans of Pi and legacy Tau session layouts, including child sessions discovered from supported subagent transcripts. An explicit Pi agent directory or session-directory environment override takes precedence over default locations.
+- If Pi is unavailable, confirm that the configured binary runs on the server machine, then refresh
+  the provider in Settings.
+- If no models appear, open Pi directly and confirm its authentication and model configuration.
+- If discovery cannot complete, T3 Code keeps Pi available with the `Pi default` model. Start a
+  thread to let the interactive Pi session handle any startup prompt.
+- If a project extension is missing, approve the project in Pi, then start a fresh provider session.
+- If a project skill is missing from the `$` menu, approve the project in Pi and refresh the provider.
+- The context meter appears once Pi reports usage for the thread. Some model providers only
+  report usage when a response completes, so the meter can wait for the first reply.

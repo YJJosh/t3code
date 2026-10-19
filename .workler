@@ -14,6 +14,24 @@ link packages/effect-codex-app-server/node_modules
 link packages/shared/node_modules
 link packages/ssh/node_modules
 link packages/tailscale/node_modules
+link packages/provider-acp/node_modules
+link packages/provider-acp-registry/node_modules
+link packages/provider-core/node_modules
+link packages/provider-cursor/node_modules
+link packages/provider-dulli/node_modules
+link packages/provider-grok/node_modules
+link packages/provider-muse/node_modules
+link packages/provider-opencode/node_modules
+link packages/provider-pi/node_modules
+link packages/provider-testing/node_modules
+link packages/source-control-azure-devops/node_modules
+link packages/source-control-bitbucket/node_modules
+link packages/source-control-core/node_modules
+link packages/source-control-forgejo/node_modules
+link packages/source-control-gitcafe/node_modules
+link packages/source-control-github/node_modules
+link packages/source-control-gitlab/node_modules
+link packages/source-control-testing/node_modules
 link scripts/node_modules
 
 # Developer-local environment values should be independently editable per
