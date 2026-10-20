@@ -304,11 +304,13 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
           // A disabled default provider must not stop the server from starting;
           // the project still opens and the user starts a thread themselves.
           Effect.map((result) => result.threadId),
-          Effect.catchTag("ThreadManagementProviderInstanceDisabledError", (error) =>
-            Effect.logInfo("auto-bootstrap thread skipped: provider disabled", {
-              message: error.message,
-            }).pipe(Effect.as(undefined)),
-          ),
+          // REVIEW: Use the repo's tagged-error handler; unrelated launch failures propagate.
+          Effect.catchTags({
+            ThreadManagementProviderInstanceDisabledError: (error) =>
+              Effect.logInfo("auto-bootstrap thread skipped: provider disabled", {
+                message: error.message,
+              }).pipe(Effect.as(undefined)),
+          }),
         );
       bootstrapProjectId = project.id;
       bootstrapThreadId = launched;
