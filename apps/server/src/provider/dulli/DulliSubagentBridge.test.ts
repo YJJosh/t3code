@@ -353,7 +353,7 @@ describe("Dulli pi-subagents v2 bridge", () => {
     ),
   );
 
-  it.effect.each(["steer", "reply", "stop"] as const)(
+  it.effect.each(["reply", "stop"] as const)(
     "awaits correlated %s result rather than treating prompt acceptance as success",
     (action) =>
       provide(
@@ -619,19 +619,19 @@ describe("Dulli pi-subagents v2 bridge", () => {
             .control({
               threadId: THREAD,
               taskId: "child",
-              action: "steer",
+              action: "reply",
               message: "Continue",
             })
             .pipe(Effect.forkScoped);
           const prompt = yield* h.takePrompt;
           const payload = decode(String(prompt.message).slice("/subagents-rpc ".length));
-          assert.equal(payload.action, "steer");
+          assert.equal(payload.action, "reply");
           yield* reopened.notify![0]!.handle(
             encode(
               envelope({
                 kind: "control_result",
                 sequence: 3,
-                control: { requestId: payload.request_id, action: "steer", success: true },
+                control: { requestId: payload.request_id, action: "reply", success: true },
               }),
             ),
             {},

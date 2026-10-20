@@ -1,24 +1,47 @@
-import { useAtomValue } from "@effect/atom-react";
-import {
-  deriveDulliAgentInspector,
-  dulliTranscriptText,
-} from "@t3tools/client-runtime/state/dulliSubagents";
 import type {
-  EnvironmentId,
-  OrchestrationV2Subagent,
-  OrchestrationV2ThreadProjection,
-  OrchestrationV2TurnItem,
-} from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
-import * as DateTime from "effect/DateTime";
-import { useMemo, useState } from "react";
-import { Button } from "~/components/ui/button";
-import { threadEnvironment } from "~/state/threads";
-import { useAtomCommand } from "~/state/use-atom-command";
-import { orchestrationEnvironment } from "~/state/orchestration";
-import { useEnvironmentQuery } from "~/state/query";
+  DulliPanelModel,
+  DulliInspectorWorkflowGroup,
+  DulliInspectorAgent,
+} from "@t3tools/client-runtime/state/dulliSubagents";
+import { formatSubagentTokenCount } from "@t3tools/client-runtime/state/dulliSubagents";
+import type { EnvironmentId, ThreadId, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import { deriveDulliAgentInspector } from "@t3tools/client-runtime/state/dulliSubagents";
+import { Bot } from "lucide-react";
+import { observeResize } from "~/lib/observeResize";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-/** The fork's roster/detail inspector, backed by Pi-owned runs and lazy transcripts. */
+import { AgentDetail } from "./agents/AgentDetail";
+import { AgentsRoster } from "./agents/AgentsRoster";
+import { preferredInspectorAgent, workflowMembers } from "./agents/agentsPresentation";
+import { WorkflowDetail } from "./agents/WorkflowDetail";
+
+const SPLIT_LAYOUT_MIN_WIDTH = 640;
+
+type InspectorSelection =
+  | { readonly kind: "agent"; readonly id: string }
+  | { readonly kind: "workflow"; readonly id: string };
+
+function panelAgents(model: DulliPanelModel): ReadonlyArray<DulliInspectorAgent> {
+  return [...model.workflows.flatMap(workflowMembers), ...model.directAgents];
+}
+
+/** Side-by-side roster/detail once this panel is at least 640px wide. */
+// The empty state and the inspector render different roots. A ref object
+// only observed whichever existed at mount, so opening the panel before the first
+// agent left the layout stuck. Observing the current element follows the swap.
+function useSplitInspectorLayout(root: HTMLDivElement | null): boolean {
+  const [split, setSplit] = useState(false);
+
+  useEffect(() => {
+    if (!root) return;
+    return observeResize(root, ([entry]) => {
+      if (entry) setSplit(entry.contentRect.width >= SPLIT_LAYOUT_MIN_WIDTH);
+    });
+  }, [root]);
+
+  return split;
+}
+
 export function AgentsPanel({
   environmentId,
   projection,
@@ -26,251 +49,217 @@ export function AgentsPanel({
   environmentId: EnvironmentId;
   projection: OrchestrationV2ThreadProjection;
 }) {
-  const model = useMemo(() => deriveDulliAgentInspector(projection), [projection]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = model.agents.find((agent) => agent.id === selectedId) ?? null;
-  const transcript = useEnvironmentQuery(
-    selected
-      ? orchestrationEnvironment.subagentTranscript({
-          environmentId,
-          input: {
-            threadId: projection.thread.id,
-            subagentId: selected.id,
-            revision: model.revision(selected.id),
-          },
-        })
-      : null,
-  );
-  const permission = useAtomValue(threadEnvironment.controlTask.permissionAtom(environmentId));
-  const control = useAtomCommand(threadEnvironment.controlTask);
-  const [message, setMessage] = useState("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const select = (agent: OrchestrationV2Subagent) => {
-    setSelectedId(agent.id);
-    setMessage("");
-    setError(null);
-  };
-  const act = async (action: "steer" | "reply" | "stop") => {
-    if (!selected?.nativeTaskRef?.nativeId || pending) return;
-    setPending(true);
-    setError(null);
-    const result = await control({
-      environmentId,
-      input: {
-        threadId: projection.thread.id,
-        taskId: selected.nativeTaskRef.nativeId,
-        ...(action === "stop" ? { action } : { action, message: message.trim() }),
-      },
-    });
-    setPending(false);
-    if (AsyncResult.isSuccess(result)) setMessage("");
-    else
-      setError("Child control failed. The child may have ended or its extension is unavailable.");
-  };
-  const row = (agent: OrchestrationV2Subagent) => (
-    <button
-      key={agent.id}
-      type="button"
-      aria-pressed={agent.id === selectedId}
-      className="w-full rounded-md px-3 py-2 text-left hover:bg-accent focus-visible:outline-2"
-      onClick={() => select(agent)}
-    >
-      <span className="block truncate text-sm font-medium">
-        {agent.title || agent.prompt || "Agent"}
-      </span>
-      <span className="block text-xs text-muted-foreground">
-        {agent.status} · {agent.model ?? "Provider default"}
-      </span>
-    </button>
-  );
+  const inspector = useMemo(() => deriveDulliAgentInspector(projection), [projection]);
   return (
-    <section className="@container flex min-h-0 flex-1 flex-col" aria-label="Agents and workflows">
-      <div className="flex min-h-0 flex-1">
-        <nav
-          aria-label="Agents roster"
-          className={`${selected ? "hidden @2xl:block" : "block"} w-full overflow-y-auto border-r @2xl:w-64 @2xl:shrink-0`}
-        >
-          <h2 className="px-3 py-3 font-semibold">Agents & workflows</h2>
-          {model.groups.length === 0 ? (
-            <p className="px-3 text-sm text-muted-foreground">No Dulli subagents yet.</p>
-          ) : null}
-          {model.groups.map((group) => (
-            <section key={group.id}>
-              <h3 className="truncate px-3 py-2 text-xs text-muted-foreground">{group.prompt}</h3>
-              {group.agents.map(row)}
-            </section>
-          ))}
-        </nav>
-        {selected ? (
-          <div className="min-w-0 flex-1 overflow-y-auto p-4">
-            <div className="mb-3 @2xl:hidden">
-              <Button variant="ghost" size="sm" onClick={() => setSelectedId(null)}>
-                Back to agents
-              </Button>
-            </div>
-            <h2 className="truncate font-semibold">{selected.title || "Agent"}</h2>
-            <p className="my-2 text-xs text-muted-foreground">
-              {selected.status} · {selected.model ?? "Provider default"}
-              {selected.modelSelection?.options?.find((option) => option.id === "reasoning")?.value
-                ? ` · ${selected.modelSelection.options.find((option) => option.id === "reasoning")!.value}`
-                : ""}
-              {selected.usage
-                ? ` · ${selected.usage.totalTokens.toLocaleString()} tokens · ${selected.usage.toolUses ?? 0} tools`
-                : ""}
-            </p>
-            <details className="mb-4" open>
-              <summary className="text-sm font-medium">Original prompt</summary>
-              <p className="whitespace-pre-wrap text-sm">{selected.prompt}</p>
-            </details>
-            {selected.workflow ? (
-              <section aria-label="Workflow phases" className="mb-4">
-                <h3 className="mb-2 font-medium">{selected.workflow.name ?? "Workflow"}</h3>
-                {selected.workflow.phases.map((phase) => (
-                  <div key={phase.index} className="border-l pl-3">
-                    <h4 className="py-1 text-sm font-medium">{phase.title}</h4>
-                    {model
-                      .children(selected)
-                      .filter((child) =>
-                        selected.workflow!.agents.some(
-                          (member) =>
-                            member.agentId === child.nativeTaskRef?.nativeId &&
-                            member.phaseIndex === phase.index,
-                        ),
-                      )
-                      .map(row)}
-                  </div>
-                ))}
-                {model
-                  .children(selected)
-                  .filter(
-                    (child) =>
-                      !selected.workflow!.agents.some(
-                        (member) =>
-                          member.agentId === child.nativeTaskRef?.nativeId &&
-                          member.phaseIndex !== undefined,
-                      ),
-                  )
-                  .map(row)}
-              </section>
-            ) : null}
-            {selected.progress ? (
-              <p className="mb-3 text-sm text-muted-foreground">{selected.progress}</p>
-            ) : null}
-            {transcript.isPending && !transcript.data ? (
-              <p className="text-sm text-muted-foreground">Loading transcript…</p>
-            ) : null}
-            {transcript.error ? (
-              <div role="alert">
-                <p className="text-sm text-destructive">{transcript.error}</p>
-                <Button variant="ghost" size="sm" onClick={transcript.refresh}>
-                  Retry transcript
-                </Button>
-              </div>
-            ) : null}
-            <div aria-label="Child transcript" className="space-y-3">
-              {model.transcript(selected, transcript.data?.items).map((item) => (
-                <article key={item.id}>
-                  <h4 className="text-xs font-medium text-muted-foreground">
-                    {item.type === "reasoning"
-                      ? "Thinking"
-                      : item.type === "dynamic_tool"
-                        ? `${item.toolName ?? "Tool"} · ${item.status}`
-                        : item.type === "user_message"
-                          ? "User"
-                          : "Assistant"}
-                  </h4>
-                  <ChildTranscriptText item={item} environmentId={environmentId} />
-                </article>
-              ))}
-            </div>
-            {selected.result ? (
-              <section className="mt-4">
-                <h3 className="text-sm font-medium">
-                  {selected.status === "failed" ? "Error" : "Result"}
-                </h3>
-                <p className="whitespace-pre-wrap text-sm">{selected.result}</p>
-              </section>
-            ) : null}
-            {model.canControl(selected) ? (
-              <form
-                className="mt-4 space-y-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void act(selected.status === "waiting" ? "reply" : "steer");
-                }}
-              >
-                <label className="block text-sm" htmlFor="dulli-child-message">
-                  {selected.status === "waiting" ? "Reply to agent" : "Steer agent"}
-                </label>
-                <textarea
-                  id="dulli-child-message"
-                  className="min-h-20 w-full rounded-md border bg-background p-2 text-sm"
-                  value={message}
-                  maxLength={32000}
-                  onChange={(event) => setMessage(event.target.value)}
-                  disabled={!permission || pending}
-                />
-                <div className="flex gap-2">
-                  <Button
-                    type="submit"
-                    size="sm"
-                    disabled={!permission || pending || !message.trim()}
-                  >
-                    {selected.status === "waiting" ? "Reply" : "Steer"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="sm"
-                    disabled={!permission || pending}
-                    onClick={() => void act("stop")}
-                  >
-                    Stop agent
-                  </Button>
-                </div>
-              </form>
-            ) : null}
-            {error ? (
-              <p role="alert" className="mt-2 text-sm text-destructive">
-                {error}
-              </p>
-            ) : null}
-          </div>
-        ) : (
-          <p className="hidden p-4 text-sm text-muted-foreground @2xl:block">
-            Select an agent or workflow.
-          </p>
-        )}
-      </div>
-    </section>
+    <Inspector
+      key={`${environmentId}:${projection.thread.id}`}
+      inspector={inspector}
+      environmentId={environmentId}
+      threadId={projection.thread.id}
+    />
   );
 }
 
-function ChildTranscriptText({
-  item,
+function Inspector({
+  inspector,
   environmentId,
+  threadId,
 }: {
-  item: OrchestrationV2TurnItem;
+  inspector: ReturnType<typeof deriveDulliAgentInspector>;
   environmentId: EnvironmentId;
+  threadId: ThreadId;
 }) {
-  // Parent streams intentionally withhold tool output. Fetch just the changed
-  // tool's bounded detail, not the child's entire transcript on every delta.
-  const detail = useEnvironmentQuery(
-    item.type === "dynamic_tool" && item.outputOmitted
-      ? orchestrationEnvironment.turnItem({
-          environmentId,
-          input: {
-            threadId: item.threadId,
-            itemId: item.id,
-            revision: DateTime.formatIso(item.updatedAt),
-          },
-        })
-      : null,
+  const model = inspector.presentation;
+  const [root, setRoot] = useState<HTMLDivElement | null>(null);
+  const splitLayout = useSplitInspectorLayout(root);
+  const agents = useMemo(() => panelAgents(model), [model]);
+  const workflows = model.workflows;
+  const visibleAgentCount = useMemo(
+    () =>
+      model.directAgents.length +
+      model.workflows.reduce((count, group) => count + workflowMembers(group).length, 0),
+    [model],
   );
+  const preferredSelection = useMemo<InspectorSelection | null>(() => {
+    const preferredAgent = preferredInspectorAgent(agents);
+    if (preferredAgent) {
+      const workflow = workflows.find((group) =>
+        workflowMembers(group).some((member) => member.id === preferredAgent.id),
+      );
+      return workflow
+        ? { kind: "workflow", id: workflow.workflow.id }
+        : { kind: "agent", id: preferredAgent.id };
+    }
+    const workflow = workflows.at(-1);
+    return workflow ? { kind: "workflow", id: workflow.workflow.id } : null;
+  }, [agents, workflows]);
+  const [requestedSelection, setSelection] = useState<InspectorSelection | null>(null);
+  // Persist the initial split-pane choice. Following the changing preference
+  // on every update remounts detail and discards a draft when another agent waits.
+  // Adjusted during render, so the first paint already shows the stored choice.
+  if (
+    splitLayout &&
+    preferredSelection &&
+    requestedSelection?.id !== preferredSelection.id &&
+    (!requestedSelection || !model.agents.some((agent) => agent.id === requestedSelection.id))
+  ) {
+    setSelection(preferredSelection);
+  }
+  const selection =
+    requestedSelection && model.agents.some((agent) => agent.id === requestedSelection.id)
+      ? requestedSelection
+      : splitLayout
+        ? preferredSelection
+        : null;
+  const [returnFocusTargetId, setReturnFocusTargetId] = useState<string | null>(null);
+  const selectedAgent =
+    selection?.kind === "agent"
+      ? (agents.find((agent) => agent.id === selection.id) ?? null)
+      : null;
+  const selectedWorkflow =
+    selection?.kind === "workflow"
+      ? (workflows.find((group) => group.workflow.id === selection.id) ?? null)
+      : null;
+  const parentWorkflow =
+    workflows.find((group) => group.workflow.id === selectedAgent?.parentAgentId) ?? null;
+
+  const selectRosterAgent = useCallback((agent: DulliInspectorAgent) => {
+    setReturnFocusTargetId(null);
+    setSelection({ kind: "agent", id: agent.id });
+  }, []);
+  const selectWorkflow = useCallback((group: DulliInspectorWorkflowGroup) => {
+    setReturnFocusTargetId(null);
+    setSelection({ kind: "workflow", id: group.workflow.id });
+  }, []);
+  const selectWorkflowAgent = useCallback(
+    (group: DulliInspectorWorkflowGroup, agent: DulliInspectorAgent) => {
+      setReturnFocusTargetId(null);
+      setSelection({ kind: "agent", id: agent.id });
+    },
+    [],
+  );
+  const showRoster = useCallback(() => {
+    setReturnFocusTargetId(selection?.id ?? null);
+    setSelection(null);
+  }, [selection]);
+  const showParentWorkflow = useCallback(() => {
+    if (!parentWorkflow) {
+      showRoster();
+      return;
+    }
+    setSelection({ kind: "workflow", id: parentWorkflow.workflow.id });
+  }, [parentWorkflow, showRoster]);
+
+  if (!model.hasAgents) {
+    return (
+      <div
+        ref={setRoot}
+        className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center"
+      >
+        <Bot aria-hidden className="size-6 text-muted-foreground/60" />
+        <p className="text-sm font-medium">No agents yet</p>
+        <p className="max-w-64 text-xs text-muted-foreground">
+          When this thread spawns an agent or runs a workflow, its live conversation and status will
+          appear here.
+        </p>
+      </div>
+    );
+  }
+
+  const roster = (
+    <AgentsRoster
+      model={model}
+      selectedAgentId={selectedAgent?.id ?? null}
+      selectedWorkflowId={selectedWorkflow?.workflow.id ?? parentWorkflow?.workflow.id ?? null}
+      autoFocusTargetId={returnFocusTargetId}
+      onSelectAgent={selectRosterAgent}
+      onSelectWorkflow={selectWorkflow}
+    />
+  );
+  const detail = selectedWorkflow ? (
+    <WorkflowDetail
+      key={selectedWorkflow.workflow.id}
+      group={selectedWorkflow}
+      selectedAgentId={null}
+      onSelectAgent={(agent) => selectWorkflowAgent(selectedWorkflow, agent)}
+      {...(!splitLayout ? { onBack: showRoster } : {})}
+    />
+  ) : selectedAgent ? (
+    <AgentDetail
+      key={selectedAgent.id}
+      agent={selectedAgent}
+      environmentId={environmentId}
+      threadId={threadId}
+      controlsEnabled={inspector.canControl(selectedAgent.source)}
+      revision={inspector.revision(selectedAgent.id)}
+      transcriptFor={inspector.transcript}
+      {...(parentWorkflow
+        ? { onBack: showParentWorkflow, backLabel: "Back to workflow" }
+        : !splitLayout
+          ? { onBack: showRoster }
+          : {})}
+    />
+  ) : (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-8 text-center text-muted-foreground">
+      <Bot aria-hidden className="size-8 opacity-50" />
+      <p className="text-sm font-medium text-foreground">Select an agent or workflow</p>
+      <p className="max-w-72 text-xs">
+        Workflows open as phase trees. Agents open as live conversations with reasoning and tools.
+      </p>
+    </div>
+  );
+
   return (
-    <pre className="whitespace-pre-wrap break-words text-sm">
-      {dulliTranscriptText(detail.data?.item ?? item)}
-    </pre>
+    <div
+      ref={setRoot}
+      className="flex h-full min-h-0 flex-col"
+      data-agent-inspector-layout={splitLayout ? "split" : "compact"}
+    >
+      <header className="shrink-0 border-b border-border/65 px-3 py-2.5">
+        <div className="flex items-baseline gap-2">
+          <h1 className="text-sm font-semibold text-foreground">Agent inspector</h1>
+          <span className="text-2xs text-muted-foreground">
+            {visibleAgentCount} agent{visibleAgentCount === 1 ? "" : "s"}
+            {workflows.length > 0
+              ? ` · ${workflows.length} workflow${workflows.length === 1 ? "" : "s"}`
+              : ""}
+          </span>
+        </div>
+        <p className="mt-0.5 text-2xs text-muted-foreground">
+          {model.runningCount + model.waitingCount > 0
+            ? `${model.runningCount + model.waitingCount} working`
+            : "No active agents"}
+          {model.idleCount > 0 ? ` · ${model.idleCount} idle` : ""}
+          {model.settledCount > 0 ? ` · ${model.settledCount} settled` : ""}
+        </p>
+      </header>
+
+      {splitLayout ? (
+        <div className="flex min-h-0 flex-1">
+          <aside
+            aria-label="Agent runs"
+            className="flex w-72 min-w-64 shrink-0 flex-col border-r border-border/65"
+          >
+            {roster}
+          </aside>
+          <section aria-label="Agent detail" className="flex min-w-0 flex-1 flex-col">
+            {detail}
+          </section>
+        </div>
+      ) : selectedAgent || selectedWorkflow ? (
+        detail
+      ) : (
+        roster
+      )}
+
+      <footer className="flex shrink-0 items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-2xs text-muted-foreground">
+        <span>
+          {model.runningCount + model.waitingCount > 0
+            ? `● ${model.runningCount + model.waitingCount} working`
+            : `${model.settledCount} settled`}
+        </span>
+        <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
+      </footer>
+    </div>
   );
 }

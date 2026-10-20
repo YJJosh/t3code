@@ -137,6 +137,40 @@ it.effect.each([
           },
         });
       }
+      // Output must remain lazy across the separate Dulli storage boundary.
+      const toolId = TurnItemId.make(`${subagentId}:transcript:tool`);
+      const toolOutput = "large child output\n".repeat(1000);
+      yield* store.apply({
+        id: EventId.make("child-tool"),
+        type: "dulli-transcript.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: toolId,
+          threadId,
+          runId: null,
+          nodeId: subagentId,
+          providerThreadId: null,
+          providerTurnId: null,
+          parentItemId: null,
+          nativeItemRef: null,
+          ordinal: 101,
+          status: "completed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "dynamic_tool",
+          toolName: "read",
+          input: "file.ts",
+          output: toolOutput,
+        },
+      });
+      const detail = yield* store.getTurnItem({ threadId, itemId: toolId });
+      assert.equal(detail?.type === "dynamic_tool" ? detail.output : null, toolOutput);
+      assert.isNull(
+        yield* store.getTurnItem({ threadId: ThreadId.make("another-thread"), itemId: toolId }),
+      );
       const projection = yield* store.getThreadProjection(threadId);
       // Persisted child history must be available to the inspector but
       // absent from both the full and SQL-windowed parent conversation.
@@ -269,8 +303,14 @@ it.effect.each([
         const history = yield* service.getSubagentTranscript({ threadId, subagentId });
         assert.deepEqual(
           history.items.map((item) => item.id),
-          [childAnswer, lateChildAnswer],
+          [childAnswer, lateChildAnswer, toolId],
         );
+        const historyTool = history.items.find((item) => item.id === toolId);
+        assert.equal(historyTool?.type, "dynamic_tool");
+        if (historyTool?.type === "dynamic_tool") {
+          assert.isTrue(historyTool.outputOmitted);
+          assert.isBelow(JSON.stringify(historyTool).length, toolOutput.length / 2);
+        }
         assert.deepEqual(
           (yield* service.getSubagentTranscript({ threadId, subagentId: NodeId.make("missing") }))
             .items,

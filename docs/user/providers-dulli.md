@@ -63,9 +63,9 @@ Interactive terminals support **Take control** and **Release control**, includin
 
 ## Subagents and workflows
 
-With the optional `pi-subagents` extension installed, Pi's child agents and workflows appear in **Agents & workflows**, separately from T3's own subagents and chat timeline. Type `/subagents` or `/workflows` to open the inspector. Web and desktop also offer it in the right-panel menu; on mobile, tap a child row above the composer.
+With the optional `pi-subagents` extension installed, Pi's child agents and workflows appear in **Agents & workflows**, separately from T3's own subagents and chat timeline. Type `/subagents` or `/workflows` to open the inspector. Web and desktop also offer it in the right-panel menu; on mobile, tap an agent chip above the composer.
 
-Select a workflow phase or child to read its prompt, model and effort, thinking, tool output, result, and usage. Transcripts are retained with the thread, including after a reload; each child retains up to 1,000 transcript items and 2 MiB of content. **Steer**, **Reply** (when the child is waiting), and **Stop agent** act on the running child without stopping its parent. Controls require the original live Dulli session and the subagent extension; opening history never restarts a child.
+Select a workflow phase or child to read its prompt, model and effort, thinking, tool output, result, and usage. Transcripts are retained with the thread, including after a reload; each child retains up to 1,000 transcript items and 2 MiB of content. **Reply** answers a waiting child; **Stop agent** stops an active child without stopping its parent. Controls require the original live Dulli session and the subagent extension; opening history never restarts a child.
 
 ## Background text generation
 
