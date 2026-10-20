@@ -92,6 +92,16 @@ function Inspector({
     return workflow ? { kind: "workflow", id: workflow.workflow.id } : null;
   }, [agents, workflows]);
   const [requestedSelection, setSelection] = useState<InspectorSelection | null>(null);
+  // REVIEW: Persist the initial split-pane choice. Following the changing preference
+  // on every update remounts detail and discards a draft when another agent waits.
+  useEffect(() => {
+    if (
+      splitLayout &&
+      preferredSelection &&
+      (!requestedSelection || !model.agents.some((agent) => agent.id === requestedSelection.id))
+    )
+      setSelection(preferredSelection);
+  }, [splitLayout, preferredSelection, requestedSelection, model.agents]);
   const selection =
     requestedSelection && model.agents.some((agent) => agent.id === requestedSelection.id)
       ? requestedSelection

@@ -377,12 +377,14 @@ export function AgentDetail({
     <div className="flex min-h-0 flex-1 flex-col" data-agent-detail={agent.id}>
       <header className="shrink-0 border-b border-border/65 px-3 py-2.5">
         <div className="flex min-w-0 items-start gap-2">
+          {/* REVIEW: The compact roster unmounts on selection; move keyboard focus into detail. */}
           {onBack ? (
             <Button
               type="button"
               size="icon-sm"
               variant="ghost"
               onClick={onBack}
+              autoFocus
               aria-label={backLabel}
             >
               <ArrowLeft aria-hidden />
