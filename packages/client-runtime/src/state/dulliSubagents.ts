@@ -314,19 +314,7 @@ export function deriveDulliAgentInspector(
   };
 }
 
-export function dulliTranscriptText(item: OrchestrationV2TurnItem): string {
-  if (
-    item.type === "assistant_message" ||
-    item.type === "reasoning" ||
-    item.type === "user_message"
-  )
-    return item.text;
-  if (item.type !== "dynamic_tool") return "";
-  const output = typeof item.output === "string" ? item.output : "";
-  const input = typeof item.input === "string" ? item.input : "";
-  return [input, output].filter(Boolean).join("\n");
-}
-
+// REVIEW: The inspector consumes typed conversation entries, not the retired plain-text formatter.
 export type DulliTranscriptEntry =
   | {
       readonly id: string;

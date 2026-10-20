@@ -1,9 +1,7 @@
-import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   formatSubagentDuration,
-  subagentRunTitle,
   subagentStatusLabel,
   subagentStatusTone,
 } from "./subagentPresentation";
@@ -16,10 +14,6 @@ describe("mobile agent presentation", () => {
     expect(subagentStatusTone("completed")).toBe("success");
     expect(subagentStatusLabel("interrupted")).toBe("Stopped");
     expect(subagentStatusTone("interrupted")).toBe("muted");
-  });
-
-  it("uses the task id when a provider supplies a blank title", () => {
-    expect(subagentRunTitle({ id: "run-1", title: "  " } as RuntimeSubagent)).toBe("run-1");
   });
 
   it("formats settled durations", () => {

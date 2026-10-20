@@ -1,7 +1,4 @@
-import type {
-  RuntimeSubagent,
-  RuntimeSubagentStatus,
-} from "@t3tools/client-runtime/state/subagentRuntime";
+import type { RuntimeSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
 
 export type MobileSubagentStatusTone = "info" | "warning" | "success" | "error" | "muted";
 
@@ -35,10 +32,7 @@ export function subagentStatusTone(status: RuntimeSubagentStatus): MobileSubagen
   return STATUS_TONES[status];
 }
 
-export function subagentRunTitle(agent: Pick<RuntimeSubagent, "id" | "title">): string {
-  return agent.title.trim() || agent.id;
-}
-
+// REVIEW: Titles are normalized by the shared inspector; remove the unused native title helper.
 export function formatSubagentDuration(
   startedAt: string | null,
   completedAt: string | null,

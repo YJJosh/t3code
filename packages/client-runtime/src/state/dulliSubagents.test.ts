@@ -17,7 +17,6 @@ import {
   deriveDulliAgentInspector,
   dulliTranscriptEntries,
   dulliToolPreview,
-  dulliTranscriptText,
   workflowIsLive,
   workflowMembers,
   workflowStatus,
@@ -137,7 +136,10 @@ describe("Dulli v2 inspector", () => {
     expect(model.groups[0]?.prompt).toBe("Review this change");
     expect(model.groups[0]?.agents).toEqual([root]);
     expect(model.children(root)).toEqual([child]);
-    expect(model.transcript(child).map(dulliTranscriptText)).toEqual(["first", "second"]);
+    expect(model.transcript(child)).toMatchObject([
+      { type: "assistant_message", text: "first" },
+      { type: "assistant_message", text: "second" },
+    ]);
     expect(model.canControl(child)).toBe(true);
     const runtime = projectedSubagentsToRuntime([child])[0];
     expect(runtime?.model).toBe("child-model");
