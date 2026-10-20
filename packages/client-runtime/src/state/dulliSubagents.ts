@@ -70,7 +70,9 @@ export function workflowMembers(group: DulliInspectorWorkflowGroup) {
 export function workflowStatus(group: DulliInspectorWorkflowGroup): RuntimeSubagent["status"] {
   const members = workflowMembers(group);
   const status = group.workflow.status;
-  if (!members.length) return status;
+  // REVIEW: Real Pi coordinators own their lifecycle (including gaps between phases
+  // and waiting for input). Only weak, synthetic coordinators infer it from children.
+  if (group.workflow.source.nativeTaskRef?.strength === "strong" || !members.length) return status;
   if (status === "failed" || members.some((agent) => agent.status === "failed")) return "failed";
   if (members.some((agent) => !isTerminalSubagentStatus(agent.status))) return "running";
   if (status === "cancelled" || status === "interrupted") return status;
@@ -80,6 +82,9 @@ export function workflowStatus(group: DulliInspectorWorkflowGroup): RuntimeSubag
 }
 export function workflowIsLive(group: DulliInspectorWorkflowGroup): boolean {
   const members = workflowMembers(group);
+  // REVIEW: Native coordinators remain live even when all retained children settled.
+  if (group.workflow.source.nativeTaskRef?.strength === "strong")
+    return !isTerminalSubagentStatus(group.workflow.status);
   return members.length
     ? members.some((agent) => !isTerminalSubagentStatus(agent.status))
     : !isTerminalSubagentStatus(group.workflow.status);

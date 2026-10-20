@@ -328,7 +328,10 @@ describe("Dulli inspector presentation", () => {
   it.each(["completed", "failed", "cancelled", "interrupted"] as const)(
     "settles a workflow from %s members without double-counting usage",
     (status) => {
-      const root = agent("workflow", { workflow: { phases: [], agents: [] } });
+      const root = agent("workflow", {
+        workflow: { phases: [], agents: [] },
+        nativeTaskRef: { driver, nativeId: "workflow", strength: "weak" },
+      });
       const child = agent("child", { parentNodeId: root.id, status, usage: { totalTokens: 12 } });
       const model = inspector([root, child]).presentation;
       const group = model.workflows[0]!;
@@ -340,6 +343,18 @@ describe("Dulli inspector presentation", () => {
         { ...child, status: "completed" },
       ]).presentation.workflows[0]!;
       expect(workflowStatus(cancelled)).toBe("cancelled");
+    },
+  );
+
+  // REVIEW: Settled retained children do not mean a native workflow has finished.
+  it.each(["running", "waiting", "interrupted", "failed", "completed"] as const)(
+    "honors a real Pi coordinator's %s state between phases or after interruption",
+    (status) => {
+      const root = agent("workflow", { status, workflow: { phases: [], agents: [] } });
+      const child = agent("child", { parentNodeId: root.id, status: "completed" });
+      const group = inspector([root, child]).presentation.workflows[0]!;
+      expect(workflowStatus(group)).toBe(status);
+      expect(workflowIsLive(group)).toBe(status === "running" || status === "waiting");
     },
   );
 
