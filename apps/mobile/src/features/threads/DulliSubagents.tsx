@@ -327,7 +327,12 @@ function AgentRunDetail({
       </View>
       <Text className="text-xs text-foreground-muted">
         {metadata(agent)} ·{" "}
-        {formatSubagentDuration(agent.startedAt, agent.completedAt ?? agent.updatedAt)}
+        {/* REVIEW: an active run measured to its last update read as a final,
+            stale duration; measure to now on each render, as the old sheet did. */}
+        {formatSubagentDuration(
+          agent.startedAt,
+          isActiveSubagentStatus(agent.status) ? null : (agent.completedAt ?? agent.updatedAt),
+        )}
       </Text>
       {agentActivityText(agent) ? (
         <Text className="text-sm text-foreground-muted">{agentActivityText(agent)}</Text>
@@ -471,7 +476,9 @@ function ToolRow({
         onPress={() => setOpen((current) => !current)}
       >
         <Text className="text-xs font-t3-bold">
-          {open ? "▾" : "▸"} {entry.name} · {entry.live ? "Running" : entry.status}
+          {open ? "▾" : "▸"} {entry.name} ·{" "}
+          {/* REVIEW: show the same status words as the rows, not raw statuses. */}
+          {entry.live ? "Running" : subagentStatusLabel(entry.status)}
         </Text>
       </Pressable>
       {entry.input ? (

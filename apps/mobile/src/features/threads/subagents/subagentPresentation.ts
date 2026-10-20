@@ -32,7 +32,6 @@ export function subagentStatusTone(status: RuntimeSubagentStatus): MobileSubagen
   return STATUS_TONES[status];
 }
 
-// REVIEW: Titles are normalized by the shared inspector; remove the unused native title helper.
 export function formatSubagentDuration(
   startedAt: string | null,
   completedAt: string | null,

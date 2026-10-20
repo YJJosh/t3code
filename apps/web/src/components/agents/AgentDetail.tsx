@@ -39,7 +39,12 @@ import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { orchestrationEnvironment } from "~/state/orchestration";
 import { useEnvironmentQuery } from "~/state/query";
-import { agentStatusLabel, AgentElapsed, AgentStatusDot } from "./agentsPresentation";
+import {
+  AGENT_STATUS_VISUALS,
+  agentStatusLabel,
+  AgentElapsed,
+  AgentStatusDot,
+} from "./agentsPresentation";
 
 function ToolGlyph({ name }: { name: string }) {
   const normalized = name.toLowerCase();
@@ -68,9 +73,14 @@ function ToolCard({
     const element = ref.current;
     if (!element) return;
     if (typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver(([record]) =>
-      setVisible(record?.isIntersecting ?? false),
-    );
+    // REVIEW: latch once seen. Dropping the query when the card scrolled away
+    // swapped fetched output back to the omitted preview, so cards above the
+    // viewport shrank and the transcript jumped while scrolling.
+    const observer = new IntersectionObserver(([record]) => {
+      if (!record?.isIntersecting) return;
+      setVisible(true);
+      observer.disconnect();
+    });
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
@@ -110,7 +120,8 @@ function ToolCard({
             failed ? "text-destructive" : "text-muted-foreground",
           )}
         >
-          {entry.live ? "Running" : entry.status === "completed" ? "Completed" : entry.status}
+          {/* REVIEW: raw statuses ("failed", "interrupted") leaked into the card. */}
+          {entry.live ? "Running" : AGENT_STATUS_VISUALS[entry.status].label}
         </span>
       </summary>
       {entry.input ? (

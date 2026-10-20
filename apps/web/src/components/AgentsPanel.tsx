@@ -8,7 +8,7 @@ import type { EnvironmentId, ThreadId, OrchestrationV2ThreadProjection } from "@
 import { deriveDulliAgentInspector } from "@t3tools/client-runtime/state/dulliSubagents";
 import { Bot } from "lucide-react";
 import { observeResize } from "~/lib/observeResize";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AgentDetail } from "./agents/AgentDetail";
 import { AgentsRoster } from "./agents/AgentsRoster";
@@ -26,16 +26,18 @@ function panelAgents(model: DulliPanelModel): ReadonlyArray<DulliInspectorAgent>
 }
 
 /** Side-by-side roster/detail once this panel is at least 640px wide. */
-function useSplitInspectorLayout(rootRef: React.RefObject<HTMLDivElement | null>): boolean {
+// REVIEW: the empty state and the inspector render different roots. A ref object
+// only observed whichever existed at mount, so opening the panel before the first
+// agent left the layout stuck. Observing the current element follows the swap.
+function useSplitInspectorLayout(root: HTMLDivElement | null): boolean {
   const [split, setSplit] = useState(false);
 
   useEffect(() => {
-    const root = rootRef.current;
-    if (!root || typeof ResizeObserver === "undefined") return;
+    if (!root) return;
     return observeResize(root, ([entry]) => {
       if (entry) setSplit(entry.contentRect.width >= SPLIT_LAYOUT_MIN_WIDTH);
     });
-  }, [rootRef]);
+  }, [root]);
 
   return split;
 }
@@ -68,8 +70,8 @@ function Inspector({
   threadId: ThreadId;
 }) {
   const model = inspector.presentation;
-  const rootRef = useRef<HTMLDivElement>(null);
-  const splitLayout = useSplitInspectorLayout(rootRef);
+  const [root, setRoot] = useState<HTMLDivElement | null>(null);
+  const splitLayout = useSplitInspectorLayout(root);
   const agents = useMemo(() => panelAgents(model), [model]);
   const workflows = model.workflows;
   const visibleAgentCount = useMemo(
@@ -150,7 +152,7 @@ function Inspector({
   if (!model.hasAgents) {
     return (
       <div
-        ref={rootRef}
+        ref={setRoot}
         className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center"
       >
         <Bot aria-hidden className="size-6 text-muted-foreground/60" />
@@ -208,7 +210,7 @@ function Inspector({
 
   return (
     <div
-      ref={rootRef}
+      ref={setRoot}
       className="flex h-full min-h-0 flex-col"
       data-agent-inspector-layout={splitLayout ? "split" : "compact"}
     >
