@@ -13,7 +13,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 
-// REVIEW: Exercise panel selection across live updates; transcript RPC/rendering is independent.
+// Exercise panel selection across live updates; transcript RPC/rendering is independent.
 vi.mock("./agents/AgentDetail", () => ({
   AgentDetail: ({ agent }: { agent: { id: string; title: string } }) => (
     <section data-agent-detail={agent.id}>

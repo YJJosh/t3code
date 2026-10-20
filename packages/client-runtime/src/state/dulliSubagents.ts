@@ -70,7 +70,7 @@ export function workflowMembers(group: DulliInspectorWorkflowGroup) {
 export function workflowStatus(group: DulliInspectorWorkflowGroup): RuntimeSubagent["status"] {
   const members = workflowMembers(group);
   const status = group.workflow.status;
-  // REVIEW: Real Pi coordinators own their lifecycle (including gaps between phases
+  // Real Pi coordinators own their lifecycle (including gaps between phases
   // and waiting for input). Only weak, synthetic coordinators infer it from children.
   if (group.workflow.source.nativeTaskRef?.strength === "strong" || !members.length) return status;
   if (status === "failed" || members.some((agent) => agent.status === "failed")) return "failed";
@@ -82,7 +82,7 @@ export function workflowStatus(group: DulliInspectorWorkflowGroup): RuntimeSubag
 }
 export function workflowIsLive(group: DulliInspectorWorkflowGroup): boolean {
   const members = workflowMembers(group);
-  // REVIEW: Native coordinators remain live even when all retained children settled.
+  // Native coordinators remain live even when all retained children settled.
   if (group.workflow.source.nativeTaskRef?.strength === "strong")
     return !isTerminalSubagentStatus(group.workflow.status);
   return members.length
@@ -305,7 +305,9 @@ export function deriveDulliAgentInspector(
         .sort((a, b) => a.ordinal - b.ordinal)
         .slice(-1000);
     },
+    // Only individual agents take Reply/Stop; a workflow coordinator has no controls of its own.
     canControl: (agent: OrchestrationV2Subagent) =>
+      agent.workflow === undefined &&
       agent.id.startsWith("dulli:subagent:") &&
       agent.nativeTaskRef?.strength === "strong" &&
       Boolean(agent.nativeTaskRef.nativeId) &&
@@ -314,7 +316,6 @@ export function deriveDulliAgentInspector(
   };
 }
 
-// REVIEW: The inspector consumes typed conversation entries, not the retired plain-text formatter.
 export type DulliTranscriptEntry =
   | {
       readonly id: string;

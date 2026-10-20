@@ -202,7 +202,7 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
   }),
 );
 
-// REVIEW: A disabled provider is recoverable, but actual launch failures must remain visible.
+// A disabled provider is recoverable, but actual launch failures must remain visible.
 it.effect.each(["disabled", "launch-failed"] as const)(
   "auto-bootstrap only suppresses a disabled default provider ($0)",
   (scenario) =>

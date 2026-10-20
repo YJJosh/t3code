@@ -73,7 +73,7 @@ function ToolCard({
     const element = ref.current;
     if (!element) return;
     if (typeof IntersectionObserver === "undefined") return;
-    // REVIEW: latch once seen. Dropping the query when the card scrolled away
+    // Latch once seen. Dropping the query when the card scrolled away
     // swapped fetched output back to the omitted preview, so cards above the
     // viewport shrank and the transcript jumped while scrolling.
     const observer = new IntersectionObserver(([record]) => {
@@ -120,7 +120,6 @@ function ToolCard({
             failed ? "text-destructive" : "text-muted-foreground",
           )}
         >
-          {/* REVIEW: raw statuses ("failed", "interrupted") leaked into the card. */}
           {entry.live ? "Running" : AGENT_STATUS_VISUALS[entry.status].label}
         </span>
       </summary>
@@ -388,7 +387,7 @@ export function AgentDetail({
     <div className="flex min-h-0 flex-1 flex-col" data-agent-detail={agent.id}>
       <header className="shrink-0 border-b border-border/65 px-3 py-2.5">
         <div className="flex min-w-0 items-start gap-2">
-          {/* REVIEW: The compact roster unmounts on selection; move keyboard focus into detail. */}
+          {/* The compact roster unmounts on selection; move keyboard focus into detail. */}
           {onBack ? (
             <Button
               type="button"

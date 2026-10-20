@@ -137,7 +137,7 @@ it.effect.each([
           },
         });
       }
-      // REVIEW: Output must remain lazy across the separate Dulli storage boundary.
+      // Output must remain lazy across the separate Dulli storage boundary.
       const toolId = TurnItemId.make(`${subagentId}:transcript:tool`);
       const toolOutput = "large child output\n".repeat(1000);
       yield* store.apply({

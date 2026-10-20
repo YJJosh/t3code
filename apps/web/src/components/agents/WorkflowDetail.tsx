@@ -87,7 +87,7 @@ function WorkflowPhaseBranch({
 }) {
   const containsSelection = phase.members.some((member) => member.id === selectedAgentId);
   const failed = phase.members.some((member) => member.status === "failed");
-  // REVIEW: the old fork re-opened a phase when it started running or came to hold
+  // The old fork re-opened a phase when it started running or came to hold
   // the selection; the port lost that, so phase 2 stayed collapsed while it worked.
   // Adjust state during render (no effect), and leave a user's collapse alone.
   const autoOpen = phase.state === "running" || containsSelection;

@@ -1217,7 +1217,7 @@ const make = Effect.gen(function* () {
           items: (dulliTranscript ?? [])
             .filter((item) => item.type !== "subagent")
             .slice(-1000)
-            // REVIEW: History carries previews; expanded tool cards fetch output individually.
+            // History carries previews; expanded tool cards fetch output individually.
             .map(projectTurnItemForWire),
         };
       }),

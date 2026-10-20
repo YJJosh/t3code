@@ -26,7 +26,7 @@ function panelAgents(model: DulliPanelModel): ReadonlyArray<DulliInspectorAgent>
 }
 
 /** Side-by-side roster/detail once this panel is at least 640px wide. */
-// REVIEW: the empty state and the inspector render different roots. A ref object
+// The empty state and the inspector render different roots. A ref object
 // only observed whichever existed at mount, so opening the panel before the first
 // agent left the layout stuck. Observing the current element follows the swap.
 function useSplitInspectorLayout(root: HTMLDivElement | null): boolean {
@@ -94,16 +94,17 @@ function Inspector({
     return workflow ? { kind: "workflow", id: workflow.workflow.id } : null;
   }, [agents, workflows]);
   const [requestedSelection, setSelection] = useState<InspectorSelection | null>(null);
-  // REVIEW: Persist the initial split-pane choice. Following the changing preference
+  // Persist the initial split-pane choice. Following the changing preference
   // on every update remounts detail and discards a draft when another agent waits.
-  useEffect(() => {
-    if (
-      splitLayout &&
-      preferredSelection &&
-      (!requestedSelection || !model.agents.some((agent) => agent.id === requestedSelection.id))
-    )
-      setSelection(preferredSelection);
-  }, [splitLayout, preferredSelection, requestedSelection, model.agents]);
+  // Adjusted during render, so the first paint already shows the stored choice.
+  if (
+    splitLayout &&
+    preferredSelection &&
+    requestedSelection?.id !== preferredSelection.id &&
+    (!requestedSelection || !model.agents.some((agent) => agent.id === requestedSelection.id))
+  ) {
+    setSelection(preferredSelection);
+  }
   const selection =
     requestedSelection && model.agents.some((agent) => agent.id === requestedSelection.id)
       ? requestedSelection

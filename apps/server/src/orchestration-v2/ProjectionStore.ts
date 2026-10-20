@@ -2847,7 +2847,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   LEFT JOIN orchestration_v2_projection_runs AS run
                     ON run.run_id = item.run_id
                   WHERE item.thread_id = ${threadId}
-                    -- REVIEW: Match shared timeline visibility before the window
+                    -- Match shared timeline visibility before the window
                     -- limit; child replay must not crowd out parent conversation.
                     AND item.turn_item_id NOT GLOB 'dulli:subagent:*:transcript:*'
                     AND item.ordinal <= COALESCE(
@@ -4915,7 +4915,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       );
 
     const getTurnItem: ProjectionStoreV2Shape["getTurnItem"] = ({ threadId, itemId }) =>
-      // REVIEW: Dulli output is addressable on demand without joining its isolated history
+      // Dulli output is addressable on demand without joining its isolated history
       // into the upstream conversation or subagent population.
       sql<{ payload_json: string }>`SELECT payload_json
         FROM orchestration_v2_projection_turn_items
@@ -6487,7 +6487,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
         Ref.get(replayState).pipe(
           Effect.map(
             (state) =>
-              // REVIEW: Match the SQL on-demand lookup while keeping Dulli data separate.
+              // Match the SQL on-demand lookup while keeping Dulli data separate.
               state.projections.get(threadId)?.turnItems.find((item) => item.id === itemId) ??
               state.projections
                 .get(threadId)

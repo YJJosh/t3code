@@ -141,6 +141,7 @@ describe("Dulli v2 inspector", () => {
       { type: "assistant_message", text: "second" },
     ]);
     expect(model.canControl(child)).toBe(true);
+    expect(model.canControl(root)).toBe(false);
     const runtime = projectedSubagentsToRuntime([child])[0];
     expect(runtime?.model).toBe("child-model");
     expect(runtime?.effort).toBe("high");
@@ -348,7 +349,7 @@ describe("Dulli inspector presentation", () => {
     },
   );
 
-  // REVIEW: Settled retained children do not mean a native workflow has finished.
+  // Settled retained children do not mean a native workflow has finished.
   it.each(["running", "waiting", "interrupted", "failed", "completed"] as const)(
     "honors a real Pi coordinator's %s state between phases or after interruption",
     (status) => {
