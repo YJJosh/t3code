@@ -4915,9 +4915,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       );
 
     const getTurnItem: ProjectionStoreV2Shape["getTurnItem"] = ({ threadId, itemId }) =>
+      // REVIEW: Dulli output is addressable on demand without joining its isolated history
+      // into the upstream conversation or subagent population.
       sql<{ payload_json: string }>`SELECT payload_json
         FROM orchestration_v2_projection_turn_items
-        WHERE turn_item_id = ${itemId} AND thread_id = ${threadId}`.pipe(
+        WHERE turn_item_id = ${itemId} AND thread_id = ${threadId}
+        UNION ALL
+        SELECT payload_json FROM dulli_projection_transcript
+        WHERE id = ${itemId} AND thread_id = ${threadId}
+        LIMIT 1`.pipe(
         Effect.flatMap((rows) =>
           rows[0] === undefined
             ? Effect.succeed(null)
@@ -6481,7 +6487,12 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
         Ref.get(replayState).pipe(
           Effect.map(
             (state) =>
-              state.projections.get(threadId)?.turnItems.find((item) => item.id === itemId) ?? null,
+              // REVIEW: Match the SQL on-demand lookup while keeping Dulli data separate.
+              state.projections.get(threadId)?.turnItems.find((item) => item.id === itemId) ??
+              state.projections
+                .get(threadId)
+                ?.dulliTranscript?.find((item) => item.id === itemId) ??
+              null,
           ),
         ),
       getThreadAttachmentIds: (threadId) =>
