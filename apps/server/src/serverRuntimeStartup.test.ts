@@ -249,7 +249,7 @@ it.effect.each(["disabled", "launch-failed"] as const)(
           assert.deepStrictEqual(result.success, { bootstrapProjectId: projectId });
       } else {
         assert.equal(result._tag, "Failure");
-        if (result._tag === "Failure") assert.strictEqual(result.failure, failure);
+        if (result._tag === "Failure") assert.isTrue(result.failure === failure);
       }
     }),
 );
