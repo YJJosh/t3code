@@ -255,7 +255,7 @@ export const resolveWelcomeBase = Effect.gen(function* () {
   } as const;
 });
 
-const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
+export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const randomUUID = crypto.randomUUIDv4();
   const serverConfig = yield* ServerConfig.ServerConfig;
@@ -285,22 +285,33 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
     if (existingThread === undefined) {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const settings = yield* serverSettings.getSettings;
-      const launched = yield* threadLaunch.launch({
-        commandId: CommandId.make(yield* randomUUID),
-        projectId: project.id,
-        title: "New thread",
-        modelSelection:
-          resolveProjectSettings(settings, project.id, project).settings.defaultModelSelection ??
-          threadModelSelection,
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: resolveProjectSettings(settings, project.id, project).settings
-          .defaultRuntimeMode,
-        workspaceStrategy: { type: "root" },
-        createdBy: "system",
-        creationSource: "server",
-      });
+      const launched = yield* threadLaunch
+        .launch({
+          commandId: CommandId.make(yield* randomUUID),
+          projectId: project.id,
+          title: "New thread",
+          modelSelection:
+            resolveProjectSettings(settings, project.id, project).settings.defaultModelSelection ??
+            threadModelSelection,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: resolveProjectSettings(settings, project.id, project).settings
+            .defaultRuntimeMode,
+          workspaceStrategy: { type: "root" },
+          createdBy: "system",
+          creationSource: "server",
+        })
+        .pipe(
+          // A disabled default provider must not stop the server from starting;
+          // the project still opens and the user starts a thread themselves.
+          Effect.map((result) => result.threadId),
+          Effect.catchTag("ThreadManagementProviderInstanceDisabledError", (error) =>
+            Effect.logInfo("auto-bootstrap thread skipped: provider disabled", {
+              message: error.message,
+            }).pipe(Effect.as(undefined)),
+          ),
+        );
       bootstrapProjectId = project.id;
-      bootstrapThreadId = launched.threadId;
+      bootstrapThreadId = launched;
     } else {
       bootstrapProjectId = project.id;
       bootstrapThreadId = existingThread.id;

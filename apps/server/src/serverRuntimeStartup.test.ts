@@ -9,11 +9,17 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 
 import * as ServerConfig from "./config.ts";
+import * as ThreadLaunch from "./orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "./project/ProjectService.ts";
+import * as ServerSettings from "./serverSettings.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 
 it("uses the canonical Codex model for auto-bootstrap", () => {
@@ -192,5 +198,40 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
       { ...overrides({ "/opted-out": false }), defaultAutoPull: true },
     ).pipe(Effect.provideService(GitVcsDriver.GitVcsDriver, git));
     assert.deepStrictEqual(pulled, ["/inherited"]);
+  }),
+);
+
+it.effect("auto-bootstrap still opens the project when the default provider is disabled", () =>
+  Effect.gen(function* () {
+    const projectId = ProjectId.make("project-1");
+    const targets = yield* ServerRuntimeStartup.resolveAutoBootstrapWelcomeTargets.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          ServerSettings.layerTest(),
+          Layer.succeed(ServerConfig.ServerConfig, {
+            cwd: "/tmp/startup-project",
+            autoBootstrapProjectFromCwd: true,
+          } as never),
+          Layer.succeed(ProjectService.ProjectService, {
+            bootstrap: () => Effect.succeed({ project: { id: projectId } }),
+          } as never),
+          Layer.succeed(ThreadManagement.ThreadManagementService, {
+            getShellSnapshot: () => Effect.succeed({ threads: [] }),
+          } as never),
+          Layer.succeed(ThreadLaunch.ThreadLaunchService, {
+            launch: () =>
+              Effect.fail(
+                new ThreadManagement.ThreadManagementProviderInstanceDisabledError({
+                  instanceId: ProviderInstanceId.make("codex"),
+                  projectId,
+                }),
+              ),
+          } as never),
+        ),
+      ),
+    );
+
+    assert.deepStrictEqual(targets, { bootstrapProjectId: projectId });
   }),
 );
