@@ -27,7 +27,7 @@ export const SUBAGENT_PREFIX = "pi-subagents:event:v1:";
 const RecordSchema = Schema.Record(Schema.String, Schema.Unknown);
 const ControlResult = Schema.Struct({
   requestId: Schema.optional(Schema.String),
-  action: Schema.Literals(["status", "replay", "steer", "reply", "kill"]),
+  action: Schema.Literals(["status", "replay", "reply", "kill"]),
   success: Schema.Boolean,
   error: Schema.optional(Schema.String),
 });

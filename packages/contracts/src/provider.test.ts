@@ -219,13 +219,13 @@ describe("provider task control", () => {
       decodeProviderTaskControlInput({
         threadId: "thread-1",
         taskId: "task-1",
-        action: "steer",
+        action: "reply",
         message: "Focus on lifecycle cleanup",
       }),
     ).toEqual({
       threadId: "thread-1",
       taskId: "task-1",
-      action: "steer",
+      action: "reply",
       message: "Focus on lifecycle cleanup",
     });
     expect(() =>
@@ -233,6 +233,17 @@ describe("provider task control", () => {
         threadId: "thread-1",
         taskId: "task-1",
         action: "reply",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects steering in the T3 task-control contract", () => {
+    expect(() =>
+      decodeProviderTaskControlInput({
+        threadId: "thread-1",
+        taskId: "task-1",
+        action: "steer",
+        message: "Continue",
       }),
     ).toThrow();
   });

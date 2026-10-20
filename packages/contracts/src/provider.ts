@@ -128,11 +128,6 @@ const ProviderTaskControlBase = {
 export const ProviderTaskControlInput = Schema.Union([
   Schema.Struct({
     ...ProviderTaskControlBase,
-    action: Schema.Literal("steer"),
-    message: TrimmedNonEmptyString,
-  }),
-  Schema.Struct({
-    ...ProviderTaskControlBase,
     action: Schema.Literal("reply"),
     message: TrimmedNonEmptyString,
   }),

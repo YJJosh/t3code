@@ -102,7 +102,11 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
       {hasDulliAgents ? (
         <View className="gap-3 pt-4">
           <Text className="text-sm font-bold text-foreground">Dulli agents</Text>
-          <DulliAgentsInspector target={target} initialSubagentId={target.subagentId} />
+          <DulliAgentsInspector
+            key={`${target.environmentId}:${target.threadId}:${target.subagentId ?? ""}`}
+            target={target}
+            initialSubagentId={target.subagentId}
+          />
         </View>
       ) : null}
     </ScrollView>
