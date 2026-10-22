@@ -131,7 +131,7 @@ it.layer(database)("Dulli migration upstream isolation", (it) => {
   it.effect("does not infer a fork from this build's phase migration or upstream Pi data", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 63 });
+      yield* runMigrations({ toMigrationInclusive: 68 });
       yield* sql`INSERT INTO provider_session_runtime (thread_id,provider_name,provider_instance_id,adapter_key,status,last_seen_at,resume_cursor_json)
       VALUES ('upstream','pi','pi','pi','stopped',${now},'{"sessionFile":"/native/pi/upstream.jsonl"}')`;
       yield* runMigrations();
@@ -151,7 +151,7 @@ it.layer(importerLayer)("Dulli partially imported v2 fork", (it) => {
   it.effect("repairs already imported shells and preserves custom instance identities", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 63 });
+      yield* runMigrations({ toMigrationInclusive: 68 });
       yield* sql`CREATE TABLE dulli_fork_native_threads (thread_id TEXT PRIMARY KEY, provider_instance_id TEXT NOT NULL, session_file TEXT NOT NULL, imported INTEGER NOT NULL DEFAULT 0)`;
       yield* insertLegacyData;
       // Reproduce the old upstream importer: a v2 shell exists but no native thread.

@@ -161,8 +161,8 @@ const make = Effect.gen(function* () {
             filePath,
             size,
             mtimeMs: Option.getOrNull(before.mtime)?.getTime() ?? null,
-            device: before.dev,
-            inode: Option.getOrNull(before.ino),
+            device: Number(before.dev),
+            inode: Option.match(before.ino, { onNone: () => null, onSome: String }),
             birthtimeMs: Option.getOrNull(before.birthtime)?.getTime() ?? null,
           },
         } satisfies AgentSessionRecentThread;

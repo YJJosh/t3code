@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import type { DulliBridgeContext } from "@t3tools/provider-dulli/server";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { ProviderAdapterV2Event } from "@t3tools/provider-core/server/ProviderAdapter";
 import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
 import * as Effect from "effect/Effect";
@@ -21,6 +22,7 @@ const layer = HtmlRender.layer.pipe(
   Layer.provide(
     Layer.mock(PreviewBrowser.PreviewBrowser)({ installed: Effect.succeed(Option.none()) }),
   ),
+  Layer.provideMerge(McpProviderSessions.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-dulli-html-" })),
   Layer.provideMerge(NodeServices.layer),
 );

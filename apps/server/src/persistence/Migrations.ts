@@ -1,19 +1,8 @@
-/**
- * Migration runner with an inline loader.
- *
- * Uses Migrator.make with fromRecord to define migrations inline.
- * All migrations are statically imported - no dynamic file system loading.
- *
- * `runMigrations` is called by the SQLite persistence layer at startup, so the
- * schema is always up to date before the application starts.
- */
-
 import * as Migrator from "effect/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
 
-// Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
 import Migration0002 from "./Migrations/002_OrchestrationCommandReceipts.ts";
 import Migration0003 from "./Migrations/003_CheckpointDiffBlobs.ts";
@@ -76,28 +65,23 @@ import Migration0059 from "./Migrations/059_McpAppModelContext.ts";
 import Migration0060 from "./Migrations/060_ThreadSnapshotWindowIndexes.ts";
 import Migration0061 from "./Migrations/061_PullRequestReviewGuides.ts";
 import Migration0062 from "./Migrations/062_ThreadFailureLookupIndex.ts";
-import Migration0063 from "./Migrations/050_ProjectionThreadMessagePhase.ts";
-import Migration0064, {
+import Migration0063 from "./Migrations/063_DropUnusedV1Projections.ts";
+import Migration0064 from "./Migrations/064_CanonicalizeThreadPullRequestLinks.ts";
+import Migration0065 from "./Migrations/065_CodexUsageNativeTurnIndex.ts";
+import Migration0066 from "./Migrations/066_RepairClientSettlementTimestamps.ts";
+import Migration0067 from "./Migrations/067_WebhookDedupe.ts";
+import Migration0068 from "./Migrations/050_ProjectionThreadMessagePhase.ts";
+import Migration0069, {
   detectDulliFork,
   hasForkPiSettings,
 } from "./Migrations/064_DulliProviderIdentity.ts";
-import Migration0065 from "./Migrations/065_PiSessionsSettlement.ts";
-import Migration0066 from "./Migrations/066_DulliRunIsolation.ts";
+import Migration0070 from "./Migrations/065_PiSessionsSettlement.ts";
+import Migration0071 from "./Migrations/066_DulliRunIsolation.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 
-/**
- * Migration loader with all migrations defined inline.
- *
- * Key format: "{id}_{name}" where:
- * - id: numeric migration ID (determines execution order)
- * - name: descriptive name for the migration
- *
- * Uses Migrator.fromRecord which parses the key format and
- * returns migrations sorted by ID.
- */
 export const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
@@ -153,7 +137,6 @@ export const migrationEntries = [
   [52, "ProjectionThreadTitleState", Migration0052],
   [53, "PullRequestFilesViewed", Migration0053],
   [54, "ProjectionThreadsAutoSettleDisabledAt", Migration0054],
-  // Released as 53 and 54 in V2 previews; reconcileV2PreviewMigration preserves their ledger.
   // Preserve this migration's schema. Future V2 schema changes need new migrations.
   [55, "OrchestrationV2", Migration0055],
   [56, "RemoveRedundantProjectionIndexes", Migration0056],
@@ -163,10 +146,15 @@ export const migrationEntries = [
   [60, "ThreadSnapshotWindowIndexes", Migration0060],
   [61, "PullRequestReviewGuides", Migration0061],
   [62, "ThreadFailureLookupIndex", Migration0062],
-  [63, "ProjectionThreadMessagePhase", Migration0063],
-  [64, "DulliProviderIdentity", Migration0064],
-  [65, "PiSessionsSettlement", Migration0065],
-  [66, "DulliRunIsolation", Migration0066],
+  [63, "DropUnusedV1Projections", Migration0063],
+  [64, "CanonicalizeThreadPullRequestLinks", Migration0064],
+  [65, "CodexUsageNativeTurnIndex", Migration0065],
+  [66, "RepairClientSettlementTimestamps", Migration0066],
+  [67, "WebhookDedupe", Migration0067],
+  [68, "ProjectionThreadMessagePhase", Migration0068],
+  [69, "DulliProviderIdentity", Migration0069],
+  [70, "PiSessionsSettlement", Migration0070],
+  [71, "DulliRunIsolation", Migration0071],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -182,15 +170,13 @@ const makeMigrationLoader = (throughId?: number) =>
     ),
   );
 
-// V2's schema migrations start at 55 after the legacy schema migrations.
 const FIRST_V2_MIGRATION_ID = 55;
 
 /**
  * Fail before migrating when the migrator would skip one of V2's own
  * migrations. It skips every id up to the highest recorded one, whatever name
  * was recorded, so a database that took a V2 id for another migration would
- * start without V2's schema and fail on first use. Earlier ids keep the
- * warning below: databases with a site-local migration there still work.
+ * start without V2's schema and fail on first use.
  */
 const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function* (
   throughId?: number,
@@ -224,17 +210,12 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
   });
 });
 
-/**
- * Migrator run function - no schema dumping needed
- * Uses the base Migrator.make without platform dependencies
- */
 const run = Migrator.make({});
 
 /**
  * Dulli used upstream IDs 50 and later 55 for the phase column. Remove only
  * those exact historical ledger rows before the max-ID migrator and V2 guard
- * run. Do not pre-register 63: that would hide upstream's pending migrations.
- * The idempotent migration at 63 preserves and re-registers the existing column.
+ * run. The idempotent migration at 68 preserves and re-registers the existing column.
  */
 const reconcileForkMessagePhaseHistory = Effect.fn("reconcileForkMessagePhaseHistory")(function* (
   throughId?: number,
@@ -251,20 +232,28 @@ const reconcileForkMessagePhaseHistory = Effect.fn("reconcileForkMessagePhaseHis
   }
 });
 
+// Fork releases used 63–66 before upstream assigned those IDs. Re-run only
+// these idempotent fork migrations at 68–71; moving their ledger rows there
+// would make the max-ID migrator skip upstream's newly required schema.
+const reconcileForkV011History = Effect.fn("reconcileForkV011History")(function* (
+  throughId?: number,
+) {
+  if (throughId !== undefined && throughId < 63) return;
+  const sql = yield* SqlClient.SqlClient;
+  const tables =
+    yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'`;
+  if (tables.length === 0) return;
+  yield* sql`DELETE FROM effect_sql_migrations WHERE
+    (migration_id = 63 AND name = 'ProjectionThreadMessagePhase') OR
+    (migration_id = 64 AND name = 'DulliProviderIdentity') OR
+    (migration_id = 65 AND name = 'PiSessionsSettlement') OR
+    (migration_id = 66 AND name = 'DulliRunIsolation')`;
+});
+
 export interface RunMigrationsOptions {
   readonly toMigrationInclusive?: number | undefined;
 }
 
-/**
- * Run all pending migrations.
- *
- * Creates the migrations tracking table (effect_sql_migrations) if it doesn't exist,
- * then runs any migrations with ID greater than the latest recorded migration.
- *
- * Returns array of [id, name] tuples for migrations that were run.
- *
- * @returns Effect containing array of executed migrations
- */
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
@@ -288,6 +277,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     }
   }
   yield* reconcileForkMessagePhaseHistory(toMigrationInclusive);
+  yield* reconcileForkV011History(toMigrationInclusive);
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
   const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
@@ -303,10 +293,6 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     ? Effect.logDebug("Database schema is current")
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
 
-  // The migrator keys on migration_id: a database that recorded a different
-  // migration under a shared id (local or fork builds) keeps that id and
-  // silently skips this build's migration at it. Surface the divergence so the
-  // skipped schema change is diagnosable.
   const sql = yield* SqlClient.SqlClient;
   const recorded = yield* sql<{
     readonly migration_id: number;

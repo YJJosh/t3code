@@ -25,9 +25,8 @@ export interface ThreadCheckpointSummary {
   readonly completedAt: string;
 }
 
-/** Derives the checkpoint/diff rows needed by review UIs from native V2 entities. */
 export function deriveThreadCheckpointSummaries(
-  projection: OrchestrationV2ThreadProjection,
+  projection: Pick<OrchestrationV2ThreadProjection, "checkpoints" | "messages">,
 ): ReadonlyArray<ThreadCheckpointSummary> {
   const lastReplyByRun = new Map<RunId, MessageId>();
   const lastFinalByRun = new Map<RunId, MessageId>();

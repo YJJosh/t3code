@@ -18,13 +18,13 @@ import { AsyncResult } from "effect/reactivity";
 import * as Haptics from "expo-haptics";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, TextInput, View } from "react-native";
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 import { cn } from "../../lib/cn";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useEnvironmentQuery } from "../../state/query";
-import { RequestActionButton } from "./RequestActionButton";
+import { Button } from "../../components/ui/Button";
 import {
   formatSubagentDuration,
   subagentStatusLabel,
@@ -215,7 +215,7 @@ export function DulliAgentsInspector({
         ))
       ) : inspector ? (
         <>
-          <RequestActionButton
+          <Button
             label={parent ? "Back to workflow" : "Back to agents"}
             tone="secondary"
             onPress={() => setSelectedId(parent?.workflow.id ?? null)}
@@ -351,11 +351,7 @@ function AgentRunDetail({
           <Text accessibilityRole="alert" className="text-sm text-danger">
             {history.error}
           </Text>
-          <RequestActionButton
-            label="Retry transcript"
-            tone="secondary"
-            onPress={history.refresh}
-          />
+          <Button label="Retry transcript" tone="secondary" onPress={history.refresh} />
         </View>
       ) : null}
       {entries.map((entry) => (
@@ -396,15 +392,16 @@ function AgentRunDetail({
             />
           ) : null}
           <View className="flex-row justify-end gap-2">
-            <RequestActionButton
+            <Button
               label="Stop agent"
               tone="danger"
               disabled={!permission || pending}
               onPress={() => void act("stop")}
             />
             {agent.status === "waiting" ? (
-              <RequestActionButton
+              <Button
                 label="Reply"
+                tone="primary"
                 disabled={!permission || pending || !message.trim()}
                 onPress={() => void act("reply")}
               />
@@ -538,7 +535,7 @@ function ToolOutput({
           <Text accessibilityRole="alert" className="text-xs text-danger">
             {detail.error}
           </Text>
-          <RequestActionButton label="Retry output" tone="secondary" onPress={detail.refresh} />
+          <Button label="Retry output" tone="secondary" onPress={detail.refresh} />
         </>
       ) : null}
     </View>
