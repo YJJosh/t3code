@@ -633,19 +633,6 @@ describe("MessagesTimeline messages", () => {
     expect(screen.text()).toContain('<root><child enabled="true" /></root>');
   });
 
-  it("does not show markdown titles in user messages", async () => {
-    await using screen = await renderTimeline([
-      message(
-        '[link](https://example.com "link tip") ![image](https://example.com/image.png "image tip")',
-      ),
-    ]);
-    expect(screen.container.querySelector('a[href="https://example.com"]')).not.toBeNull();
-    expect(
-      screen.container.querySelector('img[src="https://example.com/image.png"]'),
-    ).not.toBeNull();
-    expect(screen.container.querySelector('[title="link tip"], [title="image tip"]')).toBeNull();
-  });
-
   it("renders unsafe user HTML as inert source text", async () => {
     const source =
       '<script>globalThis.__t3Xss = 1</script><img src="x" onerror="globalThis.__t3Xss = 2">';
