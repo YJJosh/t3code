@@ -15,7 +15,7 @@ layer("055_OrchestrationV2", (it) => {
     Effect.sync(() => {
       assert.deepStrictEqual(
         migrationEntries.map(([id]) => id),
-        Array.from({ length: 71 }, (_, index) => index + 1),
+        Array.from({ length: 67 }, (_, index) => index + 1),
       );
     }),
   );
@@ -41,10 +41,10 @@ layer("055_OrchestrationV2", (it) => {
         [65, "CodexUsageNativeTurnIndex"],
         [66, "RepairClientSettlementTimestamps"],
         [67, "WebhookDedupe"],
-        [68, "ProjectionThreadMessagePhase"],
-        [69, "DulliProviderIdentity"],
-        [70, "PiSessionsSettlement"],
-        [71, "DulliRunIsolation"],
+        [1, "ProjectionThreadMessagePhase"],
+        [2, "DulliProviderIdentity"],
+        [3, "PiSessionsSettlement"],
+        [4, "DulliRunIsolation"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
 
@@ -78,10 +78,6 @@ layer("055_OrchestrationV2", (it) => {
         { migration_id: 65, name: "CodexUsageNativeTurnIndex" },
         { migration_id: 66, name: "RepairClientSettlementTimestamps" },
         { migration_id: 67, name: "WebhookDedupe" },
-        { migration_id: 68, name: "ProjectionThreadMessagePhase" },
-        { migration_id: 69, name: "DulliProviderIdentity" },
-        { migration_id: 70, name: "PiSessionsSettlement" },
-        { migration_id: 71, name: "DulliRunIsolation" },
       ]);
 
       const tables = yield* sql<{ readonly name: string }>`

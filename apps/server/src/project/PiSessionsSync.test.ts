@@ -33,7 +33,7 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as PiSessionsSettlement from "../persistence/PiSessionsSettlement.ts";
-import migration from "../persistence/Migrations/065_PiSessionsSettlement.ts";
+import migration from "../persistence/Migrations/dulli/003_PiSessionsSettlement.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AgentSessionImporter from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";

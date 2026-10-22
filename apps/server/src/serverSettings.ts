@@ -64,7 +64,7 @@ import {
   hasForkPiSettings,
   jsonObject,
   renamePiPaths,
-} from "./persistence/Migrations/064_DulliProviderIdentity.ts";
+} from "./persistence/Migrations/dulli/002_DulliProviderIdentity.ts";
 
 /** Raw migration: never send the fork config through upstream Pi's narrower schema.
  * An occupied destination is a startup error, not an implicit settings/secret merge.

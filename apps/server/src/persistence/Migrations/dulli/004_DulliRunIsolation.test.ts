@@ -2,8 +2,8 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as Sqlite from "../Sqlite.ts";
-import migration from "./066_DulliRunIsolation.ts";
+import * as Sqlite from "../../Sqlite.ts";
+import migration from "./004_DulliRunIsolation.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const at = "2026-01-01T00:00:00.000Z";

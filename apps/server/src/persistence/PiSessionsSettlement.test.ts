@@ -7,7 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
-import migration from "./Migrations/065_PiSessionsSettlement.ts";
+import migration from "./Migrations/dulli/003_PiSessionsSettlement.ts";
 import * as PiSessionsSettlement from "./PiSessionsSettlement.ts";
 
 it.layer(NodeServices.layer)("PiSessionsSettlement", (it) => {

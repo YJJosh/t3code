@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-import { migrationManifest, runMigrations } from "../Migrations.ts";
+import { dulliMigrationManifest, migrationManifest, runMigrations } from "../../Migrations.ts";
 
 const message = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -33,7 +33,7 @@ const verifyUpgrade = (expectedPhase: string | null) =>
     assert.deepEqual(yield* runMigrations(), []);
   });
 
-describe("message phase migration registered at 63", () => {
+describe("message phase migration in the fork ledger", () => {
   it.effect("migrates a fresh database and leaves legacy message phases unknown", () =>
     Effect.gen(function* () {
       yield* runMigrations({ toMigrationInclusive: 49 });
@@ -54,10 +54,10 @@ describe("message phase migration registered at 63", () => {
         yield* message;
         yield* sql`UPDATE projection_thread_messages SET phase = 'final_answer' WHERE message_id = 'message'`;
         const executed = yield* runMigrations();
-        assert.deepEqual(
-          executed,
-          migrationManifest.filter(([migrationId]) => migrationId >= id),
-        );
+        assert.deepEqual(executed, [
+          ...migrationManifest.filter(([migrationId]) => migrationId >= id),
+          ...dulliMigrationManifest,
+        ]);
         assert.isTrue(
           executed.some(([migrationId, name]) => migrationId === 55 && name === "OrchestrationV2"),
         );
@@ -69,11 +69,10 @@ describe("message phase migration registered at 63", () => {
     Effect.gen(function* () {
       yield* runMigrations({ toMigrationInclusive: 62 });
       yield* message;
-      // REVIEW: 64/65 are pending too; asserting only 63 made the upgrade test fail.
-      assert.deepEqual(
-        yield* runMigrations(),
-        migrationManifest.filter(([id]) => id > 62),
-      );
+      assert.deepEqual(yield* runMigrations(), [
+        ...migrationManifest.filter(([id]) => id > 62),
+        ...dulliMigrationManifest,
+      ]);
       yield* verifyUpgrade(null);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

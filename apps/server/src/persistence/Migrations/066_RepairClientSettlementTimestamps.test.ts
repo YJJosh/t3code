@@ -363,6 +363,8 @@ layer("066_RepairClientSettlementTimestamps", (it) => {
       yield* Migration0066;
       assert.deepEqual(yield* snapshot, repaired);
 
+      // Rebuild uses the current application schema, including the fork tables.
+      yield* runMigrations();
       const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
       assert.isTrue((yield* maintenance.rebuild).valid);
       assert.deepEqual(yield* imported, expectedImported);

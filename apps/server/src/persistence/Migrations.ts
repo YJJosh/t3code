@@ -70,13 +70,13 @@ import Migration0064 from "./Migrations/064_CanonicalizeThreadPullRequestLinks.t
 import Migration0065 from "./Migrations/065_CodexUsageNativeTurnIndex.ts";
 import Migration0066 from "./Migrations/066_RepairClientSettlementTimestamps.ts";
 import Migration0067 from "./Migrations/067_WebhookDedupe.ts";
-import Migration0068 from "./Migrations/050_ProjectionThreadMessagePhase.ts";
-import Migration0069, {
+import DulliMigration0001 from "./Migrations/dulli/001_ProjectionThreadMessagePhase.ts";
+import DulliMigration0002, {
   detectDulliFork,
   hasForkPiSettings,
-} from "./Migrations/064_DulliProviderIdentity.ts";
-import Migration0070 from "./Migrations/065_PiSessionsSettlement.ts";
-import Migration0071 from "./Migrations/066_DulliRunIsolation.ts";
+} from "./Migrations/dulli/002_DulliProviderIdentity.ts";
+import DulliMigration0003 from "./Migrations/dulli/003_PiSessionsSettlement.ts";
+import DulliMigration0004 from "./Migrations/dulli/004_DulliRunIsolation.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -151,20 +151,30 @@ export const migrationEntries = [
   [65, "CodexUsageNativeTurnIndex", Migration0065],
   [66, "RepairClientSettlementTimestamps", Migration0066],
   [67, "WebhookDedupe", Migration0067],
-  [68, "ProjectionThreadMessagePhase", Migration0068],
-  [69, "DulliProviderIdentity", Migration0069],
-  [70, "PiSessionsSettlement", Migration0070],
-  [71, "DulliRunIsolation", Migration0071],
+] as const;
+
+export const dulliMigrationEntries = [
+  [1, "ProjectionThreadMessagePhase", DulliMigration0001],
+  [2, "DulliProviderIdentity", DulliMigration0002],
+  [3, "PiSessionsSettlement", DulliMigration0003],
+  [4, "DulliRunIsolation", DulliMigration0004],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 
+export const dulliMigrationManifest = dulliMigrationEntries.map(
+  ([id, name]) => [id, name] as const,
+);
+
 const decodeRawSettingsJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
-const makeMigrationLoader = (throughId?: number) =>
+const makeMigrationLoader = (
+  entries: typeof migrationEntries | typeof dulliMigrationEntries,
+  throughId?: number,
+) =>
   Migrator.fromRecord(
     Object.fromEntries(
-      migrationEntries
+      entries
         .filter(([id]) => throughId === undefined || id <= throughId)
         .map(([id, name, migration]) => [`${id}_${name}`, migration]),
     ),
@@ -212,42 +222,24 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
 
 const run = Migrator.make({});
 
-/**
- * Dulli used upstream IDs 50 and later 55 for the phase column. Remove only
- * those exact historical ledger rows before the max-ID migrator and V2 guard
- * run. The idempotent migration at 68 preserves and re-registers the existing column.
- */
-const reconcileForkMessagePhaseHistory = Effect.fn("reconcileForkMessagePhaseHistory")(function* (
-  throughId?: number,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const tables =
-    yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'`;
-  if (tables.length === 0) return;
-  if (throughId === undefined || throughId >= 50) {
-    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 50 AND name = 'ProjectionThreadMessagePhase'`;
-  }
-  if (throughId === undefined || throughId >= 55) {
-    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 55 AND name = 'ProjectionThreadMessagePhase'`;
-  }
-});
-
-// Fork releases used 63–66 before upstream assigned those IDs. Re-run only
-// these idempotent fork migrations at 68–71; moving their ledger rows there
-// would make the max-ID migrator skip upstream's newly required schema.
-const reconcileForkV011History = Effect.fn("reconcileForkV011History")(function* (
-  throughId?: number,
-) {
-  if (throughId !== undefined && throughId < 63) return;
+// Remove only known fork identities, including the unreleased 68–71 layout.
+// Replaying them in the fork ledger preserves data without occupying upstream IDs.
+const reconcileForkHistory = Effect.fn("reconcileForkHistory")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const tables =
     yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'`;
   if (tables.length === 0) return;
   yield* sql`DELETE FROM effect_sql_migrations WHERE
+    (migration_id = 50 AND name = 'ProjectionThreadMessagePhase') OR
+    (migration_id = 55 AND name = 'ProjectionThreadMessagePhase') OR
     (migration_id = 63 AND name = 'ProjectionThreadMessagePhase') OR
     (migration_id = 64 AND name = 'DulliProviderIdentity') OR
     (migration_id = 65 AND name = 'PiSessionsSettlement') OR
-    (migration_id = 66 AND name = 'DulliRunIsolation')`;
+    (migration_id = 66 AND name = 'DulliRunIsolation') OR
+    (migration_id = 68 AND name = 'ProjectionThreadMessagePhase') OR
+    (migration_id = 69 AND name = 'DulliProviderIdentity') OR
+    (migration_id = 70 AND name = 'PiSessionsSettlement') OR
+    (migration_id = 71 AND name = 'DulliRunIsolation')`;
 });
 
 export interface RunMigrationsOptions {
@@ -276,8 +268,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
       }
     }
   }
-  yield* reconcileForkMessagePhaseHistory(toMigrationInclusive);
-  yield* reconcileForkV011History(toMigrationInclusive);
+  yield* reconcileForkHistory();
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
   const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
@@ -286,9 +277,20 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   }
   const executedMigrations = [
     ...previewMigrations,
-    ...(yield* run({ loader: makeMigrationLoader(toMigrationInclusive) })),
+    ...(yield* run({ loader: makeMigrationLoader(migrationEntries, toMigrationInclusive) })),
   ];
-  const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
+  // A cutoff builds an upstream-only historical schema; fork migrations require the full upstream schema.
+  const forkMigrations =
+    toMigrationInclusive === undefined
+      ? yield* run({
+          table: "dulli_sql_migrations",
+          loader: makeMigrationLoader(dulliMigrationEntries),
+        })
+      : [];
+  const migrations = [
+    ...executedMigrations.map(([id, name]) => `${id}_${name}`),
+    ...forkMigrations.map(([id, name]) => `dulli:${id}_${name}`),
+  ];
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
@@ -313,5 +315,5 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
       "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
     ).pipe(Effect.annotateLogs({ divergent }));
   }
-  return executedMigrations;
+  return [...executedMigrations, ...forkMigrations];
 });

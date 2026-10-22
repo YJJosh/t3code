@@ -47,10 +47,10 @@ describe("V2 preview upgrade", () => {
         [65, "CodexUsageNativeTurnIndex"],
         [66, "RepairClientSettlementTimestamps"],
         [67, "WebhookDedupe"],
-        [68, "ProjectionThreadMessagePhase"],
-        [69, "DulliProviderIdentity"],
-        [70, "PiSessionsSettlement"],
-        [71, "DulliRunIsolation"],
+        [1, "ProjectionThreadMessagePhase"],
+        [2, "DulliProviderIdentity"],
+        [3, "PiSessionsSettlement"],
+        [4, "DulliRunIsolation"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -141,10 +141,10 @@ describe("V2 preview upgrade", () => {
         [65, "CodexUsageNativeTurnIndex"],
         [66, "RepairClientSettlementTimestamps"],
         [67, "WebhookDedupe"],
-        [68, "ProjectionThreadMessagePhase"],
-        [69, "DulliProviderIdentity"],
-        [70, "PiSessionsSettlement"],
-        [71, "DulliRunIsolation"],
+        [1, "ProjectionThreadMessagePhase"],
+        [2, "DulliProviderIdentity"],
+        [3, "PiSessionsSettlement"],
+        [4, "DulliRunIsolation"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

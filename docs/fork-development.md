@@ -6,6 +6,10 @@ T3 Dulli is the branded distribution maintained in `YJJosh/t3code`. This reposit
 
 The current upstream baseline is stable **v0.1.1**, not a nightly or preview release. Upstream updates retain the fork's Pi provider, subagent/workflow inspector, background-terminal controls, Workler defaults, and Dulli identities and release channels. Resolve overlapping changes at their integration boundaries rather than replacing fork-owned features with upstream equivalents.
 
+## Fork database migrations
+
+Add fork migrations to `Migrations/dulli/` and the `dulli_sql_migrations` ledger, never upstream's `effect_sql_migrations` sequence. They run after upstream migrations and must be idempotent and safe to run after any upstream migration.
+
 ## Identity and coexistence
 
 Build Dulli with `--brand dulli`. The default remains the upstream `t3code` brand.
