@@ -349,6 +349,11 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
         END
         WHERE thread_id = ${threadId}
       `;
+      yield* sql`UPDATE projection_thread_messages SET phase = 'final_answer'
+        WHERE message_id = 'message:legacy:2'`;
+      yield* sql`UPDATE projection_thread_messages SET phase = 'commentary'
+        WHERE message_id = 'message:legacy:4'`;
+
       const sourceMessages = yield* sql`
         SELECT * FROM projection_thread_messages WHERE thread_id = ${threadId} ORDER BY message_id
       `;
@@ -365,11 +370,6 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
             'https://github.com/pingdotgg/t3code/pull/9003', 'manual',
             '2026-01-04T00:00:00.000Z', NULL)
       `;
-
-      yield* sql`UPDATE projection_thread_messages SET phase = 'final_answer'
-        WHERE message_id = 'message:legacy:2'`;
-      yield* sql`UPDATE projection_thread_messages SET phase = 'commentary'
-        WHERE message_id = 'message:legacy:4'`;
 
       assert.equal(yield* importer.pendingThreadCount, 1);
       const shellImport = yield* importer.reconcileShells;
