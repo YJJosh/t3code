@@ -463,8 +463,42 @@ describe("Dulli legacy child history", () => {
           .length,
         0,
       );
+      assert.isTrue(yield* hasActivities);
     }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("drops the V1 activities once the last thread's history is imported", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO dulli_fork_migrations VALUES('fork-detected')`;
+      yield* add("done", "task.completed", 1, payload({ status: "completed" }));
+      assert.equal((yield* importDulliLegacySubagentHistory()).runs, 1);
+      assert.isFalse(yield* hasActivities);
+      assert.equal((yield* importDulliLegacySubagentHistory()).runs, 0);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("marks threads without history when the V1 activities are already gone", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO dulli_fork_migrations VALUES('fork-detected')`;
+      yield* sql`DROP TABLE projection_thread_activities`;
+      assert.equal((yield* importDulliLegacySubagentHistory(threadId)).runs, 0);
+      assert.equal(
+        (yield* sql`SELECT 1 FROM dulli_fork_migrations WHERE name = ${`subagent-history-v1:${threadId}`}`)
+          .length,
+        1,
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+});
+const hasActivities = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM sqlite_master
+    WHERE type = 'table' AND name = 'projection_thread_activities'`;
+  return rows.length > 0;
 });
 const seedThread = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

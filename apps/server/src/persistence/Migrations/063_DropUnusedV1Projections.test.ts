@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -45,5 +45,44 @@ layer("063_DropUnusedV1Projections", (it) => {
         { message_id: "message-1" },
       ]);
     }),
+  );
+});
+
+const hasActivities = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM sqlite_master
+    WHERE type = 'table' AND name = 'projection_thread_activities'`;
+  return rows.length > 0;
+});
+
+const forkWithTaskRow = (imported: boolean) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 62 });
+    yield* sql`INSERT INTO dulli_fork_migrations VALUES ('fork-detected')`;
+    if (imported) {
+      yield* sql`INSERT INTO dulli_fork_migrations VALUES ('subagent-history-v1:thread-1')`;
+    }
+    yield* sql`
+      INSERT INTO projection_thread_activities
+        (activity_id, thread_id, tone, kind, summary, payload_json, created_at)
+      VALUES ('activity-1', 'thread-1', 'info', 'task.started', 'Task', '{}', '2026-01-01')
+    `;
+    yield* runMigrations({ toMigrationInclusive: 63 });
+  });
+
+describe("063_DropUnusedV1Projections on Dulli fork databases", () => {
+  it.effect("keeps activities while old Pi subagent history is not imported yet", () =>
+    Effect.gen(function* () {
+      yield* forkWithTaskRow(false);
+      assert.isTrue(yield* hasActivities);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("drops activities once every thread's history is imported", () =>
+    Effect.gen(function* () {
+      yield* forkWithTaskRow(true);
+      assert.isFalse(yield* hasActivities);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });

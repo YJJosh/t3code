@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import { makeSubagentFactory } from "../../provider/dulli/DulliSubagentBridge.ts";
 import * as DulliSubagents from "../../provider/dulli/DulliSubagents.ts";
+import { hasPendingDulliSubagentHistory } from "../../persistence/Migrations/DulliLegacyActivities.ts";
 import * as EventSink from "../EventSink.ts";
 
 export interface DulliLegacyTaskRow {
@@ -265,6 +266,9 @@ export const importDulliLegacySubagentHistory = Effect.fn("DulliLegacySubagentHi
       AND NOT EXISTS (SELECT 1 FROM dulli_fork_migrations m
         WHERE m.name = 'subagent-history-v1:' || t.thread_id)
   `;
+    const hasActivities =
+      (yield* sql`SELECT 1 FROM sqlite_master
+      WHERE type = 'table' AND name = 'projection_thread_activities'`).length > 0;
     const totals = { runs: 0, transcriptItems: 0, acceptedRows: 0, skippedRows: 0 };
     for (const row of threads) {
       const stored = yield* sql<{ payload_json: string }>`SELECT payload_json
@@ -279,7 +283,8 @@ export const importDulliLegacySubagentHistory = Effect.fn("DulliLegacySubagentHi
       const existing = yield* Effect.forEach(stored, (entry) => decodeAgent(entry.payload_json));
       const projector = yield* makeDulliLegacyTaskProjector(thread, existing);
       let cursor: DulliLegacyTaskRow | undefined;
-      while (true) {
+      let more = hasActivities;
+      while (more) {
         const rows = yield* sql<DulliLegacyTaskRow>`
           SELECT activity_id, kind, created_at, payload_json, sequence
           FROM projection_thread_activities WHERE thread_id = ${row.thread_id}
@@ -288,7 +293,7 @@ export const importDulliLegacySubagentHistory = Effect.fn("DulliLegacySubagentHi
               (${cursor?.created_at ?? ""}, ${cursor?.sequence ?? -1}, ${cursor?.activity_id ?? ""})
           ORDER BY created_at, coalesce(sequence, -1), activity_id LIMIT 100`;
         for (const activity of rows) yield* projector.accept(activity);
-        if (rows.length < 100) break;
+        more = rows.length === 100;
         cursor = rows.at(-1);
         yield* Effect.yieldNow;
       }
@@ -335,6 +340,10 @@ export const importDulliLegacySubagentHistory = Effect.fn("DulliLegacySubagentHi
         }),
       );
       yield* Effect.yieldNow;
+    }
+    // Migration 063 kept the V1 activities only for this import.
+    if (threadId === undefined && hasActivities && !(yield* hasPendingDulliSubagentHistory)) {
+      yield* sql`DROP TABLE IF EXISTS projection_thread_activities`;
     }
     return totals;
   },
