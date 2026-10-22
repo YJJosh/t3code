@@ -734,7 +734,7 @@ function deriveTerminalAssistantMessageIds(timelineEntries: ReadonlyArray<Timeli
     }
   }
 
-  // REVIEW: commentary is never terminal and a final answer wins. An
+  // Commentary is never terminal and a final answer wins. An
   // interrupted or errored Dulli reply has no phase, so it keeps its footer.
   return new Set(
     Array.from(

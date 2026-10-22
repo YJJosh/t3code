@@ -61,7 +61,7 @@ export const makeDulliLegacyTaskProjector = Effect.fn("DulliLegacySubagentHistor
     const existingRuns = new Set(dulli.map((agent) => agent.nativeTaskRef?.nativeId));
     let skippedRows = 0;
     let acceptedRows = 0;
-    // REVIEW: synthetic run events reuse the run's native manager id. The bridge's
+    // Synthetic run events reuse the run's native manager id. The bridge's
     // terminal flush keys the pending reply by manager; "legacy" projected it twice.
     const managerIds = new Map<string, string>();
     const bridge = yield* makeSubagentFactory({

@@ -103,7 +103,7 @@ const make = Effect.gen(function* () {
   const identity = (value: string) => fs.realPath(value).pipe(Effect.orElseSucceed(() => null));
   const enabledInstances = Effect.gen(function* () {
     const config = yield* settings.getSettings;
-    // REVIEW: The registry enables an unconfigured default Dulli instance too.
+    // The registry enables an unconfigured default Dulli instance too.
     // Keep sharing/import and UUID recovery available without a saved settings slot;
     // an explicitly occupied or disabled slot still wins, exactly as in the registry.
     const instances: Record<string, ProviderInstanceConfig> = {

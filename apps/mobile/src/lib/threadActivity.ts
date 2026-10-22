@@ -1053,7 +1053,7 @@ export function terminalThreadFeedAssistantMessageIds(feed: ReadonlyArray<Thread
       lastByResponse.set(responseKey, message.id);
     if (message.phase === "final_answer") finalByResponse.set(responseKey, message.id);
   }
-  // REVIEW: an interrupted or errored Dulli reply has no phase and keeps its footer.
+  // An interrupted or errored Dulli reply has no phase and keeps its footer.
   for (const [response, finalId] of finalByResponse) lastByResponse.set(response, finalId);
   return new Set(lastByResponse.values());
 }

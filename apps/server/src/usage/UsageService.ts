@@ -372,7 +372,7 @@ export const make = Effect.gen(function* () {
         }
       }
       directories.push(discovered);
-      // REVIEW: header-derived roots repeat once per cached file (every session in
+      // Header-derived roots repeat once per cached file (every session in
       // a project yields the same ancestor chain). Collapse them before the per-root
       // realPath/volume IO and the O(fileCache) retained-history walk below.
       const requested = new Set<string>();

@@ -37,7 +37,7 @@ export function deriveThreadCheckpointSummaries(
   }
   return projection.checkpoints.flatMap((checkpoint) => {
     if (checkpoint.appRunOrdinal === null || checkpoint.runId === null) return [];
-    // REVIEW: the final answer owns the diff, else the last non-commentary
+    // The final answer owns the diff, else the last non-commentary
     // reply (upstream rule). An interrupted Dulli reply has no phase.
     const assistantMessageId =
       lastFinalByRun.get(checkpoint.runId) ?? lastReplyByRun.get(checkpoint.runId) ?? null;

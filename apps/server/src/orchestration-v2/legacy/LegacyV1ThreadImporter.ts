@@ -693,7 +693,7 @@ const make = Effect.gen(function* () {
   // keeps that path off the database entirely after first confirmation.
   const confirmedTranscriptThreadIds = new Set<ThreadId>();
 
-  // REVIEW: old Dulli subagent runs are a best-effort extra. A thread whose
+  // Old Dulli subagent runs are a best-effort extra. A thread whose
   // history cannot be folded must still open, and must not stop the background
   // transcript hydration of every other thread. Without a marker it retries on
   // the next start.
