@@ -8,7 +8,7 @@ import type { EnvironmentId, ThreadId, OrchestrationV2ThreadProjection } from "@
 import { deriveDulliAgentInspector } from "@t3tools/client-runtime/state/dulliSubagents";
 import { Bot } from "lucide-react";
 import { observeResize } from "~/lib/observeResize";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { AgentDetail } from "./agents/AgentDetail";
 import { AgentsRoster } from "./agents/AgentsRoster";
@@ -49,7 +49,7 @@ export function AgentsPanel({
   environmentId: EnvironmentId;
   projection: OrchestrationV2ThreadProjection;
 }) {
-  const inspector = useMemo(() => deriveDulliAgentInspector(projection), [projection]);
+  const inspector = deriveDulliAgentInspector(projection);
   return (
     <Inspector
       key={`${environmentId}:${projection.thread.id}`}
@@ -72,15 +72,12 @@ function Inspector({
   const model = inspector.presentation;
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const splitLayout = useSplitInspectorLayout(root);
-  const agents = useMemo(() => panelAgents(model), [model]);
+  const agents = panelAgents(model);
   const workflows = model.workflows;
-  const visibleAgentCount = useMemo(
-    () =>
-      model.directAgents.length +
-      model.workflows.reduce((count, group) => count + workflowMembers(group).length, 0),
-    [model],
-  );
-  const preferredSelection = useMemo<InspectorSelection | null>(() => {
+  const visibleAgentCount =
+    model.directAgents.length +
+    model.workflows.reduce((count, group) => count + workflowMembers(group).length, 0);
+  const preferredSelection = ((): InspectorSelection | null => {
     const preferredAgent = preferredInspectorAgent(agents);
     if (preferredAgent) {
       const workflow = workflows.find((group) =>
@@ -92,7 +89,7 @@ function Inspector({
     }
     const workflow = workflows.at(-1);
     return workflow ? { kind: "workflow", id: workflow.workflow.id } : null;
-  }, [agents, workflows]);
+  })();
   const [requestedSelection, setSelection] = useState<InspectorSelection | null>(null);
   // Persist the initial split-pane choice. Following the changing preference
   // on every update remounts detail and discards a draft when another agent waits.
@@ -123,32 +120,29 @@ function Inspector({
   const parentWorkflow =
     workflows.find((group) => group.workflow.id === selectedAgent?.parentAgentId) ?? null;
 
-  const selectRosterAgent = useCallback((agent: DulliInspectorAgent) => {
+  const selectRosterAgent = (agent: DulliInspectorAgent) => {
     setReturnFocusTargetId(null);
     setSelection({ kind: "agent", id: agent.id });
-  }, []);
-  const selectWorkflow = useCallback((group: DulliInspectorWorkflowGroup) => {
+  };
+  const selectWorkflow = (group: DulliInspectorWorkflowGroup) => {
     setReturnFocusTargetId(null);
     setSelection({ kind: "workflow", id: group.workflow.id });
-  }, []);
-  const selectWorkflowAgent = useCallback(
-    (group: DulliInspectorWorkflowGroup, agent: DulliInspectorAgent) => {
-      setReturnFocusTargetId(null);
-      setSelection({ kind: "agent", id: agent.id });
-    },
-    [],
-  );
-  const showRoster = useCallback(() => {
+  };
+  const selectWorkflowAgent = (group: DulliInspectorWorkflowGroup, agent: DulliInspectorAgent) => {
+    setReturnFocusTargetId(null);
+    setSelection({ kind: "agent", id: agent.id });
+  };
+  const showRoster = () => {
     setReturnFocusTargetId(selection?.id ?? null);
     setSelection(null);
-  }, [selection]);
-  const showParentWorkflow = useCallback(() => {
+  };
+  const showParentWorkflow = () => {
     if (!parentWorkflow) {
       showRoster();
       return;
     }
     setSelection({ kind: "workflow", id: parentWorkflow.workflow.id });
-  }, [parentWorkflow, showRoster]);
+  };
 
   if (!model.hasAgents) {
     return (

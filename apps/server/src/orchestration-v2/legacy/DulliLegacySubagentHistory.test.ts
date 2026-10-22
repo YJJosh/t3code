@@ -63,6 +63,18 @@ const transcript = (sequence: number, text: string) => ({
 });
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  // Migration 063 removes this upstream projection; legacy fork histories still contain it.
+  yield* sql`CREATE TABLE IF NOT EXISTS projection_thread_activities (
+    activity_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    turn_id TEXT,
+    tone TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    sequence INTEGER
+  )`;
   yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES('p','P','/tmp','[]',${at(0)},${at(0)})`;
   yield* sql`INSERT INTO projection_threads(thread_id,project_id,title,model_selection_json,created_at,updated_at) VALUES(${threadId},'p','Legacy','{"instanceId":"dulli","model":"default"}',${at(0)},${at(30)})`;
   const importer = yield* Importer.LegacyV1ThreadImporter;
@@ -125,7 +137,7 @@ describe("Dulli legacy child history", () => {
           7,
           payload({ taskId: "codex", taskType: "codex-subagent" }),
         );
-        const result = yield* importDulliLegacySubagentHistory();
+        const result = yield* importDulliLegacySubagentHistory(threadId);
         assert.equal(result.runs, 4);
         assert.equal(result.transcriptItems, 1);
         assert.equal(result.skippedRows, 1);

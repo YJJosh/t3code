@@ -678,13 +678,12 @@ const resolveInstalledPiSdkUrl = Effect.fn("resolveInstalledPiSdkUrl")(
       paths
         .toFileUrl(paths.join(directory, piSdkEntry(manifest)))
         .pipe(Effect.map((url) => url.href));
-    const piSdkUrlAt = (directory: string) =>
-      Effect.gen(function* () {
-        const manifest = yield* readManifest(directory);
-        return Option.isSome(manifest) && manifest.value.name === PI_SDK_PACKAGE
-          ? yield* sdkUrl(directory, manifest.value)
-          : undefined;
-      });
+    const piSdkUrlAt = Effect.fn("PiModelDiscovery.piSdkUrlAt")(function* (directory: string) {
+      const manifest = yield* readManifest(directory);
+      return Option.isSome(manifest) && manifest.value.name === PI_SDK_PACKAGE
+        ? yield* sdkUrl(directory, manifest.value)
+        : undefined;
+    });
 
     const command = yield* resolveCommandPath(binaryPath, environment ? { env: environment } : {});
     if (command === null) return undefined;

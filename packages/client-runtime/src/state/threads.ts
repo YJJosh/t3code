@@ -225,19 +225,20 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   };
   if (resumeCache?.owner === owner) resumeCache.snapshot = committed;
   const awaitingCompletion = yield* Ref.make(false);
-  const logStreamState = (reason: string) =>
-    Effect.gen(function* () {
-      const current = yield* SubscriptionRef.get(state);
-      yield* Effect.logDebug("Thread message stream", {
-        threadId,
-        environmentId,
-        reason,
-        status: current.status,
-        lastSequence: yield* SubscriptionRef.get(lastSequence),
-        awaitingCompletion: yield* Ref.get(awaitingCompletion),
-        error: Option.getOrNull(current.error),
-      });
+  const logStreamState = Effect.fn("EnvironmentThreadState.logStreamState")(function* (
+    reason: string,
+  ) {
+    const current = yield* SubscriptionRef.get(state);
+    yield* Effect.logDebug("Thread message stream", {
+      threadId,
+      environmentId,
+      reason,
+      status: current.status,
+      lastSequence: yield* SubscriptionRef.get(lastSequence),
+      awaitingCompletion: yield* Ref.get(awaitingCompletion),
+      error: Option.getOrNull(current.error),
     });
+  });
   // Status transitions only, not message/token updates. Completion arrival is
   // logged separately so a missing replay barrier can be distinguished from loss.
   yield* SubscriptionRef.changes(state).pipe(

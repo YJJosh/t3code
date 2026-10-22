@@ -6,7 +6,9 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+
+import { useStableCallback } from "~/hooks/useStableCallback";
 
 import { randomUUID } from "../../lib/utils";
 import { Button } from "~/components/ui/button";
@@ -53,36 +55,31 @@ export function InteractiveBackgroundTerminal({
   }, [controlling]);
   const run = useAtomCommand(backgroundTerminalEnvironment.control, { reportFailure: false });
   const terminalId = terminal.view.id;
-  const control = useCallback(
-    async (command: Control) => {
-      if (!permitted) throw new Error("Terminal control permission is required.");
-      const request: DulliBackgroundTerminalControlInput = {
-        ...command,
-        threadId,
-        managerId,
-        terminalId,
-        clientId,
-      };
-      const result = await run({ environmentId, input: request });
-      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-    },
-    [permitted, run, environmentId, threadId, managerId, terminalId, clientId],
+  const control = async (command: Control) => {
+    if (!permitted) throw new Error("Terminal control permission is required.");
+    const request: DulliBackgroundTerminalControlInput = {
+      ...command,
+      threadId,
+      managerId,
+      terminalId,
+      clientId,
+    };
+    const result = await run({ environmentId, input: request });
+    if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+  };
+  // The terminal surface retains these handlers for its lifetime; changing control
+  // permissions must not dispose the surface or lose its current selection.
+  const reportError = useStableCallback((cause: unknown) =>
+    setError(cause instanceof Error ? cause.message : String(cause)),
   );
-  const reportError = useCallback(
-    (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
-    [],
-  );
-  const resize = useCallback(
-    (cols: number, rows: number) => {
-      if (controllingRef.current)
-        void control({
-          action: "resize",
-          cols: Math.max(2, Math.min(500, cols)),
-          rows: Math.max(1, Math.min(200, rows)),
-        }).catch(reportError);
-    },
-    [control, reportError],
-  );
+  const resize = useStableCallback((cols: number, rows: number) => {
+    if (controllingRef.current)
+      void control({
+        action: "resize",
+        cols: Math.max(2, Math.min(500, cols)),
+        rows: Math.max(1, Math.min(200, rows)),
+      }).catch(reportError);
+  });
 
   useEffect(() => {
     let cancelled = false;

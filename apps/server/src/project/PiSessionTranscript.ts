@@ -53,8 +53,8 @@ export class PiSessionTranscript extends Context.Service<
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const read: PiSessionTranscript["Service"]["read"] = (record, instanceId, workspaceRoot) =>
-    Effect.gen(function* () {
+  const read: PiSessionTranscript["Service"]["read"] = Effect.fn("PiSessionTranscript.read")(
+    function* (record, instanceId, workspaceRoot) {
       if (
         !record.sessionFile ||
         !path.isAbsolute(record.sessionFile) ||
@@ -167,10 +167,10 @@ const make = Effect.gen(function* () {
           },
         } satisfies AgentSessionRecentThread;
       });
-    }).pipe(
-      Effect.scoped,
-      Effect.orElseSucceed(() => null),
-    );
+    },
+    Effect.scoped,
+    Effect.orElseSucceed(() => null),
+  );
   return PiSessionTranscript.of({ read });
 });
 export const layer = Layer.effect(PiSessionTranscript, make);

@@ -73,41 +73,40 @@ const make = Effect.gen(function* () {
         sessions.delete(threadId);
         return PubSub.publish(events, { threadId, event }).pipe(Effect.asVoid);
       }),
-    control: (input) =>
-      Effect.gen(function* () {
-        const session = sessions.get(input.threadId);
-        if (!session)
-          return yield* new DulliBackgroundTerminalControlError({
-            message: "No live Dulli session for this thread. Send a message first.",
-          });
-        // A switched provider can remain resident until its queued detach lands.
-        // Resolve only the current binding; never open/recover a provider here.
-        const current = yield* projections
-          .getThreadProviderContext(input.threadId, session.instanceId)
-          .pipe(
-            Effect.mapError(
-              () =>
-                new DulliBackgroundTerminalControlError({
-                  message: "The thread's live provider binding is unavailable.",
-                }),
-            ),
-          );
-        const active = current.providerThreads.find(
-          (candidate) => candidate.id === current.thread.activeProviderThreadId,
+    control: Effect.fn("DulliBackgroundTerminals.control")(function* (input) {
+      const session = sessions.get(input.threadId);
+      if (!session)
+        return yield* new DulliBackgroundTerminalControlError({
+          message: "No live Dulli session for this thread. Send a message first.",
+        });
+      // A switched provider can remain resident until its queued detach lands.
+      // Resolve only the current binding; never open/recover a provider here.
+      const current = yield* projections
+        .getThreadProviderContext(input.threadId, session.instanceId)
+        .pipe(
+          Effect.mapError(
+            () =>
+              new DulliBackgroundTerminalControlError({
+                message: "The thread's live provider binding is unavailable.",
+              }),
+          ),
         );
-        if (
-          current.thread.archivedAt !== null ||
-          current.thread.modelSelection.instanceId !== session.instanceId ||
-          active?.driver !== "dulli" ||
-          active.providerSessionId !== session.providerSessionId ||
-          sessions.get(input.threadId)?.token !== session.token
-        ) {
-          return yield* new DulliBackgroundTerminalControlError({
-            message: "The Dulli session is no longer active for this thread.",
-          });
-        }
-        return yield* session.control(input);
-      }),
+      const active = current.providerThreads.find(
+        (candidate) => candidate.id === current.thread.activeProviderThreadId,
+      );
+      if (
+        current.thread.archivedAt !== null ||
+        current.thread.modelSelection.instanceId !== session.instanceId ||
+        active?.driver !== "dulli" ||
+        active.providerSessionId !== session.providerSessionId ||
+        sessions.get(input.threadId)?.token !== session.token
+      ) {
+        return yield* new DulliBackgroundTerminalControlError({
+          message: "The Dulli session is no longer active for this thread.",
+        });
+      }
+      return yield* session.control(input);
+    }),
     streamEvents: (threadId) =>
       Stream.fromPubSub(events).pipe(
         Stream.filter((entry) => entry.threadId === threadId),

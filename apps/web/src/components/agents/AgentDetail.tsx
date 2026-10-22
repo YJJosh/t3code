@@ -27,7 +27,7 @@ import {
   Workflow,
   Wrench,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import ChatMarkdown from "~/components/ChatMarkdown";
 import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
@@ -348,14 +348,10 @@ export function AgentDetail({
       input: { threadId, subagentId: agent.source.id, revision },
     }),
   );
-  const items = useMemo(
-    () =>
-      dulliTranscriptEntries(
-        transcriptFor(agent.source, history.data?.items),
-        agent.prompt,
-        isActiveSubagentStatus(agent.status),
-      ),
-    [transcriptFor, agent.source, agent.prompt, agent.status, history.data?.items],
+  const items = dulliTranscriptEntries(
+    transcriptFor(agent.source, history.data?.items),
+    agent.prompt,
+    isActiveSubagentStatus(agent.status),
   );
   const resultAlreadyShown = items.some(
     (item) => item.kind === "assistant" && item.text.trim() === agent.result?.trim(),

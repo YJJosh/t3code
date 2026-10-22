@@ -750,19 +750,22 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       const rpcEvents = yield* Queue.unbounded<PiRpcRecord, PiRpcError>();
       let binding = 0;
       let sharedNeedsOpen = false;
-      const forwardConnection = (source: PiRpcConnection, generation: number) =>
-        Effect.gen(function* () {
+      const forwardConnection = Effect.fn("DulliAdapter.forwardConnection")(
+        function* (source: PiRpcConnection, generation: number) {
           while (true) {
             const event = yield* Queue.take(source.events);
             if (generation === binding)
               yield* Queue.offer(rpcEvents, { ...event, t3BindingGeneration: generation });
           }
-        }).pipe(
-          Effect.catchCause((cause) =>
-            generation === binding ? Queue.failCause(rpcEvents, cause) : Effect.void,
+        },
+        (effect, _source, generation) =>
+          effect.pipe(
+            Effect.catchCause((cause) =>
+              generation === binding ? Queue.failCause(rpcEvents, cause) : Effect.void,
+            ),
+            Effect.forkIn(scope),
           ),
-          Effect.forkIn(scope),
-        );
+      );
       if (opened.shared) yield* forwardConnection(opened.connection, binding);
       const sharedCommand = (record: PiRpcRecord) =>
         !opened.shared || PI_SHARED_COMMANDS.has(String(record.type))
@@ -930,6 +933,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       const bridgeInputs = new Set<string>();
 
       let noticeSequence = 0;
+      // Pi RPC event handling stays untraced, including streaming updates.
       const emitNotice = Effect.fnUntraced(function* (message: string, level: string = "warning") {
         const at = yield* DateTime.now;
         const nativeItemId = `${input.providerSessionId}:notice:${noticeSequence++}`;
@@ -961,11 +965,12 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         });
       });
 
-      const updateProviderSession = (
-        status: OrchestrationV2ProviderSession["status"],
-        lastError: string | null = sessionEntity.lastError,
-      ) =>
-        Effect.gen(function* () {
+      const updateProviderSession =
+        /* Pi RPC events include streaming deltas; avoid a span for each update. */
+        Effect.fnUntraced(function* (
+          status: OrchestrationV2ProviderSession["status"],
+          lastError: string | null = sessionEntity.lastError,
+        ) {
           const updatedAt = yield* DateTime.now;
           sessionEntity = { ...sessionEntity, status, lastError, updatedAt };
           yield* emit({
@@ -975,12 +980,13 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           });
         });
 
-      const updateProviderThread = (
-        state: PiThreadState,
-        patch: Partial<OrchestrationV2ProviderThread>,
-        retainedNativeTurnIds?: ReadonlyArray<string>,
-      ) =>
-        Effect.gen(function* () {
+      const updateProviderThread =
+        /* Pi RPC events include streaming deltas; avoid a span for each update. */
+        Effect.fnUntraced(function* (
+          state: PiThreadState,
+          patch: Partial<OrchestrationV2ProviderThread>,
+          retainedNativeTurnIds?: ReadonlyArray<string>,
+        ) {
           const updatedAt = yield* DateTime.now;
           state.providerThread = { ...state.providerThread, ...patch, updatedAt };
           yield* emit({
@@ -1082,8 +1088,9 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
        * update (0.84.2+). Emit it on the running turn only when the total
        * changes, so the meter moves live without a burst of no-op updates.
        */
-      const reportLiveUsage = (turn: ActivePiTurn, usage: unknown) =>
-        Effect.gen(function* () {
+      const reportLiveUsage =
+        /* Pi RPC events include streaming deltas; avoid a span for each update. */
+        Effect.fnUntraced(function* (turn: ActivePiTurn, usage: unknown) {
           const usedTokens = nonNegativeInteger(usage, "totalTokens");
           if (
             usedTokens === undefined ||
@@ -1175,6 +1182,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           },
         });
 
+      // Pi RPC event handling stays untraced, including streaming updates.
       const emitProviderRetry = Effect.fnUntraced(function* (
         turn: ActivePiTurn,
         providerRetry: PiProviderRetryState,
@@ -1204,6 +1212,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       const compactionNativeItemId = (turn: ActivePiTurn): string =>
         `compaction:${turn.providerTurn.id}:${turn.nextItemOrdinal}`;
 
+      // Pi RPC event handling stays untraced, including streaming updates.
       const emitCompaction = Effect.fnUntraced(function* (
         turn: ActivePiTurn,
         compaction: PiCompactionState,
@@ -1241,8 +1250,13 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
 
       // ── streaming text / reasoning ────────────────────────
 
-      const emitStreamItem = (turn: ActivePiTurn, item: PiStreamItemState, streaming: boolean) =>
-        Effect.gen(function* () {
+      const emitStreamItem =
+        /* Pi RPC events include streaming deltas; avoid a span for each update. */
+        Effect.fnUntraced(function* (
+          turn: ActivePiTurn,
+          item: PiStreamItemState,
+          streaming: boolean,
+        ) {
           const emittedAt = yield* DateTime.now;
           const base = baseItemFields(turn, item.nativeItemId, item.startedAt, emittedAt);
           yield* emitItemNode(
@@ -1312,8 +1326,9 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           });
         });
 
-      const scheduleStreamFlush = (turn: ActivePiTurn, item: PiStreamItemState) =>
-        Effect.gen(function* () {
+      const scheduleStreamFlush =
+        /* Pi RPC events include streaming deltas; avoid a span for each update. */
+        Effect.fnUntraced(function* (turn: ActivePiTurn, item: PiStreamItemState) {
           if (item.flushScheduled || item.completed) return;
           item.flushScheduled = true;
           yield* Effect.sleep(Duration.millis(STREAM_FLUSH_MS)).pipe(
@@ -1327,6 +1342,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           );
         });
 
+      // Pi RPC event handling stays untraced, including streaming updates.
       const streamItemFor = Effect.fnUntraced(function* (
         turn: ActivePiTurn,
         kind: PiStreamItemState["kind"],
@@ -1371,6 +1387,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       // Indexed blocks reconcile legacy cumulative snapshots with modern deltas.
       // Adjacent text blocks are paragraphs, not separate answers. Only a native
       // tool/work boundary splits a segment (no wording or length heuristics).
+      // Pi RPC event handling stays untraced, including streaming updates.
       const appendAssistantDeltas = Effect.fnUntraced(function* (
         turn: ActivePiTurn,
         deltas: ReadonlyArray<PiAssistantContentDelta>,
@@ -1397,6 +1414,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         }
       });
 
+      // Pi RPC event handling stays untraced, including streaming updates.
       const emitClaudeTrace = Effect.fnUntraced(function* (
         turn: ActivePiTurn,
         contentIndex: number,
@@ -1432,6 +1450,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         }
       });
 
+      // Pi RPC event handling stays untraced, including streaming updates.
       const reconcileAssistantSnapshot = Effect.fnUntraced(function* (
         turn: ActivePiTurn,
         message: unknown,
@@ -1461,6 +1480,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
 
       // ── tools ─────────────────────────────────────────────
 
+      // Pi RPC event handling stays untraced, including streaming updates.
       const emitToolItem = Effect.fnUntraced(function* (
         turn: ActivePiTurn,
         event: PiRpcRecord,
@@ -1594,6 +1614,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
        * visible in T3's shared subagent UI without inventing a child thread.
        * Unknown or changed result shapes stay ordinary dynamic tool output.
        */
+      // Pi RPC event handling stays untraced, including streaming updates.
       const emitSubagentTasks = Effect.fnUntraced(function* (
         turn: ActivePiTurn,
         toolCallId: string,
@@ -1686,55 +1707,59 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
 
       // ── extension UI prompts ──────────────────────────────
 
-      const cancelPrompt = (pending: PendingPiPrompt, resolvedAt: DateTime.Utc) =>
-        Effect.gen(function* () {
-          if (pending.expirationFiber !== null) yield* Fiber.interrupt(pending.expirationFiber);
-          yield* connection
-            .send({
-              type: "extension_ui_response",
-              id: pending.nativeRequestId,
-              cancelled: true,
-            })
-            .pipe(Effect.ignore);
-          pending.runtimeRequest = {
-            ...pending.runtimeRequest,
+      const cancelPrompt = Effect.fn("DulliAdapter.cancelPrompt")(function* (
+        pending: PendingPiPrompt,
+        resolvedAt: DateTime.Utc,
+      ) {
+        if (pending.expirationFiber !== null) yield* Fiber.interrupt(pending.expirationFiber);
+        yield* connection
+          .send({
+            type: "extension_ui_response",
+            id: pending.nativeRequestId,
+            cancelled: true,
+          })
+          .pipe(Effect.ignore);
+        pending.runtimeRequest = {
+          ...pending.runtimeRequest,
+          status: "cancelled",
+          resolvedAt,
+        };
+        yield* emit({
+          type: "runtime_request.updated",
+          driver: DULLI_PROVIDER,
+          threadId: pending.node.threadId,
+          runtimeRequest: pending.runtimeRequest,
+        });
+        yield* emit({
+          type: "node.updated",
+          driver: DULLI_PROVIDER,
+          node: { ...pending.node, status: "cancelled", completedAt: resolvedAt },
+        });
+        yield* emit({
+          type: "turn_item.updated",
+          driver: DULLI_PROVIDER,
+          turnItem: {
+            ...pending.turnItem,
             status: "cancelled",
-            resolvedAt,
-          };
-          yield* emit({
-            type: "runtime_request.updated",
-            driver: DULLI_PROVIDER,
-            threadId: pending.node.threadId,
-            runtimeRequest: pending.runtimeRequest,
-          });
-          yield* emit({
-            type: "node.updated",
-            driver: DULLI_PROVIDER,
-            node: { ...pending.node, status: "cancelled", completedAt: resolvedAt },
-          });
-          yield* emit({
-            type: "turn_item.updated",
-            driver: DULLI_PROVIDER,
-            turnItem: {
-              ...pending.turnItem,
-              status: "cancelled",
-              completedAt: resolvedAt,
-              updatedAt: resolvedAt,
-            },
-          });
+            completedAt: resolvedAt,
+            updatedAt: resolvedAt,
+          },
         });
+      });
 
-      const cancelPendingPrompts = (resolvedAt: DateTime.Utc) =>
-        Effect.gen(function* () {
-          const pending = Array.from(pendingPrompts.values());
-          pendingPrompts.clear();
-          yield* Effect.forEach(pending, (prompt) => cancelPrompt(prompt, resolvedAt), {
-            discard: true,
-          });
+      const cancelPendingPrompts = Effect.fn("DulliAdapter.cancelPendingPrompts")(function* (
+        resolvedAt: DateTime.Utc,
+      ) {
+        const pending = Array.from(pendingPrompts.values());
+        pendingPrompts.clear();
+        yield* Effect.forEach(pending, (prompt) => cancelPrompt(prompt, resolvedAt), {
+          discard: true,
         });
+      });
 
       yield* Effect.addFinalizer(() => DateTime.now.pipe(Effect.flatMap(cancelPendingPrompts)));
 
+      // Pi RPC event handling stays untraced, including streaming updates.
       const handleExtensionUiRequest = Effect.fnUntraced(function* (event: PiRpcRecord) {
         const method = recordString(event, "method");
         const nativeRequestId = recordString(event, "id");
@@ -1958,6 +1983,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         }
       });
 
+      // Pi RPC event handling stays untraced, including streaming updates.
       const emitExtensionError = Effect.fnUntraced(function* (event: PiRpcRecord) {
         const state = threadState;
         const turn = state?.activeTurn ?? null;
@@ -2025,7 +2051,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
        * returned so orchestration can roll back runs that fell off it.
        * Pure bookkeeping: failures degrade to the synthetic refs.
        */
-      const captureTurnTreeRefs = Effect.fnUntraced(function* (
+      const captureTurnTreeRefs = Effect.fn("DulliAdapter.captureTurnTreeRefs")(function* (
         timeoutMs = PI_REQUEST_TIMEOUT_MS,
       ): Effect.fn.Return<PiTurnTreeRefs | null> {
         const cursorWasStale = leafCursorStale;
@@ -2075,7 +2101,10 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         };
       });
 
-      const finalizeTurn = Effect.fnUntraced(function* (state: PiThreadState, readUsage = true) {
+      const finalizeTurn = Effect.fn("DulliAdapter.finalizeTurn")(function* (
+        state: PiThreadState,
+        readUsage = true,
+      ) {
         const turn = state.activeTurn;
         if (turn === null) return;
         state.activeTurn = null;
@@ -2226,7 +2255,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         );
       };
 
-      const stopPendingWake = Effect.fnUntraced(function* (wake: PiWake) {
+      const stopPendingWake = Effect.fn("DulliAdapter.stopPendingWake")(function* (wake: PiWake) {
         if (pendingWake !== wake || threadState !== wake.state || closed) return;
         pendingWake = null;
         stopRequested = true;
@@ -2234,6 +2263,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         yield* connection.terminate;
       });
 
+      // Pi RPC event handling stays untraced, including streaming updates.
       const handleSessionEvent = Effect.fnUntraced(function* (event: PiRpcRecord) {
         if (!sharedReady) {
           startupEvents.push(event);
@@ -2967,7 +2997,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
 
       // ── session runtime ───────────────────────────────────
 
-      const registerThread = Effect.fnUntraced(function* (
+      const registerThread = Effect.fn("DulliAdapter.registerThread")(function* (
         threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput,
         publish = true,
       ) {
@@ -3206,7 +3236,9 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         return providerThread;
       });
 
-      const applySelection = Effect.fnUntraced(function* (modelSelection: ModelSelection) {
+      const applySelection = Effect.fn("DulliAdapter.applySelection")(function* (
+        modelSelection: ModelSelection,
+      ) {
         const thinking = getModelSelectionStringOptionValue(modelSelection, "reasoning");
         if (modelSelection.model === PI_INHERIT_MODEL_SLUG) {
           // Returning to "Pi default" after an explicit pick has to replay the
@@ -3304,7 +3336,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         }
       });
 
-      const resolvePromptPayload = Effect.fnUntraced(function* (
+      const resolvePromptPayload = Effect.fn("DulliAdapter.resolvePromptPayload")(function* (
         text: string,
         attachments: ReadonlyArray<ChatAttachment>,
       ) {
@@ -3408,8 +3440,8 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             ...turnInput,
             message: { ...turnInput.message, text: "/compact" },
           }),
-        startTurn: (turnInput) =>
-          Effect.gen(function* () {
+        startTurn: Effect.fn("DulliAdapter.startTurn")(
+          function* (turnInput) {
             if (rollbackBarrier !== null)
               return yield* protocolError("Cannot start a Pi turn during rollback");
             const state = threadState;
@@ -3599,20 +3631,23 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             // and extension commands may block on user dialogs indefinitely.
             // Rejections therefore return later as id-less response records
             // handled by the event pump.
-          }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapter.ProviderAdapterTurnStartError({
-                  driver: DULLI_PROVIDER,
-                  threadId: turnInput.threadId,
-                  providerThreadId: turnInput.providerThread.id,
-                  runId: turnInput.runId,
-                  cause,
-                }),
+          },
+          (effect, turnInput) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterTurnStartError({
+                    driver: DULLI_PROVIDER,
+                    threadId: turnInput.threadId,
+                    providerThreadId: turnInput.providerThread.id,
+                    runId: turnInput.runId,
+                    cause,
+                  }),
+              ),
             ),
-          ),
-        steerTurn: (steerInput: ProviderAdapter.ProviderAdapterV2SteerInput) =>
-          Effect.gen(function* () {
+        ),
+        steerTurn: Effect.fn("DulliAdapter.steerTurn")(
+          function* (steerInput: ProviderAdapter.ProviderAdapterV2SteerInput) {
             const turn = threadState?.activeTurn ?? null;
             if (turn === null || turn.providerTurn.id !== steerInput.providerTurnId) {
               return yield* protocolError(`Pi turn ${steerInput.providerTurnId} is not active`);
@@ -3663,19 +3698,22 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                 turn.settleProbeGeneration += 1;
               }),
             );
-          }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapter.ProviderAdapterSteerRunError({
-                  driver: DULLI_PROVIDER,
-                  providerThreadId: steerInput.providerThread.id,
-                  providerTurnId: steerInput.providerTurnId,
-                  cause,
-                }),
+          },
+          (effect, steerInput) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterSteerRunError({
+                    driver: DULLI_PROVIDER,
+                    providerThreadId: steerInput.providerThread.id,
+                    providerTurnId: steerInput.providerTurnId,
+                    cause,
+                  }),
+              ),
             ),
-          ),
-        interruptTurn: (interruptInput) =>
-          Effect.gen(function* () {
+        ),
+        interruptTurn: Effect.fn("DulliAdapter.interruptTurn")(
+          function* (interruptInput) {
             const turn = threadState?.activeTurn ?? null;
             // Stop on a settled turn: Pi runs nothing between prompts, so
             // nothing of that turn is left to stop.
@@ -3718,19 +3756,22 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             yield* request({ type: "abort" }).pipe(
               Effect.tapError(() => Effect.sync(() => (turn.interrupted = false))),
             );
-          }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapter.ProviderAdapterInterruptError({
-                  driver: DULLI_PROVIDER,
-                  providerThreadId: interruptInput.providerThread.id,
-                  providerTurnId: interruptInput.providerTurnId,
-                  cause,
-                }),
+          },
+          (effect, interruptInput) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterInterruptError({
+                    driver: DULLI_PROVIDER,
+                    providerThreadId: interruptInput.providerThread.id,
+                    providerTurnId: interruptInput.providerTurnId,
+                    cause,
+                  }),
+              ),
             ),
-          ),
-        respondToRuntimeRequest: (requestInput) =>
-          Effect.gen(function* () {
+        ),
+        respondToRuntimeRequest: Effect.fn("DulliAdapter.respondToRuntimeRequest")(
+          function* (requestInput) {
             const pending = pendingPrompts.get(String(requestInput.requestId));
             if (pending === undefined) {
               return yield* protocolError(
@@ -3792,19 +3833,22 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                 updatedAt: resolvedAt,
               },
             });
-          }).pipe(
-            sessionEventPermit.withPermits(1),
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapter.ProviderAdapterRuntimeRequestResponseError({
-                  driver: DULLI_PROVIDER,
-                  requestId: requestInput.requestId,
-                  cause,
-                }),
+          },
+          (effect, requestInput) =>
+            effect.pipe(
+              sessionEventPermit.withPermits(1),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterRuntimeRequestResponseError({
+                    driver: DULLI_PROVIDER,
+                    requestId: requestInput.requestId,
+                    cause,
+                  }),
+              ),
             ),
-          ),
-        readThreadSnapshot: (snapshotInput) =>
-          Effect.gen(function* () {
+        ),
+        readThreadSnapshot: Effect.fn("DulliAdapter.readThreadSnapshot")(
+          function* (snapshotInput) {
             const state = threadState;
             const boundNativeId = state?.providerThread.nativeThreadRef?.nativeId;
             const wantedNativeId = snapshotInput.providerThread.nativeThreadRef?.nativeId;
@@ -3860,18 +3904,21 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
               messages,
               runtimeRequests: [],
             };
-          }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapter.ProviderAdapterReadThreadSnapshotError({
-                  driver: DULLI_PROVIDER,
-                  providerThreadId: snapshotInput.providerThread.id,
-                  cause,
-                }),
+          },
+          (effect, snapshotInput) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterReadThreadSnapshotError({
+                    driver: DULLI_PROVIDER,
+                    providerThreadId: snapshotInput.providerThread.id,
+                    cause,
+                  }),
+              ),
             ),
-          ),
-        rollbackThread: (rollbackInput) =>
-          Effect.gen(function* () {
+        ),
+        rollbackThread: Effect.fn("DulliAdapter.rollbackThread")(
+          function* (rollbackInput) {
             if (opened.shared)
               return yield* protocolError(
                 "Rollback is not available in a chat shared with the terminal.",
@@ -3990,19 +4037,22 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                   if (rollbackBarrier === barrier) rollbackBarrier = null;
                 }),
             );
-          }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapter.ProviderAdapterRollbackThreadError({
-                  driver: DULLI_PROVIDER,
-                  providerThreadId: rollbackInput.providerThread.id,
-                  checkpointId: rollbackInput.target.checkpointId,
-                  cause,
-                }),
+          },
+          (effect, rollbackInput) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                    driver: DULLI_PROVIDER,
+                    providerThreadId: rollbackInput.providerThread.id,
+                    checkpointId: rollbackInput.target.checkpointId,
+                    cause,
+                  }),
+              ),
             ),
-          ),
-        forkThread: (forkInput) =>
-          Effect.gen(function* () {
+        ),
+        forkThread: Effect.fn("DulliAdapter.forkThread")(
+          function* (forkInput) {
             if (opened.shared)
               return yield* protocolError(
                 "Fork is not available in a chat shared with the terminal.",
@@ -4106,16 +4156,19 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
               },
               false,
             );
-          }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapter.ProviderAdapterForkThreadError({
-                  driver: DULLI_PROVIDER,
-                  providerThreadId: forkInput.sourceProviderThread.id,
-                  cause,
-                }),
+          },
+          (effect, forkInput) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterForkThreadError({
+                    driver: DULLI_PROVIDER,
+                    providerThreadId: forkInput.sourceProviderThread.id,
+                    cause,
+                  }),
+              ),
             ),
-          ),
+        ),
       };
       return runtime;
     }),

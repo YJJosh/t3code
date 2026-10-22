@@ -22,8 +22,8 @@ const encodeEnvelope = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown)
 
 export const makeFactory = Effect.gen(function* () {
   const service = yield* Service.DulliBackgroundTerminals;
-  const factory: DulliBridgeFactory = (context) =>
-    Effect.gen(function* () {
+  const factory: DulliBridgeFactory = Effect.fn("DulliBackgroundTerminalBridge.makeBridge")(
+    function* (context) {
       let token: symbol | null = null;
       let managerId: string | null = null;
       let sequence = 0;
@@ -33,22 +33,21 @@ export const makeFactory = Effect.gen(function* () {
         Deferred.Deferred<DulliBackgroundTerminalControlResult, DulliBackgroundTerminalControlError>
       >();
       const error = (message: string) => new DulliBackgroundTerminalControlError({ message });
-      const reset = () =>
-        Effect.gen(function* () {
-          managerId = `dulli-session-${yield* randomUuidV4}`;
-          sequence = 1;
-          running.clear();
-          return decode({
-            contractVersion: 1,
-            managerId,
-            sequence: 1,
-            timestamp: DateTime.formatIso(yield* DateTime.now),
-            kind: "snapshot",
-            snapshot: { terminals: [], replay: true },
-          });
+      const reset = Effect.fn("DulliBackgroundTerminalBridge.reset")(function* () {
+        managerId = `dulli-session-${yield* randomUuidV4}`;
+        sequence = 1;
+        running.clear();
+        return decode({
+          contractVersion: 1,
+          managerId,
+          sequence: 1,
+          timestamp: DateTime.formatIso(yield* DateTime.now),
+          kind: "snapshot",
+          snapshot: { terminals: [], replay: true },
         });
-      const control = (input: DulliBackgroundTerminalControlInput) =>
-        Effect.gen(function* () {
+      });
+      const control = Effect.fn("DulliBackgroundTerminalBridge.control")(
+        function* (input: DulliBackgroundTerminalControlInput) {
           if (token === null) return yield* error("The Dulli session has stopped.");
           if (input.action !== "replay" && input.managerId !== managerId) {
             return yield* error("The selected terminal belongs to a stale Dulli process.");
@@ -114,70 +113,62 @@ export const makeFactory = Effect.gen(function* () {
           );
           if (result.action !== input.action || !result.success)
             return yield* error(result.error ?? "Dulli rejected the background-terminal control.");
-        }).pipe(
-          Effect.mapError((cause) =>
-            isControlError(cause)
-              ? cause
-              : error("Background-terminal control failed or timed out."),
-          ),
-        );
-      const stop = () =>
-        Effect.gen(function* () {
-          const current = token;
-          token = null;
-          for (const waiter of pending.values())
-            yield* Deferred.fail(waiter, error("The Dulli session stopped."));
-          pending.clear();
-          if (current !== null)
-            yield* service.unregister(context.threadId, current, yield* reset());
-        });
+        },
+        Effect.mapError((cause) =>
+          isControlError(cause) ? cause : error("Background-terminal control failed or timed out."),
+        ),
+      );
+      const stop = Effect.fn("DulliBackgroundTerminalBridge.stop")(function* () {
+        const current = token;
+        token = null;
+        for (const waiter of pending.values())
+          yield* Deferred.fail(waiter, error("The Dulli session stopped."));
+        pending.clear();
+        if (current !== null) yield* service.unregister(context.threadId, current, yield* reset());
+      });
       yield* Effect.addFinalizer(stop);
       return {
-        onStart: () =>
-          Effect.gen(function* () {
-            token = yield* service.register(
-              context.threadId,
-              { instanceId: context.instanceId, providerSessionId: context.providerSessionId },
-              control,
-            );
-            yield* service.publish(context.threadId, token, yield* reset());
-          }),
+        onStart: Effect.fn("DulliBackgroundTerminalBridge.onStart")(function* () {
+          token = yield* service.register(
+            context.threadId,
+            { instanceId: context.instanceId, providerSessionId: context.providerSessionId },
+            control,
+          );
+          yield* service.publish(context.threadId, token, yield* reset());
+        }),
         onStop: stop,
         hasPendingBackgroundWork: () => running.size > 0,
         notify: [
           {
             prefix: PREFIX,
-            handle: (payload) =>
-              Effect.gen(function* () {
-                const event = yield* decodeNotification(payload).pipe(Effect.option);
-                if (event._tag === "None" || token === null) return;
-                const value = event.value;
-                if (
-                  managerId !== null &&
-                  managerId !== value.managerId &&
-                  value.kind !== "snapshot"
-                )
-                  return;
-                if (managerId === value.managerId && value.sequence <= sequence) return;
-                managerId = value.managerId;
-                sequence = value.sequence;
-                if (value.kind === "snapshot") {
-                  running.clear();
-                  for (const terminal of value.snapshot.terminals)
-                    if (terminal.status === "running") running.add(terminal.id);
-                } else if (value.kind === "terminal_upsert") {
-                  if (value.view.status === "running") running.add(value.terminalId);
-                  else running.delete(value.terminalId);
-                } else if (value.kind === "terminal_removed") running.delete(value.terminalId);
-                if (value.kind === "control_result" && value.control.requestId) {
-                  const waiter = pending.get(value.control.requestId);
-                  if (waiter) yield* Deferred.succeed(waiter, value.control);
-                }
-                yield* service.publish(context.threadId, token, value);
-              }),
+            // Terminal notifications include high-frequency output chunks.
+            handle: Effect.fnUntraced(function* (payload) {
+              const event = yield* decodeNotification(payload).pipe(Effect.option);
+              if (event._tag === "None" || token === null) return;
+              const value = event.value;
+              if (managerId !== null && managerId !== value.managerId && value.kind !== "snapshot")
+                return;
+              if (managerId === value.managerId && value.sequence <= sequence) return;
+              managerId = value.managerId;
+              sequence = value.sequence;
+              if (value.kind === "snapshot") {
+                running.clear();
+                for (const terminal of value.snapshot.terminals)
+                  if (terminal.status === "running") running.add(terminal.id);
+              } else if (value.kind === "terminal_upsert") {
+                if (value.view.status === "running") running.add(value.terminalId);
+                else running.delete(value.terminalId);
+              } else if (value.kind === "terminal_removed") running.delete(value.terminalId);
+              if (value.kind === "control_result" && value.control.requestId) {
+                const waiter = pending.get(value.control.requestId);
+                if (waiter) yield* Deferred.succeed(waiter, value.control);
+              }
+              yield* service.publish(context.threadId, token, value);
+            }),
           },
         ],
       };
-    });
+    },
+  );
   return factory;
 });

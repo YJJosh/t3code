@@ -66,19 +66,20 @@ export const make = Effect.gen(function* () {
   // reading it spares a git process. A linked worktree or submodule has a
   // `.git` file instead; only then ask git, which would otherwise walk up into
   // a repository around the group.
-  const readRemoteUrl = (repository: string) =>
-    Effect.gen(function* () {
-      const dotGit = path.join(repository, ".git");
-      const info = yield* fileSystem.stat(dotGit);
-      if (info.type === "Directory") {
-        return parseOriginUrlFromGitConfig(
-          yield* fileSystem.readFileString(path.join(dotGit, "config")),
-        );
-      }
-      return info.type === "File"
-        ? yield* git.readConfigValue(repository, "remote.origin.url")
-        : null;
-    });
+  const readRemoteUrl = Effect.fn("ProjectMultiRepoResolver.readRemoteUrl")(function* (
+    repository: string,
+  ) {
+    const dotGit = path.join(repository, ".git");
+    const info = yield* fileSystem.stat(dotGit);
+    if (info.type === "Directory") {
+      return parseOriginUrlFromGitConfig(
+        yield* fileSystem.readFileString(path.join(dotGit, "config")),
+      );
+    }
+    return info.type === "File"
+      ? yield* git.readConfigValue(repository, "remote.origin.url")
+      : null;
+  });
 
   const remoteUrl = (repository: string) =>
     readRemoteUrl(repository).pipe(
@@ -95,27 +96,28 @@ export const make = Effect.gen(function* () {
     return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
   };
 
-  const describe = (workspaceRoot: string) =>
-    Effect.gen(function* () {
-      const members = yield* workspaces.members(workspaceRoot);
-      if (members === null) {
-        if (insideT3Home(workspaceRoot)) return NOT_A_MULTI_REPO_FOLDER;
-        return {
-          multiRepo: null,
-          nestedRepositories: yield* workspaces.nestedRepositories(workspaceRoot),
-        };
-      }
+  const describe = Effect.fn("ProjectMultiRepoResolver.describe")(function* (
+    workspaceRoot: string,
+  ) {
+    const members = yield* workspaces.members(workspaceRoot);
+    if (members === null) {
+      if (insideT3Home(workspaceRoot)) return NOT_A_MULTI_REPO_FOLDER;
       return {
-        multiRepo: {
-          members: yield* Effect.forEach(members, (member) =>
-            remoteUrl(path.join(workspaceRoot, member)).pipe(
-              Effect.map((url) => ({ path: member, remoteUrl: url })),
-            ),
-          ),
-        },
-        nestedRepositories: [],
+        multiRepo: null,
+        nestedRepositories: yield* workspaces.nestedRepositories(workspaceRoot),
       };
-    });
+    }
+    return {
+      multiRepo: {
+        members: yield* Effect.forEach(members, (member) =>
+          remoteUrl(path.join(workspaceRoot, member)).pipe(
+            Effect.map((url) => ({ path: member, remoteUrl: url })),
+          ),
+        ),
+      },
+      nestedRepositories: [],
+    };
+  });
 
   const cache = yield* Cache.makeWith<string, ProjectFolderRepositories>(describe, {
     capacity: CACHE_CAPACITY,

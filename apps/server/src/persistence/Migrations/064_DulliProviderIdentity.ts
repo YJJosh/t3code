@@ -174,56 +174,60 @@ export default Effect.gen(function* () {
   const names = new Set(tables.map((row) => row.name));
   // Bound each read even on multi-gigabyte fork logs. JSON is parsed only for rows
   // containing the exact old token; updates preserve every unrelated field.
-  const rewrite = (table: string, column: string, paths: ReadonlyArray<string>, eventLog = false) =>
-    Effect.gen(function* () {
-      if (!names.has(table)) return;
-      // review guides are WITHOUT ROWID, and use a composite key.
-      if (table === "pull_request_review_guides") {
-        const rows = yield* sql<{
-          host: string;
-          repository: string;
-          number: number;
-          guide_json: string;
-        }>`SELECT * FROM pull_request_review_guides`;
-        for (const row of rows) {
-          const parsed = yield* decodeJson(row.guide_json);
-          const next = yield* encodeJson(renamePiPaths(parsed, paths));
-          if (next !== row.guide_json)
-            yield* sql`UPDATE pull_request_review_guides SET guide_json = ${next} WHERE host = ${row.host} AND repository = ${row.repository} AND number = ${row.number}`;
-        }
-        return;
+  const rewrite = Effect.fn("DulliProviderIdentity.rewrite")(function* (
+    table: string,
+    column: string,
+    paths: ReadonlyArray<string>,
+    eventLog = false,
+  ) {
+    if (!names.has(table)) return;
+    // review guides are WITHOUT ROWID, and use a composite key.
+    if (table === "pull_request_review_guides") {
+      const rows = yield* sql<{
+        host: string;
+        repository: string;
+        number: number;
+        guide_json: string;
+      }>`SELECT * FROM pull_request_review_guides`;
+      for (const row of rows) {
+        const parsed = yield* decodeJson(row.guide_json);
+        const next = yield* encodeJson(renamePiPaths(parsed, paths));
+        if (next !== row.guide_json)
+          yield* sql`UPDATE pull_request_review_guides SET guide_json = ${next} WHERE host = ${row.host} AND repository = ${row.repository} AND number = ${row.number}`;
       }
-      let after = 0;
-      while (true) {
-        const rows = yield* sql.unsafe<{
-          rid: number;
-          value: string;
-          event_type?: string;
-          application_event_version?: number;
-        }>(
-          `SELECT rowid AS rid, ${column} AS value${eventLog ? ", event_type, application_event_version" : ""} FROM ${table} WHERE rowid > ? AND instr(${column}, '"pi"') > 0 ORDER BY rowid LIMIT 100`,
-          [after],
-        );
-        if (!rows.length) break;
-        for (const row of rows) {
-          const selected =
-            eventLog && column === "payload_json"
-              ? row.application_event_version === 2
-                ? v2IdentityEvents.has(row.event_type ?? "")
-                  ? turnItemPaths
-                  : []
-                : (v1EventPaths[row.event_type ?? ""] ?? [])
-              : paths;
-          if (!selected.length) continue;
-          const parsed = yield* decodeJson(row.value);
-          const before = yield* encodeJson(parsed);
-          const next = yield* encodeJson(renamePiPaths(parsed, selected));
-          if (next !== before)
-            yield* sql.unsafe(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`, [next, row.rid]);
-        }
-        after = rows[rows.length - 1]!.rid;
+      return;
+    }
+    let after = 0;
+    while (true) {
+      const rows = yield* sql.unsafe<{
+        rid: number;
+        value: string;
+        event_type?: string;
+        application_event_version?: number;
+      }>(
+        `SELECT rowid AS rid, ${column} AS value${eventLog ? ", event_type, application_event_version" : ""} FROM ${table} WHERE rowid > ? AND instr(${column}, '"pi"') > 0 ORDER BY rowid LIMIT 100`,
+        [after],
+      );
+      if (!rows.length) break;
+      for (const row of rows) {
+        const selected =
+          eventLog && column === "payload_json"
+            ? row.application_event_version === 2
+              ? v2IdentityEvents.has(row.event_type ?? "")
+                ? turnItemPaths
+                : []
+              : (v1EventPaths[row.event_type ?? ""] ?? [])
+            : paths;
+        if (!selected.length) continue;
+        const parsed = yield* decodeJson(row.value);
+        const before = yield* encodeJson(parsed);
+        const next = yield* encodeJson(renamePiPaths(parsed, selected));
+        if (next !== before)
+          yield* sql.unsafe(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`, [next, row.rid]);
       }
-    });
+      after = rows[rows.length - 1]!.rid;
+    }
+  });
 
   yield* sql`
     INSERT OR IGNORE INTO dulli_fork_native_threads (thread_id, provider_instance_id, session_file)

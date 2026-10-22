@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import {
   EnvironmentId,
@@ -9,8 +7,8 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { render } from "../../test/render";
+import { userEvent } from "vite-plus/test/browser";
 import { expect, it, vi } from "vite-plus/test";
 
 // Exercise panel selection across live updates; transcript RPC/rendering is independent.
@@ -65,47 +63,19 @@ function projection(waiting = false): OrchestrationV2ThreadProjection {
 }
 
 it("keeps the automatically opened agent and its draft when another agent needs input", async () => {
-  vi.useFakeTimers();
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  Object.defineProperty(Element.prototype, "getAnimations", {
-    configurable: true,
-    value: () => [],
-  });
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    },
+  await using screen = await render(
+    <AgentsPanel environmentId={EnvironmentId.make("local")} projection={projection()} />,
   );
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  const render = async (next: OrchestrationV2ThreadProjection) => {
-    await act(() =>
-      root.render(<AgentsPanel environmentId={EnvironmentId.make("local")} projection={next} />),
-    );
-    await act(() => vi.advanceTimersByTimeAsync(0));
-  };
-  try {
-    await render(projection());
-    expect(container.querySelector("[data-agent-detail]")?.getAttribute("data-agent-detail")).toBe(
-      "dulli:subagent:first",
-    );
-    const draft = container.querySelector<HTMLInputElement>('input[aria-label="Draft reply"]')!;
-    draft.value = "Keep this draft";
-    await render(projection(true));
-    expect(container.querySelector("[data-agent-detail]")?.getAttribute("data-agent-detail")).toBe(
-      "dulli:subagent:first",
-    );
-    expect(container.querySelector('input[aria-label="Draft reply"]')).toBe(draft);
-    expect(draft.value).toBe("Keep this draft");
-  } finally {
-    await act(() => root.unmount());
-    container.remove();
-    vi.unstubAllGlobals();
-    Reflect.deleteProperty(Element.prototype, "getAnimations");
-    vi.useRealTimers();
-  }
+  const detail = screen.container.querySelector("[data-agent-detail]");
+  expect(detail?.getAttribute("data-agent-detail")).toBe("dulli:subagent:first");
+  const draft = screen.container.querySelector<HTMLInputElement>(
+    'input[aria-label="Draft reply"]',
+  )!;
+  await userEvent.fill(screen.getByRole("textbox", { name: "Draft reply" }), "Keep this draft");
+  await screen.rerender(
+    <AgentsPanel environmentId={EnvironmentId.make("local")} projection={projection(true)} />,
+  );
+  expect(screen.container.querySelector("[data-agent-detail]")).toBe(detail);
+  expect(screen.container.querySelector('input[aria-label="Draft reply"]')).toBe(draft);
+  expect(draft.value).toBe("Keep this draft");
 });
