@@ -1038,11 +1038,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const macUsageDescriptions = macOptions.extendInfo as Record<string, unknown>;
       assert.equal(
         macUsageDescriptions.NSCameraUsageDescription,
-        "T3 Dulli lets commands run by terminals and coding agents use the camera.",
+        "T3 Code lets commands run by terminals and coding agents use the camera.",
       );
       assert.equal(
         macUsageDescriptions.NSMicrophoneUsageDescription,
-        "T3 Dulli lets commands run by terminals and coding agents use the microphone.",
+        "T3 Code lets commands run by terminals and coding agents use the microphone.",
       );
       assert.deepStrictEqual(macOptions.protocols, [
         { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
