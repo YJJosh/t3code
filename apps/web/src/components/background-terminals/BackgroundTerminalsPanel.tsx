@@ -182,15 +182,13 @@ export function BackgroundTerminalsPanel({
   const startTerminal = async (options: StartBackgroundTerminalOptions) => {
     setStartPending(true);
     setStartError(null);
-    try {
-      const result = await starter.start(options);
-      if ("error" in result) {
-        setStartError(result.error);
-      } else {
-        setPendingStartRequestId(result.requestId);
-      }
-    } finally {
-      setStartPending(false);
+    // start() reports every failure in its result instead of rejecting.
+    const result = await starter.start(options);
+    setStartPending(false);
+    if ("error" in result) {
+      setStartError(result.error);
+    } else {
+      setPendingStartRequestId(result.requestId);
     }
   };
 
