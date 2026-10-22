@@ -3147,7 +3147,7 @@ export const layerWsRpc = (
     }),
   );
 
-export const layerDulliWsRpc = Layer.unwrap(
+const layerDulliWsRpc = Layer.unwrap(
   Effect.gen(function* () {
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const projectService = yield* ProjectService.ProjectService;

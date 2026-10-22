@@ -1593,8 +1593,9 @@ it.effect("Workler preserves a fully qualified fetched base for comparison and G
     assert.equal(yield* read(worktree.path, ["rev-parse", "HEAD"]), fetched);
   }).pipe(
     Effect.scoped,
-    Effect.provide(ServerSettings.layerTest({ useWorklerForNewWorkspaces: true })),
-    Effect.provide(layerGitContract),
+    Effect.provide(
+      Layer.merge(layerGitContract, ServerSettings.layerTest({ useWorklerForNewWorkspaces: true })),
+    ),
   ),
 );
 
