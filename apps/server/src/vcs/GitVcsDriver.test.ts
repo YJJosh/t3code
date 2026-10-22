@@ -19,6 +19,8 @@ import { CheckpointRef, GitCommandError, VcsProcessExitError } from "@t3tools/co
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { withWorklerWorkspaceSupport } from "./WorklerGitWorkspaceDriver.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
@@ -1537,6 +1539,63 @@ it.effect("does not detect an enclosing repository through a group root or works
     yield* fs.writeFileString(path.join(ordinary, ".workler"), "copy .env\n");
     assert.isNotNull(yield* driver.detectRepository(ordinary));
   }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
+);
+
+// Local main is stale on purpose, so a missing pin of the clone's origin/main fails.
+it.effect("Workler preserves a fully qualified fetched base for comparison and GitHub", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    const workler = yield* WorklerWorkspaceService.make;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const driver = withWorklerWorkspaceSupport({ git, workler, settings, path, fileSystem: fs });
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workler-remote-base-" });
+    const read = (cwd: string, args: ReadonlyArray<string>) =>
+      git
+        .execute({ operation: "GitVcsDriver.test", cwd, args })
+        .pipe(Effect.map((result) => result.stdout.trim()));
+    const commit = (message: string) =>
+      runGit(root, [
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        message,
+      ]);
+    yield* runGit(root, ["init", "--initial-branch=main"]);
+    yield* commit("local main");
+    yield* runGit(root, ["checkout", "-b", "incoming"]);
+    yield* commit("fetched main");
+    const fetched = yield* read(root, ["rev-parse", "HEAD"]);
+    yield* runGit(root, ["checkout", "main"]);
+    yield* runGit(root, ["remote", "add", "origin", root]);
+    yield* runGit(root, ["update-ref", "refs/remotes/origin/main", fetched]);
+    const { worktree } = yield* driver.createWorktree({
+      cwd: root,
+      path: null,
+      refName: fetched,
+      newRefName: "feature/review",
+      baseRefName: "refs/remotes/origin/main",
+    });
+    assert.equal(
+      yield* read(worktree.path, ["config", "branch.feature/review.gh-merge-base"]),
+      "main",
+    );
+    assert.equal(
+      yield* read(worktree.path, ["config", "branch.feature/review.t3-merge-base-ref"]),
+      "refs/remotes/origin/main",
+    );
+    assert.equal(yield* read(worktree.path, ["rev-parse", "refs/remotes/origin/main"]), fetched);
+    assert.equal(yield* read(worktree.path, ["rev-parse", "HEAD"]), fetched);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ServerSettings.layerTest({ useWorklerForNewWorkspaces: true })),
+    Effect.provide(layerGitContract),
+  ),
 );
 
 it.effect("removing a Workler clone keeps its branch and tags in the project", () =>
