@@ -1414,6 +1414,14 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         }
       });
 
+      // Thread streams encode tool input as JSON, which rejects undefined fields.
+      const claudeTraceArgs = (trace: NonNullable<ReturnType<typeof parseClaudeCodeToolTrace>>) =>
+        trace.toolName === "Bash"
+          ? { command: trace.detail ?? "" }
+          : trace.detail === undefined
+            ? {}
+            : { detail: trace.detail };
+
       // Pi RPC event handling stays untraced, including streaming updates.
       const emitClaudeTrace = Effect.fnUntraced(function* (
         turn: ActivePiTurn,
@@ -1428,26 +1436,18 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             done: false,
           };
           turn.claudeTraces.set(contentIndex, current);
+          yield* emitToolItem(turn, { ...current, args: claudeTraceArgs(trace) }, "start");
+        }
+        if (trace.done && !current.done) {
+          current.done = true;
+          // The start trace usually comes before Claude has streamed the input.
           yield* emitToolItem(
             turn,
             {
               ...current,
-              // Thread streams encode tool input as JSON, which rejects undefined fields.
-              args:
-                trace.toolName === "Bash"
-                  ? { command: trace.detail ?? "" }
-                  : trace.detail === undefined
-                    ? {}
-                    : { detail: trace.detail },
+              args: claudeTraceArgs(trace),
+              result: { content: [{ type: "text", text: trace.detail ?? "" }] },
             },
-            "start",
-          );
-        }
-        if (trace.done && !current.done) {
-          current.done = true;
-          yield* emitToolItem(
-            turn,
-            { ...current, result: { content: [{ type: "text", text: trace.detail ?? "" }] } },
             "end",
           );
         }

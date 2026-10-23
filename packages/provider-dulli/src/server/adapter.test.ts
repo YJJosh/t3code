@@ -4583,7 +4583,7 @@ describe("Dulli fork policy", () => {
       );
       yield* fake.emit({
         type: "message_end",
-        message: { ...trace("✓ Read"), stopReason: "stop" },
+        message: { ...trace("✓ Read /tmp/a.ts"), stopReason: "stop" },
       });
       const completed = yield* takeEvent(
         (event) =>
@@ -4599,6 +4599,13 @@ describe("Dulli fork policy", () => {
             isJsonValue(event.turnItem.input),
         );
       }
+      // Pi's trace gains its detail once Claude finishes streaming the input.
+      assert.deepStrictEqual(
+        completed.type === "turn_item.updated" && completed.turnItem.type === "dynamic_tool"
+          ? completed.turnItem.input
+          : undefined,
+        { detail: "/tmp/a.ts" },
+      );
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
