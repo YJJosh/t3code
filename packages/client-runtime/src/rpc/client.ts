@@ -246,6 +246,12 @@ interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
     cause: Cause.Cause<EnvironmentRpcStreamFailure<TTag>>,
   ) => Effect.Effect<void, never, never>;
   readonly retryExpectedFailureAfter?: Duration.Input;
+  /**
+   * Resubscribes after a defect instead of ending the stream. A resumable
+   * stream re-reads from the server's durable state, so a defect caused by one
+   * bad live value (e.g. an event that failed to encode) heals itself.
+   */
+  readonly retryDefectAfter?: Duration.Input;
   readonly resubscribe?: Stream.Stream<unknown, never, never>;
 }
 
@@ -291,7 +297,7 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                 EnvironmentRpcStreamValue<TTag>,
                 EnvironmentRpcStreamFailure<TTag>
               >;
-              let expectedFailureRetries = 0;
+              let retryAttempts = 0;
               const subscribeToSession = (): Stream.Stream<A, EnvironmentRpcStreamFailure<TTag>> =>
                 Stream.suspend(() =>
                   Stream.unwrap(
@@ -305,7 +311,7 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                       const stream = mapStream(session, method(input)).pipe(
                         Stream.onFirst(() =>
                           Effect.sync(() => {
-                            expectedFailureRetries = 0;
+                            retryAttempts = 0;
                           }),
                         ),
                       );
@@ -359,25 +365,45 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                         ) {
                           return handled;
                         }
-                        const retryDelay = Duration.millis(
-                          Math.min(
-                            Duration.toMillis(options.retryExpectedFailureAfter) *
-                              2 ** expectedFailureRetries,
-                            MAX_EXPECTED_FAILURE_RETRY_DELAY_MS,
-                          ),
-                        );
-                        expectedFailureRetries += 1;
                         return handled.pipe(
-                          Stream.concat(
-                            Stream.fromEffect(Effect.sleep(retryDelay)).pipe(Stream.drain),
-                          ),
-                          Stream.concat(subscribeToSession()),
+                          Stream.concat(retryAfter(options.retryExpectedFailureAfter)),
                         );
+                      }
+                      if (
+                        options?.retryDefectAfter !== undefined &&
+                        Cause.hasDies(cause) &&
+                        !Cause.hasInterrupts(cause)
+                      ) {
+                        return Stream.fromEffect(
+                          Effect.logWarning(
+                            "Durable RPC subscription hit a defect; resubscribing.",
+                            {
+                              cause: Cause.pretty(cause),
+                              method: tag,
+                              environmentId: supervisor.target.environmentId,
+                            },
+                          ),
+                        ).pipe(Stream.drain, Stream.concat(retryAfter(options.retryDefectAfter)));
                       }
                       return Stream.failCause(cause);
                     }),
                   ),
                 );
+              // Backoff resets only once a new stream yields a value, so a failure
+              // that repeats on every resubscribe slows down instead of looping.
+              const retryAfter = (delay: Duration.Input) => {
+                const retryDelay = Duration.millis(
+                  Math.min(
+                    Duration.toMillis(delay) * 2 ** retryAttempts,
+                    MAX_EXPECTED_FAILURE_RETRY_DELAY_MS,
+                  ),
+                );
+                retryAttempts += 1;
+                return Stream.fromEffect(Effect.sleep(retryDelay)).pipe(
+                  Stream.drain,
+                  Stream.concat(subscribeToSession()),
+                );
+              };
               return subscribeToSession();
             },
           }),

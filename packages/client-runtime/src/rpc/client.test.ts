@@ -15,6 +15,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 import { RpcClientError } from "effect/rpc";
 
 import {
@@ -388,5 +389,53 @@ describe("environment RPC", () => {
         expect(expectedFailureCount).toBe(0);
         expect(observedDefects).toEqual([defect]);
       }),
+  );
+
+  it.effect("resubscribes after a defect, backing off while streams die before yielding", () =>
+    Effect.gen(function* () {
+      const defect = new Error("Failed to encode response");
+      const subscribed = yield* Queue.unbounded<number>();
+      const observedDefects: unknown[] = [];
+      let streams = 0;
+      const client = {
+        [WS_METHODS.subscribeTerminalEvents]: () => {
+          streams += 1;
+          const attempt = streams;
+          return Stream.fromEffect(Queue.offer(subscribed, attempt)).pipe(
+            Stream.drain,
+            Stream.concat(attempt < 3 ? Stream.die(defect) : Stream.never),
+          );
+        },
+      } as unknown as WsRpcProtocolClient;
+      const { activeSession, supervisor } = yield* makeHarness();
+
+      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+      const subscriptionFiber = yield* subscribeDynamicWithSession(
+        WS_METHODS.subscribeTerminalEvents,
+        () => Effect.succeed({}),
+        {
+          onDefect: (cause) =>
+            Effect.sync(() => {
+              observedDefects.push(Cause.squash(cause));
+            }),
+          retryDefectAfter: "1 second",
+        },
+      ).pipe(
+        Stream.runDrain,
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.forkChild,
+      );
+
+      expect(yield* Queue.take(subscribed)).toBe(1);
+      yield* TestClock.adjust("1 second");
+      expect(yield* Queue.take(subscribed)).toBe(2);
+      yield* TestClock.adjust("1 second");
+      expect(yield* Queue.size(subscribed)).toBe(0);
+      yield* TestClock.adjust("1 second");
+      expect(yield* Queue.take(subscribed)).toBe(3);
+      yield* Fiber.interrupt(subscriptionFiber);
+
+      expect(observedDefects).toEqual([defect, defect]);
+    }),
   );
 });

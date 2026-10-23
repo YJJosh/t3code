@@ -888,6 +888,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         onDefect: () => setStreamError("Could not synchronize the thread."),
         onExpectedFailure: (cause) => setStreamError(formatThreadError(cause)),
         retryExpectedFailureAfter: "250 millis",
+        retryDefectAfter: "1 second",
         resubscribe: foregroundResubscriptions,
       },
     ).pipe(Stream.runForEachArray(applyItems)),
