@@ -223,9 +223,12 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
   // A shared terminal can change model/thinking without touching this client's
   // persisted composer pick. Adopt a newer native selection, not an older draft.
-  const sharedThreadSelection = activeThread?.modelSelection;
-  const sharedThreadId = activeThread?.id;
-  const sharedEnvironmentId = activeThread?.environmentId;
+  // A local draft's modelSelection is the project default, not a terminal change; following it
+  // would overwrite the sticky pick of every new Dulli draft.
+  const sharedThread = isLocalDraftThread ? undefined : activeThread;
+  const sharedThreadSelection = sharedThread?.modelSelection;
+  const sharedThreadId = sharedThread?.id;
+  const sharedEnvironmentId = sharedThread?.environmentId;
   useEffect(() => {
     if (!sharedThreadSelection || !sharedThreadId || !sharedEnvironmentId) return;
     if (
