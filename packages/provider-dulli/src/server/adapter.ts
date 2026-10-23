@@ -1432,10 +1432,13 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             turn,
             {
               ...current,
+              // Thread streams encode tool input as JSON, which rejects undefined fields.
               args:
                 trace.toolName === "Bash"
                   ? { command: trace.detail ?? "" }
-                  : { detail: trace.detail },
+                  : trace.detail === undefined
+                    ? {}
+                    : { detail: trace.detail },
             },
             "start",
           );

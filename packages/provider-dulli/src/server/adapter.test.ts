@@ -62,6 +62,7 @@ const layerTest = Layer.mergeAll(
 
 const decodeJsonLine = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeJsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const isJsonValue = Schema.is(Schema.Json);
 
 const PI_INSTANCE_ID = ProviderInstanceId.make("dulli");
 const THREAD_ID = ThreadId.make("thread-pi-test");
@@ -4554,6 +4555,50 @@ describe("Dulli fork policy", () => {
           tool.turnItem.input === "git status" &&
           tool.turnItem.output === "clean",
       );
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  // Thread streams encode tool input as JSON; one undefined field ended the
+  // live subscription until the thread was reopened.
+  it.effect("Claude tool traces without detail keep JSON tool input", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const thread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, thread);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      yield* fake.emit({ type: "message_start", message: { role: "assistant" } });
+      const trace = (thinking: string) => ({
+        role: "assistant",
+        content: [{ type: "thinking", thinking, claudeCodeSyntheticTool: true }],
+      });
+      yield* fake.emit({ type: "message_update", message: trace("◌ Read") });
+      const started = yield* takeEvent(
+        (event) => event.type === "turn_item.updated" && event.turnItem.type === "dynamic_tool",
+      );
+      yield* fake.emit({
+        type: "message_end",
+        message: { ...trace("✓ Read"), stopReason: "stop" },
+      });
+      const completed = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "dynamic_tool" &&
+          event.turnItem.status === "completed",
+      );
+      for (const event of [started, completed]) {
+        assert.isTrue(
+          event.type === "turn_item.updated" &&
+            event.turnItem.type === "dynamic_tool" &&
+            event.turnItem.toolName === "Read" &&
+            isJsonValue(event.turnItem.input),
+        );
+      }
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
