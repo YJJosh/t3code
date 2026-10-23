@@ -161,4 +161,4 @@ console.log("Packaged Workler clone lifecycle passed.");`,
     await NodeFSP.rm(entryRoot, { recursive: true, force: true });
     await NodeFSP.rm(root, { recursive: true, force: true });
   }
-}, 120_000);
+});

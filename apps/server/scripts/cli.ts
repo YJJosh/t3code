@@ -11,6 +11,7 @@ import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-execu
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import rootPackageJson from "../../../package.json" with { type: "json" };
 import {
   DEVELOPMENT_ICON_OVERRIDES,
   resolveWebAssetBrandForPackageVersion,
@@ -432,7 +433,7 @@ const buildExeCmd = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Build the server as a Node single-executable (needs a Node 25.7+ host for --build-sea). The binary still resolves native packages from a node_modules tree beside it.",
+    `Build the server as a Node single-executable. Native builds require Node ${rootPackageJson.engines.node}; explicit cross-target builds need a Node 25.7+ host for --build-sea. The binary still resolves native packages from a node_modules tree beside it.`,
   ),
 );
 

@@ -261,7 +261,7 @@ const config: ExpoConfig = {
   slug: "t3-code",
   platforms: ["ios", "android"],
   scheme: dulliFork?.scheme ?? variant.scheme,
-  version: dulliFork?.versionName ?? repoEnv.T3CODE_MOBILE_VERSION ?? "2.0.0",
+  version: dulliFork?.versionName ?? repoEnv.T3CODE_MOBILE_VERSION ?? "2.1.0",
   runtimeVersion: {
     // Development manifests resolve on every launch, so avoid fingerprint's
     // expensive native-project calculation there. Preview and production stay

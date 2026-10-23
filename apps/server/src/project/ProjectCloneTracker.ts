@@ -20,6 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
@@ -71,6 +72,10 @@ export interface ProjectCloneHooks {
 }
 
 const DONE_RETENTION = "30 seconds";
+// Git prints nothing while a transfer waits on the network, and the kernel can
+// take 15+ minutes to give up on a dead connection. Without this the banner
+// keeps showing the last transfer speed as if data were still arriving.
+const STALL_AFTER = "20 seconds";
 
 function clampText(text: string, maxLength: number): string {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
@@ -181,8 +186,27 @@ export const make = Effect.gen(function* () {
         percent: update.percent,
         detail:
           update.detail === null ? null : clampText(update.detail, PROJECT_CLONE_DETAIL_MAX_LENGTH),
+        stalled: false,
       },
     })).pipe(Effect.asVoid);
+
+  const markStalled = (projectId: ProjectId) =>
+    modify(projectId, (tracked) => ({
+      ...tracked,
+      snapshot: { ...tracked.snapshot, stalled: true },
+    })).pipe(Effect.asVoid);
+
+  /** Marks the clone stalled once, then waits for git to speak again. */
+  const watchForStall = (projectId: ProjectId, pulses: Queue.Dequeue<void>) =>
+    Queue.take(pulses).pipe(
+      Effect.timeoutOption(STALL_AFTER),
+      Effect.flatMap((pulse) =>
+        Option.isSome(pulse)
+          ? Effect.void
+          : markStalled(projectId).pipe(Effect.andThen(Queue.take(pulses))),
+      ),
+      Effect.forever,
+    );
 
   const finish = Effect.fn("ProjectCloneTracker.finish")(function* (
     projectId: ProjectId,
@@ -198,11 +222,31 @@ export const make = Effect.gen(function* () {
         phase,
         endedAt,
         percent: phase === "done" ? 100 : tracked.snapshot.percent,
+        stalled: false,
         error: error === null ? null : clampText(error, PROJECT_CLONE_ERROR_MAX_LENGTH),
       },
     }));
     if (phase === "done") yield* scheduleRemoval(projectId);
   });
+
+  const cloneWatchingForStall = Effect.fn("ProjectCloneTracker.cloneWatchingForStall")(function* (
+    projectId: ProjectId,
+    tracked: TrackedClone,
+  ) {
+    const pulses = yield* Queue.sliding<void>(1);
+    yield* watchForStall(projectId, pulses).pipe(Effect.forkScoped);
+    const options = {
+      onProgress: (update: GitCloneProgressLine) =>
+        Queue.offer(pulses, undefined).pipe(Effect.andThen(progress(projectId, update))),
+      timeoutMs: null,
+    };
+    return yield* tracked.input.multiRepo
+      ? repositories.cloneMultiRepo(tracked.input.multiRepo, options)
+      : repositories.cloneRepository(
+          { remoteUrl: tracked.input.cloneUrl, destinationPath: tracked.input.destinationPath },
+          options,
+        );
+  }, Effect.scoped);
 
   /**
    * Runs in its own fiber; the tracker records the outcome through `onExit`,
@@ -211,18 +255,8 @@ export const make = Effect.gen(function* () {
    * the post-clone hook runs, so a late Cancel cannot tear down a complete
    * checkout.
    */
-  const runClone = (projectId: ProjectId, tracked: TrackedClone) => {
-    const options = {
-      onProgress: (update: GitCloneProgressLine) => progress(projectId, update),
-      timeoutMs: null,
-    };
-    const clone = tracked.input.multiRepo
-      ? repositories.cloneMultiRepo(tracked.input.multiRepo, options)
-      : repositories.cloneRepository(
-          { remoteUrl: tracked.input.cloneUrl, destinationPath: tracked.input.destinationPath },
-          options,
-        );
-    return clone.pipe(
+  const runClone = (projectId: ProjectId, tracked: TrackedClone) =>
+    cloneWatchingForStall(projectId, tracked).pipe(
       Effect.onExit((exit) =>
         Exit.isSuccess(exit)
           ? finish(projectId, "done", null)
@@ -237,8 +271,6 @@ export const make = Effect.gen(function* () {
       ),
       Effect.ignoreCause(),
     );
-  };
-
   /** Removes the partial checkout so the destination is empty again. */
   const discardCheckout = (tracked: TrackedClone) =>
     tracked.input.multiRepo
@@ -297,6 +329,7 @@ export const make = Effect.gen(function* () {
         stage: "connecting",
         percent: null,
         detail: null,
+        stalled: false,
         error: null,
         startedAt,
         endedAt: null,
@@ -401,6 +434,7 @@ export const make = Effect.gen(function* () {
           stage: "connecting",
           percent: null,
           detail: null,
+          stalled: false,
           error: null,
           startedAt,
           endedAt: null,

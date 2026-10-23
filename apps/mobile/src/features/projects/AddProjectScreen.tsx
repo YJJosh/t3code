@@ -56,7 +56,13 @@ import {
   resolveEnvironmentMachineKind,
   SourceControlProviderKind,
 } from "@t3tools/contracts";
-import { CommonActions, StackActions, useNavigation } from "@react-navigation/native";
+import {
+  CommonActions,
+  StackActions,
+  useNavigation,
+  type NavigationState,
+  type ParamListBase,
+} from "@react-navigation/native";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Platform, Pressable, View } from "react-native";
@@ -721,7 +727,10 @@ export function AddProjectSourceScreen() {
 }
 
 function openNewTaskDraft(
-  navigation: { dispatch: (action: ReturnType<typeof CommonActions.reset>) => void },
+  navigation: {
+    dispatch: (action: ReturnType<typeof CommonActions.reset>) => void;
+    getState: () => NavigationState<ParamListBase> | undefined;
+  },
   params: {
     environmentId: EnvironmentId;
     projectId: ProjectId;
@@ -730,9 +739,14 @@ function openNewTaskDraft(
     draftId?: string;
   },
 ) {
-  navigation.dispatch(
-    CommonActions.reset({ index: 0, routes: [{ name: "NewTaskDraft", params }] }),
-  );
+  const state = navigation.getState();
+  if (!state) return;
+  const threadIndex = state.routes.findLastIndex((route) => route.name === "Thread");
+  const routes = [
+    ...state.routes.slice(0, threadIndex < 0 ? state.index : threadIndex),
+    { key: uuidv4(), name: "Thread", params: { draft: params } },
+  ];
+  navigation.dispatch(CommonActions.reset({ ...state, index: routes.length - 1, routes }));
 }
 
 async function draftWithPrompt(
@@ -772,21 +786,11 @@ function useCreateProject(environment: EnvironmentOption | null) {
     if (existing) {
       await prepare?.(existing.id);
       Dialog.alert("Project already exists", existing.title);
-      navigation.dispatch(
-        CommonActions.reset({
-          index: 0,
-          routes: [
-            {
-              name: "NewTaskDraft",
-              params: {
-                environmentId: existing.environmentId,
-                projectId: existing.id,
-                title: existing.title,
-              },
-            },
-          ],
-        }),
-      );
+      openNewTaskDraft(navigation, {
+        environmentId: existing.environmentId,
+        projectId: existing.id,
+        title: existing.title,
+      });
       return;
     }
 
@@ -804,21 +808,11 @@ function useCreateProject(environment: EnvironmentOption | null) {
       return result;
     }
     await prepare?.(projectId);
-    navigation.dispatch(
-      CommonActions.reset({
-        index: 0,
-        routes: [
-          {
-            name: "NewTaskDraft",
-            params: {
-              environmentId: environment.environmentId,
-              projectId,
-              title: inferProjectTitleFromPath(workspaceRoot),
-            },
-          },
-        ],
-      }),
-    );
+    openNewTaskDraft(navigation, {
+      environmentId: environment.environmentId,
+      projectId,
+      title: inferProjectTitleFromPath(workspaceRoot),
+    });
     return result;
   };
 }

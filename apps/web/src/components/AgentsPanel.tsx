@@ -4,7 +4,8 @@ import type {
   DulliInspectorAgent,
 } from "@t3tools/client-runtime/state/dulliSubagents";
 import { formatSubagentTokenCount } from "@t3tools/client-runtime/state/dulliSubagents";
-import type { EnvironmentId, ThreadId, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { ThreadStructure } from "@t3tools/client-runtime/state/models";
 import { deriveDulliAgentInspector } from "@t3tools/client-runtime/state/dulliSubagents";
 import { Bot } from "lucide-react";
 import { observeResize } from "~/lib/observeResize";
@@ -47,7 +48,7 @@ export function AgentsPanel({
   projection,
 }: {
   environmentId: EnvironmentId;
-  projection: OrchestrationV2ThreadProjection;
+  projection: ThreadStructure;
 }) {
   const inspector = deriveDulliAgentInspector(projection);
   return (
