@@ -3,8 +3,10 @@ import { useNavigation } from "@react-navigation/native";
 import {
   agentActivityText,
   deriveDulliAgentInspector,
+  dulliRunTranscript,
   dulliTranscriptEntries,
   dulliToolPreview,
+  dulliWorkLabel,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
   type DulliInspectorAgent,
@@ -269,6 +271,8 @@ function AgentRunDetail({
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState(false);
   const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
+  const [workOpen, setWorkOpen] = useState(false);
+  const transcript = dulliRunTranscript(entries, agent);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -310,9 +314,6 @@ function AgentRunDetail({
         : "The task control could not be delivered. The child may have ended or its extension is unavailable.",
     });
   };
-  const resultAlreadyShown = entries.some(
-    (entry) => entry.kind === "assistant" && entry.text.trim() === agent.result?.trim(),
-  );
   return (
     <View className="gap-3">
       {agent.workflowName || agent.phaseTitle ? (
@@ -354,9 +355,23 @@ function AgentRunDetail({
           <Button label="Retry transcript" tone="secondary" onPress={history.refresh} />
         </View>
       ) : null}
-      {entries.map((entry) => (
-        <TranscriptRow key={entry.id} entry={entry} target={target} />
-      ))}
+      {transcript.folded && transcript.work.length > 0 ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: workOpen }}
+          onPress={() => setWorkOpen((open) => !open)}
+          className="py-2"
+        >
+          <Text className="text-sm text-foreground-muted">
+            {workOpen ? "▾" : "▸"} {dulliWorkLabel(transcript.work)}
+          </Text>
+        </Pressable>
+      ) : null}
+      {!transcript.folded || workOpen
+        ? transcript.work.map((entry) => (
+            <TranscriptRow key={entry.id} entry={entry} target={target} />
+          ))
+        : null}
       {agent.error ? (
         <View className="gap-2 rounded-xl border border-danger p-3">
           <Text className="text-xs font-t3-bold text-danger">Agent failed</Text>
@@ -364,11 +379,11 @@ function AgentRunDetail({
             {agent.error}
           </Text>
         </View>
-      ) : agent.result && !resultAlreadyShown ? (
+      ) : transcript.result ? (
         <View className="gap-2 rounded-xl border border-border bg-card p-3">
           <Text className="text-xs font-t3-bold">Final result</Text>
           <Text selectable className="text-sm">
-            {agent.result}
+            {transcript.result}
           </Text>
         </View>
       ) : null}
