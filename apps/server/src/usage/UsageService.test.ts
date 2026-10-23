@@ -2576,7 +2576,7 @@ describe("UsageService", () => {
 });
 
 describe("generic source coverage", () => {
-  it.live.each([5, 6])("imports a v%s cache into v7 without replacing its legacy file", (version) =>
+  it.live.each([5, 6])("imports a v%s cache into v9 without replacing its legacy file", (version) =>
     Effect.gen(function* () {
       const { home, settings, transcript } = yield* setup;
       yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
@@ -2607,7 +2607,7 @@ describe("generic source coverage", () => {
         const migrated = decodeUnknownJsonString(
           yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8")),
         ) as { version: number };
-        assert.strictEqual(migrated.version, 7);
+        assert.strictEqual(migrated.version, 9);
       }).pipe(Effect.provide(layerService({ prefix: "coverage-cache-upgrade", home, settings })));
     }).pipe(Effect.scoped),
   );
