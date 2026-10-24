@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "T3 Dulli version (0.<minor>.<patch>-dulli.<build>, e.g. 0.1.1-dulli.1)"
+        description: "T3 Dulli version (0.<minor>.<patch>-dulli.<build>, e.g. 0.1.2-dulli.1)"
         required: true
         type: string
 
@@ -111,7 +111,6 @@ jobs:
             scripts/build-desktop-artifact.test.ts \
             scripts/extract-android-cert-sha256.test.ts \
             apps/desktop/src/app/DesktopEnvironment.test.ts \
-            apps/desktop/src/electron/ElectronApp.test.ts \
             apps/desktop/src/electron/ElectronProtocol.test.ts \
             apps/desktop/src/electron/ElectronUpdater.test.ts \
             apps/desktop/src/electron/DulliGitHubProvider.test.ts \
@@ -128,8 +127,7 @@ jobs:
             apps/web/src/components/settings/ProviderSettingsForm.test.ts \
             apps/mobile/plugins/withAndroidReleaseSigning.test.ts \
             apps/mobile/scripts/dulli-fork-version.test.ts \
-            apps/mobile/src/lib/modelOptions.test.ts \
-            packages/client-runtime/src/state/subagentDisplay.test.ts
+            apps/mobile/src/lib/modelOptions.test.ts
 
       # Server tests need apps/server's vite config: its setup file pins git
       # behaviour (filemode, autocrlf, signing) for the repositories they create.

@@ -88,7 +88,7 @@ Example unsigned Linux artifact:
   --platform linux \
   --target AppImage \
   --arch x64 \
-  --build-version 0.1.1-dulli.1
+  --build-version 0.1.2-dulli.1
 ```
 
 `T3CODE_DESKTOP_BRAND=dulli` is the environment equivalent. Dulli package metadata always defaults its updater to prereleases from `YJJosh/t3code`; `T3CODE_DESKTOP_UPDATE_REPOSITORY` remains available for an explicit test feed override.
