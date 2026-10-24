@@ -15,8 +15,11 @@ import * as DateTime from "effect/DateTime";
 import {
   agentActivityText,
   deriveDulliAgentInspector,
+  dulliRunTranscript,
   dulliTranscriptEntries,
   dulliToolPreview,
+  dulliWorkLabel,
+  type DulliTranscriptEntry,
   workflowIsLive,
   workflowMembers,
   workflowStatus,
@@ -455,6 +458,51 @@ describe("Dulli conversation presentation", () => {
     expect(dulliTranscriptEntries(model.transcript(child))).toMatchObject([
       { kind: "tool", name: "read", live: true },
     ]);
+  });
+
+  it("folds a settled run's work between its prompt and outcome", () => {
+    const message = (id: string, text: string): DulliTranscriptEntry => ({
+      id,
+      kind: "assistant",
+      text,
+      live: false,
+    });
+    const reasoning: DulliTranscriptEntry = {
+      id: "think",
+      kind: "reasoning",
+      text: "Checking",
+      live: false,
+    };
+    const work = [message("plan", "Looking around"), reasoning, message("final", " Done. ")];
+
+    expect(dulliRunTranscript(work, { status: "completed", result: "Done.", error: null })).toEqual(
+      { work: work.slice(0, 2), result: "Done.", folded: true },
+    );
+    expect(
+      dulliRunTranscript(work, { status: "failed", result: null, error: "Crashed" }),
+    ).toMatchObject({ work, result: null, folded: true });
+    // While it runs, the work stays open and the final message is not repeated.
+    expect(dulliRunTranscript(work, { status: "running", result: "Done.", error: null })).toEqual({
+      work,
+      result: null,
+      folded: false,
+    });
+    // Without an outcome, the work is the only answer, so it stays open.
+    expect(
+      dulliRunTranscript(work, { status: "interrupted", result: null, error: null }),
+    ).toMatchObject({ work, folded: false });
+  });
+
+  it("labels folded work by its step count", () => {
+    const child = agent("child");
+    const entries = dulliTranscriptEntries([
+      item(child.id, "answer", 1),
+      tool(child.id, "first", 2, { input: "", output: "" }),
+      tool(child.id, "second", 3, { input: "", output: "" }),
+    ]);
+    expect(dulliWorkLabel(entries)).toBe("Work · 3 steps");
+    expect(dulliWorkLabel(entries.slice(0, 1))).toBe("Work · 1 step");
+    expect(dulliWorkLabel([])).toBe("Work");
   });
 
   it("does not repeat Pi's wrapped originating prompt but keeps a later quoted reply", () => {

@@ -76,98 +76,104 @@ export const DulliDriver: ProviderDriver<DulliSettings, DulliDriverEnv, Path.Pat
   usage: dulliUsageReader,
   configSchema: DulliSettings,
   defaultConfig: (): DulliSettings => decodeDulliSettings({}),
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
-    Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const pathService = yield* Path.Path;
-      const host = yield* ProviderHost.ProviderHost;
-      const { cwd } = host.paths;
-      const processEnv = yield* mergeProviderInstanceEnvironment(environment);
-      const continuationIdentity = defaultProviderContinuationIdentity({
-        driverKind: DRIVER_KIND,
-        instanceId,
-      });
-      const stampIdentity = withInstanceIdentity({
-        instanceId,
-        displayName,
-        accentColor,
-        continuationGroupKey: continuationIdentity.continuationKey,
-      });
-      const effectiveConfig = { ...config, enabled } satisfies DulliSettings;
-      const resolveMaintenance = () => Effect.succeed(MAINTENANCE);
+  create: Effect.fn("DulliDriver.create")(function* ({
+    instanceId,
+    displayName,
+    accentColor,
+    environment,
+    enabled,
+    config,
+  }) {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const pathService = yield* Path.Path;
+    const host = yield* ProviderHost.ProviderHost;
+    const { cwd } = host.paths;
+    const processEnv = yield* mergeProviderInstanceEnvironment(environment);
+    const continuationIdentity = defaultProviderContinuationIdentity({
+      driverKind: DRIVER_KIND,
+      instanceId,
+    });
+    const stampIdentity = withInstanceIdentity({
+      instanceId,
+      displayName,
+      accentColor,
+      continuationGroupKey: continuationIdentity.continuationKey,
+    });
+    const effectiveConfig = { ...config, enabled } satisfies DulliSettings;
+    const resolveMaintenance = () => Effect.succeed(MAINTENANCE);
 
-      const orchestrationAdapter = yield* DulliAdapterV2Driver.create({
-        instanceId,
-        displayName,
-        accentColor,
-        environment,
-        enabled,
-        config,
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: "Failed to build Pi orchestration adapter.",
-              cause,
-            }),
+    const orchestrationAdapter = yield* DulliAdapterV2Driver.create({
+      instanceId,
+      displayName,
+      accentColor,
+      environment,
+      enabled,
+      config,
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: "Failed to build Pi orchestration adapter.",
+            cause,
+          }),
+      ),
+    );
+    const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
+
+    const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv, cwd).pipe(
+      Effect.map(stampIdentity),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, pathService),
+    );
+
+    const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
+    const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<DulliSettings>>({
+      resolveMaintenance,
+      getSettings: snapshotSettings.getSettings,
+      streamSettings: snapshotSettings.streamSettings,
+      haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+      initialSnapshot: (settings) =>
+        buildInitialPiProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity)),
+      checkProvider,
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: "Failed to build Pi snapshot.",
+            cause,
+          }),
+      ),
+    );
+
+    yield* watchPiModelConfig({
+      agentDir: effectiveConfig.agentDir,
+      environment: processEnv,
+      onChange: snapshot.refresh.pipe(Effect.asVoid),
+    });
+
+    return {
+      instanceId,
+      driverKind: DRIVER_KIND,
+      continuationIdentity,
+      displayName,
+      accentColor,
+      enabled,
+      snapshot,
+      snapshotForCwd: (workspaceCwd) =>
+        checkPiProviderStatus(effectiveConfig, processEnv, workspaceCwd).pipe(
+          Effect.map(stampIdentity),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, pathService),
         ),
-      );
-      const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
-
-      const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv, cwd).pipe(
-        Effect.map(stampIdentity),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, pathService),
-      );
-
-      const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
-      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<DulliSettings>>({
-        resolveMaintenance,
-        getSettings: snapshotSettings.getSettings,
-        streamSettings: snapshotSettings.streamSettings,
-        haveSettingsChanged: haveProviderSnapshotSettingsChanged,
-        initialSnapshot: (settings) =>
-          buildInitialPiProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity)),
-        checkProvider,
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: "Failed to build Pi snapshot.",
-              cause,
-            }),
-        ),
-      );
-
-      yield* watchPiModelConfig({
-        agentDir: effectiveConfig.agentDir,
-        environment: processEnv,
-        onChange: snapshot.refresh.pipe(Effect.asVoid),
-      });
-
-      return {
-        instanceId,
-        driverKind: DRIVER_KIND,
-        continuationIdentity,
-        displayName,
-        accentColor,
-        enabled,
-        snapshot,
-        snapshotForCwd: (workspaceCwd) =>
-          checkPiProviderStatus(effectiveConfig, processEnv, workspaceCwd).pipe(
-            Effect.map(stampIdentity),
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            Effect.provideService(FileSystem.FileSystem, fileSystem),
-            Effect.provideService(Path.Path, pathService),
-          ),
-        orchestrationAdapter,
-        textGeneration,
-      } satisfies ProviderInstance;
-    }),
+      orchestrationAdapter,
+      textGeneration,
+    } satisfies ProviderInstance;
+  }),
 };

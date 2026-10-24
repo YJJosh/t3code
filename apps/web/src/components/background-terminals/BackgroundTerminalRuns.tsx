@@ -7,7 +7,7 @@ import {
 } from "@t3tools/client-runtime/state/background-terminals";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { ChevronRightIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { Badge } from "~/components/ui/badge";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "~/components/ui/collapsible";
@@ -142,12 +142,9 @@ interface BackgroundTerminalOutputPaneProps {
 function BackgroundTerminalOutputPane({ buffer }: BackgroundTerminalOutputPaneProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
-  const text = useMemo(() => sanitizeTerminalOutputText(buffer.text), [buffer.text]);
+  const text = sanitizeTerminalOutputText(buffer.text);
   const truncated = isBackgroundTerminalOutputTruncated(buffer);
-  const truncatedBytesLabel = useMemo(
-    () => formatBytes(backgroundTerminalTruncatedBytes(buffer)),
-    [buffer],
-  );
+  const truncatedBytesLabel = formatBytes(backgroundTerminalTruncatedBytes(buffer));
 
   useEffect(() => {
     const viewport = rootRef.current?.querySelector<HTMLElement>(
@@ -164,7 +161,8 @@ function BackgroundTerminalOutputPane({ buffer }: BackgroundTerminalOutputPanePr
     return () => viewport.removeEventListener("scroll", updateStickiness);
   }, []);
 
-  useEffect(() => {
+  // DOM measurements must follow the committed output, even when React reuses its text.
+  useLayoutEffect(() => {
     if (!stickToBottomRef.current) {
       return;
     }
@@ -174,7 +172,7 @@ function BackgroundTerminalOutputPane({ buffer }: BackgroundTerminalOutputPanePr
     if (viewport !== undefined && viewport !== null) {
       viewport.scrollTop = viewport.scrollHeight;
     }
-  }, [text]);
+  });
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1">
@@ -407,11 +405,8 @@ export function BackgroundTerminalRuns({
   onOpenTerminal,
 }: BackgroundTerminalRunsProps) {
   const { state } = useBackgroundTerminalRuntime({ environmentId, threadId, enabled });
-  const terminals = useMemo(() => selectBackgroundTerminals(state), [state]);
-  const { running, settled } = useMemo(
-    () => groupBackgroundTerminalsForRoster(terminals),
-    [terminals],
-  );
+  const terminals = selectBackgroundTerminals(state);
+  const { running, settled } = groupBackgroundTerminalsForRoster(terminals);
   if (
     !enabled ||
     environmentId === null ||

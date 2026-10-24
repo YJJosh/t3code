@@ -103,7 +103,7 @@ const make = Effect.gen(function* () {
   const identity = (value: string) => fs.realPath(value).pipe(Effect.orElseSucceed(() => null));
   const enabledInstances = Effect.gen(function* () {
     const config = yield* settings.getSettings;
-    // REVIEW: The registry enables an unconfigured default Dulli instance too.
+    // The registry enables an unconfigured default Dulli instance too.
     // Keep sharing/import and UUID recovery available without a saved settings slot;
     // an explicitly occupied or disabled slot still wins, exactly as in the registry.
     const instances: Record<string, ProviderInstanceConfig> = {
@@ -129,8 +129,8 @@ const make = Effect.gen(function* () {
         : [];
     });
   });
-  const headBranch = (dir: string) =>
-    Effect.gen(function* () {
+  const headBranch = Effect.fn("PiSessionsSync.headBranch")(
+    function* (dir: string) {
       const dotGit = path.join(dir, ".git");
       const info = yield* fs.stat(dotGit);
       let gitDir = dotGit;
@@ -144,86 +144,90 @@ const make = Effect.gen(function* () {
           .exec(yield* fs.readFileString(path.join(gitDir, "HEAD")))?.[1]
           ?.trim() ?? null
       );
-    }).pipe(Effect.orElseSucceed(() => null));
-  const reconcile = (record: PiSessionInfo, threadId: ThreadId) =>
-    Effect.gen(function* () {
-      // Capture before reading the shell; the serialized orchestrator checks all thread events.
-      const sequence = yield* sink.latestSequence({ threadId });
-      const shell = yield* projections.getThread(threadId);
-      if (shell.archivedAt !== null || shell.deletedAt !== null) return;
-      if (record.settleRev !== undefined) {
-        const link = { environmentId, threadId, sessionId: record.sessionId };
-        const baseline = Option.getOrNull(yield* baselines.get(link));
-        const t3Settled = shell.settledOverride === "settled";
-        const daemonSettled = record.settledAt !== undefined;
-        const target = settlementTarget({
-          baseline,
-          daemonRev: record.settleRev,
-          daemonSettled,
-          t3Settled,
-          imported: shell.historyOrigin === "v1_import",
+    },
+    Effect.orElseSucceed(() => null),
+  );
+  const reconcile = Effect.fn("PiSessionsSync.reconcile")(function* (
+    record: PiSessionInfo,
+    threadId: ThreadId,
+  ) {
+    // Capture before reading the shell; the serialized orchestrator checks all thread events.
+    const sequence = yield* sink.latestSequence({ threadId });
+    const shell = yield* projections.getThread(threadId);
+    if (shell.archivedAt !== null || shell.deletedAt !== null) return;
+    if (record.settleRev !== undefined) {
+      const link = { environmentId, threadId, sessionId: record.sessionId };
+      const baseline = Option.getOrNull(yield* baselines.get(link));
+      const t3Settled = shell.settledOverride === "settled";
+      const daemonSettled = record.settledAt !== undefined;
+      const target = settlementTarget({
+        baseline,
+        daemonRev: record.settleRev,
+        daemonSettled,
+        t3Settled,
+        imported: shell.historyOrigin === "v1_import",
+      });
+      if (target === null) return;
+      let revision = record.settleRev;
+      if (daemonSettled !== target || t3Settled !== target) {
+        const updated = yield* client.settle({
+          sessionId: record.sessionId,
+          settled: target,
+          ifRev: revision,
         });
-        if (target === null) return;
-        let revision = record.settleRev;
-        if (daemonSettled !== target || t3Settled !== target) {
-          const updated = yield* client.settle({
-            sessionId: record.sessionId,
-            settled: target,
-            ifRev: revision,
-          });
-          if (
-            updated?.settleRev === undefined ||
-            (daemonSettled === target && updated.settleRev !== revision)
-          )
-            return;
-          revision = updated.settleRev;
-        }
-        if (t3Settled !== target) {
-          const commandId = CommandId.make(`pi-sessions:settle:${yield* crypto.randomUUIDv4()}`);
-          yield* orchestrator.dispatch(
-            target
-              ? { type: "thread.settle", commandId, threadId, expectedSequence: sequence }
-              : {
-                  type: "thread.unsettle",
-                  commandId,
-                  threadId,
-                  reason: "user",
-                  expectedSequence: sequence,
-                },
-          );
-        }
         if (
-          baseline?.daemonRev !== revision ||
-          baseline.daemonSettled !== target ||
-          baseline.t3Settled !== target
-        )
-          yield* baselines.set(link, {
-            daemonRev: revision,
-            daemonSettled: target,
-            t3Settled: target,
-          });
-      }
-      if (record.branch && shell.worktreePath && record.branch !== shell.branch) {
-        const dir = yield* identity(shell.worktreePath);
-        if (
-          dir === null ||
-          dir !== (yield* identity(record.cwd)) ||
-          (yield* headBranch(dir)) !== record.branch
+          updated?.settleRev === undefined ||
+          (daemonSettled === target && updated.settleRev !== revision)
         )
           return;
-        // Re-read after our own settlement dispatch, but retain the originally observed branch.
-        const branchSequence = yield* sink.latestSequence({ threadId });
-        const current = yield* projections.getThread(threadId);
-        if (current.branch !== shell.branch || current.worktreePath !== shell.worktreePath) return;
-        yield* orchestrator.dispatch({
-          type: "thread.metadata.update",
-          commandId: CommandId.make(`pi-sessions:branch:${yield* crypto.randomUUIDv4()}`),
-          threadId,
-          branch: record.branch,
-          expectedSequence: branchSequence,
-        });
+        revision = updated.settleRev;
       }
-    });
+      if (t3Settled !== target) {
+        const commandId = CommandId.make(`pi-sessions:settle:${yield* crypto.randomUUIDv4()}`);
+        yield* orchestrator.dispatch(
+          target
+            ? { type: "thread.settle", commandId, threadId, expectedSequence: sequence }
+            : {
+                type: "thread.unsettle",
+                commandId,
+                threadId,
+                reason: "user",
+                expectedSequence: sequence,
+              },
+        );
+      }
+      if (
+        baseline?.daemonRev !== revision ||
+        baseline.daemonSettled !== target ||
+        baseline.t3Settled !== target
+      )
+        yield* baselines.set(link, {
+          daemonRev: revision,
+          daemonSettled: target,
+          t3Settled: target,
+        });
+    }
+    if (record.branch && shell.worktreePath && record.branch !== shell.branch) {
+      const dir = yield* identity(shell.worktreePath);
+      if (
+        dir === null ||
+        dir !== (yield* identity(record.cwd)) ||
+        (yield* headBranch(dir)) !== record.branch
+      )
+        return;
+      // Re-read after our own settlement dispatch, but retain the originally observed branch.
+      const branchSequence = yield* sink.latestSequence({ threadId });
+      const current = yield* projections.getThread(threadId);
+      if (current.branch !== shell.branch || current.worktreePath !== shell.worktreePath) return;
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`pi-sessions:branch:${yield* crypto.randomUUIDv4()}`),
+        threadId,
+        branch: record.branch,
+        expectedSequence: branchSequence,
+      });
+    }
+  });
   let latest: ReadonlyArray<PiSessionInfo> | null = null;
   let offset = 0;
   let recoveredHomes = "";
@@ -450,49 +454,48 @@ const make = Effect.gen(function* () {
     return result;
   });
   let started = false;
-  const start: PiSessionsSync["Service"]["start"] = () =>
-    Effect.gen(function* () {
-      if (started) return;
-      started = true;
-      const changes = yield* settings.subscribeChanges;
-      let watching: Fiber.Fiber<void> | undefined;
-      const configure = Effect.gen(function* () {
-        const enabled = (yield* enabledInstances).some(
-          (instance) => instance.config.piSessions && instance.config.shareWithTerminal,
-        );
-        if (!enabled && watching) {
-          yield* Fiber.interrupt(watching);
-          watching = undefined;
-          latest = null;
-        }
-        if (enabled && !watching)
-          watching = yield* client
-            .watch((records) =>
-              Effect.gen(function* () {
-                latest = records;
-                yield* enqueue;
-              }),
-            )
-            .pipe(Effect.forkScoped);
-        yield* enqueue;
-      });
-      yield* forkParked(
-        Effect.gen(function* () {
-          yield* configure.pipe(Effect.ignore);
-          yield* Stream.runForEach(changes, () => configure.pipe(Effect.ignore));
-        }),
+  const start: PiSessionsSync["Service"]["start"] = Effect.fn("PiSessionsSync.start")(function* () {
+    if (started) return;
+    started = true;
+    const changes = yield* settings.subscribeChanges;
+    let watching: Fiber.Fiber<void> | undefined;
+    const configure = Effect.gen(function* () {
+      const enabled = (yield* enabledInstances).some(
+        (instance) => instance.config.piSessions && instance.config.shareWithTerminal,
       );
-      yield* Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
-        ["thread.settled", "thread.unsettled", "provider-session.detached"].includes(event.type)
-          ? enqueue
-          : Effect.void,
-      ).pipe(Effect.ignore, Effect.forkScoped);
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          started = false;
-        }),
-      );
+      if (!enabled && watching) {
+        yield* Fiber.interrupt(watching);
+        watching = undefined;
+        latest = null;
+      }
+      if (enabled && !watching)
+        watching = yield* client
+          .watch((records) =>
+            Effect.gen(function* () {
+              latest = records;
+              yield* enqueue;
+            }),
+          )
+          .pipe(Effect.forkScoped);
+      yield* enqueue;
     });
+    yield* forkParked(
+      Effect.gen(function* () {
+        yield* configure.pipe(Effect.ignore);
+        yield* Stream.runForEach(changes, () => configure.pipe(Effect.ignore));
+      }),
+    );
+    yield* Stream.runForEach(orchestrator.streamDomainEvents, (event) =>
+      ["thread.settled", "thread.unsettled", "provider-session.detached"].includes(event.type)
+        ? enqueue
+        : Effect.void,
+    ).pipe(Effect.ignore, Effect.forkScoped);
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        started = false;
+      }),
+    );
+  });
   return PiSessionsSync.of({ refresh, start, drain: worker.drain });
 });
 export const layer = Layer.effect(PiSessionsSync, make);

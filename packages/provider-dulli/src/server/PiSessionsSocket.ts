@@ -40,7 +40,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Scoped local connection. Disconnecting never kills the daemon's Pi. */
-export const connectPiSessions = Effect.fn(function* (socketPath: string, role: "control" | "rpc") {
+export const connectPiSessions = Effect.fn("PiSessionsSocket.connect")(function* (
+  socketPath: string,
+  role: "control" | "rpc",
+) {
   const connected = yield* Deferred.make<void, PiSessionsSocketError>();
   const events = yield* Queue.unbounded<Record<string, unknown>>();
   const pending = new Map<number, Deferred.Deferred<unknown, PiSessionsSocketError>>();
@@ -128,20 +131,22 @@ export const connectPiSessions = Effect.fn(function* (socketPath: string, role: 
           ? cause
           : new PiSessionsSocketError({ detail: "Failed to write to Pi sessions.", cause }),
     });
-  const request = (message: object, timeoutMs = 3_000) =>
-    Effect.gen(function* () {
-      const id = ++sequence;
-      const waiter = yield* Deferred.make<unknown, PiSessionsSocketError>();
-      pending.set(id, waiter);
-      const response = yield* send({ ...message, id }).pipe(
-        Effect.andThen(Deferred.await(waiter)),
-        Effect.timeoutOption(timeoutMs),
-        Effect.ensuring(Effect.sync(() => pending.delete(id))),
-      );
-      if (Option.isNone(response))
-        return yield* new PiSessionsSocketError({ detail: "Pi sessions request timed out." });
-      return response.value;
-    });
+  const request = Effect.fn("PiSessionsSocket.request")(function* (
+    message: object,
+    timeoutMs = 3_000,
+  ) {
+    const id = ++sequence;
+    const waiter = yield* Deferred.make<unknown, PiSessionsSocketError>();
+    pending.set(id, waiter);
+    const response = yield* send({ ...message, id }).pipe(
+      Effect.andThen(Deferred.await(waiter)),
+      Effect.timeoutOption(timeoutMs),
+      Effect.ensuring(Effect.sync(() => pending.delete(id))),
+    );
+    if (Option.isNone(response))
+      return yield* new PiSessionsSocketError({ detail: "Pi sessions request timed out." });
+    return response.value;
+  });
   const ready = yield* Deferred.await(connected).pipe(Effect.timeoutOption("1 second"));
   if (Option.isNone(ready))
     return yield* new PiSessionsSocketError({ detail: "Pi sessions connection timed out." });

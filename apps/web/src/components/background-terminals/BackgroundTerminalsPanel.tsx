@@ -4,7 +4,7 @@ import {
 } from "@t3tools/client-runtime/state/background-terminals";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { ChevronLeft, Plus, Terminal } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/checkbox";
@@ -142,11 +142,8 @@ export function BackgroundTerminalsPanel({
   const rootRef = useRef<HTMLDivElement>(null);
   const splitLayout = useSplitInspectorLayout(rootRef);
   const { state } = useBackgroundTerminalRuntime({ environmentId, threadId, enabled });
-  const terminals = useMemo(() => selectBackgroundTerminals(state), [state]);
-  const { running, settled } = useMemo(
-    () => groupBackgroundTerminalsForRoster(terminals),
-    [terminals],
-  );
+  const terminals = selectBackgroundTerminals(state);
+  const { running, settled } = groupBackgroundTerminalsForRoster(terminals);
   const runningCount = running.length;
   const [selectedId, setSelectedId] = useState<string | null>(selectedTerminalId);
   const [formOpen, setFormOpen] = useState(false);
@@ -159,39 +156,39 @@ export function BackgroundTerminalsPanel({
     managerId: state.managerId,
   });
 
-  // Follow whoever opened the surface with a terminal (strip row, /terminal).
-  useEffect(() => {
+  const [previousSelectedTerminalId, setPreviousSelectedTerminalId] = useState(selectedTerminalId);
+  if (selectedTerminalId !== previousSelectedTerminalId) {
+    setPreviousSelectedTerminalId(selectedTerminalId);
     if (selectedTerminalId !== null) setSelectedId(selectedTerminalId);
-  }, [selectedTerminalId]);
+  }
 
-  // A terminal started here is selected as soon as Dulli acknowledges it with an id.
-  useEffect(() => {
-    if (pendingStartRequestId === null) return;
-    const result = selectBackgroundTerminalControlResult(state, pendingStartRequestId);
-    if (result === null) return;
+  // Control results arrive through runtime state; apply each result before painting.
+  const startResult =
+    pendingStartRequestId === null
+      ? null
+      : selectBackgroundTerminalControlResult(state, pendingStartRequestId);
+  if (startResult !== null) {
     setPendingStartRequestId(null);
-    if (result.success && result.terminalId !== undefined) {
-      setSelectedId(result.terminalId);
+    if (startResult.success && startResult.terminalId !== undefined) {
+      setSelectedId(startResult.terminalId);
       setFormOpen(false);
-    } else if (!result.success) {
-      setStartError(result.error ?? "Dulli could not start the terminal.");
+    } else if (!startResult.success) {
+      setStartError(startResult.error ?? "Dulli could not start the terminal.");
     }
-  }, [pendingStartRequestId, state]);
+  }
 
   const selected = selectedId === null ? null : (state.terminals.get(selectedId) ?? null);
 
   const startTerminal = async (options: StartBackgroundTerminalOptions) => {
     setStartPending(true);
     setStartError(null);
-    try {
-      const result = await starter.start(options);
-      if ("error" in result) {
-        setStartError(result.error);
-      } else {
-        setPendingStartRequestId(result.requestId);
-      }
-    } finally {
-      setStartPending(false);
+    // start() reports every failure in its result instead of rejecting.
+    const result = await starter.start(options);
+    setStartPending(false);
+    if ("error" in result) {
+      setStartError(result.error);
+    } else {
+      setPendingStartRequestId(result.requestId);
     }
   };
 

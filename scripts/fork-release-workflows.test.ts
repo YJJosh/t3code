@@ -76,9 +76,9 @@ function resolvePreviousTag(currentTag: string, tags: ReadonlyArray<string>) {
 }
 
 const hardDisabledWorkflows = {
-  "cursor-hygiene-webhook.yml": ["forward"],
   "deploy-relay.yml": ["deploy_relay"],
-  "desktop-macos-preview.yml": ["build", "publish", "cleanup"],
+  "desktop-macos-preview.yml": ["build"],
+  "desktop-macos-preview-publish.yml": ["resolve", "build", "publish", "cleanup"],
   "mobile-eas-preview.yml": ["preview"],
   "mobile-android-apk.yml": ["mirror"],
   "mobile-eas-production.yml": ["production"],

@@ -2,7 +2,7 @@ import Constants from "expo-constants";
 import { Image } from "expo-image";
 import { View } from "react-native";
 
-import { AppText as Text } from "./AppText";
+import { AppText as Text } from "./ui/AppText";
 import { resolveMobileBrandName } from "../lib/mobileBranding";
 import { T3_CODE_BRAND_MARK_SOURCE } from "./brandAssets";
 

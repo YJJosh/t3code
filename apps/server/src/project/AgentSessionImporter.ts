@@ -261,6 +261,26 @@ const make = Effect.gen(function* () {
               providerSessionId: thread.providerSessionId,
             });
           }
+          const driver = ProviderDriverKind.make(thread.source);
+          const persistRuntime = runtimes.upsert(
+            {
+              threadId,
+              providerName: driver,
+              providerInstanceId: thread.providerInstanceId,
+              adapterKey: driver,
+              runtimeMode: DEFAULT_RUNTIME_MODE,
+              status: "stopped",
+              lastSeenAt: thread.updatedAt,
+              resumeCursor:
+                thread.source === "dulli"
+                  ? { piSessionId: thread.providerSessionId, piSessionFile: source.filePath }
+                  : thread.source === "codex"
+                    ? { threadId: thread.providerSessionId }
+                    : { threadId, resume: thread.providerSessionId },
+              runtimePayload: { cwd: project.workspaceRoot },
+            },
+            { onConflict: "ignore" },
+          );
           const existing = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
           if (Option.isSome(existing)) {
             if (existing.value.thread.projectId !== input.projectId) {
@@ -279,15 +299,16 @@ const make = Effect.gen(function* () {
             ) {
               return yield* new AgentSessionThreadModifiedError({ threadId });
             }
+            yield* persistRuntime;
             yield* runtimes.recordImportedTranscript({ threadId, source });
             return true;
           }
 
-          const driver = ProviderDriverKind.make(thread.source);
           const nativeId = thread.source === "dulli" ? source.filePath : thread.providerSessionId;
           const model = thread.model ?? DEFAULT_MODEL_BY_PROVIDER[driver] ?? DEFAULT_MODEL;
           const providerThreadId = idAllocator.derive.providerThread({
             driver,
+            providerInstanceId: thread.providerInstanceId,
             nativeThreadId: nativeId,
           });
           const createdAt = dateTime(thread.createdAt);
@@ -351,26 +372,8 @@ const make = Effect.gen(function* () {
             updatedAt,
           };
 
-          yield* runtimes.upsert(
-            {
-              threadId,
-              providerName: driver,
-              providerInstanceId: thread.providerInstanceId,
-              adapterKey: driver,
-              runtimeMode: DEFAULT_RUNTIME_MODE,
-              status: "stopped",
-              lastSeenAt: thread.updatedAt,
-              resumeCursor:
-                thread.source === "dulli"
-                  ? { piSessionId: thread.providerSessionId, piSessionFile: source.filePath }
-                  : thread.source === "codex"
-                    ? { threadId: thread.providerSessionId }
-                    : { threadId, resume: thread.providerSessionId },
-              runtimePayload: { cwd: project.workspaceRoot },
-            },
-            { onConflict: "ignore" },
-          );
-          yield* eventSink.write({
+          const committed = yield* eventSink.write({
+            unlessNativeThreadOwned: providerThread,
             events: [
               {
                 id: EventId.make(`${IMPORT_EVENT_PREFIX}:thread:${threadId}:created`),
@@ -394,6 +397,8 @@ const make = Effect.gen(function* () {
               },
             ],
           });
+          if (committed.length === 0) return null;
+          yield* persistRuntime;
           yield* runtimes.recordImportedTranscript({ threadId, source });
           return true;
         }).pipe(
@@ -405,10 +410,10 @@ const make = Effect.gen(function* () {
             }).pipe(Effect.as(false)),
           ),
         );
-        if (imported) {
+        if (imported === true) {
           importedThreadIds.add(threadId);
           importedCount += 1;
-        } else {
+        } else if (imported === false) {
           skippedCount += 1;
         }
       }),

@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import { makeSubagentFactory } from "../../provider/dulli/DulliSubagentBridge.ts";
 import * as DulliSubagents from "../../provider/dulli/DulliSubagents.ts";
+import { hasPendingDulliSubagentHistory } from "../../persistence/Migrations/DulliLegacyActivities.ts";
 import * as EventSink from "../EventSink.ts";
 
 export interface DulliLegacyTaskRow {
@@ -46,64 +47,66 @@ const decodeAgent = Schema.decodeUnknownEffect(Schema.fromJsonString(Orchestrati
  * deduplication, sanitization and the 1,000 item / 2 MiB per-run ring stay identical.
  * No RPC or session lifecycle is started. Only the final bounded records are saved,
  * not thousands of historical intermediate states in the v2 event log. */
-export const makeDulliLegacyTaskProjector = Effect.fn(function* (
-  thread: OrchestrationV2AppThread,
-  existing: ReadonlyArray<OrchestrationV2Subagent> = [],
-) {
-  const ids = yield* IdAllocator.IdAllocatorV2;
-  const controls = yield* DulliSubagents.DulliSubagents;
-  const events = new Map<string, OrchestrationV2DomainEvent>();
-  const agents = new Map<string, OrchestrationV2Subagent>();
-  const dulli = existing.filter((agent) => agent.driver === "dulli");
-  const existingIds = new Set<string>(dulli.map((agent) => agent.id));
-  const existingRuns = new Set(dulli.map((agent) => agent.nativeTaskRef?.nativeId));
-  let skippedRows = 0;
-  let acceptedRows = 0;
-  // REVIEW: synthetic run events reuse the run's native manager id. The bridge's
-  // terminal flush keys the pending reply by manager; "legacy" projected it twice.
-  const managerIds = new Map<string, string>();
-  const bridge = yield* makeSubagentFactory({
-    controls,
-    write: (event) =>
-      Effect.sync(() => {
-        if (event.type !== "dulli-run.updated" && event.type !== "dulli-transcript.updated") return;
-        const payload = event.payload;
-        if (
-          existingIds.has(payload.id) ||
-          ("nodeId" in payload && payload.nodeId && existingIds.has(payload.nodeId))
-        )
-          return;
-        const id = EventId.make(`migration:dulli:history:${event.type}:${payload.id}`);
-        if (event.type === "dulli-run.updated")
-          agents.set(event.payload.nativeTaskRef!.nativeId!, event.payload);
-        events.set(id, { ...event, id });
-      }),
-    read: () => Effect.succeed({ subagents: existing, turnItems: [] }),
-  })({
-    threadId: thread.id,
-    providerSessionId: ProviderSessionId.make(`migration:dulli:${thread.id}`),
-    instanceId: thread.providerInstanceId,
-    settings: {
-      enabled: true,
-      binaryPath: "pi",
-      profile: "coder",
-      agentDir: "",
-      piSessions: false,
-      shareWithTerminal: false,
-      customModels: [],
-    },
-    environment: {},
-    cwd: "",
-    modelSelection: thread.modelSelection,
-    ids,
-    getProviderThread: () => null,
-    getActiveTurn: () => null,
-    rpc: { send: () => Effect.void, request: () => Effect.void },
-    emit: () => Effect.void,
-  });
-  const notify = (value: unknown) => bridge.notify![0]!.handle(encodeJson(value), {});
-  const accept = (row: DulliLegacyTaskRow) =>
-    Effect.gen(function* () {
+export const makeDulliLegacyTaskProjector = Effect.fn("DulliLegacySubagentHistory.makeProjector")(
+  function* (
+    thread: OrchestrationV2AppThread,
+    existing: ReadonlyArray<OrchestrationV2Subagent> = [],
+  ) {
+    const ids = yield* IdAllocator.IdAllocatorV2;
+    const controls = yield* DulliSubagents.DulliSubagents;
+    const events = new Map<string, OrchestrationV2DomainEvent>();
+    const agents = new Map<string, OrchestrationV2Subagent>();
+    const dulli = existing.filter((agent) => agent.driver === "dulli");
+    const existingIds = new Set<string>(dulli.map((agent) => agent.id));
+    const existingRuns = new Set(dulli.map((agent) => agent.nativeTaskRef?.nativeId));
+    let skippedRows = 0;
+    let acceptedRows = 0;
+    // Synthetic run events reuse the run's native manager id. The bridge's
+    // terminal flush keys the pending reply by manager; "legacy" projected it twice.
+    const managerIds = new Map<string, string>();
+    const bridge = yield* makeSubagentFactory({
+      controls,
+      write: (event) =>
+        Effect.sync(() => {
+          if (event.type !== "dulli-run.updated" && event.type !== "dulli-transcript.updated")
+            return;
+          const payload = event.payload;
+          if (
+            existingIds.has(payload.id) ||
+            ("nodeId" in payload && payload.nodeId && existingIds.has(payload.nodeId))
+          )
+            return;
+          const id = EventId.make(`migration:dulli:history:${event.type}:${payload.id}`);
+          if (event.type === "dulli-run.updated")
+            agents.set(event.payload.nativeTaskRef!.nativeId!, event.payload);
+          events.set(id, { ...event, id });
+        }),
+      read: () => Effect.succeed({ subagents: existing, turnItems: [] }),
+    })({
+      threadId: thread.id,
+      providerSessionId: ProviderSessionId.make(`migration:dulli:${thread.id}`),
+      instanceId: thread.providerInstanceId,
+      settings: {
+        enabled: true,
+        binaryPath: "pi",
+        profile: "coder",
+        agentDir: "",
+        piSessions: false,
+        shareWithTerminal: false,
+        customModels: [],
+      },
+      environment: {},
+      cwd: "",
+      modelSelection: thread.modelSelection,
+      ids,
+      getProviderThread: () => null,
+      getActiveTurn: () => null,
+      rpc: { send: () => Effect.void, request: () => Effect.void },
+      emit: () => Effect.void,
+    });
+    const notify = (value: unknown) => bridge.notify![0]!.handle(encodeJson(value), {});
+    // Legacy rows are folded in a tight replay loop without per-row spans.
+    const accept = Effect.fnUntraced(function* (row: DulliLegacyTaskRow) {
       if (row.payload_json.length > 8 * 1024 * 1024) {
         skippedRows++;
         return;
@@ -222,30 +225,31 @@ export const makeDulliLegacyTaskProjector = Effect.fn(function* (
               : row.created_at,
         });
     });
-  const finish = Effect.gen(function* () {
-    // No process survived the v1 cutover. Incomplete histories must not show live
-    // controls forever. Do not use wall-clock time: replay freshness is native time.
-    for (const [runId, agent] of agents) {
-      if (terminal(agent.status)) continue;
-      yield* notify({
-        contractVersion: 1,
-        managerId: managerIds.get(runId) ?? "legacy",
-        sequence: acceptedRows + 1,
-        timestamp: DateTime.formatIso(agent.updatedAt),
-        runId,
-        kind: "interrupted",
-        view: { runId, state: "interrupted" },
-      });
-    }
-    return { events: [...events.values()], acceptedRows, skippedRows, runs: agents.size };
-  });
-  return { accept, finish };
-});
+    const finish = Effect.gen(function* () {
+      // No process survived the v1 cutover. Incomplete histories must not show live
+      // controls forever. Do not use wall-clock time: replay freshness is native time.
+      for (const [runId, agent] of agents) {
+        if (terminal(agent.status)) continue;
+        yield* notify({
+          contractVersion: 1,
+          managerId: managerIds.get(runId) ?? "legacy",
+          sequence: acceptedRows + 1,
+          timestamp: DateTime.formatIso(agent.updatedAt),
+          runId,
+          kind: "interrupted",
+          view: { runId, state: "interrupted" },
+        });
+      }
+      return { events: [...events.values()], acceptedRows, skippedRows, runs: agents.size };
+    });
+    return { accept, finish };
+  },
+);
 
 /** Also repairs threads whose ordinary transcript was imported by older builds.
  * Invoked on demand or by background hydration, never by shell reconciliation. */
-export const importDulliLegacySubagentHistory = (threadId?: ThreadId) =>
-  Effect.gen(function* () {
+export const importDulliLegacySubagentHistory = Effect.fn("DulliLegacySubagentHistory.import")(
+  function* (threadId?: ThreadId) {
     const sql = yield* SqlClient.SqlClient;
     const sink = yield* EventSink.EventSinkV2;
     if (!(yield* sql`SELECT 1 FROM dulli_fork_migrations WHERE name = 'fork-detected'`).length)
@@ -262,6 +266,9 @@ export const importDulliLegacySubagentHistory = (threadId?: ThreadId) =>
       AND NOT EXISTS (SELECT 1 FROM dulli_fork_migrations m
         WHERE m.name = 'subagent-history-v1:' || t.thread_id)
   `;
+    const hasActivities =
+      (yield* sql`SELECT 1 FROM sqlite_master
+      WHERE type = 'table' AND name = 'projection_thread_activities'`).length > 0;
     const totals = { runs: 0, transcriptItems: 0, acceptedRows: 0, skippedRows: 0 };
     for (const row of threads) {
       const stored = yield* sql<{ payload_json: string }>`SELECT payload_json
@@ -276,7 +283,8 @@ export const importDulliLegacySubagentHistory = (threadId?: ThreadId) =>
       const existing = yield* Effect.forEach(stored, (entry) => decodeAgent(entry.payload_json));
       const projector = yield* makeDulliLegacyTaskProjector(thread, existing);
       let cursor: DulliLegacyTaskRow | undefined;
-      while (true) {
+      let more = hasActivities;
+      while (more) {
         const rows = yield* sql<DulliLegacyTaskRow>`
           SELECT activity_id, kind, created_at, payload_json, sequence
           FROM projection_thread_activities WHERE thread_id = ${row.thread_id}
@@ -285,7 +293,7 @@ export const importDulliLegacySubagentHistory = (threadId?: ThreadId) =>
               (${cursor?.created_at ?? ""}, ${cursor?.sequence ?? -1}, ${cursor?.activity_id ?? ""})
           ORDER BY created_at, coalesce(sequence, -1), activity_id LIMIT 100`;
         for (const activity of rows) yield* projector.accept(activity);
-        if (rows.length < 100) break;
+        more = rows.length === 100;
         cursor = rows.at(-1);
         yield* Effect.yieldNow;
       }
@@ -333,5 +341,16 @@ export const importDulliLegacySubagentHistory = (threadId?: ThreadId) =>
       );
       yield* Effect.yieldNow;
     }
+    // Migration 063 kept the V1 activities only for this import.
+    if (threadId === undefined && hasActivities && !(yield* hasPendingDulliSubagentHistory)) {
+      yield* sql`DROP TABLE IF EXISTS projection_thread_activities`;
+    }
     return totals;
-  }).pipe(Effect.provide(Layer.mergeAll(IdAllocator.layer, DulliSubagents.layer)), Effect.scoped);
+  },
+  // Preserve the optional call argument when inferring the transform's argument tuple.
+  (effect, ..._args: [threadId?: ThreadId]) =>
+    effect.pipe(
+      Effect.provide(Layer.mergeAll(IdAllocator.layer, DulliSubagents.layer)),
+      Effect.scoped,
+    ),
+);

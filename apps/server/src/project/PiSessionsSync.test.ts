@@ -33,7 +33,7 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as PiSessionsSettlement from "../persistence/PiSessionsSettlement.ts";
-import migration from "../persistence/Migrations/065_PiSessionsSettlement.ts";
+import migration from "../persistence/Migrations/dulli/003_PiSessionsSettlement.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AgentSessionImporter from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
@@ -168,7 +168,7 @@ const fixture = Effect.gen(function* () {
       Layer.mergeAll(
         PiSessionTranscript.layer,
         PiSessionsSettlement.layer,
-        // REVIEW: Default-instance discovery must use only this sandbox home in tests.
+        // Default-instance discovery must use only this sandbox home in tests.
         Layer.succeed(HostProcess.Environment, { PI_CODING_AGENT_DIR: agentDir }),
         IdAllocator.layer,
         Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
@@ -323,7 +323,7 @@ const fixture = Effect.gen(function* () {
 });
 const layer = Layer.mergeAll(NodeServices.layer, NodeSqliteClient.layer({ filename: ":memory:" }));
 it.layer(layer)("PiSessionsSync", (it) => {
-  // REVIEW: A fresh/reset default instance shares terminal chats without an explicit slot.
+  // A fresh/reset default instance shares terminal chats without an explicit slot.
   it.effect("imports with an unconfigured default, but respects a disabled or occupied slot", () =>
     Effect.gen(function* () {
       const f = yield* fixture;

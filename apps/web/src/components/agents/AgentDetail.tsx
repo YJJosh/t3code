@@ -1,7 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  dulliRunTranscript,
   dulliTranscriptEntries,
   dulliToolPreview,
+  dulliWorkLabel,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
   type DulliInspectorAgent,
@@ -27,8 +29,10 @@ import {
   Workflow,
   Wrench,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide";
+import { useEffect, useId, useRef, useState } from "react";
 import ChatMarkdown from "~/components/ChatMarkdown";
+import { MorphIcon } from "~/components/MorphIcon";
 import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Textarea } from "~/components/ui/textarea";
@@ -348,22 +352,22 @@ export function AgentDetail({
       input: { threadId, subagentId: agent.source.id, revision },
     }),
   );
-  const items = useMemo(
-    () =>
-      dulliTranscriptEntries(
-        transcriptFor(agent.source, history.data?.items),
-        agent.prompt,
-        isActiveSubagentStatus(agent.status),
-      ),
-    [transcriptFor, agent.source, agent.prompt, agent.status, history.data?.items],
+  const active = isActiveSubagentStatus(agent.status);
+  const items = dulliTranscriptEntries(
+    transcriptFor(agent.source, history.data?.items),
+    agent.prompt,
+    active,
   );
-  const resultAlreadyShown = items.some(
-    (item) => item.kind === "assistant" && item.text.trim() === agent.result?.trim(),
-  );
+  const transcript = dulliRunTranscript(items, agent);
+  const [workOpen, setWorkOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const contentRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    // Only a live run follows its newest output. A settled run reads from the
+    // prompt down, and opening its work must not jump to the end.
+    if (!active) return;
+    stick.current = true;
     const viewport = scrollRef.current?.querySelector<HTMLElement>(
       '[data-slot="scroll-area-viewport"]',
     );
@@ -382,7 +386,7 @@ export function AgentDetail({
       viewport.removeEventListener("scroll", track);
       stop();
     };
-  }, []);
+  }, [active]);
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-agent-detail={agent.id}>
       <header className="shrink-0 border-b border-border/65 px-3 py-2.5">
@@ -448,9 +452,22 @@ export function AgentDetail({
               </Button>
             </div>
           ) : null}
-          {items.map((entry) => (
-            <TranscriptEntry key={entry.id} entry={entry} environmentId={environmentId} />
-          ))}
+          {transcript.folded && transcript.work.length > 0 ? (
+            <button
+              type="button"
+              aria-expanded={workOpen}
+              onClick={() => setWorkOpen((open) => !open)}
+              className="flex cursor-pointer select-none items-center gap-1 self-start rounded-md px-1 text-sm leading-relaxed text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+            >
+              <span>{dulliWorkLabel(transcript.work)}</span>
+              <MorphIcon className="size-3.5" icon={workOpen ? ChevronDown : ChevronRight} />
+            </button>
+          ) : null}
+          {!transcript.folded || workOpen
+            ? transcript.work.map((entry) => (
+                <TranscriptEntry key={entry.id} entry={entry} environmentId={environmentId} />
+              ))
+            : null}
           {agent.error ? (
             <section className="rounded-lg border border-destructive/35 bg-destructive/5 px-3 py-2.5">
               <h3 className="mb-1 text-xs font-semibold text-destructive">Agent failed</h3>
@@ -461,7 +478,7 @@ export function AgentDetail({
                 parseRawHtml={false}
               />
             </section>
-          ) : agent.result && !resultAlreadyShown ? (
+          ) : transcript.result ? (
             <section className="rounded-lg border border-border/65 px-3 py-2.5">
               <h3 className="mb-1 flex items-center gap-2 text-xs font-semibold">
                 <Bot aria-hidden className="size-3.5" />
@@ -470,7 +487,7 @@ export function AgentDetail({
               <ChatMarkdown
                 cwd={undefined}
                 environmentId={environmentId}
-                text={agent.result}
+                text={transcript.result}
                 parseRawHtml={false}
               />
             </section>

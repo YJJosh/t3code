@@ -12,7 +12,7 @@ type TimelineTurnItem = Pick<OrchestrationV2TurnItem, "type" | "runId" | "nodeId
   readonly id?: OrchestrationV2TurnItem["id"];
 };
 
-// REVIEW: Dulli persists child transcripts as turn items for on-demand inspectors,
+// Dulli persists child transcripts as turn items for on-demand inspectors,
 // not parent conversation rows. Use their stable slot namespace so snapshots and
 // live client reductions agree without changing any upstream provider's timeline.
 export function isDulliSubagentTranscriptItem(item: {
@@ -83,7 +83,6 @@ export function isOrchestrationV2TurnItemVisible(input: {
   });
 }
 
-/** Index once when reconciling a whole timeline after run/attempt state changes. */
 export function createOrchestrationV2TurnItemVisibility(input: {
   readonly runs: ReadonlyArray<TimelineRun>;
   readonly attempts: ReadonlyArray<TimelineRunAttempt>;

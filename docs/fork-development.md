@@ -4,7 +4,11 @@ T3 Dulli is the branded distribution maintained in `YJJosh/t3code`. This reposit
 
 ## Upstream baseline
 
-The current upstream baseline is stable **v0.1.0**, not a nightly or preview release. Upstream updates retain the fork's Pi provider, subagent/workflow inspector, background-terminal controls, Workler defaults, and Dulli identities and release channels. Resolve overlapping changes at their integration boundaries rather than replacing fork-owned features with upstream equivalents.
+The current upstream baseline is stable **v0.1.2**, not a nightly or preview release. Upstream updates retain the fork's Pi provider, subagent/workflow inspector, background-terminal controls, Workler defaults, and Dulli identities and release channels. Resolve overlapping changes at their integration boundaries rather than replacing fork-owned features with upstream equivalents.
+
+## Fork database migrations
+
+Add fork migrations to `Migrations/dulli/` and the `dulli_sql_migrations` ledger, never upstream's `effect_sql_migrations` sequence. They run after upstream migrations and must be idempotent and safe to run after any upstream migration.
 
 ## Identity and coexistence
 
@@ -62,7 +66,7 @@ The remaining T3 tools (projects, thread records, schedules, PRs, secrets, attac
 
 ## Local development with Portler
 
-With Node 24, repository dependencies, and [Portler](https://yjjosh.github.io/Portler/) installed, run these commands from the checkout root:
+With Node 26.12.1 (the version in `package.json` `engines`), repository dependencies, and [Portler](https://yjjosh.github.io/Portler/) installed, run these commands from the checkout root:
 
 ```sh
 portler up -d
@@ -84,7 +88,7 @@ Example unsigned Linux artifact:
   --platform linux \
   --target AppImage \
   --arch x64 \
-  --build-version 0.1.0-dulli.1
+  --build-version 0.1.2-dulli.1
 ```
 
 `T3CODE_DESKTOP_BRAND=dulli` is the environment equivalent. Dulli package metadata always defaults its updater to prereleases from `YJJosh/t3code`; `T3CODE_DESKTOP_UPDATE_REPOSITORY` remains available for an explicit test feed override.
@@ -95,7 +99,7 @@ Install the newest x86_64 Dulli prerelease, or provide a tag:
 
 ```sh
 scripts/dulli/install-linux-appimage.sh
-scripts/dulli/install-linux-appimage.sh v0.1.0-dulli.1
+scripts/dulli/install-linux-appimage.sh v0.1.2-dulli.1
 ```
 
 The helper downloads only a `T3-Dulli-*-x86_64.AppImage` prerelease, installs an isolated launcher and icon, and writes `t3-dulli-clean.desktop`. Future updates use the app's built-in updater. There is intentionally no restart helper that finds or kills processes by pattern.
@@ -111,9 +115,9 @@ The helper downloads only a `T3-Dulli-*-x86_64.AppImage` prerelease, installs an
 - publishes the GitHub prerelease and updater manifests; and
 - publishes the same server and web client as `@yjosh/t3` through npm trusted publishing.
 
-The first release on upstream v0.1.0 is `0.1.0-dulli.1`. Increase the build counter for
-fork changes; reset it when the upstream minor or patch increases. Normal SemVer ordering
-upgrades `0.0.45-dulli.N` installs to `0.1.0-dulli.1`.
+The Dulli version follows the upstream baseline: the first release on upstream v0.1.2 is
+`0.1.2-dulli.1`. Increase the build counter for fork changes; reset it when the upstream minor
+or patch increases. Normal SemVer ordering upgrades `0.1.1-dulli.N` installs to `0.1.2-dulli.1`.
 
 Retain `0.0.40-pi.1` and its assets: older `0.0.36-pi.2` installs discover only the `pi`
 channel and need that migration-aware release before discovering `dulli`. Its updater permits

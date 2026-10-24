@@ -9,7 +9,6 @@ type AddProjectDestinationRouteParams = {
   readonly repositoryName?: string | string[];
   readonly sourceEnvironmentId?: string | string[];
   readonly sourceProjectId?: string | string[];
-  /** A prompt link's prompt, for the draft the clone opens. */
   readonly prompt?: string | string[];
 };
 

@@ -24,8 +24,8 @@ export const makePiTextGeneration = Effect.fn("makeDulliTextGeneration")(functio
     ...environment,
     PI_CODING_AGENT_DIR: resolvePiAgentDir(paths, { agentDir: settings.agentDir, environment }),
   };
-  const run: TextGenerationOperations.Runner = (request) =>
-    Effect.gen(function* () {
+  const run: TextGenerationOperations.Runner = Effect.fn("DulliTextGeneration.run")(
+    function* (request) {
       const model = request.modelSelection.model.trim();
       if (parsePiModelSlug(model) === null) {
         return yield* new TextGenerationError({
@@ -72,29 +72,32 @@ export const makePiTextGeneration = Effect.fn("makeDulliTextGeneration")(functio
         "Dulli",
         result.stdout.trim(),
       );
-    }).pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      Effect.timeoutOrElse({
-        duration: 180_000,
-        orElse: () =>
-          Effect.fail(
-            new TextGenerationError({
-              operation: request.operation,
-              detail: "Dulli text generation timed out.",
-            }),
-          ),
-      }),
-      Effect.mapError((cause) =>
-        isTextGenerationError(cause)
-          ? cause
-          : new TextGenerationError({
-              operation: request.operation,
-              detail: "Dulli text generation failed.",
-              cause,
-            }),
+    },
+    (effect, request) =>
+      effect.pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.timeoutOrElse({
+          duration: 180_000,
+          orElse: () =>
+            Effect.fail(
+              new TextGenerationError({
+                operation: request.operation,
+                detail: "Dulli text generation timed out.",
+              }),
+            ),
+        }),
+        Effect.mapError((cause) =>
+          isTextGenerationError(cause)
+            ? cause
+            : new TextGenerationError({
+                operation: request.operation,
+                detail: "Dulli text generation failed.",
+                cause,
+              }),
+        ),
+        Effect.scoped,
       ),
-      Effect.scoped,
-    );
+  );
   return TextGenerationOperations.fromRunner(
     "DulliTextGeneration",
     TextGenerationOperations.withoutInvestigation("Dulli", run),

@@ -105,27 +105,30 @@ export const make = Effect.gen(function* () {
 
   const exists = (file: string) => fileSystem.exists(file).pipe(Effect.orElseSucceed(() => false));
 
-  const members: MultiRepoWorkspaces["Service"]["members"] = (cwd) =>
-    Effect.gen(function* () {
-      // Most projects are repositories; two stats keep them off the Workler worker.
-      const [hasConfig, hasGit] = yield* Effect.all([
-        exists(path.join(cwd, WORKLER_CONFIG_FILE)),
-        exists(path.join(cwd, ".git")),
-      ]);
-      if (!hasConfig || hasGit) return null;
-      const group = yield* workler.inspectGroup(cwd).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("Workler could not inspect a possible project group", {
-            cwd,
-            detail: error.detail,
-          }).pipe(Effect.as(null)),
-        ),
-      );
-      return group?.projects ?? null;
-    });
+  const members: MultiRepoWorkspaces["Service"]["members"] = Effect.fn(
+    "MultiRepoWorkspaces.members",
+  )(function* (cwd) {
+    // Most projects are repositories; two stats keep them off the Workler worker.
+    const [hasConfig, hasGit] = yield* Effect.all([
+      exists(path.join(cwd, WORKLER_CONFIG_FILE)),
+      exists(path.join(cwd, ".git")),
+    ]);
+    if (!hasConfig || hasGit) return null;
+    const group = yield* workler.inspectGroup(cwd).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Workler could not inspect a possible project group", {
+          cwd,
+          detail: error.detail,
+        }).pipe(Effect.as(null)),
+      ),
+    );
+    return group?.projects ?? null;
+  });
 
   // Like git, a `.git` in `cwd` or any folder above it puts `cwd` in that repository.
-  const insideRepository = Effect.fn(function* (cwd: string) {
+  const insideRepository = Effect.fn("MultiRepoWorkspaces.insideRepository")(function* (
+    cwd: string,
+  ) {
     for (let dir = path.resolve(cwd); ;) {
       if (yield* exists(path.join(dir, ".git"))) return true;
       const parent = path.dirname(dir);
@@ -154,30 +157,29 @@ export const make = Effect.gen(function* () {
   // symbolic links, hidden folders (so `.worktrees`) and node_modules. Read
   // with async calls here because snapshots ask about every plain project
   // folder; `makeGroup` still lets Workler decide what it writes.
-  const findRepositories = (
+  const findRepositories = Effect.fn("MultiRepoWorkspaces.findRepositories")(function* (
     dir: string,
     relative: string,
     depth: number,
-  ): Effect.Effect<ReadonlyArray<string>> =>
-    Effect.gen(function* () {
-      const names = yield* listFolders(dir);
-      const found = yield* Effect.forEach(
-        names.filter((name) => !name.startsWith(".") && name !== "node_modules").toSorted(),
-        (name) =>
-          Effect.gen(function* () {
-            const child = path.join(dir, name);
-            const childRelative = relative === "" ? name : `${relative}/${name}`;
-            if (yield* hasGitFolder(child)) {
-              return WorklerWorkspaceService.canWriteProjectPath(childRelative)
-                ? [childRelative]
-                : [];
-            }
-            return depth < 2 ? yield* findRepositories(child, childRelative, depth + 1) : [];
-          }),
-        { concurrency: 8 },
-      );
-      return found.flat();
-    });
+  ): Effect.fn.Return<ReadonlyArray<string>> {
+    const names = yield* listFolders(dir);
+    const found = yield* Effect.forEach(
+      names.filter((name) => !name.startsWith(".") && name !== "node_modules").toSorted(),
+      (name) =>
+        Effect.gen(function* () {
+          const child = path.join(dir, name);
+          const childRelative = relative === "" ? name : `${relative}/${name}`;
+          if (yield* hasGitFolder(child)) {
+            return WorklerWorkspaceService.canWriteProjectPath(childRelative)
+              ? [childRelative]
+              : [];
+          }
+          return depth < 2 ? yield* findRepositories(child, childRelative, depth + 1) : [];
+        }),
+      { concurrency: 8 },
+    );
+    return found.flat();
+  });
 
   // Whether `child` is `parent` or inside it. Across Windows drives `relative`
   // is absolute, which is outside.
@@ -194,13 +196,14 @@ export const make = Effect.gen(function* () {
   // ask the desktop app for access.
   const holdsHomeFolder = (cwd: string) => isWithin(cwd, NodeOS.homedir());
 
-  const nestedRepositories: MultiRepoWorkspaces["Service"]["nestedRepositories"] = (cwd) =>
-    Effect.gen(function* () {
-      if (holdsHomeFolder(cwd)) return [];
-      if (yield* exists(path.join(cwd, WORKLER_CONFIG_FILE))) return [];
-      if (yield* insideRepository(cwd)) return [];
-      return yield* findRepositories(cwd, "", 1);
-    });
+  const nestedRepositories: MultiRepoWorkspaces["Service"]["nestedRepositories"] = Effect.fn(
+    "MultiRepoWorkspaces.nestedRepositories",
+  )(function* (cwd) {
+    if (holdsHomeFolder(cwd)) return [];
+    if (yield* exists(path.join(cwd, WORKLER_CONFIG_FILE))) return [];
+    if (yield* insideRepository(cwd)) return [];
+    return yield* findRepositories(cwd, "", 1);
+  });
 
   const makeGroup: MultiRepoWorkspaces["Service"]["makeGroup"] = Effect.fn(
     "MultiRepoWorkspaces.makeGroup",

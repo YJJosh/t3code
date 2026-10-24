@@ -130,59 +130,59 @@ function piModelsFromSettings(
   return withPiProfileChoices(models, profileChoices, configSets, defaultSet);
 }
 
-export function buildInitialPiProviderSnapshot(
-  settings: PiSettings,
-): Effect.Effect<ServerProviderDraft> {
-  return Effect.gen(function* () {
-    const checkedAt = DateTime.formatIso(yield* DateTime.now);
-    const models = piModelsFromSettings(
-      settings.customModels,
-      [],
-      parsePiProfileChoices(undefined, settings.profile),
-    );
-    if (!settings.enabled) {
-      return buildServerProvider({
-        presentation: PI_PRESENTATION,
-        enabled: false,
-        checkedAt,
-        models,
-        probe: {
-          installed: false,
-          version: null,
-          status: "warning",
-          auth: { status: "unknown" },
-          message: "Pi is disabled in T3 Code settings.",
-        },
-      });
-    }
+export const buildInitialPiProviderSnapshot = Effect.fn(
+  "DulliProviderStatus.buildInitialPiProviderSnapshot",
+)(function* (settings: PiSettings) {
+  const checkedAt = DateTime.formatIso(yield* DateTime.now);
+  const models = piModelsFromSettings(
+    settings.customModels,
+    [],
+    parsePiProfileChoices(undefined, settings.profile),
+  );
+  if (!settings.enabled) {
     return buildServerProvider({
       presentation: PI_PRESENTATION,
-      enabled: true,
+      enabled: false,
       checkedAt,
       models,
       probe: {
-        installed: true,
+        installed: false,
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "Checking Pi CLI availability...",
+        message: "Pi is disabled in T3 Code settings.",
       },
     });
+  }
+  return buildServerProvider({
+    presentation: PI_PRESENTATION,
+    enabled: true,
+    checkedAt,
+    models,
+    probe: {
+      installed: true,
+      version: null,
+      status: "warning",
+      auth: { status: "unknown" },
+      message: "Checking Pi CLI availability...",
+    },
   });
-}
+});
 
-const runPiVersionCommand = (settings: PiSettings, environment: NodeJS.ProcessEnv) =>
-  Effect.gen(function* () {
-    const command = resolvePiBinary(settings);
-    const spawnCommand = yield* resolveSpawnCommand(command, ["--version"], { env: environment });
-    return yield* spawnAndCollect(
-      command,
-      ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-        env: environment,
-        shell: spawnCommand.shell,
-      }),
-    );
-  });
+const runPiVersionCommand = Effect.fn("DulliProviderStatus.runPiVersionCommand")(function* (
+  settings: PiSettings,
+  environment: NodeJS.ProcessEnv,
+) {
+  const command = resolvePiBinary(settings);
+  const spawnCommand = yield* resolveSpawnCommand(command, ["--version"], { env: environment });
+  return yield* spawnAndCollect(
+    command,
+    ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+      env: environment,
+      shell: spawnCommand.shell,
+    }),
+  );
+});
 
 export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function* (
   settings: PiSettings,

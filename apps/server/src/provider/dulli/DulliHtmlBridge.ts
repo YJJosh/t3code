@@ -39,85 +39,84 @@ export const makeFactory = Effect.gen(function* () {
       notify: [
         {
           prefix: PREFIX,
-          handle: (payload) =>
-            Effect.gen(function* () {
-              // The envelope contains only a file reference, never raw HTML or image data.
-              if (!live || payload.length > 8192 || new TextEncoder().encode(payload).length > 8192)
-                return;
-              const decoded = decode(payload);
-              if (decoded._tag === "None") return;
-              const input = decoded.value;
-              if (!paths.isAbsolute(input.path) || input.path.includes("\0") || !input.title.trim())
-                return;
-              const active = context.getActiveTurn();
-              if (!active || active.input.threadId !== context.threadId) return;
-              if (runId !== active.input.runId) {
-                runId = active.input.runId;
-                seen.clear();
-              }
-              // Notifications may be replayed on reconnect. One render per native tool call.
-              if (seen.has(input.toolCallId) || seen.size >= 256) return;
-              seen.add(input.toolCallId);
-              const reference = yield* htmlRender
-                .publishFile({
-                  threadId: context.threadId,
-                  path: input.path,
-                  title: input.title,
-                  height: input.height,
-                })
-                .pipe(
-                  Effect.tapError((error) =>
-                    Effect.logWarning("Dulli html_show could not publish inline HTML", {
-                      threadId: context.threadId,
-                      path: input.path,
-                      error,
-                    }),
-                  ),
-                  Effect.result,
-                );
-              if (!live || context.getActiveTurn()?.providerTurn.id !== active.providerTurn.id)
-                return;
-              const now = yield* DateTime.now;
-              // A separate item cannot be overwritten by Pi's ordinary html_show tool end.
-              // html_render is the existing cross-client presentation contract, not a second tool.
-              // Never forward the terminal text version: the native html_show row is title-only.
-              const nativeId = `html-show:${context.providerSessionId}:${input.toolCallId}`;
-              yield* context.emit({
-                type: "turn_item.updated",
-                driver: DRIVER,
-                turnItem: {
-                  id: TurnItemId.make(`dulli:${context.threadId}:${nativeId}`),
-                  threadId: context.threadId,
-                  runId: active.input.runId,
-                  nodeId: active.input.rootNodeId,
-                  providerThreadId: active.input.providerThread.id,
-                  providerTurnId: active.providerTurn.id,
-                  nativeItemRef: { driver: DRIVER, nativeId, strength: "strong" },
-                  parentItemId: null,
-                  ordinal: context.getItemOrdinal?.(nativeId) ?? 0,
-                  // The native html_show row is title-only, so a failed publication
-                  // must show here rather than leave the visual silently missing.
-                  status: Result.isSuccess(reference) ? "completed" : "failed",
-                  title: input.title,
-                  startedAt: now,
-                  completedAt: now,
-                  updatedAt: now,
-                  type: "dynamic_tool",
-                  toolName: "html_render",
-                  input: { title: input.title, height: input.height },
-                  output: Result.isSuccess(reference)
-                    ? { htmlRender: reference.success }
-                    : {
-                        content: [
-                          {
-                            type: "text",
-                            text: `T3 could not display this visual. ${reference.failure.message}`,
-                          },
-                        ],
-                      },
-                },
-              });
-            }),
+          handle: Effect.fn("DulliHtmlBridge.publishHtml")(function* (payload) {
+            // The envelope contains only a file reference, never raw HTML or image data.
+            if (!live || payload.length > 8192 || new TextEncoder().encode(payload).length > 8192)
+              return;
+            const decoded = decode(payload);
+            if (decoded._tag === "None") return;
+            const input = decoded.value;
+            if (!paths.isAbsolute(input.path) || input.path.includes("\0") || !input.title.trim())
+              return;
+            const active = context.getActiveTurn();
+            if (!active || active.input.threadId !== context.threadId) return;
+            if (runId !== active.input.runId) {
+              runId = active.input.runId;
+              seen.clear();
+            }
+            // Notifications may be replayed on reconnect. One render per native tool call.
+            if (seen.has(input.toolCallId) || seen.size >= 256) return;
+            seen.add(input.toolCallId);
+            const reference = yield* htmlRender
+              .publishFile({
+                threadId: context.threadId,
+                path: input.path,
+                title: input.title,
+                height: input.height,
+              })
+              .pipe(
+                Effect.tapError((error) =>
+                  Effect.logWarning("Dulli html_show could not publish inline HTML", {
+                    threadId: context.threadId,
+                    path: input.path,
+                    error,
+                  }),
+                ),
+                Effect.result,
+              );
+            if (!live || context.getActiveTurn()?.providerTurn.id !== active.providerTurn.id)
+              return;
+            const now = yield* DateTime.now;
+            // A separate item cannot be overwritten by Pi's ordinary html_show tool end.
+            // html_render is the existing cross-client presentation contract, not a second tool.
+            // Never forward the terminal text version: the native html_show row is title-only.
+            const nativeId = `html-show:${context.providerSessionId}:${input.toolCallId}`;
+            yield* context.emit({
+              type: "turn_item.updated",
+              driver: DRIVER,
+              turnItem: {
+                id: TurnItemId.make(`dulli:${context.threadId}:${nativeId}`),
+                threadId: context.threadId,
+                runId: active.input.runId,
+                nodeId: active.input.rootNodeId,
+                providerThreadId: active.input.providerThread.id,
+                providerTurnId: active.providerTurn.id,
+                nativeItemRef: { driver: DRIVER, nativeId, strength: "strong" },
+                parentItemId: null,
+                ordinal: context.getItemOrdinal?.(nativeId) ?? 0,
+                // The native html_show row is title-only, so a failed publication
+                // must show here rather than leave the visual silently missing.
+                status: Result.isSuccess(reference) ? "completed" : "failed",
+                title: input.title,
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+                type: "dynamic_tool",
+                toolName: "html_render",
+                input: { title: input.title, height: input.height },
+                output: Result.isSuccess(reference)
+                  ? { htmlRender: reference.success }
+                  : {
+                      content: [
+                        {
+                          type: "text",
+                          text: `T3 could not display this visual. ${reference.failure.message}`,
+                        },
+                      ],
+                    },
+              },
+            });
+          }),
         },
       ],
     });
