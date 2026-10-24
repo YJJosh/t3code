@@ -341,6 +341,35 @@ export function dulliToolPreview(value: unknown): string {
   return text.length > 8000 ? `${text.slice(0, 8000)}\n[preview truncated]` : text;
 }
 
+/**
+ * A settled run with an outcome reads as prompt, folded work, then outcome, so
+ * the task and its answer sit together. A live run keeps its work open, and the
+ * outcome card only repeats what the work has not already said.
+ */
+export function dulliRunTranscript(
+  entries: ReadonlyArray<DulliTranscriptEntry>,
+  run: Pick<RuntimeSubagent, "status" | "result" | "error">,
+) {
+  const result = run.result?.trim() || null;
+  const echoesResult = (entry: DulliTranscriptEntry) =>
+    entry.kind === "assistant" && entry.text.trim() === result;
+  if (isActiveSubagentStatus(run.status) || (!result && !run.error)) {
+    return { work: entries, result: entries.some(echoesResult) ? null : result, folded: false };
+  }
+  const echo = entries.findLastIndex(echoesResult);
+  return {
+    work: entries.filter((_, index) => index !== echo),
+    result,
+    folded: true,
+  };
+}
+
+/** Counts steps, not tools: the header's tool count comes from Pi and can differ. */
+export function dulliWorkLabel(work: ReadonlyArray<DulliTranscriptEntry>): string {
+  if (work.length === 0) return "Work";
+  return `Work · ${work.length} step${work.length === 1 ? "" : "s"}`;
+}
+
 /** Keep later replies even when they quote the task; only the origin is redundant. */
 export function dulliTranscriptEntries(
   items: ReadonlyArray<OrchestrationV2TurnItem>,

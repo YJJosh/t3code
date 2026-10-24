@@ -27,7 +27,7 @@ const isRecord = (value: unknown): value is PiRpcRecord =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Native framed RPC. Closing or terminating only detaches; the terminal owns Pi. */
-export const makePiDaemonConnection = Effect.fn(function* (
+export const makePiDaemonConnection = Effect.fn("PiDaemonConnection.make")(function* (
   input: PiRpcSpawnOptions & { readonly threadId: string },
   options: { readonly attach?: boolean; readonly sessionFile?: string } = {},
 ) {
@@ -100,15 +100,14 @@ export const makePiDaemonConnection = Effect.fn(function* (
   >();
   let sequence = 0;
   let failure: PiRpcError | undefined;
-  const fail = (error: PiRpcError, code = -1) =>
-    Effect.gen(function* () {
-      if (failure) return;
-      failure = error;
-      for (const { waiter } of pending.values()) yield* Deferred.fail(waiter, error);
-      pending.clear();
-      yield* Deferred.succeed(exited, code);
-      yield* Queue.fail(events, error);
-    });
+  const fail = Effect.fn("PiDaemonConnection.fail")(function* (error: PiRpcError, code = -1) {
+    if (failure) return;
+    failure = error;
+    for (const { waiter } of pending.values()) yield* Deferred.fail(waiter, error);
+    pending.clear();
+    yield* Deferred.succeed(exited, code);
+    yield* Queue.fail(events, error);
+  });
   yield* Effect.gen(function* () {
     while (true) {
       const frame = yield* Queue.take(transport.events);
@@ -150,21 +149,23 @@ export const makePiDaemonConnection = Effect.fn(function* (
             .send({ type: "rpc-in", message })
             .pipe(Effect.mapError((cause) => new PiRpcError({ operation: "daemon-send", cause }))),
     );
-  const request: PiRpcConnection["request"] = (record, timeoutMs = 30_000) =>
-    Effect.gen(function* () {
-      const id = `t3-${input.threadId}-${++sequence}`;
-      const waiter = yield* Deferred.make<unknown, PiRpcError>();
-      pending.set(id, { command: String(record.type), waiter });
-      return yield* send({ ...record, id }).pipe(
-        Effect.andThen(Deferred.await(waiter)),
-        Effect.timeoutOrElse({
-          duration: timeoutMs,
-          orElse: () =>
-            Effect.fail(new PiRpcTimeoutError({ operation: String(record.type), timeoutMs })),
-        }),
-        Effect.ensuring(Effect.sync(() => pending.delete(id))),
-      );
-    });
+  const request: PiRpcConnection["request"] = Effect.fn("PiDaemonConnection.request")(function* (
+    record,
+    timeoutMs = 30_000,
+  ) {
+    const id = `t3-${input.threadId}-${++sequence}`;
+    const waiter = yield* Deferred.make<unknown, PiRpcError>();
+    pending.set(id, { command: String(record.type), waiter });
+    return yield* send({ ...record, id }).pipe(
+      Effect.andThen(Deferred.await(waiter)),
+      Effect.timeoutOrElse({
+        duration: timeoutMs,
+        orElse: () =>
+          Effect.fail(new PiRpcTimeoutError({ operation: String(record.type), timeoutMs })),
+      }),
+      Effect.ensuring(Effect.sync(() => pending.delete(id))),
+    );
+  });
   return {
     connection: {
       send,

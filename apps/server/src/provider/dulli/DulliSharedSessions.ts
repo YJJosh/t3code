@@ -117,32 +117,33 @@ export const makeFactory = Effect.gen(function* () {
         events: [
           {
             type: "pi_sessions_state",
-            handle: (event) =>
-              Effect.gen(function* () {
-                const model = event.model;
-                if (
-                  typeof model !== "object" ||
-                  model === null ||
-                  !("provider" in model) ||
-                  !("id" in model) ||
-                  typeof model.provider !== "string" ||
-                  typeof model.id !== "string"
-                )
-                  return;
-                yield* Queue.offer(updates.queue, {
-                  threadId: context.threadId,
-                  instanceId: context.instanceId,
-                  model: `${model.provider}/${model.id}`,
-                  ...(typeof event.thinkingLevel === "string"
-                    ? { thinking: event.thinkingLevel }
-                    : {}),
-                });
-              }),
+            // Model state is handled on the provider event pump.
+            handle: Effect.fnUntraced(function* (event) {
+              const model = event.model;
+              if (
+                typeof model !== "object" ||
+                model === null ||
+                !("provider" in model) ||
+                !("id" in model) ||
+                typeof model.provider !== "string" ||
+                typeof model.id !== "string"
+              )
+                return;
+              yield* Queue.offer(updates.queue, {
+                threadId: context.threadId,
+                instanceId: context.instanceId,
+                model: `${model.provider}/${model.id}`,
+                ...(typeof event.thinkingLevel === "string"
+                  ? { thinking: event.thinkingLevel }
+                  : {}),
+              });
+            }),
           },
           {
             type: "pi_sessions_ui_prompt",
-            handle: (event) =>
-              Effect.gen(function* () {
+            // Prompt state is projected on the provider event pump.
+            handle: Effect.fnUntraced(
+              function* (event) {
                 yield* closePrompt;
                 if (event.phase !== "start") return;
                 const at = yield* DateTime.now;
@@ -219,11 +220,11 @@ export const makeFactory = Effect.gen(function* () {
                 });
                 yield* context.emit({ type: "node.updated", driver, node });
                 yield* context.emit({ type: "turn_item.updated", driver, turnItem: item });
-              }).pipe(
-                Effect.catch((cause) =>
-                  Effect.logWarning("Dulli terminal prompt update skipped", { cause }),
-                ),
+              },
+              Effect.catch((cause) =>
+                Effect.logWarning("Dulli terminal prompt update skipped", { cause }),
               ),
+            ),
           },
         ],
       };

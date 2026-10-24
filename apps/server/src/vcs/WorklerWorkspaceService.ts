@@ -258,32 +258,31 @@ export const makeFromRunner = (run: WorklerRunner): WorklerWorkspaceService["Ser
           Effect.map((info) => (info.isGroup ? { projects: info.projects } : null)),
         ),
       ),
-    initGroup: (root) =>
-      Effect.gen(function* () {
-        const operation = "WorklerWorkspaceService.initGroup";
-        const refuse = (code: WorklerWorkspaceErrorCode, detail: string) =>
-          new WorklerWorkspaceError({ operation, root, code, detail });
-        const info = yield* read(call(operation, root, "inspectProject", [root]));
-        if (info.isGroup) return { projects: info.projects };
-        if (!info.exists) return yield* refuse("ROOT_NOT_FOUND", `${root} does not exist.`);
-        // `init` writes Workler's single-repository template when it finds
-        // nothing to group, so only a plain folder holding repositories gets here.
-        if (info.gitRepo) {
-          return yield* refuse("NOT_A_PLAIN_FOLDER", `${root} is a Git repository.`);
-        }
-        if (info.configFileExists) {
-          return yield* refuse(
-            "NOT_A_PLAIN_FOLDER",
-            info.configError ?? `${root} already has a .workler file that lists no repositories.`,
-          );
-        }
-        const found = yield* read(call(operation, root, "discoverProjects", [root]));
-        if (!found.some(canWriteProjectPath)) {
-          return yield* refuse("NO_REPOSITORIES", `No Git repositories were found in ${root}.`);
-        }
-        const result = yield* write(call(operation, root, "initProject", [root]));
-        return { projects: result.projects };
-      }),
+    initGroup: Effect.fn("WorklerWorkspaceService.initGroup")(function* (root) {
+      const operation = "WorklerWorkspaceService.initGroup";
+      const refuse = (code: WorklerWorkspaceErrorCode, detail: string) =>
+        new WorklerWorkspaceError({ operation, root, code, detail });
+      const info = yield* read(call(operation, root, "inspectProject", [root]));
+      if (info.isGroup) return { projects: info.projects };
+      if (!info.exists) return yield* refuse("ROOT_NOT_FOUND", `${root} does not exist.`);
+      // `init` writes Workler's single-repository template when it finds
+      // nothing to group, so only a plain folder holding repositories gets here.
+      if (info.gitRepo) {
+        return yield* refuse("NOT_A_PLAIN_FOLDER", `${root} is a Git repository.`);
+      }
+      if (info.configFileExists) {
+        return yield* refuse(
+          "NOT_A_PLAIN_FOLDER",
+          info.configError ?? `${root} already has a .workler file that lists no repositories.`,
+        );
+      }
+      const found = yield* read(call(operation, root, "discoverProjects", [root]));
+      if (!found.some(canWriteProjectPath)) {
+        return yield* refuse("NO_REPOSITORIES", `No Git repositories were found in ${root}.`);
+      }
+      const result = yield* write(call(operation, root, "initProject", [root]));
+      return { projects: result.projects };
+    }),
   });
 };
 

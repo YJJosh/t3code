@@ -59,20 +59,18 @@ export function BackgroundTerminalControls({
   const kill = async () => {
     setPending(true);
     setError(null);
-    try {
-      const input: DulliBackgroundTerminalControlInput = {
-        threadId,
-        action: "kill",
-        terminalId,
-        managerId,
-        requestId: `${terminalId}:${requestFieldId}:${++requestSequenceRef.current}`,
-      };
-      const result = await runControl({ environmentId, input });
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        setError(controlErrorMessage(squashAtomCommandFailure(result), "Failed to stop terminal."));
-      }
-    } finally {
-      setPending(false);
+    const input: DulliBackgroundTerminalControlInput = {
+      threadId,
+      action: "kill",
+      terminalId,
+      managerId,
+      requestId: `${terminalId}:${requestFieldId}:${++requestSequenceRef.current}`,
+    };
+    // Atom commands settle thrown errors into the result, so this always runs.
+    const result = await runControl({ environmentId, input });
+    setPending(false);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      setError(controlErrorMessage(squashAtomCommandFailure(result), "Failed to stop terminal."));
     }
   };
 

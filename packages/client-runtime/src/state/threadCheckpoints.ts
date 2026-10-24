@@ -25,9 +25,8 @@ export interface ThreadCheckpointSummary {
   readonly completedAt: string;
 }
 
-/** Derives the checkpoint/diff rows needed by review UIs from native V2 entities. */
 export function deriveThreadCheckpointSummaries(
-  projection: OrchestrationV2ThreadProjection,
+  projection: Pick<OrchestrationV2ThreadProjection, "checkpoints" | "messages">,
 ): ReadonlyArray<ThreadCheckpointSummary> {
   const lastReplyByRun = new Map<RunId, MessageId>();
   const lastFinalByRun = new Map<RunId, MessageId>();
@@ -38,7 +37,7 @@ export function deriveThreadCheckpointSummaries(
   }
   return projection.checkpoints.flatMap((checkpoint) => {
     if (checkpoint.appRunOrdinal === null || checkpoint.runId === null) return [];
-    // REVIEW: the final answer owns the diff, else the last non-commentary
+    // The final answer owns the diff, else the last non-commentary
     // reply (upstream rule). An interrupted Dulli reply has no phase.
     const assistantMessageId =
       lastFinalByRun.get(checkpoint.runId) ?? lastReplyByRun.get(checkpoint.runId) ?? null;

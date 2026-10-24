@@ -8,7 +8,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useRef } from "react";
+import { useRef } from "react";
 
 import { backgroundTerminalEnvironment } from "../../state/backgroundTerminals";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -56,45 +56,44 @@ export function useStartBackgroundTerminal(input: {
     permitted &&
     !managerId.startsWith("dulli-session-");
 
-  const start = useCallback(
-    async (options: StartBackgroundTerminalOptions): Promise<StartBackgroundTerminalResult> => {
-      if (!available || environmentId === null || threadId === null || managerId === null) {
-        return { error: BACKGROUND_TERMINAL_START_UNAVAILABLE };
+  const start = async (
+    options: StartBackgroundTerminalOptions,
+  ): Promise<StartBackgroundTerminalResult> => {
+    if (!available || environmentId === null || threadId === null || managerId === null) {
+      return { error: BACKGROUND_TERMINAL_START_UNAVAILABLE };
+    }
+    const command = options.command.trim();
+    if (command.length === 0) {
+      return { error: "Enter a command to run." };
+    }
+    sequenceRef.current += 1;
+    const requestId = `start:${Date.now().toString(36)}:${sequenceRef.current}`;
+    const title = options.title?.trim();
+    const control: DulliBackgroundTerminalControlInput = {
+      threadId,
+      action: "start",
+      managerId,
+      requestId,
+      command,
+      ...(title ? { title } : {}),
+      interactive: options.interactive ?? true,
+      ...(options.keepOpen ? { keepOpen: true } : {}),
+    };
+    const result = await runControl({ environmentId, input: control });
+    if (result._tag === "Failure") {
+      if (isAtomCommandInterrupted(result)) {
+        return { error: "Starting the terminal was interrupted." };
       }
-      const command = options.command.trim();
-      if (command.length === 0) {
-        return { error: "Enter a command to run." };
-      }
-      sequenceRef.current += 1;
-      const requestId = `start:${Date.now().toString(36)}:${sequenceRef.current}`;
-      const title = options.title?.trim();
-      const control: DulliBackgroundTerminalControlInput = {
-        threadId,
-        action: "start",
-        managerId,
-        requestId,
-        command,
-        ...(title ? { title } : {}),
-        interactive: options.interactive ?? true,
-        ...(options.keepOpen ? { keepOpen: true } : {}),
+      const cause = squashAtomCommandFailure(result);
+      return {
+        error:
+          cause instanceof Error && cause.message.trim().length > 0
+            ? cause.message
+            : "Failed to start terminal.",
       };
-      const result = await runControl({ environmentId, input: control });
-      if (result._tag === "Failure") {
-        if (isAtomCommandInterrupted(result)) {
-          return { error: "Starting the terminal was interrupted." };
-        }
-        const cause = squashAtomCommandFailure(result);
-        return {
-          error:
-            cause instanceof Error && cause.message.trim().length > 0
-              ? cause.message
-              : "Failed to start terminal.",
-        };
-      }
-      return { requestId };
-    },
-    [available, environmentId, managerId, runControl, threadId],
-  );
+    }
+    return { requestId };
+  };
 
   return { start, available };
 }

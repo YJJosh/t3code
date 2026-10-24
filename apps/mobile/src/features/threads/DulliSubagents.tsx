@@ -3,8 +3,10 @@ import { useNavigation } from "@react-navigation/native";
 import {
   agentActivityText,
   deriveDulliAgentInspector,
+  dulliRunTranscript,
   dulliTranscriptEntries,
   dulliToolPreview,
+  dulliWorkLabel,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
   type DulliInspectorAgent,
@@ -18,13 +20,13 @@ import { AsyncResult } from "effect/reactivity";
 import * as Haptics from "expo-haptics";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, TextInput, View } from "react-native";
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 import { cn } from "../../lib/cn";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useEnvironmentQuery } from "../../state/query";
-import { RequestActionButton } from "./RequestActionButton";
+import { Button } from "../../components/ui/Button";
 import {
   formatSubagentDuration,
   subagentStatusLabel,
@@ -215,7 +217,7 @@ export function DulliAgentsInspector({
         ))
       ) : inspector ? (
         <>
-          <RequestActionButton
+          <Button
             label={parent ? "Back to workflow" : "Back to agents"}
             tone="secondary"
             onPress={() => setSelectedId(parent?.workflow.id ?? null)}
@@ -269,6 +271,8 @@ function AgentRunDetail({
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState(false);
   const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
+  const [workOpen, setWorkOpen] = useState(false);
+  const transcript = dulliRunTranscript(entries, agent);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -310,9 +314,6 @@ function AgentRunDetail({
         : "The task control could not be delivered. The child may have ended or its extension is unavailable.",
     });
   };
-  const resultAlreadyShown = entries.some(
-    (entry) => entry.kind === "assistant" && entry.text.trim() === agent.result?.trim(),
-  );
   return (
     <View className="gap-3">
       {agent.workflowName || agent.phaseTitle ? (
@@ -351,16 +352,26 @@ function AgentRunDetail({
           <Text accessibilityRole="alert" className="text-sm text-danger">
             {history.error}
           </Text>
-          <RequestActionButton
-            label="Retry transcript"
-            tone="secondary"
-            onPress={history.refresh}
-          />
+          <Button label="Retry transcript" tone="secondary" onPress={history.refresh} />
         </View>
       ) : null}
-      {entries.map((entry) => (
-        <TranscriptRow key={entry.id} entry={entry} target={target} />
-      ))}
+      {transcript.folded && transcript.work.length > 0 ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: workOpen }}
+          onPress={() => setWorkOpen((open) => !open)}
+          className="py-2"
+        >
+          <Text className="text-sm text-foreground-muted">
+            {workOpen ? "▾" : "▸"} {dulliWorkLabel(transcript.work)}
+          </Text>
+        </Pressable>
+      ) : null}
+      {!transcript.folded || workOpen
+        ? transcript.work.map((entry) => (
+            <TranscriptRow key={entry.id} entry={entry} target={target} />
+          ))
+        : null}
       {agent.error ? (
         <View className="gap-2 rounded-xl border border-danger p-3">
           <Text className="text-xs font-t3-bold text-danger">Agent failed</Text>
@@ -368,11 +379,11 @@ function AgentRunDetail({
             {agent.error}
           </Text>
         </View>
-      ) : agent.result && !resultAlreadyShown ? (
+      ) : transcript.result ? (
         <View className="gap-2 rounded-xl border border-border bg-card p-3">
           <Text className="text-xs font-t3-bold">Final result</Text>
           <Text selectable className="text-sm">
-            {agent.result}
+            {transcript.result}
           </Text>
         </View>
       ) : null}
@@ -396,15 +407,16 @@ function AgentRunDetail({
             />
           ) : null}
           <View className="flex-row justify-end gap-2">
-            <RequestActionButton
+            <Button
               label="Stop agent"
               tone="danger"
               disabled={!permission || pending}
               onPress={() => void act("stop")}
             />
             {agent.status === "waiting" ? (
-              <RequestActionButton
+              <Button
                 label="Reply"
+                tone="primary"
                 disabled={!permission || pending || !message.trim()}
                 onPress={() => void act("reply")}
               />
@@ -538,7 +550,7 @@ function ToolOutput({
           <Text accessibilityRole="alert" className="text-xs text-danger">
             {detail.error}
           </Text>
-          <RequestActionButton label="Retry output" tone="secondary" onPress={detail.refresh} />
+          <Button label="Retry output" tone="secondary" onPress={detail.refresh} />
         </>
       ) : null}
     </View>

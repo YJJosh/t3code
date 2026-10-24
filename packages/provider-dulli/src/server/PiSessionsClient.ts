@@ -62,14 +62,14 @@ const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
   const socketPath = piSessionsSocketPath(environment, path, platform);
   let active: AwaitedConnection | undefined;
-  const request = (message: object) =>
-    Effect.gen(function* () {
+  const request = Effect.fn("PiSessionsClient.request")(
+    function* (message: object) {
       const connection = active ?? (yield* connectPiSessions(socketPath, "control"));
       return yield* connection.request(message);
-    }).pipe(
-      Effect.scoped,
-      Effect.orElseSucceed(() => null),
-    );
+    },
+    Effect.scoped,
+    Effect.orElseSucceed(() => null),
+  );
   const decodeList = (response: unknown) =>
     Array.isArray(response)
       ? response.flatMap((entry: unknown) => {
@@ -92,8 +92,8 @@ const make = Effect.gen(function* () {
     );
   const link: PiSessionsClient["Service"]["link"] = (input) =>
     request({ type: "link", ...input }).pipe(Effect.asVoid);
-  const watch: PiSessionsClient["Service"]["watch"] = (onThreads) =>
-    Effect.gen(function* () {
+  const watch: PiSessionsClient["Service"]["watch"] = Effect.fn("PiSessionsClient.watch")(
+    function* (onThreads) {
       let delay = 250;
       while (true) {
         yield* Effect.gen(function* () {
@@ -136,7 +136,8 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.scoped);
         delay = Math.min(delay * 2, 30_000);
       }
-    });
+    },
+  );
   return PiSessionsClient.of({ list, settle, link, watch });
 });
 type AwaitedConnection = Effect.Success<ReturnType<typeof connectPiSessions>>;

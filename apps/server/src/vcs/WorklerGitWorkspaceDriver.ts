@@ -380,14 +380,34 @@ export const withWorklerWorkspaceSupport = (input: {
           Effect.map((result) => parseRemoteNames(result.stdout)),
           Effect.orElseSucceed(() => []),
         );
-      const remoteBase = parseRemoteRefWithRemoteNames(createInput.baseRefName, remoteNames);
-      const baseBranch = remoteBase?.branchName ?? createInput.baseRefName;
+      // Launch passes a fetched base as refs/remotes/<remote>/<branch>. gh wants the
+      // branch name; T3 diffs against the full remote ref, like GitVcsDriver.createWorktree.
+      const remoteBase = createInput.baseRefName.startsWith("refs/heads/")
+        ? null
+        : parseRemoteRefWithRemoteNames(
+            createInput.baseRefName.replace(/^refs\/remotes\//, ""),
+            remoteNames,
+          );
+      const baseBranch =
+        remoteBase?.branchName ?? createInput.baseRefName.replace(/^refs\/heads\//, "");
       yield* input.git.execute({
         operation: "GitVcsDriver.createWorktree.configureBaseRef",
         cwd: managedWorkspace.path,
         args: ["config", `branch.${createInput.newRefName}.gh-merge-base`, baseBranch],
         timeoutMs: 10_000,
       });
+      if (remoteBase) {
+        yield* input.git.execute({
+          operation: "GitVcsDriver.createWorktree.configureComparisonRef",
+          cwd: managedWorkspace.path,
+          args: [
+            "config",
+            `branch.${createInput.newRefName}.t3-merge-base-ref`,
+            `refs/remotes/${remoteBase.remoteRef}`,
+          ],
+          timeoutMs: 10_000,
+        });
+      }
       if (remoteBase && /^[0-9a-f]{40}$/i.test(createInput.refName)) {
         yield* input.git.execute({
           operation: "GitVcsDriver.createWorktree.pinBaseTrackingRef",
