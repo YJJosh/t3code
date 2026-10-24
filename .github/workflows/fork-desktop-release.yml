@@ -232,11 +232,9 @@ jobs:
           }
           NODE
 
+      # Setup Vite+ selects the exact engines.node version from package.json,
+      # which apps/server/vite.config.ts requires for native executables.
       - name: Build CLI single-executable
-        env:
-          # Exact host Node with --build-sea support; keep in step with
-          # SEA_NODE_VERSION in apps/server/vite.config.ts.
-          VP_NODE_VERSION: "26.8.2"
         run: node apps/server/scripts/cli.ts build-exe --verbose
 
       - name: Build resource monitor
