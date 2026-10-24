@@ -10,7 +10,11 @@ const path = require("node:path");
 const appConfig = fs.readFileSync(path.join(__dirname, "app.config.ts"), "utf8");
 const version =
   process.env.T3CODE_MOBILE_VERSION ??
-  appConfig.match(/^ {2}version: repoEnv\.T3CODE_MOBILE_VERSION \?\? "([^"]+)"/m)?.[1];
+  // The fork prefixes the version with `dulliFork?.versionName ??`. Expo swallows the throw below
+  // and then fingerprints native modules by package version only, so patched native code goes unseen.
+  appConfig.match(
+    /^ {2}version: (?:dulliFork\?\.versionName \?\? )?repoEnv\.T3CODE_MOBILE_VERSION \?\? "([^"]+)"/m,
+  )?.[1];
 const majorVersion = version?.match(/^(\d+)\./)?.[1];
 if (!majorVersion) {
   throw new Error("fingerprint.config.js could not read the app version from app.config.ts");
