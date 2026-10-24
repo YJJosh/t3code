@@ -91,17 +91,18 @@ diff --git a/android/src/main/java/expo/modules/ui/RNHostView.kt b/android/src/m
 index 54f09a7..32399b9 100644
 --- a/android/src/main/java/expo/modules/ui/RNHostView.kt
 +++ b/android/src/main/java/expo/modules/ui/RNHostView.kt
-@@ -707,7 +707,12 @@ private class TouchDispatchingRootViewGroup(
+@@ -707,7 +707,13 @@ private class TouchDispatchingRootViewGroup(
    override fun setNestedScrollingEnabled(enabled: Boolean) {
      childHelper.isNestedScrollingEnabled = enabled
    }
 -  override fun isNestedScrollingEnabled(): Boolean = childHelper.isNestedScrollingEnabled
-+  // This host only relays scroll from a descendant list, and childHelper keeps its own flag for
-+  // that. Reporting true lets an enclosing BottomSheetBehavior (react-native-screens form sheets)
-+  // adopt the first host it meets depth-first as the sheet's scrolling child. In a sheet header
-+  // that is a button host above the real list, and the sheet then drags itself instead of
-+  // scrolling the list.
-+  override fun isNestedScrollingEnabled(): Boolean = false
++  // Claim nested scrolling only while relaying a descendant's scroll. Compose's AndroidViewHolder
++  // mirrors this flag and drops relayed scrolls and flings while it is false, but an enclosing
++  // BottomSheetBehavior (react-native-screens form sheets) picks its scrolling child at layout,
++  // depth-first by this flag, and would otherwise adopt a sheet-header button host above the real
++  // list, so every drag on the list moved the sheet instead.
++  override fun isNestedScrollingEnabled(): Boolean =
++    childHelper.isNestedScrollingEnabled && childHelper.hasNestedScrollingParent()
    override fun startNestedScroll(axes: Int): Boolean = childHelper.startNestedScroll(axes)
    override fun startNestedScroll(axes: Int, type: Int): Boolean = childHelper.startNestedScroll(axes, type)
    override fun stopNestedScroll() = childHelper.stopNestedScroll()
