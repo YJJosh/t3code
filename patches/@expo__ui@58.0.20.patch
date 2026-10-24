@@ -87,6 +87,24 @@ index 4887034..6eaf039 100644
      val layoutDirection = props.layoutDirection.value.toLayoutDirection()
  
      // Material3's `MaterialTheme` does not provide `LocalContentColor` — only `Surface` does — so
+diff --git a/android/src/main/java/expo/modules/ui/RNHostView.kt b/android/src/main/java/expo/modules/ui/RNHostView.kt
+index 54f09a7..32399b9 100644
+--- a/android/src/main/java/expo/modules/ui/RNHostView.kt
++++ b/android/src/main/java/expo/modules/ui/RNHostView.kt
+@@ -707,7 +707,12 @@ private class TouchDispatchingRootViewGroup(
+   override fun setNestedScrollingEnabled(enabled: Boolean) {
+     childHelper.isNestedScrollingEnabled = enabled
+   }
+-  override fun isNestedScrollingEnabled(): Boolean = childHelper.isNestedScrollingEnabled
++  // This host only relays scroll from a descendant list, and childHelper keeps its own flag for
++  // that. Reporting true lets an enclosing BottomSheetBehavior (react-native-screens form sheets)
++  // adopt the first host it meets depth-first as the sheet's scrolling child. In a sheet header
++  // that is a button host above the real list, and the sheet then drags itself instead of
++  // scrolling the list.
++  override fun isNestedScrollingEnabled(): Boolean = false
+   override fun startNestedScroll(axes: Int): Boolean = childHelper.startNestedScroll(axes)
+   override fun startNestedScroll(axes: Int, type: Int): Boolean = childHelper.startNestedScroll(axes, type)
+   override fun stopNestedScroll() = childHelper.stopNestedScroll()
 diff --git a/android/src/main/java/expo/modules/ui/TopAppBarView.kt b/android/src/main/java/expo/modules/ui/TopAppBarView.kt
 new file mode 100644
 index 0000000..4ed0132
