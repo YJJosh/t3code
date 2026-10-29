@@ -153,7 +153,7 @@ describe("readTranscriptRecords resume", () => {
           state.errors += 1;
           return [];
         }
-        return TEST_FORMATS.claude.parseProjected(value, undefined);
+        return TEST_FORMATS.claude.parseProjected(value, { piDriven: false });
       },
       readMalformedRecords: (state: { errors: number }) => state.errors,
     };
@@ -213,6 +213,54 @@ describe("readTranscriptRecords resume", () => {
     const full = await readTranscriptRecords(path, TEST_FORMATS.claude);
     assert.isNotNull(full);
     assert.deepStrictEqual([...first.records, ...second.records], [...full.records]);
+  });
+
+  it.each([
+    {
+      marker: "Pi's system prompt note",
+      line: {
+        type: "attachment",
+        attachment: {
+          type: "prompt_snapshot",
+          systemPrompt: ["You are Claude Code.", "## Conversation replay\nPi runs each turn"],
+        },
+      },
+    },
+    {
+      marker: "Pi's text replay",
+      line: {
+        type: "user",
+        message: { role: "user", content: [{ type: "text", text: "USER:\n" }] },
+      },
+    },
+  ])(
+    "skips Claude usage that Pi drives, marked by $marker, also after resume",
+    async ({ line }) => {
+      // Pi records this usage in its own session, which the Dulli reader counts.
+      const path = NodePath.join(dir, "pi-driven.jsonl");
+      await NodeFSP.writeFile(path, `${JSON.stringify(line)}\n${claudeLine(1, 5)}`);
+      const first = await readTranscriptRecords(path, TEST_FORMATS.claude);
+      assert.isNotNull(first);
+      assert.deepStrictEqual(first.records, []);
+
+      await NodeFSP.appendFile(path, claudeLine(2, 7));
+      const resumed = await readTranscriptRecords(path, TEST_FORMATS.claude, first.position);
+      assert.isNotNull(resumed);
+      assert.isTrue(resumed.resumed);
+      assert.deepStrictEqual(resumed.records, []);
+    },
+  );
+
+  it("keeps Claude usage whose first prompt only quotes Pi's replay labels", async () => {
+    const path = NodePath.join(dir, "native.jsonl");
+    const user = {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "Why does USER:\n appear here?" }] },
+    };
+    await NodeFSP.writeFile(path, `${JSON.stringify(user)}\n${claudeLine(1, 5)}`);
+    const read = await readTranscriptRecords(path, TEST_FORMATS.claude);
+    assert.isNotNull(read);
+    assert.strictEqual(read.records.length, 1);
   });
 
   it("carries the Codex reducer state across the resume boundary", async () => {

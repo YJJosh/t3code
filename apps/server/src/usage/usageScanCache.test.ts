@@ -162,7 +162,7 @@ describe("scan cache round trip", () => {
     expect(restored).toEqual(original);
   });
 
-  it.each([5, 6, 7, 8])(
+  it.each([5, 6, 7, 8, 9])(
     "retains v%s history and compatible positions but invalidates obsolete state",
     (version) => {
       const original = cacheWith([["/gone.jsonl", 100, [record({ speed: "fast" })]]]);
@@ -219,12 +219,21 @@ describe("scan cache round trip", () => {
       };
 
       const restored = decodeScanCache(JSON.parse(JSON.stringify(legacy)), TEST_FORMAT_MAP);
-      expect(restored.get("/gone.jsonl")).toEqual(original.get("/gone.jsonl"));
-      expect(restored.get("/gone-codex.jsonl")).toEqual({
-        ...original.get("/gone-codex.jsonl"),
+      // Pre-v10 Claude entries may hold Pi-driven usage, so live files re-parse.
+      expect(restored.get("/gone.jsonl")).toEqual({
+        ...original.get("/gone.jsonl"),
         size: -1,
         position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
       });
+      expect(restored.get("/gone-codex.jsonl")).toEqual(
+        version >= 9
+          ? original.get("/gone-codex.jsonl")
+          : {
+              ...original.get("/gone-codex.jsonl"),
+              size: -1,
+              position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
+            },
+      );
       expect(restored.get("/clean-codex.jsonl")).toEqual(
         version >= 8
           ? cleanCodex
@@ -307,7 +316,7 @@ describe("scan cache round trip", () => {
 });
 
 describe("colliding legacy cache layouts", () => {
-  it("imports upstream v5, keeping Claude warm and cold-parsing Codex for current provenance", () => {
+  it("imports upstream v5, keeping history but cold-parsing live Claude and Codex files", () => {
     const cache = cacheWith([["/claude.jsonl", 100, [record({ speed: "fast" })]]]);
     cache.set("/codex.jsonl", {
       ...cache.get("/claude.jsonl")!,
@@ -316,7 +325,8 @@ describe("colliding legacy cache layouts", () => {
       position: position({ state: TEST_FORMAT_MAP.get("codex")!.state!.initial() }),
     });
     const restored = decodeScanCache({ ...encodeScanCache(cache), version: 5 }, TEST_FORMAT_MAP);
-    expect(restored.get("/claude.jsonl")).toEqual(cache.get("/claude.jsonl"));
+    expect(restored.get("/claude.jsonl")?.records).toEqual(cache.get("/claude.jsonl")?.records);
+    expect(restored.get("/claude.jsonl")?.size).toBe(-1);
     expect(restored.get("/codex.jsonl")?.records).toEqual(cache.get("/codex.jsonl")?.records);
     expect(restored.get("/codex.jsonl")?.size).toBe(-1);
     expect(restored.get("/codex.jsonl")?.position.resumeOffset).toBe(0);
@@ -339,11 +349,11 @@ describe("colliding legacy cache layouts", () => {
     };
     const restored = decodeScanCache(fork, TEST_FORMAT_MAP);
     expect(restored.get("/claude.jsonl")?.records[0]?.speed).toBe("fast");
-    expect(restored.get("/claude.jsonl")?.size).toBe(entry.s);
+    expect(restored.get("/claude.jsonl")?.size).toBe(-1);
     expect(restored.get("/codex.jsonl")?.records).toHaveLength(1);
     expect(restored.get("/codex.jsonl")?.size).toBe(-1);
     expect(restored.get("/codex.jsonl")?.position.resumeOffset).toBe(0);
     expect(restored.has("/pi.jsonl")).toBe(false);
-    expect(encodeScanCache(restored).version).toBe(9);
+    expect(encodeScanCache(restored).version).toBe(10);
   });
 });

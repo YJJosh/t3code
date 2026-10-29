@@ -2105,7 +2105,7 @@ describe("UsageService", () => {
             60 + 20 * (version === 4 ? 1 : 2),
           );
           yield* upgraded.awaitPersisted;
-          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v9.json");
+          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v10.json");
           assert.strictEqual(
             yield* Effect.promise(() => NodeFSP.readFile(legacyPath, "utf8")),
             legacy,
@@ -2576,40 +2576,42 @@ describe("UsageService", () => {
 });
 
 describe("generic source coverage", () => {
-  it.live.each([5, 6])("imports a v%s cache into v9 without replacing its legacy file", (version) =>
-    Effect.gen(function* () {
-      const { home, settings, transcript } = yield* setup;
-      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
-      yield* Effect.gen(function* () {
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const cachePath = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
-        const previousPath = NodePath.join(stateDir, `usage-scan-cache-v${version}.json`);
-        const first = yield* UsageService.make;
-        yield* first.readSummary(WINDOW);
-        yield* first.awaitPersisted;
-        const previousText = yield* Effect.promise(async () => {
-          const document = decodeUnknownJsonString(
-            await NodeFSP.readFile(cachePath, "utf8"),
-          ) as Record<string, unknown>;
-          const text = encodeUnknownJsonString({ ...document, version });
-          await NodeFSP.writeFile(previousPath, text);
-          await NodeFSP.rm(cachePath);
-          await NodeFSP.rm(transcript);
-          return text;
-        });
-        const second = yield* UsageService.make;
-        assert.strictEqual(totalOutputTokens(yield* second.readSummary(WINDOW)), 5);
-        yield* second.awaitPersisted;
-        assert.strictEqual(
-          yield* Effect.promise(() => NodeFSP.readFile(previousPath, "utf8")),
-          previousText,
-        );
-        const migrated = decodeUnknownJsonString(
-          yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8")),
-        ) as { version: number };
-        assert.strictEqual(migrated.version, 9);
-      }).pipe(Effect.provide(layerService({ prefix: "coverage-cache-upgrade", home, settings })));
-    }).pipe(Effect.scoped),
+  it.live.each([5, 6])(
+    "imports a v%s cache into v10 without replacing its legacy file",
+    (version) =>
+      Effect.gen(function* () {
+        const { home, settings, transcript } = yield* setup;
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+        yield* Effect.gen(function* () {
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const cachePath = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
+          const previousPath = NodePath.join(stateDir, `usage-scan-cache-v${version}.json`);
+          const first = yield* UsageService.make;
+          yield* first.readSummary(WINDOW);
+          yield* first.awaitPersisted;
+          const previousText = yield* Effect.promise(async () => {
+            const document = decodeUnknownJsonString(
+              await NodeFSP.readFile(cachePath, "utf8"),
+            ) as Record<string, unknown>;
+            const text = encodeUnknownJsonString({ ...document, version });
+            await NodeFSP.writeFile(previousPath, text);
+            await NodeFSP.rm(cachePath);
+            await NodeFSP.rm(transcript);
+            return text;
+          });
+          const second = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* second.readSummary(WINDOW)), 5);
+          yield* second.awaitPersisted;
+          assert.strictEqual(
+            yield* Effect.promise(() => NodeFSP.readFile(previousPath, "utf8")),
+            previousText,
+          );
+          const migrated = decodeUnknownJsonString(
+            yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8")),
+          ) as { version: number };
+          assert.strictEqual(migrated.version, 10);
+        }).pipe(Effect.provide(layerService({ prefix: "coverage-cache-upgrade", home, settings })));
+      }).pipe(Effect.scoped),
   );
 
   it.live("attributes physical nested scans so environments can merge them once", () =>
