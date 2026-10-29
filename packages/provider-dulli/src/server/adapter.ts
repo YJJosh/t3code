@@ -3816,7 +3816,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                 `Pi extension request ${requestInput.requestId} has expired`,
               );
             }
-            // REVIEW: old/malformed clients may still send free text. Reject it without consuming the card;
+            // old/malformed clients may still send free text. Reject it without consuming the card;
             // shared Pi ignores cancelled responses, so silently converting it to cancellation strands the tool.
             const response = piUiResponse(pending, requestInput.decision, requestInput.answers);
             if (
@@ -4356,7 +4356,7 @@ function piQuestion(
     header: title,
     question,
     ...(method === "editor" ? { initialAnswer: recordString(event, "prefill") ?? "" } : {}),
-    // REVIEW: Pi selects accept only listed values; free text would cancel T3's card but leave shared Pi waiting.
+    // Pi selects accept only listed values; free text would cancel T3's card but leave shared Pi waiting.
     ...(method === "select" ? { allowCustomAnswer: false } : {}),
     options,
   };
@@ -4373,7 +4373,7 @@ function piUiResponse(
     return { cancelled: true };
   }
   const rawAnswer = answers?.[pending.questionId];
-  // REVIEW: orchestration also accepts single-option array answers. Normalize
+  // orchestration also accepts single-option array answers. Normalize
   // that valid representation instead of cancelling an already-resolved card.
   const answer = Array.isArray(rawAnswer) && rawAnswer.length === 1 ? rawAnswer[0] : rawAnswer;
   // An empty string is a valid dialog value per the RPC spec (the extension

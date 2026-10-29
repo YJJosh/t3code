@@ -321,7 +321,7 @@ it.effect(
           }
         }
         if (mode === "live") {
-          // REVIEW: Adapter failures happen after resolution. Invalid select values
+          // Adapter failures happen after resolution. Invalid select values
           // must fail dispatch itself so old/malformed clients cannot strand Pi.
           const pending = yield* projections.getRuntimeResponseContext(threadId, requestId);
           const sequence = yield* orchestrator.getThreadEventSequence(threadId);

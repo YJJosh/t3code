@@ -4714,7 +4714,7 @@ describe("Dulli fork policy", () => {
         );
         yield* fake.emit({ type: "agent_settled" });
         yield* takeEvent((event) => event.type === "turn.terminal");
-        // REVIEW: shared Pi ignores cancellation, so an invalid answer must stay retryable.
+        // shared Pi ignores cancellation, so an invalid answer must stay retryable.
         const rejected = yield* runtime
           .respondToRuntimeRequest({
             requestId: pending.runtimeRequest.id,

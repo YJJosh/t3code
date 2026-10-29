@@ -3,7 +3,7 @@ import * as DateTime from "effect/DateTime";
 import { expect, it } from "vite-plus/test";
 import { threadAttentionKey } from "./ThreadNotificationCoordinator.logic";
 
-// REVIEW: a fast second approval can replace the first before React renders the gap.
+// a fast second approval can replace the first before React renders the gap.
 it.each(["input", "approval"])(
   "distinguishes %s requests in one run without repeating snapshot alerts",
   (status) => {

@@ -217,7 +217,7 @@ it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
   },
 );
 
-// REVIEW: back-to-back approvals can replace the pending id without a rendered running state.
+// back-to-back approvals can replace the pending id without a rendered running state.
 it("notifies for each pending request in the same run, but not for repeated snapshots", async () => {
   await using app = setup();
   await app.render();

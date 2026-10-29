@@ -7707,7 +7707,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
       }
 
-      // REVIEW: Provider effects run after the request/card is persisted as
+      // Provider effects run after the request/card is persisted as
       // resolved. Reject invalid listed choices here, not only in the adapter,
       // so an old or malformed client can retry instead of stranding Pi.
       if (
