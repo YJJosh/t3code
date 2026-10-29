@@ -29,7 +29,6 @@ Send text and images normally, steer an active turn, or stop it. `/compact` redu
 
 Extension selections, confirmations, inputs, and editors appear as questions in chat on web, desktop, and mobile. Selections accept only their listed choices; free-text answers are reserved for input and editor questions. Dismiss a question to cancel; Dulli never chooses its first option for you. Timed questions expire, and session-scoped questions can outlive an unrelated model turn. All Pi extension dialogs are human-only, including secret-access approvals: agents and parent orchestrators can see that a child is waiting, but cannot answer through T3's MCP response tools. Answer in the child thread in T3, or in its Pi terminal when sharing a chat.
 
-<!-- REVIEW: client authentication identifies an authorized session, not proof of a human gesture. -->
 This is an agent-tool policy, not isolation from code running as your user. Authenticated WebSocket clients with orchestration permission are treated as user actions, including automation using your client credentials. A same-user process may obtain credentials from its environment or issue them with the local T3 CLI; it may also answer shared Pi dialogs directly through pi-sessions.
 
 Assistant text blocks remain separate paragraphs. Thinking rows contain actual reasoning provided by the model. Native tool calls and the Claude Agent SDK's tool-lifecycle notifications appear in the work log. Growing tool previews are bounded; completed results retain their structured content.
