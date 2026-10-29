@@ -5,6 +5,7 @@ import {
   EventId,
   NodeId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Command,
   PlanId,
   ProjectId,
   ProviderDriverKind,
@@ -31,6 +32,7 @@ import * as DelegatedTaskQuestionReactor from "./DelegatedTaskQuestionReactor.ts
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { withCreationProvenance } from "./ThreadManagementService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -202,7 +204,7 @@ it.effect(
           lastError: null,
         },
       });
-      for (const mode of ["live", "message"] as const) {
+      for (const mode of ["live", "message", "human-only", "human-only-legacy"] as const) {
         const requestId = RuntimeRequestId.make(`request:${mode}`);
         yield* projections.apply({
           id: EventId.make(`request:${mode}`),
@@ -215,9 +217,10 @@ it.effect(
             providerTurnId: null,
             nativeRequestRef: null,
             kind: "user_input",
+            ...(mode.startsWith("human-only") ? { humanOnly: true as const } : {}),
             status: "pending",
             responseCapability:
-              mode === "live"
+              mode !== "message"
                 ? { type: "live", providerSessionId: sessionId }
                 : { type: "message" },
             createdAt: now,
@@ -352,10 +355,43 @@ it.effect(
             assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
           }
         }
-        yield* orchestrator.dispatch(
-          mode === "live"
+        if (mode.startsWith("human-only")) {
+          const pending = yield* projections.getRuntimeResponseContext(threadId, requestId);
+          const sequence = yield* orchestrator.getThreadEventSequence(threadId);
+          for (const actor of ["agent", "system", undefined] as const) {
+            const commandId = CommandId.make(`human-only-rejected:${mode}:${actor}`);
+            const result = yield* orchestrator
+              .dispatch({
+                type: "runtime-request.respond",
+                commandId,
+                threadId,
+                requestId,
+                answers,
+                ...(actor === undefined ? {} : { createdBy: actor }),
+              })
+              .pipe(Effect.result);
+            assert.isTrue(Result.isFailure(result));
+            if (Result.isFailure(result))
+              assert.deepInclude(result.failure, {
+                cause: "This request must be answered by a person in T3 or the Pi terminal.",
+              });
+            assert.deepEqual(
+              yield* projections.getRuntimeResponseContext(threadId, requestId),
+              pending,
+            );
+            assert.equal(yield* orchestrator.getThreadEventSequence(threadId), sequence);
+            assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+          }
+        }
+        const responseCommand: OrchestrationV2Command =
+          mode !== "message"
             ? {
                 type: "runtime-request.respond",
+                ...(mode === "human-only"
+                  ? { createdBy: "user" as const }
+                  : mode === "live"
+                    ? { createdBy: "agent" as const }
+                    : {}),
                 commandId: CommandId.make(`respond:${mode}`),
                 threadId,
                 requestId,
@@ -366,16 +402,20 @@ it.effect(
                 commandId: CommandId.make(`respond:${mode}`),
                 threadId,
                 requestId,
-              },
+              };
+        yield* orchestrator.dispatch(
+          mode === "human-only-legacy"
+            ? withCreationProvenance(responseCommand, { createdBy: "user", creationSource: "web" })
+            : responseCommand,
         );
         assert.equal(
           (yield* projections.getRuntimeRequest(threadId, requestId))?.status,
           "resolved",
         );
         const response = yield* projections.getRuntimeResponseContext(threadId, requestId);
-        assert.equal(response.node?.status, mode === "live" ? "completed" : "cancelled");
-        assert.equal(response.item?.status, mode === "live" ? "completed" : "cancelled");
-        if (mode === "live") {
+        assert.equal(response.node?.status, mode !== "message" ? "completed" : "cancelled");
+        assert.equal(response.item?.status, mode !== "message" ? "completed" : "cancelled");
+        if (mode !== "message") {
           assert.deepEqual(response.request?.answers, normalizedAnswers);
           assert.equal(response.item?.type, "user_input_request");
           if (response.item?.type === "user_input_request") {
@@ -1117,6 +1157,30 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       taskIds: [followup.delegatedTaskId],
       childThreadId: task.childThreadId!,
     });
+    assert.include(followupWake.text, "Answer it with t3_pending_request_respond");
+    for (const kind of ["user_input", "command"] as const) {
+      const base = requestEvent(
+        `event:human-${kind}`,
+        `request:human-${kind}`,
+        "live",
+        kind,
+        followup,
+      );
+      const humanQuestion = { ...base, payload: { ...base.payload, humanOnly: true as const } };
+      yield* eventSink.write({ events: [humanQuestion] });
+      yield* reactor.handle(humanQuestion);
+      const wake = (yield* projections.getThreadRecords(parentThreadId, [
+        "messages",
+      ])).messages.find((message) =>
+        message.text.includes(`requestId ${humanQuestion.payload.id}.`),
+      );
+      assert.isDefined(wake);
+      assert.include(wake?.text, "waiting for the user");
+      assert.include(wake?.text, "Tell the user");
+      assert.include(wake?.text, "child thread in T3 or the Pi terminal");
+      assert.notInclude(wake?.text, "t3_pending_request_respond");
+      assert.isDefined(wake?.notification);
+    }
   }).pipe(Effect.provide(DelegatedTaskQuestionReactor.layer.pipe(Layer.provideMerge(layerTest)))),
 );
 

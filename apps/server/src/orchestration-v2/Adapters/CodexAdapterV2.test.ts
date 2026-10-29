@@ -1416,6 +1416,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         assert.lengthOf(requests, 1);
         assert.equal(requests[0]?.status, "pending");
+        assert.isUndefined(requests[0]?.humanOnly);
         assert.deepEqual(requests[0]?.responseCapability, { type: "message" });
         const questionItem = harness.events.find(
           (event) =>

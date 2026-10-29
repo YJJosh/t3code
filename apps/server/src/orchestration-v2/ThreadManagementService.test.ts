@@ -8,6 +8,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -24,6 +25,25 @@ import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+
+it("stamps runtime responses at the authenticated client boundary, including legacy commands", () => {
+  for (const actor of [undefined, "agent", "system"] as const) {
+    const command = {
+      type: "runtime-request.respond" as const,
+      commandId: CommandId.make("command:legacy-response"),
+      threadId: ThreadId.make("thread:legacy-response"),
+      requestId: RuntimeRequestId.make("request:legacy-response"),
+      ...(actor === undefined ? {} : { createdBy: actor }),
+      answers: { choice: "Allow" },
+    };
+    expect(
+      ThreadManagementService.withCreationProvenance(command, {
+        createdBy: "user",
+        creationSource: "web",
+      }),
+    ).toEqual({ ...command, createdBy: "user" });
+  }
+});
 
 const layerReceiptsTest = CommandReceiptStore.layer.pipe(
   Layer.provide(SqlitePersistence.layerMemory),

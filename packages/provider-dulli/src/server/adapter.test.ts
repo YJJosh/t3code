@@ -1421,6 +1421,7 @@ describe("DulliAdapterV2", () => {
             event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
         );
         if (dialog.type !== "runtime_request.updated") return;
+        assert.propertyVal(dialog.runtimeRequest, "humanOnly", true);
         yield* fake.emit({ type: "pi_sessions_ui_closed", id: "shared-dialog", outcome });
         yield* takeEvent(
           (event) =>
@@ -3056,6 +3057,52 @@ describe("DulliAdapterV2", () => {
             completed.turnItem.exitCode === exitCode &&
             completed.turnItem.status === (exitCode === 0 ? "completed" : "failed"),
         );
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect.each(["select", "confirm", "input", "editor"] as const)(
+    "marks extension %s dialogs as human-only before and during turns",
+    (method) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const thread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        for (const inTurn of [false, true]) {
+          if (inTurn) {
+            yield* startTurn(runtime, thread);
+            yield* fake.takeRequest("prompt");
+            yield* fake.emit({ type: "agent_start" });
+          }
+          yield* fake.emit({
+            type: "extension_ui_request",
+            id: `human-only-${inTurn}`,
+            method,
+            title: "Allow secret access?",
+            options: ["Allow", "Deny"],
+          });
+          const pending = yield* takeEvent(
+            (event) =>
+              event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+          );
+          assert.isTrue(pending.type === "runtime_request.updated");
+          if (pending.type !== "runtime_request.updated") return;
+          assert.propertyVal(pending.runtimeRequest, "humanOnly", true);
+          yield* runtime.respondToRuntimeRequest({
+            requestId: pending.runtimeRequest.id,
+            ...(method === "confirm"
+              ? { decision: "accept" as const }
+              : { answers: { [`human-only-${inTurn}`]: "Allow" } }),
+          });
+          const response = yield* fake.takeRequest("extension_ui_response");
+          assert.equal(
+            response[method === "confirm" ? "confirmed" : "value"],
+            method === "confirm" ? true : "Allow",
+          );
+        }
       }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 

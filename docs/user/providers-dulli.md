@@ -27,7 +27,7 @@ Reasoning choices follow the model's supported thinking levels. Context-window c
 
 Send text and images normally, steer an active turn, or stop it. `/compact` reduces conversation context; it can include instructions. Registered extension commands can run while the agent is working. A command that does not start agent work finishes without leaving the thread marked busy.
 
-Extension selections, confirmations, inputs, and editors appear as questions in chat on web, desktop, and mobile. Selections accept only their listed choices; free-text answers are reserved for input and editor questions. Dismiss a question to cancel; Dulli never chooses its first option for you. Timed questions expire, and session-scoped questions can outlive an unrelated model turn.
+Extension selections, confirmations, inputs, and editors appear as questions in chat on web, desktop, and mobile. Selections accept only their listed choices; free-text answers are reserved for input and editor questions. Dismiss a question to cancel; Dulli never chooses its first option for you. Timed questions expire, and session-scoped questions can outlive an unrelated model turn. All Pi extension dialogs are human-only, including secret-access approvals: agents and parent orchestrators can see that a child is waiting, but cannot answer for you. Answer in the child thread in T3, or in its Pi terminal when sharing a chat.
 
 Assistant text blocks remain separate paragraphs. Thinking rows contain actual reasoning provided by the model. Native tool calls and the Claude Agent SDK's tool-lifecycle notifications appear in the work log. Growing tool previews are bounded; completed results retain their structured content.
 

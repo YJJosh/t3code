@@ -7670,6 +7670,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Runtime request ${command.requestId} was not found.`,
         });
       }
+      // Only the authenticated client boundary may supply legacy user provenance.
+      // Internal omissions must not silently acquire permission to answer Pi UI.
+      if (runtimeRequest.humanOnly && command.createdBy !== "user") {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "This request must be answered by a person in T3 or the Pi terminal.",
+        });
+      }
       if (runtimeRequest.status !== "pending") {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,

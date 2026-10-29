@@ -49,18 +49,26 @@ const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
   return { sequence: result.sequence };
 });
 
-const readQuestion = Effect.fn("mcp.readQuestion")(function* (input: {
-  threadId?: ThreadId | undefined;
-  requestId: RuntimeRequestId;
-}) {
+const readQuestion = Effect.fn("mcp.readQuestion")(function* (
+  input: { threadId?: ThreadId | undefined; requestId: RuntimeRequestId },
+  answering = false,
+) {
   const context = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"]);
   const request = context.projection.runtimeRequests.find(
-    (request) => request.id === input.requestId && request.kind === "user_input",
+    (request) => request.id === input.requestId,
   );
+  // Confirm dialogs use approval items, but the human-only refusal applies to
+  // every Pi dialog, before narrowing this question-only tool's supported kind.
+  if (answering && request?.humanOnly) {
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message: "This request must be answered by a person in T3 or the Pi terminal.",
+    });
+  }
   const item = context.projection.turnItems.find(
     (item) => item.type === "user_input_request" && item.requestId === input.requestId,
   );
-  if (request === undefined || item?.type !== "user_input_request")
+  if (request?.kind !== "user_input" || item?.type !== "user_input_request")
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",
       message: "The pending user-input request was not found.",
@@ -205,25 +213,34 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   t3_pending_request_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const { projection } = yield* readThread(input.threadId, ["runtimeRequests"]);
+      const requests = projection.runtimeRequests.filter(
+        (request) => request.kind === "user_input" && request.status === "pending",
+      );
       return {
-        requestIds: projection.runtimeRequests
-          .filter((request) => request.kind === "user_input" && request.status === "pending")
+        requestIds: requests.map((request) => request.id),
+        humanOnlyRequestIds: requests
+          .filter((request) => request.humanOnly)
           .map((request) => request.id),
       };
     }),
   ),
   t3_pending_request_read: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const { item } = yield* readQuestion(input);
-      return { requestId: input.requestId, questions: item.questions };
+      const { item, request } = yield* readQuestion(input);
+      return {
+        requestId: input.requestId,
+        questions: item.questions,
+        humanOnly: request.humanOnly === true,
+      };
     }),
   ),
   t3_pending_request_respond: writesThread((input) =>
     Effect.gen(function* () {
-      const { threads, projection } = yield* readQuestion(input);
+      const { threads, projection } = yield* readQuestion(input, true);
       const result = yield* threads
         .dispatch({
           type: "runtime-request.respond",
+          createdBy: "agent",
           threadId: projection.thread.id,
           commandId: yield* newCommandId(),
           requestId: input.requestId,

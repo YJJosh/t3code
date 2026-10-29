@@ -9,12 +9,17 @@ import {
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2RpcSchemas,
+  OrchestrationV2RuntimeRequest,
+  OrchestrationV2RuntimeRequestJson,
   OrchestrationV2Subagent,
   OrchestrationV2SubagentJson,
   OrchestrationV2ThreadHistoryPage,
   OrchestrationV2TurnItem,
   OrchestrationV2TurnItemJson,
 } from "./orchestrationV2.ts";
+
+const encodeRuntimeRequestJson = Schema.encodeSync(OrchestrationV2RuntimeRequestJson);
+const decodeRuntimeRequestJson = Schema.decodeUnknownSync(OrchestrationV2RuntimeRequestJson);
 
 const now = DateTime.makeUnsafe("2026-04-20T00:00:00.000Z");
 
@@ -35,6 +40,57 @@ const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
 );
 
 describe("orchestration V2 contracts", () => {
+  it("keeps human-only request events compatible with old clients and persisted requests", () => {
+    // The previous request schema had exactly these fields. In particular, its
+    // default excess-property handling must accept the new server's marker.
+    const fields = OrchestrationV2RuntimeRequest.fields;
+    const oldRequest = Schema.Struct({
+      id: fields.id,
+      nodeId: fields.nodeId,
+      providerTurnId: fields.providerTurnId,
+      nativeRequestRef: fields.nativeRequestRef,
+      kind: fields.kind,
+      status: fields.status,
+      responseCapability: fields.responseCapability,
+      createdAt: fields.createdAt,
+      resolvedAt: fields.resolvedAt,
+      decision: fields.decision,
+      answers: fields.answers,
+    });
+    const oldWireEvent = Schema.toCodecJson(
+      Schema.Struct({
+        id: Schema.String,
+        type: Schema.Literal("runtime-request.updated"),
+        threadId: Schema.String,
+        occurredAt: Schema.DateTimeUtc,
+        payload: oldRequest,
+      }),
+    );
+    const legacy = {
+      id: "request-1",
+      nodeId: "node-1",
+      providerTurnId: null,
+      nativeRequestRef: null,
+      kind: "user_input",
+      status: "pending",
+      responseCapability: { type: "message" },
+      createdAt: DateTime.formatIso(now),
+      resolvedAt: null,
+    };
+    const marked = { ...legacy, humanOnly: true };
+    const event = {
+      id: "event-1",
+      type: "runtime-request.updated",
+      threadId: "thread-1",
+      occurredAt: DateTime.formatIso(now),
+      payload: marked,
+    };
+    expect(Schema.decodeUnknownSync(oldWireEvent)(event).payload).not.toHaveProperty("humanOnly");
+    expect(decodeRuntimeRequestJson(legacy)).not.toHaveProperty("humanOnly");
+    expect(decodeRuntimeRequestJson(marked).humanOnly).toBe(true);
+    expect(encodeRuntimeRequestJson(decodeRuntimeRequestJson(marked))).toEqual(marked);
+  });
+
   it("decodes thread event types from a newer server as skippable items", () => {
     const decodeWireItems = Schema.decodeUnknownSync(
       Schema.toCodecJson(Schema.Array(OrchestrationV2RpcSchemas.subscribeThread.output)),

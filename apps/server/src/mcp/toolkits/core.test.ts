@@ -136,7 +136,8 @@ it.effect("an answered question reports already answered instead of not found", 
       server
         .callTool({
           name: "t3_pending_request_respond",
-          arguments: { requestId: id, answers: { size: "large" } },
+          // Extra actor input cannot confer human authority.
+          arguments: { requestId: id, answers: { size: "large" }, createdBy: "user" },
         })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
@@ -204,6 +205,127 @@ it.effect("an answered question reports already answered instead of not found", 
     ),
   );
 });
+
+it.effect.each(["human-question", "agent-question", "human-confirm"] as const)(
+  "pending requests enforce human-only policy (%s)",
+  (dialog) => {
+    const humanOnly = dialog !== "agent-question";
+    const kind = dialog === "human-confirm" ? ("command" as const) : ("user_input" as const);
+    const shell = McpToolAccessTestkit.liveThreadShell(threadId);
+    const requestId = RuntimeRequestId.make("answered-question");
+    const projection = McpToolAccessTestkit.idleThreadProjection(shell);
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const respond = (id: string) =>
+        server
+          .callTool({
+            name: "t3_pending_request_respond",
+            // Extra actor input cannot confer human authority.
+            arguments: { requestId: id, answers: { size: "large" }, createdBy: "user" },
+          })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+      const read = yield* server
+        .callTool({ name: "t3_pending_request_read", arguments: { requestId } })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      if (kind === "user_input") {
+        expect(read.isError).not.toBe(true);
+        expect(read.structuredContent).toMatchObject({ requestId, humanOnly, questions: [] });
+      } else {
+        expect(read.isError).toBe(true);
+      }
+      const list = yield* server
+        .callTool({ name: "t3_pending_request_list", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(list.isError).not.toBe(true);
+      expect(list.structuredContent).toMatchObject({
+        requestIds: kind === "user_input" ? [requestId] : [],
+        humanOnlyRequestIds: kind === "user_input" && humanOnly ? [requestId] : [],
+      });
+      const response = yield* respond(requestId);
+      if (humanOnly) {
+        expect(declaredFailure(response)).toMatchObject({
+          code: "invalid_request",
+          message: "This request must be answered by a person in T3 or the Pi terminal.",
+        });
+      } else {
+        expect(response.isError).not.toBe(true);
+        expect(response.structuredContent).toMatchObject({ sequence: 42 });
+      }
+    }).pipe(
+      Effect.provide(
+        layerThreadToolkit.pipe(
+          Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: () => Effect.succeed(shell),
+              getProjectThreadRecords: () =>
+                Effect.succeed({
+                  ...projection,
+                  runtimeRequests: [
+                    {
+                      id: requestId,
+                      nodeId: NodeId.make("root"),
+                      providerTurnId: null,
+                      nativeRequestRef: null,
+                      kind,
+                      status: "pending",
+                      ...(humanOnly ? { humanOnly: true as const } : {}),
+                      responseCapability: { type: "message" },
+                      createdAt: shell.createdAt,
+                      resolvedAt: shell.updatedAt,
+                      answers: { size: "large" },
+                    },
+                  ],
+                  turnItems:
+                    kind === "command"
+                      ? []
+                      : [
+                          {
+                            id: TurnItemId.make("answered-question-item"),
+                            threadId,
+                            runId: null,
+                            nodeId: null,
+                            providerThreadId: null,
+                            providerTurnId: null,
+                            nativeItemRef: null,
+                            parentItemId: null,
+                            ordinal: 0,
+                            status: "completed",
+                            title: null,
+                            startedAt: shell.createdAt,
+                            completedAt: shell.updatedAt,
+                            updatedAt: shell.updatedAt,
+                            type: "user_input_request",
+                            requestId,
+                            questions: [],
+                          },
+                        ],
+                }),
+              dispatch: (command) => {
+                expect(humanOnly).toBe(false);
+                expect(command).toMatchObject({
+                  type: "runtime-request.respond",
+                  createdBy: "agent",
+                });
+                return Effect.succeed({ sequence: 42, storedEvents: [] });
+              },
+            }),
+          ),
+        ),
+      ),
+    );
+  },
+);
 
 it("bounds public command rejections and redacts internal dispatch causes", () => {
   const command = { commandId: CommandId.make("mcp-core-command"), commandType: "thread.settle" };

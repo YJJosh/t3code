@@ -1895,6 +1895,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         const providerTurnId = null;
         const runtimeRequest: OrchestrationV2RuntimeRequest = {
           id: requestId,
+          humanOnly: true,
           nodeId,
           providerTurnId,
           nativeRequestRef: providerRef(nativeRequestId),
