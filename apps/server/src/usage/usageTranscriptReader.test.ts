@@ -215,36 +215,49 @@ describe("readTranscriptRecords resume", () => {
     assert.deepStrictEqual([...first.records, ...second.records], [...full.records]);
   });
 
-  it.each([
-    {
-      marker: "Pi's system prompt note",
-      line: {
-        type: "attachment",
-        attachment: {
-          type: "prompt_snapshot",
-          systemPrompt: ["You are Claude Code.", "## Conversation replay\nPi runs each turn"],
+  it.each(
+    [
+      {
+        marker: "Pi's system prompt note",
+        line: {
+          type: "attachment",
+          attachment: {
+            type: "prompt_snapshot",
+            systemPrompt: ["You are Claude Code.", "## Conversation replay\nPi runs each turn"],
+          },
         },
       },
-    },
-    {
-      marker: "Pi's text replay",
-      line: {
-        type: "user",
-        message: { role: "user", content: [{ type: "text", text: "USER:\n" }] },
+      {
+        marker: "Pi's text replay",
+        line: {
+          type: "user",
+          message: { role: "user", content: [{ type: "text", text: "USER:\n" }] },
+        },
       },
-    },
-  ])(
-    "skips Claude usage that Pi drives, marked by $marker, also after resume",
-    async ({ line }) => {
+    ].flatMap((marker) => [
+      { ...marker, mode: "buffered", streamingThresholdBytes: Infinity },
+      { ...marker, mode: "streaming", streamingThresholdBytes: 0 },
+    ]),
+  )(
+    "skips Claude usage that Pi drives, marked by $marker in $mode reads, also after resume",
+    async ({ line, streamingThresholdBytes }) => {
       // Pi records this usage in its own session, which the Dulli reader counts.
       const path = NodePath.join(dir, "pi-driven.jsonl");
-      await NodeFSP.writeFile(path, `${JSON.stringify(line)}\n${claudeLine(1, 5)}`);
-      const first = await readTranscriptRecords(path, TEST_FORMATS.claude);
+      const options = { streamingThresholdBytes };
+      // Lines enter the projected parser only when they cross a stream chunk.
+      const padded = { ...line, padding: "x".repeat(256 * 1024) };
+      await NodeFSP.writeFile(path, `${JSON.stringify(padded)}\n${claudeLine(1, 5)}`);
+      const first = await readTranscriptRecords(path, TEST_FORMATS.claude, undefined, options);
       assert.isNotNull(first);
       assert.deepStrictEqual(first.records, []);
 
       await NodeFSP.appendFile(path, claudeLine(2, 7));
-      const resumed = await readTranscriptRecords(path, TEST_FORMATS.claude, first.position);
+      const resumed = await readTranscriptRecords(
+        path,
+        TEST_FORMATS.claude,
+        first.position,
+        options,
+      );
       assert.isNotNull(resumed);
       assert.isTrue(resumed.resumed);
       assert.deepStrictEqual(resumed.records, []);

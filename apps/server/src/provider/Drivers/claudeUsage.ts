@@ -131,7 +131,8 @@ export const claudeUsageFormat: TranscriptUsageFormat<ClaudeScanState> = {
     sessionId: true,
     costUSD: true,
     attachment: { systemPrompt: true },
-    message: { id: true, model: true, usage: true },
+    // The first block's text keeps Pi's `USER:` replay marker on streamed lines.
+    message: { id: true, model: true, usage: true, content: { 0: { text: true } } },
   },
   usageMarkers: ['"usage"', '"prompt_snapshot"', `"text":${JSON.stringify(PI_REPLAY_FIRST_BLOCK)}`],
   parseLine: (line, state) => orEmpty(parseClaudeLine(line, state)),
