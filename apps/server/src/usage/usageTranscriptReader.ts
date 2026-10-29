@@ -92,8 +92,10 @@ function selectUsageFields(fields: SelectedFields) {
     let selected: true | SelectedFields = fields;
     for (const key of path) {
       if (selected === true) return true;
-      if (typeof key !== "string" || !Object.hasOwn(selected, key)) return false;
-      selected = selected[key]!;
+      // Array indexes select by their string form, like `{ content: { 0: ... } }`.
+      const name = typeof key === "number" ? String(key) : key;
+      if (name === null || !Object.hasOwn(selected, name)) return false;
+      selected = selected[name]!;
     }
     return true;
   };

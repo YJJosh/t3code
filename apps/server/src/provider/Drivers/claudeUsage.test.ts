@@ -79,11 +79,13 @@ describe("parseClaudeLine", () => {
         },
       }),
     ];
-    expect(claudeUsageFormat.parseLine(JSON.stringify(projected), undefined)).toEqual(expected);
-    expect(claudeUsageFormat.parseProjected(projected, undefined)).toEqual(expected);
+    expect(claudeUsageFormat.parseLine(JSON.stringify(projected), { piDriven: false })).toEqual(
+      expected,
+    );
+    expect(claudeUsageFormat.parseProjected(projected, { piDriven: false })).toEqual(expected);
 
     const synthetic = { ...projected, message: { ...projected.message, model: "<synthetic>" } };
-    expect(claudeUsageFormat.parseLine(JSON.stringify(synthetic), undefined)).toEqual([]);
-    expect(claudeUsageFormat.parseProjected(synthetic, undefined)).toEqual([]);
+    expect(claudeUsageFormat.parseLine(JSON.stringify(synthetic), { piDriven: false })).toEqual([]);
+    expect(claudeUsageFormat.parseProjected(synthetic, { piDriven: false })).toEqual([]);
   });
 });
