@@ -1380,6 +1380,77 @@ describe("DulliAdapterV2", () => {
       }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
+  it.effect.each([
+    ["answered", "resolved", "completed"],
+    ["cancelled", "cancelled", "cancelled"],
+  ] as const)(
+    "clears a shared-chat dialog the terminal closed (%s) without answering it",
+    ([outcome, requestStatus, itemStatus]) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const offers =
+          yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+        const { runtime, takeEvent } = yield* openRuntime(
+          fake,
+          "default",
+          THREAD_ID,
+          SESSION_ID,
+          undefined,
+          {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        );
+        yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        // A turn started in the terminal stays an unclaimed wake while its dialog is open.
+        yield* fake.emit({ type: "agent_start" });
+        yield* Queue.take(offers);
+        yield* fake.emit({
+          type: "extension_ui_request",
+          id: "shared-dialog",
+          method: "select",
+          title: "Allow 1Password?",
+          options: ["Allow", "Deny"],
+          timeout: 60_000,
+        });
+        const dialog = yield* takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+        );
+        if (dialog.type !== "runtime_request.updated") return;
+        yield* fake.emit({ type: "pi_sessions_ui_closed", id: "shared-dialog", outcome });
+        yield* takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" &&
+            event.runtimeRequest.id === dialog.runtimeRequest.id &&
+            event.runtimeRequest.status === requestStatus,
+        );
+        yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.nodeId === dialog.runtimeRequest.nodeId &&
+            event.turnItem.status === itemStatus,
+        );
+        const late = yield* Effect.result(
+          runtime.respondToRuntimeRequest({
+            requestId: dialog.runtimeRequest.id,
+            decision: "accept",
+            answers: { "shared-dialog": "Allow" },
+          }),
+        );
+        assert.equal(late._tag, "Failure");
+        // Expiry of the closed card must not reach Pi either.
+        yield* TestClock.adjust(Duration.seconds(60));
+        assert.deepEqual(
+          fake.allRequests().filter((request) => request["type"] === "extension_ui_response"),
+          [],
+        );
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect("stops provider-initiated work that has no T3 turn owner", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi;
