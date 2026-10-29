@@ -4680,35 +4680,57 @@ describe("Dulli fork policy", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
-  it.effect("session dialogs survive model settlement and invalid select answers cancel", () =>
-    Effect.gen(function* () {
-      const fake = yield* makeFakePi;
-      const { runtime, takeEvent } = yield* openRuntime(fake);
-      const thread = yield* runtime.ensureThread({
-        threadId: THREAD_ID,
-        modelSelection: modelSelection("default"),
-        runtimePolicy,
-      });
-      yield* startTurn(runtime, thread);
-      yield* fake.takeRequest("prompt");
-      yield* fake.emit({ type: "agent_start" });
-      yield* fake.emit({
-        type: "extension_ui_request",
-        method: "select",
-        id: "menu",
-        title: "Choose",
-        options: ["Delete", "Keep"],
-      });
-      const pending = yield* takeEvent((event) => event.type === "runtime_request.updated");
-      if (pending.type !== "runtime_request.updated") return yield* Effect.die("Missing dialog");
-      yield* fake.emit({ type: "agent_settled" });
-      yield* takeEvent((event) => event.type === "turn.terminal");
-      yield* runtime.respondToRuntimeRequest({
-        requestId: pending.runtimeRequest.id,
-        answers: { menu: "invented" },
-      });
-      assert.equal((yield* fake.takeRequest("extension_ui_response"))["cancelled"], true);
-    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  it.effect(
+    "session dialogs reject invalid select answers without consuming the live request",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const thread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, thread);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        yield* fake.emit({
+          type: "extension_ui_request",
+          method: "select",
+          id: "menu",
+          title: "Choose",
+          options: ["Delete", "Keep"],
+        });
+        const pending = yield* takeEvent((event) => event.type === "runtime_request.updated");
+        if (pending.type !== "runtime_request.updated") return yield* Effect.die("Missing dialog");
+        const card = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+        );
+        assert.isTrue(
+          card.type === "turn_item.updated" &&
+            card.turnItem.type === "user_input_request" &&
+            card.turnItem.questions[0]?.allowCustomAnswer === false,
+        );
+        yield* fake.emit({ type: "agent_settled" });
+        yield* takeEvent((event) => event.type === "turn.terminal");
+        // REVIEW: shared Pi ignores cancellation, so an invalid answer must stay retryable.
+        const rejected = yield* runtime
+          .respondToRuntimeRequest({
+            requestId: pending.runtimeRequest.id,
+            answers: { menu: "invented" },
+          })
+          .pipe(Effect.result);
+        assert.equal(rejected._tag, "Failure");
+        assert.isFalse(
+          fake.allRequests().some((request) => request["type"] === "extension_ui_response"),
+        );
+        yield* runtime.respondToRuntimeRequest({
+          requestId: pending.runtimeRequest.id,
+          answers: { menu: ["Keep"] },
+        });
+        assert.equal((yield* fake.takeRequest("extension_ui_response"))["value"], "Keep");
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect(

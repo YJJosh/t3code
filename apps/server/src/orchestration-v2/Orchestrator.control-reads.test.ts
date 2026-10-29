@@ -270,10 +270,26 @@ it.effect(
             updatedAt: now,
             type: "user_input_request",
             requestId,
-            questions: [],
+            questions: [
+              {
+                id: "choice",
+                header: "Choice",
+                question: "Choose an option",
+                allowCustomAnswer: false,
+                options: [
+                  { label: "Keep", value: " keep ", description: "Keep it" },
+                  { label: "Delete", description: "Delete it" },
+                ],
+              },
+            ],
           },
         });
-        const answers = { text: "Blue", list: ["Red"], codex: { answers: ["Green"] } };
+        const answers = {
+          text: "Blue",
+          list: ["Red"],
+          codex: { answers: ["Green"] },
+          choice: " keep ",
+        };
         const normalizedAnswers = { ...answers, codex: ["Green"] };
         if (mode === "live") {
           const pending = yield* projections.getRuntimeResponseContext(threadId, requestId);
@@ -293,6 +309,38 @@ it.effect(
                 threadId,
                 requestId,
                 answers: { ...answers, invalid: value },
+              })
+              .pipe(Effect.result);
+            assert.isTrue(Result.isFailure(result));
+            assert.deepEqual(
+              yield* projections.getRuntimeResponseContext(threadId, requestId),
+              pending,
+            );
+            assert.equal(yield* orchestrator.getThreadEventSequence(threadId), sequence);
+            assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
+          }
+        }
+        if (mode === "live") {
+          // REVIEW: Adapter failures happen after resolution. Invalid select values
+          // must fail dispatch itself so old/malformed clients cannot strand Pi.
+          const pending = yield* projections.getRuntimeResponseContext(threadId, requestId);
+          const sequence = yield* orchestrator.getThreadEventSequence(threadId);
+          for (const [index, choice] of [
+            "invented",
+            "Keep",
+            [" keep ", "Delete"],
+            null,
+            undefined,
+          ].entries()) {
+            const commandId = CommandId.make(`invalid-choice:${index}`);
+            const { choice: _choice, ...otherAnswers } = answers;
+            const result = yield* orchestrator
+              .dispatch({
+                type: "runtime-request.respond",
+                commandId,
+                threadId,
+                requestId,
+                answers: choice === undefined ? otherAnswers : { ...answers, choice },
               })
               .pipe(Effect.result);
             assert.isTrue(Result.isFailure(result));
