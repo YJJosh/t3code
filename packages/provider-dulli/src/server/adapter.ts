@@ -1710,23 +1710,15 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
 
       // ── extension UI prompts ──────────────────────────────
 
-      const cancelPrompt = Effect.fn("DulliAdapter.cancelPrompt")(function* (
+      /** Closes a card without telling Pi, which already closed the dialog. */
+      const closePrompt = Effect.fn("DulliAdapter.closePrompt")(function* (
         pending: PendingPiPrompt,
         resolvedAt: DateTime.Utc,
+        status: "resolved" | "cancelled",
       ) {
         if (pending.expirationFiber !== null) yield* Fiber.interrupt(pending.expirationFiber);
-        yield* connection
-          .send({
-            type: "extension_ui_response",
-            id: pending.nativeRequestId,
-            cancelled: true,
-          })
-          .pipe(Effect.ignore);
-        pending.runtimeRequest = {
-          ...pending.runtimeRequest,
-          status: "cancelled",
-          resolvedAt,
-        };
+        const itemStatus = status === "resolved" ? "completed" : "cancelled";
+        pending.runtimeRequest = { ...pending.runtimeRequest, status, resolvedAt };
         yield* emit({
           type: "runtime_request.updated",
           driver: DULLI_PROVIDER,
@@ -1736,18 +1728,32 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         yield* emit({
           type: "node.updated",
           driver: DULLI_PROVIDER,
-          node: { ...pending.node, status: "cancelled", completedAt: resolvedAt },
+          node: { ...pending.node, status: itemStatus, completedAt: resolvedAt },
         });
         yield* emit({
           type: "turn_item.updated",
           driver: DULLI_PROVIDER,
           turnItem: {
             ...pending.turnItem,
-            status: "cancelled",
+            status: itemStatus,
             completedAt: resolvedAt,
             updatedAt: resolvedAt,
           },
         });
+      });
+
+      const cancelPrompt = Effect.fn("DulliAdapter.cancelPrompt")(function* (
+        pending: PendingPiPrompt,
+        resolvedAt: DateTime.Utc,
+      ) {
+        yield* connection
+          .send({
+            type: "extension_ui_response",
+            id: pending.nativeRequestId,
+            cancelled: true,
+          })
+          .pipe(Effect.ignore);
+        yield* closePrompt(pending, resolvedAt, "cancelled");
       });
 
       const cancelPendingPrompts = Effect.fn("DulliAdapter.cancelPendingPrompts")(function* (
@@ -1889,6 +1895,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         const providerTurnId = null;
         const runtimeRequest: OrchestrationV2RuntimeRequest = {
           id: requestId,
+          humanOnly: true,
           nodeId,
           providerTurnId,
           nativeRequestRef: providerRef(nativeRequestId),
@@ -2273,11 +2280,13 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           return;
         }
         // Model-selection hooks can await a dialog before startTurn can claim
-        // a wake. Keep interactive requests session-scoped until a turn owns
-        // them; buffer native output and notifications for that turn.
+        // a wake. Keep interactive requests, and a shared chat's terminal
+        // closing one, session-scoped until a turn owns them; buffer native
+        // output and notifications for that turn.
         const interactiveUiRequest =
-          event["type"] === "extension_ui_request" &&
-          ["select", "confirm", "input", "editor"].includes(String(event["method"]));
+          (event["type"] === "extension_ui_request" &&
+            ["select", "confirm", "input", "editor"].includes(String(event["method"]))) ||
+          event["type"] === "pi_sessions_ui_closed";
         if (
           threadState?.activeTurn === null &&
           pendingWake !== null &&
@@ -2867,6 +2876,22 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             if (pending === undefined || pending !== event["pending"]) return;
             pendingPrompts.delete(requestId);
             yield* cancelPrompt(pending, yield* DateTime.now);
+            return;
+          }
+          case "pi_sessions_ui_closed": {
+            // pi-sessions also showed this dialog in the terminal, which answered it
+            // first, or it timed out or was aborted there. Pi needs no response.
+            const nativeRequestId = recordString(event, "id");
+            const entry = Array.from(pendingPrompts).find(
+              ([, pending]) => pending.nativeRequestId === nativeRequestId,
+            );
+            if (entry === undefined) return;
+            pendingPrompts.delete(entry[0]);
+            yield* closePrompt(
+              entry[1],
+              yield* DateTime.now,
+              recordString(event, "outcome") === "answered" ? "resolved" : "cancelled",
+            );
             return;
           }
           case "t3.flush_extension_errors": {
@@ -3792,7 +3817,16 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                 `Pi extension request ${requestInput.requestId} has expired`,
               );
             }
+            // old/malformed clients may still send free text. Reject it without consuming the card;
+            // shared Pi ignores cancelled responses, so silently converting it to cancellation strands the tool.
             const response = piUiResponse(pending, requestInput.decision, requestInput.answers);
+            if (
+              pending.method === "select" &&
+              requestInput.answers?.[pending.questionId] !== undefined &&
+              response["cancelled"] === true
+            ) {
+              return yield* protocolError("Choose one of the listed Pi dialog options.");
+            }
             yield* connection.send({
               type: "extension_ui_response",
               id: pending.nativeRequestId,
@@ -4323,6 +4357,8 @@ function piQuestion(
     header: title,
     question,
     ...(method === "editor" ? { initialAnswer: recordString(event, "prefill") ?? "" } : {}),
+    // Pi selects accept only listed values; free text would cancel T3's card but leave shared Pi waiting.
+    ...(method === "select" ? { allowCustomAnswer: false } : {}),
     options,
   };
 }
@@ -4337,7 +4373,10 @@ function piUiResponse(
     if (decision === "decline") return { confirmed: false };
     return { cancelled: true };
   }
-  const answer = answers?.[pending.questionId];
+  const rawAnswer = answers?.[pending.questionId];
+  // orchestration also accepts single-option array answers. Normalize
+  // that valid representation instead of cancelling an already-resolved card.
+  const answer = Array.isArray(rawAnswer) && rawAnswer.length === 1 ? rawAnswer[0] : rawAnswer;
   // An empty string is a valid dialog value per the RPC spec (the extension
   // receives ""), distinct from cancelling (the extension receives undefined).
   if (typeof answer === "string") {

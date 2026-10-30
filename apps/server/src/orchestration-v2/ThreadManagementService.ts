@@ -71,6 +71,9 @@ export function withCreationProvenance(
   provenance: ThreadManagementProvenance,
 ): OrchestrationV2Command {
   switch (command.type) {
+    case "runtime-request.respond":
+      // ws.ts calls this after client authentication; old clients omit the actor.
+      return { ...command, createdBy: provenance.createdBy };
     case "thread.create":
     case "message.dispatch":
     case "thread.fork":

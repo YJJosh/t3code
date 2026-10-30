@@ -146,21 +146,25 @@ const question = Schema.Struct({
 });
 const pendingRequest = Schema.Struct({
   requestId: RuntimeRequestId,
+  humanOnly: Schema.Boolean,
   questions: Schema.Array(question),
 });
 const PendingRequestListTool = Tool.make("t3_pending_request_list", {
   ...commandTool,
   description:
-    "List pending user questions in a thread. Omit threadId for this thread. Approval requests are not included.",
+    "List pending user questions in a thread. Omit threadId for this thread. humanOnlyRequestIds must be answered by a person, not an agent. Approval requests are not included.",
   parameters: Schema.Struct({ threadId: Schema.optional(ThreadId) }),
-  success: Schema.Struct({ requestIds: Schema.Array(RuntimeRequestId) }),
+  success: Schema.Struct({
+    requestIds: Schema.Array(RuntimeRequestId),
+    humanOnlyRequestIds: Schema.Array(RuntimeRequestId),
+  }),
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
 const PendingRequestReadTool = Tool.make("t3_pending_request_read", {
   ...commandTool,
   description:
-    "Read a pending user question. Answer with t3_pending_request_respond; existing live or message response handling is used.",
+    "Read a pending user question. If humanOnly is true, tell the user to answer in the child thread in T3 or the Pi terminal; agents cannot answer it. Otherwise answer with t3_pending_request_respond.",
   parameters: Schema.Struct(requestTarget),
   success: pendingRequest,
 })
@@ -169,7 +173,7 @@ const PendingRequestReadTool = Tool.make("t3_pending_request_read", {
 const PendingRequestRespondTool = Tool.make("t3_pending_request_respond", {
   ...commandTool,
   description:
-    "Answer a pending user-input request using the existing runtime response command. This cannot approve a permission request.",
+    "Answer a pending user-input request using the existing runtime response command. This cannot approve a permission request or answer a human-only Pi extension dialog.",
   parameters: Schema.Struct({ ...requestTarget, answers: ProviderUserInputAnswers }),
 })
   .annotate(Tool.Destructive, true)

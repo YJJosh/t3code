@@ -78,7 +78,11 @@ export const layerBinding = Layer.effectDiscard(
   }),
 );
 
-/** Persist terminal model changes through commands; terminal dialogs have no T3 response route. */
+/**
+ * Persist terminal model changes through commands, and show the terminal-only
+ * dialogs pi-sessions does not forward as `extension_ui_request` (input,
+ * custom views, or everything with an older pi-sessions) as a notice.
+ */
 export const makeFactory = Effect.gen(function* () {
   const updates = yield* DulliSharedModelUpdates;
   const factory: DulliBridgeFactory = (context) =>

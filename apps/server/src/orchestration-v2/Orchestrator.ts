@@ -7670,6 +7670,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Runtime request ${command.requestId} was not found.`,
         });
       }
+      // Only the authenticated client boundary may supply legacy user provenance.
+      // Internal omissions must not silently acquire permission to answer Pi UI.
+      if (runtimeRequest.humanOnly && command.createdBy !== "user") {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "This request must be answered by a person in T3 or the Pi terminal.",
+        });
+      }
       if (runtimeRequest.status !== "pending") {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -7705,6 +7714,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             typeof answer === "object" && "answers" in answer ? answer.answers : answer,
           ]),
         );
+      }
+
+      // Provider effects run after the request/card is persisted as
+      // resolved. Reject invalid listed choices here, not only in the adapter,
+      // so an old or malformed client can retry instead of stranding Pi.
+      if (
+        runtimeRequest.kind === "user_input" &&
+        context.item?.type === "user_input_request" &&
+        command.decision !== "cancel" &&
+        command.decision !== "decline"
+      ) {
+        for (const question of context.item.questions) {
+          if (question.allowCustomAnswer !== false) continue;
+          const answer = answers?.[question.id];
+          if (answer === undefined && question.required === false) continue;
+          const selected =
+            typeof answer === "string" ? [answer] : Array.isArray(answer) ? answer : [];
+          if (
+            selected.length === 0 ||
+            (question.multiSelect !== true && selected.length !== 1) ||
+            selected.some(
+              (value) =>
+                !question.options.some((option) => value === (option.value ?? option.label)),
+            )
+          ) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Choose one of the listed question options.",
+            });
+          }
+        }
       }
 
       const now = yield* DateTime.now;

@@ -79,6 +79,9 @@ export const makePiDaemonConnection = Effect.fn("PiDaemonConnection.make")(funct
             ? { environment: env.PI_SESSIONS_T3_ENVIRONMENT }
             : {}),
         },
+        // T3 answers the shared chat's select/confirm dialogs and clears a card on
+        // `pi_sessions_ui_closed`. Older pi-sessions ignore it and keep the terminal notice.
+        features: ["ui-dialogs"],
       },
       65_000,
     )

@@ -1024,6 +1024,8 @@ export function latestProviderTurnForAttempt<
 
 export const OrchestrationV2RuntimeRequest = Schema.Struct({
   id: RuntimeRequestId,
+  /** Pi extension dialogs are UI for the person, not questions for another agent. */
+  humanOnly: Schema.optional(Schema.Literal(true)),
   nodeId: NodeId,
   providerTurnId: Schema.NullOr(ProviderTurnId),
   nativeRequestRef: Schema.NullOr(OrchestrationV2ProviderRef),
@@ -2982,6 +2984,8 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("runtime-request.respond"),
+    // Optional for legacy clients; the authenticated client boundary supplies user provenance.
+    createdBy: Schema.optional(OrchestrationV2Actor),
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,

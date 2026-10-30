@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   TurnItemId,
   WS_METHODS,
@@ -37,6 +38,8 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import { v2Now, v2Projection, v2ThreadId } from "../state/orchestrationV2TestFixtures.ts";
 import {
   archiveThread,
+  respondToThreadApproval,
+  respondToThreadUserInput,
   interruptThreadTurn,
   revertThreadCheckpoint,
   resumeThreadQueue,
@@ -137,6 +140,29 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("V2 environment commands", () => {
+  it.effect("identifies web, desktop and mobile card answers as user actions", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands, projects: [] });
+      const threadId = ThreadId.make("human-question-thread");
+      const requestId = RuntimeRequestId.make("human-question");
+      yield* respondToThreadUserInput({
+        threadId,
+        requestId,
+        answers: { secret: "Allow" },
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      yield* respondToThreadApproval({
+        threadId,
+        requestId,
+        decision: "accept",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(commands).toMatchObject([
+        { type: "runtime-request.respond", createdBy: "user", answers: { secret: "Allow" } },
+        { type: "runtime-request.respond", createdBy: "user", decision: "accept" },
+      ]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect("distinguishes sending a selected queued message from resuming queue order", () =>
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];

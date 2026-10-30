@@ -82,6 +82,7 @@ const thread = {
   archivedAt: null as string | null,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
+  requestId: "request-1",
   session: null as { status: string } | null,
   latestTurn: { turnId: "turn", state: "running", completedAt: null as string | null },
 };
@@ -120,9 +121,9 @@ function toV2ThreadShell(input: typeof thread) {
           ? "failed"
           : "running",
     pendingRuntimeRequest: input.hasPendingUserInput
-      ? { id: "request-1", kind: "user_input", createdAt: SHELL_NOW }
+      ? { id: input.requestId, kind: "user_input", createdAt: SHELL_NOW }
       : input.hasPendingApprovals
-        ? { id: "request-1", kind: "command", createdAt: SHELL_NOW }
+        ? { id: input.requestId, kind: "command", createdAt: SHELL_NOW }
         : null,
     latestVisibleMessage: null,
     latestUserMessageAt: null,
@@ -215,3 +216,18 @@ it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
     expect(notification.close).toHaveBeenCalled();
   },
 );
+
+// back-to-back approvals can replace the pending id without a rendered running state.
+it("notifies for each pending request in the same run, but not for repeated snapshots", async () => {
+  await using app = setup();
+  await app.render();
+  state.shells.set("one", shell({ hasPendingUserInput: true }));
+  await app.render();
+  expect(TestNotification.sent).toHaveLength(1);
+  state.shells.set("one", shell({ hasPendingUserInput: true, requestId: "request-2" }));
+  await app.render();
+  expect(TestNotification.sent).toHaveLength(2);
+  state.shells.set("one", shell({ hasPendingUserInput: true, requestId: "request-2" }));
+  await app.render();
+  expect(TestNotification.sent).toHaveLength(2);
+});

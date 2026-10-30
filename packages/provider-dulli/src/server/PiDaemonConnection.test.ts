@@ -215,6 +215,7 @@ it.layer(NodeServices.layer)("PiDaemonConnection", (it) => {
             attach: true,
             sessionFile: `${f.home}/native.jsonl`,
             t3: { thread: "t3-thread", environment: "env" },
+            features: ["ui-dialogs"],
           });
           const launch = request.launch as { args: string[]; env: Record<string, string> };
           expect(launch.args).not.toContain("--mode");

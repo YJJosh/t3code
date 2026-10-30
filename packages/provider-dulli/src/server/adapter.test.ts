@@ -1380,6 +1380,78 @@ describe("DulliAdapterV2", () => {
       }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
+  it.effect.each([
+    ["answered", "resolved", "completed"],
+    ["cancelled", "cancelled", "cancelled"],
+  ] as const)(
+    "clears a shared-chat dialog the terminal closed (%s) without answering it",
+    ([outcome, requestStatus, itemStatus]) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const offers =
+          yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+        const { runtime, takeEvent } = yield* openRuntime(
+          fake,
+          "default",
+          THREAD_ID,
+          SESSION_ID,
+          undefined,
+          {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        );
+        yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        // A turn started in the terminal stays an unclaimed wake while its dialog is open.
+        yield* fake.emit({ type: "agent_start" });
+        yield* Queue.take(offers);
+        yield* fake.emit({
+          type: "extension_ui_request",
+          id: "shared-dialog",
+          method: "select",
+          title: "Allow 1Password?",
+          options: ["Allow", "Deny"],
+          timeout: 60_000,
+        });
+        const dialog = yield* takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+        );
+        if (dialog.type !== "runtime_request.updated") return;
+        assert.propertyVal(dialog.runtimeRequest, "humanOnly", true);
+        yield* fake.emit({ type: "pi_sessions_ui_closed", id: "shared-dialog", outcome });
+        yield* takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" &&
+            event.runtimeRequest.id === dialog.runtimeRequest.id &&
+            event.runtimeRequest.status === requestStatus,
+        );
+        yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.nodeId === dialog.runtimeRequest.nodeId &&
+            event.turnItem.status === itemStatus,
+        );
+        const late = yield* Effect.result(
+          runtime.respondToRuntimeRequest({
+            requestId: dialog.runtimeRequest.id,
+            decision: "accept",
+            answers: { "shared-dialog": "Allow" },
+          }),
+        );
+        assert.equal(late._tag, "Failure");
+        // Expiry of the closed card must not reach Pi either.
+        yield* TestClock.adjust(Duration.seconds(60));
+        assert.deepEqual(
+          fake.allRequests().filter((request) => request["type"] === "extension_ui_response"),
+          [],
+        );
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect("stops provider-initiated work that has no T3 turn owner", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi;
@@ -2985,6 +3057,52 @@ describe("DulliAdapterV2", () => {
             completed.turnItem.exitCode === exitCode &&
             completed.turnItem.status === (exitCode === 0 ? "completed" : "failed"),
         );
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect.each(["select", "confirm", "input", "editor"] as const)(
+    "marks extension %s dialogs as human-only before and during turns",
+    (method) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const thread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        for (const inTurn of [false, true]) {
+          if (inTurn) {
+            yield* startTurn(runtime, thread);
+            yield* fake.takeRequest("prompt");
+            yield* fake.emit({ type: "agent_start" });
+          }
+          yield* fake.emit({
+            type: "extension_ui_request",
+            id: `human-only-${inTurn}`,
+            method,
+            title: "Allow secret access?",
+            options: ["Allow", "Deny"],
+          });
+          const pending = yield* takeEvent(
+            (event) =>
+              event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+          );
+          assert.isTrue(pending.type === "runtime_request.updated");
+          if (pending.type !== "runtime_request.updated") return;
+          assert.propertyVal(pending.runtimeRequest, "humanOnly", true);
+          yield* runtime.respondToRuntimeRequest({
+            requestId: pending.runtimeRequest.id,
+            ...(method === "confirm"
+              ? { decision: "accept" as const }
+              : { answers: { [`human-only-${inTurn}`]: "Allow" } }),
+          });
+          const response = yield* fake.takeRequest("extension_ui_response");
+          assert.equal(
+            response[method === "confirm" ? "confirmed" : "value"],
+            method === "confirm" ? true : "Allow",
+          );
+        }
       }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
@@ -4609,35 +4727,57 @@ describe("Dulli fork policy", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
-  it.effect("session dialogs survive model settlement and invalid select answers cancel", () =>
-    Effect.gen(function* () {
-      const fake = yield* makeFakePi;
-      const { runtime, takeEvent } = yield* openRuntime(fake);
-      const thread = yield* runtime.ensureThread({
-        threadId: THREAD_ID,
-        modelSelection: modelSelection("default"),
-        runtimePolicy,
-      });
-      yield* startTurn(runtime, thread);
-      yield* fake.takeRequest("prompt");
-      yield* fake.emit({ type: "agent_start" });
-      yield* fake.emit({
-        type: "extension_ui_request",
-        method: "select",
-        id: "menu",
-        title: "Choose",
-        options: ["Delete", "Keep"],
-      });
-      const pending = yield* takeEvent((event) => event.type === "runtime_request.updated");
-      if (pending.type !== "runtime_request.updated") return yield* Effect.die("Missing dialog");
-      yield* fake.emit({ type: "agent_settled" });
-      yield* takeEvent((event) => event.type === "turn.terminal");
-      yield* runtime.respondToRuntimeRequest({
-        requestId: pending.runtimeRequest.id,
-        answers: { menu: "invented" },
-      });
-      assert.equal((yield* fake.takeRequest("extension_ui_response"))["cancelled"], true);
-    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  it.effect(
+    "session dialogs reject invalid select answers without consuming the live request",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const thread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, thread);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        yield* fake.emit({
+          type: "extension_ui_request",
+          method: "select",
+          id: "menu",
+          title: "Choose",
+          options: ["Delete", "Keep"],
+        });
+        const pending = yield* takeEvent((event) => event.type === "runtime_request.updated");
+        if (pending.type !== "runtime_request.updated") return yield* Effect.die("Missing dialog");
+        const card = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+        );
+        assert.isTrue(
+          card.type === "turn_item.updated" &&
+            card.turnItem.type === "user_input_request" &&
+            card.turnItem.questions[0]?.allowCustomAnswer === false,
+        );
+        yield* fake.emit({ type: "agent_settled" });
+        yield* takeEvent((event) => event.type === "turn.terminal");
+        // shared Pi ignores cancellation, so an invalid answer must stay retryable.
+        const rejected = yield* runtime
+          .respondToRuntimeRequest({
+            requestId: pending.runtimeRequest.id,
+            answers: { menu: "invented" },
+          })
+          .pipe(Effect.result);
+        assert.equal(rejected._tag, "Failure");
+        assert.isFalse(
+          fake.allRequests().some((request) => request["type"] === "extension_ui_response"),
+        );
+        yield* runtime.respondToRuntimeRequest({
+          requestId: pending.runtimeRequest.id,
+          answers: { menu: ["Keep"] },
+        });
+        assert.equal((yield* fake.takeRequest("extension_ui_response"))["value"], "Keep");
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect(

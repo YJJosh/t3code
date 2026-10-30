@@ -1267,6 +1267,7 @@ describe("ClaudeAdapterV2 resume compaction", () => {
         ) {
           return;
         }
+        assert.isUndefined(questionEvent.value.runtimeRequest.humanOnly);
         yield* runtime.respondToRuntimeRequest({
           requestId: questionEvent.value.runtimeRequest.id,
           answers: { [longQuestion]: ["Production", "Staging"] },
