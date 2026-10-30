@@ -1,4 +1,3 @@
-import { useDulliClientMigration } from "../hooks/useDulliClientMigration";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
@@ -142,7 +141,6 @@ function RootRouteView() {
 }
 
 function RootRouteBranch() {
-  useDulliClientMigration();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
