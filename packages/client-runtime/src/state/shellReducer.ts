@@ -109,26 +109,25 @@ export function mergeShellSnapshotProjects(
 
   if (isEnrichment) {
     const nextById = new Map(next.projects.map((project) => [project.id, project] as const));
-    return {
-      ...previous,
-      projects: previous.projects.map((project) => {
-        const candidate = nextById.get(project.id);
-        if (candidate === undefined || candidate.workspaceRoot !== project.workspaceRoot) {
+    const projects = previous.projects.map((project) => {
+      const candidate = nextById.get(project.id);
+      if (candidate === undefined || candidate.workspaceRoot !== project.workspaceRoot) {
+        return project;
+      }
+      if (resolvedRootSet?.has(project.workspaceRoot) === true) {
+        if (sameEnrichedMetadata(project, candidate)) {
           return project;
         }
-        if (resolvedRootSet?.has(project.workspaceRoot) === true) {
-          // Enrichment re-resolves every root; unchanged metadata keeps subscribers from re-rendering.
-          if (sameEnrichedMetadata(project, candidate)) {
-            return project;
-          }
-          return { ...project, ...enrichedMetadata(candidate) };
-        }
-        if (!hasEnrichedMetadata(project) && hasEnrichedMetadata(candidate)) {
-          return { ...project, ...enrichedMetadata(candidate) };
-        }
-        return project;
-      }),
-    };
+        return { ...project, ...enrichedMetadata(candidate) };
+      }
+      if (!hasEnrichedMetadata(project) && hasEnrichedMetadata(candidate)) {
+        return { ...project, ...enrichedMetadata(candidate) };
+      }
+      return project;
+    });
+    return projects.every((project, index) => project === previous.projects[index])
+      ? previous
+      : { ...previous, projects };
   }
 
   const previousById = new Map(previous.projects.map((project) => [project.id, project] as const));

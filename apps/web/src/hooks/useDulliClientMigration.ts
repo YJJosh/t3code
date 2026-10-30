@@ -11,6 +11,7 @@ let pending = Promise.resolve();
  * environment must not rename newly chosen upstream Pi selections. */
 export function useDulliClientMigration(): void {
   const configs = useAtomValue(environmentServerConfigsAtom);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Migrate browser-persisted composer data and its localStorage receipt when connected environments report their cutover.
   useEffect(() => {
     pending = pending
       .then(async () => {

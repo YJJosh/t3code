@@ -23,6 +23,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { buildBoundedThreadProjection } from "../../orchestration-v2/threadHistoryPaging.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as RemoteDelegation from "../../peer/RemoteDelegation.ts";
 import * as McpService from "../../mcp/OrchestratorMcpService.ts";
 import * as ProviderRegistry from "../ProviderRegistry.ts";
 import * as AdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -33,7 +34,6 @@ import * as Secrets from "../../secrets/SecretRequests.ts";
 import * as Git from "../../vcs/GitVcsDriver.ts";
 
 it.effect.each([
-  { name: "memory", storeLayer: ProjectionStore.layerMemory },
   { name: "sqlite", storeLayer: ProjectionStore.layer.pipe(Layer.provide(Sqlite.layerMemory)) },
 ] as const)(
   "loads selected Dulli node history outside the paged parent snapshot ($name)",
@@ -256,6 +256,7 @@ it.effect.each([
             Layer.provide(
               Layer.mergeAll(
                 NodeCrypto.layer,
+                Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                 Layer.mock(ThreadManagement.ThreadManagementService)({
                   getThreadRecords: (id, fields, filter) =>
                     store

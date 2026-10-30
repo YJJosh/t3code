@@ -63,15 +63,17 @@ const make = Effect.gen(function* () {
     `,
   });
   return PiSessionsSettlement.of({
-    get: (link) =>
+    get: Effect.fn("PiSessionsSettlement.get")((link) =>
       get(link).pipe(
         Effect.map(Option.map((row) => row.baseline)),
         Effect.mapError((cause) => new PiSessionsSettlementError({ operation: "get", cause })),
       ),
-    set: (link, baseline) =>
+    ),
+    set: Effect.fn("PiSessionsSettlement.set")((link, baseline) =>
       set({ ...link, baseline }).pipe(
         Effect.mapError((cause) => new PiSessionsSettlementError({ operation: "set", cause })),
       ),
+    ),
   });
 });
 

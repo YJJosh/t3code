@@ -132,7 +132,9 @@ const make = Effect.gen(function* () {
             }
           }).pipe(Effect.scoped, Effect.ignore);
           // Only retry a lost socket; never refresh a connected daemon's list.
-          yield* Queue.take(wake).pipe(Effect.raceFirst(Effect.sleep(delay)));
+          yield* Queue.take(wake).pipe(
+            Effect.timeoutOrElse({ duration: delay, orElse: () => Effect.void }),
+          );
         }).pipe(Effect.scoped);
         delay = Math.min(delay * 2, 30_000);
       }

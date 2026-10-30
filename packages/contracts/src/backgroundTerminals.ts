@@ -51,7 +51,6 @@ export const DulliBackgroundTerminalScreen = Schema.Struct({
   lines: Schema.Array(
     Schema.String.check(
       Schema.isMaxLength(128 * 1024),
-      // eslint-disable-next-line no-control-regex -- Reject every control except generated SGR.
       Schema.isPattern(/^(?:[^\x00-\x1f\x7f-\x9f]|\x1b\[[0-9;]*m)*$/u),
     ),
   ).check(Schema.isMaxLength(200)),

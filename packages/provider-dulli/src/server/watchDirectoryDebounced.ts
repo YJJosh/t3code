@@ -1,11 +1,6 @@
 /**
- * Debounced directory watching shared by the server's config-file watchers.
- *
- * Editors emit multiple events per save (truncate, write, rename) and
- * `fs.watch` can fire before content has been flushed to disk, so events are
- * debounced before consumers re-read the changed file.
- *
- * @module stream/watchDirectoryDebounced
+ * Editors emit multiple events per save, and fs.watch may fire before disk flush.
+ * Debounce before consumers reread configuration files.
  */
 import * as Duration from "effect/Duration";
 import type * as FileSystem from "effect/FileSystem";

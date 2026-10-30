@@ -176,7 +176,7 @@ export const makeFromRunner = (run: WorklerRunner): WorklerWorkspaceService["Ser
     );
 
   return WorklerWorkspaceService.of({
-    createWorkspace: (input) =>
+    createWorkspace: Effect.fn("WorklerWorkspaceService.createWorkspace")((input) =>
       write(
         call("WorklerWorkspaceService.createWorkspace", input.root, "createWorkspace", [
           input.root,
@@ -229,7 +229,8 @@ export const makeFromRunner = (run: WorklerRunner): WorklerWorkspaceService["Ser
           ),
         ),
       ),
-    listWorkspaces: (root) =>
+    ),
+    listWorkspaces: Effect.fn("WorklerWorkspaceService.listWorkspaces")((root) =>
       read(
         call("WorklerWorkspaceService.listWorkspaces", root, "listWorkspaces", [root]).pipe(
           Effect.map((workspaces) =>
@@ -244,7 +245,8 @@ export const makeFromRunner = (run: WorklerRunner): WorklerWorkspaceService["Ser
           ),
         ),
       ),
-    removeWorkspace: (input) =>
+    ),
+    removeWorkspace: Effect.fn("WorklerWorkspaceService.removeWorkspace")((input) =>
       write(
         call("WorklerWorkspaceService.removeWorkspace", input.root, "removeWorkspace", [
           input.root,
@@ -252,12 +254,14 @@ export const makeFromRunner = (run: WorklerRunner): WorklerWorkspaceService["Ser
           input.force === undefined ? {} : { force: input.force },
         ]).pipe(Effect.map((removed) => ({ name: removed.name, path: removed.path }))),
       ),
-    inspectGroup: (root) =>
+    ),
+    inspectGroup: Effect.fn("WorklerWorkspaceService.inspectGroup")((root) =>
       read(
         call("WorklerWorkspaceService.inspectGroup", root, "inspectProject", [root]).pipe(
           Effect.map((info) => (info.isGroup ? { projects: info.projects } : null)),
         ),
       ),
+    ),
     initGroup: Effect.fn("WorklerWorkspaceService.initGroup")(function* (root) {
       const operation = "WorklerWorkspaceService.initGroup";
       const refuse = (code: WorklerWorkspaceErrorCode, detail: string) =>
@@ -439,7 +443,7 @@ export const runInWorker = (
 // reads the real filesystem.
 const requireForWorkler = NodeModule.createRequire(import.meta.url);
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const library = yield* Effect.cached(
     Effect.try({

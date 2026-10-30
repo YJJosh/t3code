@@ -1,10 +1,7 @@
 import type { ModelSelection } from "@t3tools/contracts";
 
-// A shared Dulli chat (pi-sessions) can switch model in the terminal. The server
-// then moves the thread's model, but the composer keeps the user's last pick
-// for the thread and would send it back with the next message. The composer
-// remembers which thread model it last saw; when the thread's model moves
-// away from that, the newer change wins and the composer follows it.
+// A shared Pi terminal can change the thread model outside this client. Follow only
+// changes since the last seen thread model so stale composer picks cannot undo them.
 const SEEN_STORAGE_KEY = "t3code:dulli-thread-model-seen";
 const SEEN_LIMIT = 200;
 const seenInMemory = new Map<string, string>();

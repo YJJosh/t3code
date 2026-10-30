@@ -210,18 +210,16 @@ const makeImporter = Effect.fn(function* (
           }),
           Layer.mock(ProjectService.ProjectService)({
             getById: () =>
-              Effect.succeed(
-                Option.some({
-                  id: projectId,
-                  title: "Project",
-                  workspaceRoot: "/workspace/project",
-                  defaultModelSelection: null,
-                  scripts: [],
-                  createdAt: timestamp,
-                  updatedAt: timestamp,
-                  deletedAt: null,
-                }),
-              ),
+              Effect.succeedSome({
+                id: projectId,
+                title: "Project",
+                workspaceRoot: "/workspace/project",
+                defaultModelSelection: null,
+                scripts: [],
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                deletedAt: null,
+              }),
           }),
           Layer.mock(Orchestrator.OrchestratorV2)({
             getThreadRecords: (threadId, fields) =>
@@ -284,9 +282,7 @@ it.effect.each([false, true])(
           }),
           Layer.mock(ProjectService.ProjectService)({
             getById: () =>
-              Effect.succeed(
-                Option.some({ id: projectId, workspaceRoot: "/workspace/project" } as never),
-              ),
+              Effect.succeedSome({ id: projectId, workspaceRoot: "/workspace/project" } as never),
           }),
           Layer.mock(Orchestrator.OrchestratorV2)({
             getThreadRecords: (id) =>

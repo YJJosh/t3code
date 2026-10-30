@@ -113,11 +113,8 @@ const text = (value: unknown, limit = TRANSCRIPT_BYTES): string => {
   const source = typeof value === "string" ? value : encodeJson(value ?? "");
   // Strip terminal control sequences before any client renders tool output.
   const clean = source
-    // eslint-disable-next-line no-control-regex -- Strip native terminal escape/control sequences before persistence.
     .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-    // eslint-disable-next-line no-control-regex -- Strip native terminal escape/control sequences before persistence.
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    // eslint-disable-next-line no-control-regex -- Strip native terminal escape/control sequences before persistence.
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
   const bytes = Buffer.from(clean);
   return bytes.length <= limit

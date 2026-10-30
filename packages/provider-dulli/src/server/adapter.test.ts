@@ -4797,7 +4797,7 @@ describe("Dulli fork policy", () => {
         // Production provides the registry to hydration, not to the later MCP
         // and orchestration facades that open sessions on the captured adapter.
         const adapter = yield* makeAdapter(fake).pipe(
-          Effect.provide(Layer.succeed(DulliBridgeRegistry, [factory])),
+          Effect.provideService(DulliBridgeRegistry, [factory]),
         );
         const runtime = yield* adapter.openSession({
           threadId: THREAD_ID,

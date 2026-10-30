@@ -136,7 +136,6 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const getModelDisabledReason = makeModelDisabledReason(
     currentModelSelection
       ? {
-          providers: providerStatuses,
           hasStartedSession,
           supportsProviderSwitchingViaHandoff,
           currentModelSelection,
@@ -196,7 +195,6 @@ export function useComposerSelection(input: ComposerSelectionInput) {
         ? { instanceId, model: resolvedModel, options: [...rememberedOptions] }
         : { instanceId, model: resolvedModel };
     const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
-      providers: providerStatuses,
       hasStartedSession: activeRuntime !== null,
       supportsProviderSwitchingViaHandoff,
       currentModelSelection: activeThread.modelSelection,
@@ -229,6 +227,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const sharedThreadSelection = sharedThread?.modelSelection;
   const sharedThreadId = sharedThread?.id;
   const sharedEnvironmentId = sharedThread?.environmentId;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile browser-persisted model picks and the seen receipt with model changes from a shared Pi terminal.
   useEffect(() => {
     if (!sharedThreadSelection || !sharedThreadId || !sharedEnvironmentId) return;
     if (
