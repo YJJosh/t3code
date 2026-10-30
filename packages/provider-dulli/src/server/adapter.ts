@@ -36,7 +36,7 @@ import { discoverPiProfileChoices } from "./piProfileDiscovery.ts";
  * Extension dialogs use runtime requests; terminal-only decoration has no T3 surface.
  */
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { AgentScope } from "@t3tools/shared/AgentScope";
+import { AgentScope, type AgentScopeCommand } from "@t3tools/shared/AgentScope";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { readToolOutputImage } from "@t3tools/shared/toolOutput";
 import * as Predicate from "effect/Predicate";
@@ -665,13 +665,14 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       const sessionsExtension = options.settings.piSessions
         ? findPiSessionsExtension(piSessionsHome(launch.env, paths), paths)
         : undefined;
-      const scopedLaunch = yield* agentScope.wrap({
+      const wrapLaunch = agentScope.wrap({
         command: options.settings.binaryPath || "pi",
         args: sessionsExtension ? [...launch.args, "-e", sessionsExtension] : launch.args,
         name: "dulli",
         threadId: input.threadId,
         env: launch.env,
       });
+      const scopedLaunch = yield* wrapLaunch;
       const spawnOptions = {
         command: scopedLaunch.command,
         args: scopedLaunch.args,
@@ -682,15 +683,19 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         { ...spawnOptions, command: options.settings.binaryPath || "pi" },
         paths,
       );
-      const owned = Effect.gen(function* () {
-        const unit = scopedLaunch.unit;
+      const owned = Effect.fn("DulliAdapter.openOwnedPi")(function* (
+        ownedLaunch: AgentScopeCommand,
+      ) {
+        const unit = ownedLaunch.unit;
         const stopScope =
           unit === undefined ? Effect.void : yield* Effect.cached(agentScope.stop(unit));
         // Finalizers run in reverse order: terminate Pi before reaping its detached work.
         yield* Effect.addFinalizer(() => stopScope);
-        const connection = yield* makePiRpcConnection(spawnOptions).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        );
+        const connection = yield* makePiRpcConnection({
+          ...spawnOptions,
+          command: ownedLaunch.command,
+          args: ownedLaunch.args,
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
         if (unit !== undefined) {
           yield* connection.exited.pipe(
             Effect.matchEffect({ onFailure: () => stopScope, onSuccess: () => stopScope }),
@@ -729,12 +734,16 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                       : (cause.detail?.includes("did not start in time")
                           ? skipPiDaemon(daemonKey)
                           : Effect.void
-                        ).pipe(Effect.andThen(owned)),
+                        ).pipe(
+                          // The daemon may still run its Pi in the first unit; never share or reap it.
+                          Effect.andThen(wrapLaunch),
+                          Effect.flatMap(owned),
+                        ),
                   ),
                 );
               }),
             )
-          : owned
+          : owned(scopedLaunch)
       ).pipe(
         Effect.mapError(
           (cause) =>

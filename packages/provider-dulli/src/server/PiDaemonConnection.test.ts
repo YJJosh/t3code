@@ -36,6 +36,7 @@ import {
   isPiDaemonSkipped,
 } from "./PiDaemonConnection.ts";
 import type { PiRpcRecord } from "./rpc.ts";
+import { AgentScope } from "@t3tools/shared/AgentScope";
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decode = Schema.decodeSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
@@ -790,6 +791,8 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
     Effect.gen(function* () {
       const f = yield* fixture(error);
       let spawns = 0;
+      let wraps = 0;
+      const stopped: Array<string> = [];
       const adapter = yield* makeDulliAdapterV2({
         instanceId: ProviderInstanceId.make("dulli"),
         settings: {
@@ -811,6 +814,15 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
             }).pipe(Effect.andThen(Effect.die("fake owned spawn reached"))),
           ),
         ),
+        Effect.provideService(AgentScope, {
+          ...AgentScope.defaultValue(),
+          wrap: ({ command, args }) =>
+            Effect.sync(() => {
+              const unit = `t3code-dulli-${++wraps}.scope`;
+              return { command, args: [...args, `--unit=${unit}`], unit };
+            }),
+          stop: (unit) => Effect.sync(() => void stopped.push(unit)),
+        }),
       );
       const open = adapter.openSession({
         threadId: ThreadId.make("shared"),
@@ -823,9 +835,19 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
       if (error.includes("did not start in time")) {
         yield* Effect.exit(open.pipe(Effect.scoped));
         expect(spawns).toBe(2);
-        const requests = yield* Queue.takeAll(f.requests);
-        expect(requests.filter((request) => request.type === "rpc-open")).toHaveLength(1);
       }
+      const opens = (yield* Queue.takeAll(f.requests)).filter(
+        (request) => request.type === "rpc-open",
+      );
+      if (error.includes("did not start in time")) expect(opens).toHaveLength(1);
+      // The daemon may still run the Pi it started; only the owned spawn's scope is reaped.
+      const daemonUnits = opens.flatMap((request) =>
+        (request.launch as { args: Array<string> }).args
+          .filter((arg) => arg.startsWith("--unit="))
+          .map((arg) => arg.slice("--unit=".length)),
+      );
+      expect(stopped).toHaveLength(spawns);
+      expect(stopped.filter((unit) => daemonUnits.includes(unit))).toEqual([]);
     }).pipe(Effect.scoped),
   );
 });
