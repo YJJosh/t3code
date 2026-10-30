@@ -75,6 +75,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { providerMessageTextWithAttachmentPaths } from "@t3tools/provider-core/server/attachmentPrompt";
 import { mcpToolPresentation } from "@t3tools/provider-core/server/mcpToolPresentation";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { parsePiCompactCommand, type PiCompactCommand } from "./commands.ts";
@@ -681,10 +682,23 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         { ...spawnOptions, command: options.settings.binaryPath || "pi" },
         paths,
       );
-      const owned = makePiRpcConnection(spawnOptions).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.map((connection) => ({ connection, shared: false, started: true })),
-      );
+      const owned = Effect.gen(function* () {
+        const unit = scopedLaunch.unit;
+        const stopScope =
+          unit === undefined ? Effect.void : yield* Effect.cached(agentScope.stop(unit));
+        // Finalizers run in reverse order: terminate Pi before reaping its detached work.
+        yield* Effect.addFinalizer(() => stopScope);
+        const connection = yield* makePiRpcConnection(spawnOptions).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+        if (unit !== undefined) {
+          yield* connection.exited.pipe(
+            Effect.matchEffect({ onFailure: () => stopScope, onSuccess: () => stopScope }),
+            Effect.forkIn(scope),
+          );
+        }
+        return { connection, shared: false, started: true };
+      });
       if (input.attachOnly && !(options.settings.piSessions && options.settings.shareWithTerminal))
         return yield* protocolError("Shared sessions are disabled");
       const daemonScope = yield* Scope.make();
@@ -3339,7 +3353,12 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         attachments: ReadonlyArray<ChatAttachment>,
       ) {
         const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
-        const extraLines: Array<string> = [];
+        const message = yield* providerMessageTextWithAttachmentPaths({
+          text,
+          attachments,
+          resolveAttachmentPath: host.resolveAttachmentPath,
+          resolveExtractedTextPath: host.resolveExtractedTextPath,
+        });
         for (const attachment of attachments) {
           const path = host.resolveAttachmentPath(attachment);
           if (path === null) continue;
@@ -3350,11 +3369,8 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
               data: Buffer.from(bytes).toString("base64"),
               mimeType: attachment.mimeType,
             });
-          } else {
-            extraLines.push(`[Attachment saved at ${path}]`);
           }
         }
-        const message = extraLines.length === 0 ? text : `${text}\n\n${extraLines.join("\n")}`;
         return { message, images };
       });
 
@@ -4307,7 +4323,10 @@ function piQuestion(
               value: "",
             },
           ];
-  const question = recordString(event, "message") ?? recordString(event, "placeholder") ?? title;
+  const question =
+    [recordString(event, "message"), recordString(event, "placeholder")].find(
+      (text) => text !== undefined && text.trim().length > 0,
+    ) ?? title;
   return {
     id: questionId,
     header: title,
