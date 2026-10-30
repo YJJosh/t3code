@@ -36,7 +36,7 @@ const T3_NAMESPACE = { name: "mcp__t3-code", description: "T3 Code" };
 // Pi extensions own these capabilities, including any future browser operations.
 const PI_OWNED_TOOLS = new Set([
   "delegate_task", "task_status", "task_cancel", "t3_workflow_stop",
-  "create_threads", "html_render", "html_preview",
+  "create_threads", "html_render", "html_preview", "t3_background_wait",
 ]);
 const isT3OwnedTool = (tool: McpTool) =>
   !PI_OWNED_TOOLS.has(tool.name) &&
