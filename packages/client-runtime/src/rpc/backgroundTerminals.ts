@@ -16,25 +16,15 @@ import {
 import { RpcPermissionGuard, requestGuarded, subscribe } from "./client.ts";
 
 /**
- * Delay before requesting a replay after a connection is (re)established. The
- * event subscription and the replay control travel over the same socket; the
- * subscription is mounted first (its atom is read before this fires) so the
- * server has registered the per-thread listener before the snapshot is
- * pushed. The small delay makes that ordering robust against subscription
- * setup jitter.
+ * Mount the event subscription before requesting replay on the same socket,
+ * so the server registers its per-thread listener before pushing the snapshot.
+ * Delay replay to tolerate subscription setup jitter.
  */
 const REPLAY_REQUEST_DELAY = "150 millis";
 
 /**
- * Live, reconnect-safe background-terminal runtime state for a thread.
- *
- * The stream folds the raw `subscribeBackgroundTerminalEvents` feed into the
- * pure projection from {@link applyBackgroundTerminalEvent}. In parallel it
- * watches the connection generation and, on every (re)connect, issues a
- * `replay` control so the server pushes a fresh snapshot onto the same event
- * feed. Because the outer scan state is retained across the subscription's
- * internal reconnects, a snapshot rebuilds the terminal set in place rather
- * than resetting it to empty on every reconnect.
+ * Keep the fold across subscription reconnects; replay on each connection generation
+ * rebuilds terminals in place from an authoritative snapshot, avoiding an empty flash.
  */
 export function backgroundTerminalRuntimeChanges(
   threadId: ThreadId,

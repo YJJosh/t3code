@@ -4,7 +4,7 @@ T3 Dulli is the branded distribution maintained in `YJJosh/t3code`. This reposit
 
 ## Upstream baseline
 
-The current upstream baseline is stable **v0.1.2**, not a nightly or preview release. Upstream updates retain the fork's Pi provider, subagent/workflow inspector, background-terminal controls, Workler defaults, and Dulli identities and release channels. Resolve overlapping changes at their integration boundaries rather than replacing fork-owned features with upstream equivalents.
+The current upstream baseline is stable **v0.1.5**, not a nightly or preview release. Upstream updates retain the fork's Pi provider, subagent/workflow inspector, background-terminal controls, Workler defaults, and Dulli identities and release channels. Resolve overlapping changes at their integration boundaries rather than replacing fork-owned features with upstream equivalents.
 
 ## Fork database migrations
 
@@ -99,7 +99,7 @@ Install the newest x86_64 Dulli prerelease, or provide a tag:
 
 ```sh
 scripts/dulli/install-linux-appimage.sh
-scripts/dulli/install-linux-appimage.sh v0.1.2-dulli.1
+scripts/dulli/install-linux-appimage.sh v0.1.5-dulli.1
 ```
 
 The helper downloads only a `T3-Dulli-*-x86_64.AppImage` prerelease, installs an isolated launcher and icon, and writes `t3-dulli-clean.desktop`. Future updates use the app's built-in updater. There is intentionally no restart helper that finds or kills processes by pattern.
@@ -115,9 +115,9 @@ The helper downloads only a `T3-Dulli-*-x86_64.AppImage` prerelease, installs an
 - publishes the GitHub prerelease and updater manifests; and
 - publishes the same server and web client as `@yjosh/t3` through npm trusted publishing.
 
-The Dulli version follows the upstream baseline: the first release on upstream v0.1.2 is
-`0.1.2-dulli.1`. Increase the build counter for fork changes; reset it when the upstream minor
-or patch increases. Normal SemVer ordering upgrades `0.1.1-dulli.N` installs to `0.1.2-dulli.1`.
+The Dulli version follows the upstream baseline: the first release on upstream v0.1.5 is
+`0.1.5-dulli.1`. Increase the build counter for fork changes; reset it when the upstream minor
+or patch increases. Normal SemVer ordering upgrades `0.1.2-dulli.N` installs to `0.1.5-dulli.1`.
 
 Retain `0.0.40-pi.1` and its assets: older `0.0.36-pi.2` installs discover only the `pi`
 channel and need that migration-aware release before discovering `dulli`. Its updater permits

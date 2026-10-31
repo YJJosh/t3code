@@ -55,24 +55,27 @@ const make = Effect.gen(function* () {
     256,
   );
   return DulliBackgroundTerminals.of({
-    register: (threadId, session, control) =>
+    register: Effect.fn("DulliBackgroundTerminals.register")((threadId, session, control) =>
       Effect.sync(() => {
         const token = Symbol();
         sessions.set(threadId, { ...session, token, control });
         return token;
       }),
-    publish: (threadId, token, event) =>
+    ),
+    publish: Effect.fn("DulliBackgroundTerminals.publish")((threadId, token, event) =>
       Effect.suspend(() =>
         sessions.get(threadId)?.token === token
           ? PubSub.publish(events, { threadId, event }).pipe(Effect.asVoid)
           : Effect.void,
       ),
-    unregister: (threadId, token, event) =>
+    ),
+    unregister: Effect.fn("DulliBackgroundTerminals.unregister")((threadId, token, event) =>
       Effect.suspend(() => {
         if (sessions.get(threadId)?.token !== token) return Effect.void;
         sessions.delete(threadId);
         return PubSub.publish(events, { threadId, event }).pipe(Effect.asVoid);
       }),
+    ),
     control: Effect.fn("DulliBackgroundTerminals.control")(function* (input) {
       const session = sessions.get(input.threadId);
       if (!session)

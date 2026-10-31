@@ -1,20 +1,8 @@
 /**
- * PiRpc — stdio JSONL transport for the Pi coding agent's RPC mode.
- *
- * Spawns `pi --mode rpc` and speaks Pi's line-delimited JSON protocol:
- * requests go to stdin as `{"type": "...", "id": "..."}` records, responses
- * come back as `{"type": "response", "id": ..., "success": ...}` and are
- * correlated by `id`; every other stdout record is a session event and is
- * surfaced on the `events` queue in arrival order.
- *
- * Framing follows Pi's spec: LF-delimited only, with a trailing `\r`
- * stripped. Lines are split manually (never with `readline`, which also
- * splits on U+2028/U+2029 and would corrupt frames). Records that fail to
- * parse as JSON are dropped with a debug log rather than failing the
- * transport, so a chatty extension cannot take the session down.
- *
- * Used by `DulliAdapterV2` for sessions and by `PiTextGeneration` /
- * `PiProvider` for ephemeral one-shot processes.
+ * Correlate responses by id; queue all other stdout records as ordered session events.
+ * Frame on LF, stripping trailing CR, never readline (which also splits U+2028/U+2029).
+ * Log and drop invalid JSON so a chatty extension cannot terminate the session.
+ * Used for durable sessions and ephemeral text-generation processes.
  */
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -382,34 +370,33 @@ export const makePiRpcConnection = Effect.fn("PiRpcConnection.make")(function* (
   }).pipe(
     Effect.matchCauseEffect({
       onFailure: (cause) => failTransport(new PiRpcError({ operation: "read", cause })),
-      onSuccess: () =>
-        Effect.gen(function* () {
-          // Claim the stdout-close path before waiting so a broken stdin
-          // writer cannot replace the exit diagnosis with a write error.
-          diagnosingStdoutClose = true;
-          const polled = yield* Deferred.poll(exitDeferred);
-          const maybeExitCode = Option.isSome(polled)
-            ? yield* polled.value.pipe(
-                Effect.map(Option.some),
-                Effect.orElseSucceed(() => Option.none<number>()),
-              )
-            : yield* Deferred.await(exitDeferred).pipe(
-                Effect.timeoutOption(Duration.millis(250)),
-                // Adapter tests run under TestClock. A planned stdout close
-                // without an exit, for example Stop-with-restart, must not wait
-                // on that clock or the transport never fails.
-                Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
-                Effect.orElseSucceed(() => Option.none<number>()),
-              );
-          return yield* failTransport(
-            new PiRpcError({
-              operation: "read",
-              detail: describePiStdoutClosure(
-                Option.isSome(maybeExitCode) ? maybeExitCode.value : undefined,
-              ),
-            }),
-          );
-        }),
+      onSuccess: Effect.fn("PiRpcConnection.diagnoseStdoutClose")(function* () {
+        // Claim the stdout-close path before waiting so a broken stdin
+        // writer cannot replace the exit diagnosis with a write error.
+        diagnosingStdoutClose = true;
+        const polled = yield* Deferred.poll(exitDeferred);
+        const maybeExitCode = Option.isSome(polled)
+          ? yield* polled.value.pipe(
+              Effect.asSome,
+              Effect.orElseSucceed(() => Option.none<number>()),
+            )
+          : yield* Deferred.await(exitDeferred).pipe(
+              Effect.timeoutOption(Duration.millis(250)),
+              // Adapter tests run under TestClock. A planned stdout close
+              // without an exit, for example Stop-with-restart, must not wait
+              // on that clock or the transport never fails.
+              Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
+              Effect.orElseSucceed(() => Option.none<number>()),
+            );
+        return yield* failTransport(
+          new PiRpcError({
+            operation: "read",
+            detail: describePiStdoutClosure(
+              Option.isSome(maybeExitCode) ? maybeExitCode.value : undefined,
+            ),
+          }),
+        );
+      }),
     }),
     Effect.forkIn(scope),
   );

@@ -8,7 +8,6 @@ import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
@@ -19,9 +18,7 @@ import { makeFactory } from "./DulliHtmlBridge.ts";
 
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const layer = HtmlRender.layer.pipe(
-  Layer.provide(
-    Layer.mock(PreviewBrowser.PreviewBrowser)({ installed: Effect.succeed(Option.none()) }),
-  ),
+  Layer.provide(Layer.mock(PreviewBrowser.PreviewBrowser)({ installed: Effect.succeedNone })),
   Layer.provideMerge(McpProviderSessions.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-dulli-html-" })),
   Layer.provideMerge(NodeServices.layer),

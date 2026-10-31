@@ -36,6 +36,8 @@ import {
   isPiDaemonSkipped,
 } from "./PiDaemonConnection.ts";
 import type { PiRpcRecord } from "./rpc.ts";
+import { AgentScope } from "@t3tools/shared/AgentScope";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decode = Schema.decodeSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
@@ -195,6 +197,51 @@ const fixture = Effect.fn(function* (
     push: (message: PiRpcRecord) => Effect.sync(() => rpc!.write(frame(message))),
   };
 });
+
+/**
+ * Hands out a unit per wrap, like systemd-run's `--unit=`, plus a `--scope-of=` marker that
+ * survives in a launch prefix, and records how each was wrapped and which were stopped.
+ */
+const fakeAgentScope = () => {
+  const wraps = new Map<
+    string,
+    { survivesRestart: boolean; shared: boolean; threadId: string | undefined }
+  >();
+  const stopped: Array<string> = [];
+  const scope: typeof AgentScope.Service = {
+    ...AgentScope.defaultValue(),
+    wrap: ({ command, args, survivesRestart, shared, threadId, env }) =>
+      Effect.gen(function* () {
+        const executable =
+          (yield* resolveCommandPath(command, env === undefined ? {} : { env }).pipe(
+            Effect.provide(NodeServices.layer),
+          )) ?? command;
+        const unit = `t3code-dulli-${wraps.size + 1}.scope`;
+        wraps.set(unit, {
+          survivesRestart: survivesRestart === true,
+          shared: shared === true,
+          threadId,
+        });
+        return {
+          command: executable,
+          args: [`--unit=${unit}`, `--scope-of=${unit}`, ...args],
+          unit,
+        };
+      }),
+    stop: (unit) => Effect.sync(() => void stopped.push(unit)),
+  };
+  /** The daemon launches' units. Pi's own arguments must stay free of the wrapper. */
+  const launchUnits = (opens: ReadonlyArray<PiRpcRecord>) =>
+    opens.flatMap((request) => {
+      const launch = request.launch as { command: Array<string>; args: Array<string> };
+      expect(launch.command.some((arg) => arg.startsWith("--unit="))).toBe(false);
+      expect(launch.args.some((arg) => arg.startsWith("--scope-of="))).toBe(false);
+      return launch.command
+        .filter((arg) => arg.startsWith("--scope-of="))
+        .map((arg) => arg.slice("--scope-of=".length));
+    });
+  return { scope, wraps, stopped, launchUnits };
+};
 
 it.layer(NodeServices.layer)("PiDaemonConnection", (it) => {
   it.effect(
@@ -702,6 +749,11 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
   it.effect("detaches and rpc-opens a different file or new chat without another writer", () =>
     Effect.gen(function* () {
       const f = yield* fixture(undefined, { type: "pi_sessions_state" });
+      const fs = yield* FileSystem.FileSystem;
+      const providerPi = `${f.home}/pi`;
+      yield* fs.writeFileString(providerPi, "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(providerPi, 0o755);
+      const agentScope = fakeAgentScope();
       const instanceId = ProviderInstanceId.make("dulli");
       const threadId = ThreadId.make("rebind");
       const selection = { instanceId, model: "default" };
@@ -721,12 +773,13 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           shareWithTerminal: true,
           customModels: [],
         },
-        environment: f.input.env,
+        environment: { ...f.input.env, PATH: f.home },
       }).pipe(
         Effect.provideService(
           ChildProcessSpawner.ChildProcessSpawner,
           ChildProcessSpawner.make(() => Effect.die("must not spawn another writer")),
         ),
+        Effect.provideService(AgentScope, agentScope.scope),
       );
       const runtime = yield* adapter.openSession({
         threadId,
@@ -745,7 +798,6 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
         modelSelection: selection,
         runtimePolicy,
       });
-      const fs = yield* FileSystem.FileSystem;
       const otherFile = `${f.home}/other.jsonl`;
       yield* fs.writeFileString(otherFile, "");
       const different = yield* runtime.resumeThread({
@@ -773,8 +825,21 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
       const requests = yield* Queue.takeAll(f.requests);
       const opens = requests.filter((request) => request.type === "rpc-open");
       expect(opens).toHaveLength(3);
+      for (const request of opens)
+        expect((request.launch as { command: string[] }).command[0]).toBe(providerPi);
       expect(opens[1]?.sessionFile).toBe(otherFile);
       expect(opens[2]).not.toHaveProperty("sessionFile");
+      // The terminal shares these Pis: each open gets its own restart-surviving unit,
+      // none is this thread's scope, and the session never reaps one.
+      const units = agentScope.launchUnits(opens);
+      expect(new Set(units).size).toBe(3);
+      for (const unit of units)
+        expect(agentScope.wraps.get(unit)).toEqual({
+          survivesRestart: true,
+          shared: true,
+          threadId: undefined,
+        });
+      expect(agentScope.stopped).toEqual([]);
       const commands = requests
         .filter((request) => request.type === "rpc-in")
         .map((request) => (request.message as PiRpcRecord).type);
@@ -790,6 +855,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
     Effect.gen(function* () {
       const f = yield* fixture(error);
       let spawns = 0;
+      const agentScope = fakeAgentScope();
       const adapter = yield* makeDulliAdapterV2({
         instanceId: ProviderInstanceId.make("dulli"),
         settings: {
@@ -811,6 +877,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
             }).pipe(Effect.andThen(Effect.die("fake owned spawn reached"))),
           ),
         ),
+        Effect.provideService(AgentScope, agentScope.scope),
       );
       const open = adapter.openSession({
         threadId: ThreadId.make("shared"),
@@ -823,9 +890,21 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
       if (error.includes("did not start in time")) {
         yield* Effect.exit(open.pipe(Effect.scoped));
         expect(spawns).toBe(2);
-        const requests = yield* Queue.takeAll(f.requests);
-        expect(requests.filter((request) => request.type === "rpc-open")).toHaveLength(1);
       }
+      const opens = (yield* Queue.takeAll(f.requests)).filter(
+        (request) => request.type === "rpc-open",
+      );
+      if (error.includes("did not start in time")) expect(opens).toHaveLength(1);
+      // The daemon may still run the Pi it started; only the owned spawn's scope is reaped.
+      for (const unit of agentScope.launchUnits(opens))
+        expect(agentScope.wraps.get(unit)?.survivesRestart).toBe(true);
+      expect(agentScope.stopped).toHaveLength(spawns);
+      for (const unit of agentScope.stopped)
+        expect(agentScope.wraps.get(unit)).toEqual({
+          survivesRestart: false,
+          shared: false,
+          threadId: "shared",
+        });
     }).pipe(Effect.scoped),
   );
 });

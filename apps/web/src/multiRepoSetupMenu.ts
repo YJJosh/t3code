@@ -1,8 +1,10 @@
 import type { ContextMenuItem, EnvironmentId, ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import { deriveMultiRepoKey } from "@t3tools/client-runtime/state/project-grouping";
+import {
+  deriveMultiRepoKey,
+  listMultiRepoProjectsToSetUp,
+} from "@t3tools/client-runtime/state/project-grouping";
 import type { CommandPaletteMultiRepoSetup } from "./commandPaletteBus";
-import { listMultiRepoProjectsToSetUp } from "./logicalProject";
 
 /** Build only when a project menu opens, using the same missing-project rule as Add Project. */
 export function buildMultiRepoProjectSetupMenu(input: {

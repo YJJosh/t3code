@@ -274,6 +274,7 @@ function AgentRunDetail({
   const [workOpen, setWorkOpen] = useState(false);
   const transcript = dulliRunTranscript(entries, agent);
   const mounted = useRef(true);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Bound in-flight task-control RPC feedback to this run detail’s mounted lifetime.
   useEffect(() => {
     mounted.current = true;
     return () => {

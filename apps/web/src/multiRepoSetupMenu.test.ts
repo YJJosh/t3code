@@ -66,15 +66,18 @@ describe("multi-repo sidebar setup menu", () => {
     expect(intent.setup.source).toBe(source);
     expect(intent.setup.members).toEqual(source.multiRepo?.members);
     const state = reduceCommandPaletteUiState(
-      { open: true, mode: "files", openIntent: null },
+      { open: true, mode: "files", openIntent: null, session: 0 },
       { _tag: "OpenMultiRepoSetup", ...intent },
     );
     expect(state).toEqual({
       open: true,
       mode: "command",
       openIntent: { kind: "multi-repo-setup", ...intent },
+      session: 1,
     });
-    expect(reduceCommandPaletteUiState(state, { _tag: "ClearOpenIntent" }).openIntent).toBeNull();
+    expect(
+      reduceCommandPaletteUiState(state, { _tag: "SetOpen", open: false }).openIntent,
+    ).toBeNull();
   });
 
   it("groups multiple missing environments in a submenu", () => {

@@ -53,15 +53,10 @@ export function mapWorklerError(
 }
 
 /**
- * Removing a Workler clone deletes its refs, while a linked worktree's stay in
- * the project. Call before removing one: copies into the repository it was
- * cloned from every branch and tag the project doesn't have yet, fast-forwards
- * branches the clone moved ahead, and copies T3's checkpoints. A tag whose
- * name the project uses for something else is kept as
- * `refs/t3/kept-tags/<object>/<tag>`. Fails, so the caller keeps the clone,
- * when that would mean overwriting a branch of the project and losing work
- * (always for the current branch, which resuming the thread needs), or when
- * the clone has a stash or commits on no branch.
+ * Before deleting a clone, preserve branches, tags and checkpoints in its source;
+ * conflicting tags go under `refs/t3/kept-tags/<object>/<tag>`.
+ * Keep the clone if preservation would overwrite a source branch (including the
+ * current branch needed for resume), or if it contains stashes or unbranched commits.
  */
 export const keepWorklerCloneRefs = Effect.fn("WorklerGitWorkspaceDriver.keepCloneRefs")(function* (
   git: Pick<GitVcsDriver.GitVcsDriver["Service"], "execute">,

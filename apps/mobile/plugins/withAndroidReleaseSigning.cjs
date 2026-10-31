@@ -1,11 +1,8 @@
 const { withAppBuildGradle } = require("expo/config-plugins");
 
-// Signs Android release builds with the keystore referenced by the
-// T3CODE_ANDROID_RELEASE_* environment variables, replacing the Expo
-// template's debug-keystore fallback. Without T3CODE_ANDROID_RELEASE_KEYSTORE
-// the plugin is a no-op so local prebuilds keep the debug default. The same
-// variables must still be set when Gradle runs: the patched build.gradle
-// reads them through System.getenv so no secret lands in the file.
+// Without T3CODE_ANDROID_RELEASE_KEYSTORE, keep Expo’s debug signing default.
+// T3CODE_ANDROID_RELEASE_* must also be set when Gradle runs: build.gradle reads
+// System.getenv so no signing secret is written to the generated file.
 const REQUIRED_ENV = [
   "T3CODE_ANDROID_RELEASE_KEYSTORE",
   "T3CODE_ANDROID_RELEASE_KEYSTORE_PASSWORD",
