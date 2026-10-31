@@ -197,6 +197,29 @@ const fixture = Effect.fn(function* (
   };
 });
 
+/** Hands out a unit per wrap and records how each was wrapped and which were stopped. */
+const fakeAgentScope = () => {
+  const wraps = new Map<string, { survivesRestart: boolean; threadId: string | undefined }>();
+  const stopped: Array<string> = [];
+  const scope: typeof AgentScope.Service = {
+    ...AgentScope.defaultValue(),
+    wrap: ({ command, args, survivesRestart, threadId }) =>
+      Effect.sync(() => {
+        const unit = `t3code-dulli-${wraps.size + 1}.scope`;
+        wraps.set(unit, { survivesRestart: survivesRestart === true, threadId });
+        return { command, args: [...args, `--unit=${unit}`], unit };
+      }),
+    stop: (unit) => Effect.sync(() => void stopped.push(unit)),
+  };
+  const launchUnits = (opens: ReadonlyArray<PiRpcRecord>) =>
+    opens.flatMap((request) =>
+      (request.launch as { args: Array<string> }).args
+        .filter((arg) => arg.startsWith("--unit="))
+        .map((arg) => arg.slice("--unit=".length)),
+    );
+  return { scope, wraps, stopped, launchUnits };
+};
+
 it.layer(NodeServices.layer)("PiDaemonConnection", (it) => {
   it.effect(
     "attaches with native file identity, replays in order, correlates data, detaches without kill",
@@ -703,6 +726,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
   it.effect("detaches and rpc-opens a different file or new chat without another writer", () =>
     Effect.gen(function* () {
       const f = yield* fixture(undefined, { type: "pi_sessions_state" });
+      const agentScope = fakeAgentScope();
       const instanceId = ProviderInstanceId.make("dulli");
       const threadId = ThreadId.make("rebind");
       const selection = { instanceId, model: "default" };
@@ -728,6 +752,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           ChildProcessSpawner.ChildProcessSpawner,
           ChildProcessSpawner.make(() => Effect.die("must not spawn another writer")),
         ),
+        Effect.provideService(AgentScope, agentScope.scope),
       );
       const runtime = yield* adapter.openSession({
         threadId,
@@ -776,6 +801,13 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
       expect(opens).toHaveLength(3);
       expect(opens[1]?.sessionFile).toBe(otherFile);
       expect(opens[2]).not.toHaveProperty("sessionFile");
+      // The terminal shares these Pis: each open gets its own restart-surviving unit,
+      // none is this thread's scope, and the session never reaps one.
+      const units = agentScope.launchUnits(opens);
+      expect(new Set(units).size).toBe(3);
+      for (const unit of units)
+        expect(agentScope.wraps.get(unit)).toEqual({ survivesRestart: true, threadId: undefined });
+      expect(agentScope.stopped).toEqual([]);
       const commands = requests
         .filter((request) => request.type === "rpc-in")
         .map((request) => (request.message as PiRpcRecord).type);
@@ -791,8 +823,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
     Effect.gen(function* () {
       const f = yield* fixture(error);
       let spawns = 0;
-      let wraps = 0;
-      const stopped: Array<string> = [];
+      const agentScope = fakeAgentScope();
       const adapter = yield* makeDulliAdapterV2({
         instanceId: ProviderInstanceId.make("dulli"),
         settings: {
@@ -814,15 +845,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
             }).pipe(Effect.andThen(Effect.die("fake owned spawn reached"))),
           ),
         ),
-        Effect.provideService(AgentScope, {
-          ...AgentScope.defaultValue(),
-          wrap: ({ command, args }) =>
-            Effect.sync(() => {
-              const unit = `t3code-dulli-${++wraps}.scope`;
-              return { command, args: [...args, `--unit=${unit}`], unit };
-            }),
-          stop: (unit) => Effect.sync(() => void stopped.push(unit)),
-        }),
+        Effect.provideService(AgentScope, agentScope.scope),
       );
       const open = adapter.openSession({
         threadId: ThreadId.make("shared"),
@@ -841,13 +864,11 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
       );
       if (error.includes("did not start in time")) expect(opens).toHaveLength(1);
       // The daemon may still run the Pi it started; only the owned spawn's scope is reaped.
-      const daemonUnits = opens.flatMap((request) =>
-        (request.launch as { args: Array<string> }).args
-          .filter((arg) => arg.startsWith("--unit="))
-          .map((arg) => arg.slice("--unit=".length)),
-      );
-      expect(stopped).toHaveLength(spawns);
-      expect(stopped.filter((unit) => daemonUnits.includes(unit))).toEqual([]);
+      for (const unit of agentScope.launchUnits(opens))
+        expect(agentScope.wraps.get(unit)?.survivesRestart).toBe(true);
+      expect(agentScope.stopped).toHaveLength(spawns);
+      for (const unit of agentScope.stopped)
+        expect(agentScope.wraps.get(unit)).toEqual({ survivesRestart: false, threadId: "shared" });
     }).pipe(Effect.scoped),
   );
 });

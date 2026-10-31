@@ -665,24 +665,24 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       const sessionsExtension = options.settings.piSessions
         ? findPiSessionsExtension(piSessionsHome(launch.env, paths), paths)
         : undefined;
-      const wrapLaunch = agentScope.wrap({
+      const piLaunch = {
         command: options.settings.binaryPath || "pi",
         args: sessionsExtension ? [...launch.args, "-e", sessionsExtension] : launch.args,
-        name: "dulli",
-        threadId: input.threadId,
-        env: launch.env,
-      });
-      const scopedLaunch = yield* wrapLaunch;
-      const spawnOptions = {
-        command: scopedLaunch.command,
-        args: scopedLaunch.args,
         cwd,
         env: launch.env,
       };
-      const daemonKey = piDaemonSkipKey(
-        { ...spawnOptions, command: options.settings.binaryPath || "pi" },
-        paths,
-      );
+      const daemonKey = piDaemonSkipKey(piLaunch, paths);
+      const wrapOwnedLaunch = agentScope.wrap({
+        ...piLaunch,
+        name: "dulli",
+        threadId: input.threadId,
+      });
+      // The daemon runs this Pi for the terminal too, so it must outlive a T3 restart
+      // and is never this thread's scope. Each rpc-open may spawn, so each gets its own unit.
+      const daemonLaunch = (threadId: string) =>
+        agentScope
+          .wrap({ ...piLaunch, name: "dulli-shared", survivesRestart: true, shared: true })
+          .pipe(Effect.map((wrapped) => ({ ...piLaunch, ...wrapped, threadId })));
       const owned = Effect.fn("DulliAdapter.openOwnedPi")(function* (
         ownedLaunch: AgentScopeCommand,
       ) {
@@ -692,7 +692,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         // Finalizers run in reverse order: terminate Pi before reaping its detached work.
         yield* Effect.addFinalizer(() => stopScope);
         const connection = yield* makePiRpcConnection({
-          ...spawnOptions,
+          ...piLaunch,
           command: ownedLaunch.command,
           args: ownedLaunch.args,
         }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
@@ -712,15 +712,15 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         options.settings.piSessions &&
         options.settings.shareWithTerminal &&
         (input.attachOnly || !(yield* isPiDaemonSkipped(daemonKey)))
-          ? makePiDaemonConnection(
-              { ...spawnOptions, threadId: input.threadId },
-              {
-                ...(input.attachOnly ? { attach: true } : {}),
-                ...(input.initialNativeThreadId
-                  ? { sessionFile: input.initialNativeThreadId }
-                  : {}),
-              },
-            ).pipe(
+          ? daemonLaunch(input.threadId).pipe(
+              Effect.flatMap((daemonInput) =>
+                makePiDaemonConnection(daemonInput, {
+                  ...(input.attachOnly ? { attach: true } : {}),
+                  ...(input.initialNativeThreadId
+                    ? { sessionFile: input.initialNativeThreadId }
+                    : {}),
+                }),
+              ),
               Effect.provideService(Path.Path, paths),
               Effect.provideService(Scope.Scope, daemonScope),
               Effect.map((result) => ({ ...result, shared: true })),
@@ -734,16 +734,12 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                       : (cause.detail?.includes("did not start in time")
                           ? skipPiDaemon(daemonKey)
                           : Effect.void
-                        ).pipe(
-                          // The daemon may still run its Pi in the first unit; never share or reap it.
-                          Effect.andThen(wrapLaunch),
-                          Effect.flatMap(owned),
-                        ),
+                        ).pipe(Effect.andThen(wrapOwnedLaunch), Effect.flatMap(owned)),
                   ),
                 );
               }),
             )
-          : owned(scopedLaunch)
+          : wrapOwnedLaunch.pipe(Effect.flatMap(owned))
       ).pipe(
         Effect.mapError(
           (cause) =>
@@ -3100,10 +3096,13 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             yield* opened.connection.terminate;
             // Never fall back to an owned process here: rpc-open is the
             // single-writer arbiter, including a failed/retried registration.
-            const next = yield* makePiDaemonConnection(
-              { ...spawnOptions, threadId: threadInput.threadId },
-              resumeId == null ? {} : { sessionFile: resumeId },
-            ).pipe(
+            const next = yield* daemonLaunch(threadInput.threadId).pipe(
+              Effect.flatMap((daemonInput) =>
+                makePiDaemonConnection(
+                  daemonInput,
+                  resumeId == null ? {} : { sessionFile: resumeId },
+                ),
+              ),
               Effect.provideService(Path.Path, paths),
               Effect.provideService(Scope.Scope, daemonScope),
             );
