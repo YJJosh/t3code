@@ -197,26 +197,40 @@ const fixture = Effect.fn(function* (
   };
 });
 
-/** Hands out a unit per wrap and records how each was wrapped and which were stopped. */
+/**
+ * Hands out a unit per wrap, like systemd-run's `--unit=`, plus a `--scope-of=` marker that
+ * survives in a launch prefix, and records how each was wrapped and which were stopped.
+ */
 const fakeAgentScope = () => {
-  const wraps = new Map<string, { survivesRestart: boolean; threadId: string | undefined }>();
+  const wraps = new Map<
+    string,
+    { survivesRestart: boolean; shared: boolean; threadId: string | undefined }
+  >();
   const stopped: Array<string> = [];
   const scope: typeof AgentScope.Service = {
     ...AgentScope.defaultValue(),
-    wrap: ({ command, args, survivesRestart, threadId }) =>
+    wrap: ({ command, args, survivesRestart, shared, threadId }) =>
       Effect.sync(() => {
         const unit = `t3code-dulli-${wraps.size + 1}.scope`;
-        wraps.set(unit, { survivesRestart: survivesRestart === true, threadId });
-        return { command, args: [...args, `--unit=${unit}`], unit };
+        wraps.set(unit, {
+          survivesRestart: survivesRestart === true,
+          shared: shared === true,
+          threadId,
+        });
+        return { command, args: [`--unit=${unit}`, `--scope-of=${unit}`, ...args], unit };
       }),
     stop: (unit) => Effect.sync(() => void stopped.push(unit)),
   };
+  /** The daemon launches' units. Pi's own arguments must stay free of the wrapper. */
   const launchUnits = (opens: ReadonlyArray<PiRpcRecord>) =>
-    opens.flatMap((request) =>
-      (request.launch as { args: Array<string> }).args
-        .filter((arg) => arg.startsWith("--unit="))
-        .map((arg) => arg.slice("--unit=".length)),
-    );
+    opens.flatMap((request) => {
+      const launch = request.launch as { command: Array<string>; args: Array<string> };
+      expect(launch.command.some((arg) => arg.startsWith("--unit="))).toBe(false);
+      expect(launch.args.some((arg) => arg.startsWith("--scope-of="))).toBe(false);
+      return launch.command
+        .filter((arg) => arg.startsWith("--scope-of="))
+        .map((arg) => arg.slice("--scope-of=".length));
+    });
   return { scope, wraps, stopped, launchUnits };
 };
 
@@ -806,7 +820,11 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
       const units = agentScope.launchUnits(opens);
       expect(new Set(units).size).toBe(3);
       for (const unit of units)
-        expect(agentScope.wraps.get(unit)).toEqual({ survivesRestart: true, threadId: undefined });
+        expect(agentScope.wraps.get(unit)).toEqual({
+          survivesRestart: true,
+          shared: true,
+          threadId: undefined,
+        });
       expect(agentScope.stopped).toEqual([]);
       const commands = requests
         .filter((request) => request.type === "rpc-in")
@@ -868,7 +886,11 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
         expect(agentScope.wraps.get(unit)?.survivesRestart).toBe(true);
       expect(agentScope.stopped).toHaveLength(spawns);
       for (const unit of agentScope.stopped)
-        expect(agentScope.wraps.get(unit)).toEqual({ survivesRestart: false, threadId: "shared" });
+        expect(agentScope.wraps.get(unit)).toEqual({
+          survivesRestart: false,
+          shared: false,
+          threadId: "shared",
+        });
     }).pipe(Effect.scoped),
   );
 });

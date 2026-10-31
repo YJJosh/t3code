@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   findPiSessionsExtension,
   isPiSessionsDaemonMissing,
@@ -95,5 +96,35 @@ it.live("does not start anything without start.json, on Windows, or when the sta
     expect(yield* startPiSessionsDaemon(env, path, "darwin")).toBe(false);
     // A start that exits without a socket gives up at once, not after the 5 s wait.
     expect((yield* Clock.currentTimeMillis) - before).toBeLessThan(3_000);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("starts the daemon in its own scope that survives a T3 restart", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const dir = yield* home;
+    const marker = path.join(dir, "scoped");
+    yield* writeStart(dir, { version: 1, command: [process.execPath, "-e", "process.exit(1)"] });
+    const wraps: Array<{
+      command: string;
+      survivesRestart: boolean | undefined;
+      shared: boolean | undefined;
+    }> = [];
+    const started = yield* startPiSessionsDaemon({ PI_SESSIONS_HOME: dir }, path, "linux").pipe(
+      Effect.provideService(AgentScope, {
+        ...AgentScope.defaultValue(),
+        wrap: ({ command, survivesRestart, shared }) =>
+          Effect.sync(() => {
+            wraps.push({ command, survivesRestart, shared });
+            // The wrapped command runs instead of the start.json one.
+            const script = `require("fs").writeFileSync(${JSON.stringify(marker)}, "")`;
+            return { command: process.execPath, args: ["-e", script] };
+          }),
+      }),
+    );
+    expect(started).toBe(false);
+    expect(wraps).toEqual([{ command: process.execPath, survivesRestart: true, shared: true }]);
+    expect(yield* fs.exists(marker)).toBe(true);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

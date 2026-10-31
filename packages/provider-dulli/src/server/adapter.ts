@@ -678,11 +678,26 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         threadId: input.threadId,
       });
       // The daemon runs this Pi for the terminal too, so it must outlive a T3 restart
-      // and is never this thread's scope. Each rpc-open may spawn, so each gets its own unit.
+      // and is never this thread's scope. The scope wrapper is a command prefix because
+      // /reloadx replays it with the Pi arguments; without a fixed unit name, the replay
+      // cannot collide with the old scope while that one is still stopping.
       const daemonLaunch = (threadId: string) =>
         agentScope
-          .wrap({ ...piLaunch, name: "dulli-shared", survivesRestart: true, shared: true })
-          .pipe(Effect.map((wrapped) => ({ ...piLaunch, ...wrapped, threadId })));
+          .wrap({
+            command: piLaunch.command,
+            args: [],
+            name: "dulli-shared",
+            survivesRestart: true,
+            shared: true,
+          })
+          .pipe(
+            Effect.map((wrapped) => ({
+              ...piLaunch,
+              command: wrapped.command,
+              commandPrefix: wrapped.args.filter((arg) => !arg.startsWith("--unit=")),
+              threadId,
+            })),
+          );
       const owned = Effect.fn("DulliAdapter.openOwnedPi")(function* (
         ownedLaunch: AgentScopeCommand,
       ) {

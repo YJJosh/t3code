@@ -8,7 +8,10 @@ export interface AgentScopeShape {
     readonly name: string;
     readonly threadId?: string | undefined;
     readonly env?: NodeJS.ProcessEnv | undefined;
-    /** Terminals may survive restarts; agents must remain eligible for orphan cleanup. */
+    /**
+     * Terminals and processes another owner keeps, such as Pis the pi-sessions daemon
+     * hosts, may survive restarts. Agents T3 owns must remain eligible for orphan cleanup.
+     */
     readonly survivesRestart?: boolean | undefined;
     /**
      * Keep a shared process running after a tool OOM when supported.
