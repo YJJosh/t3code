@@ -37,6 +37,7 @@ import {
 } from "./PiDaemonConnection.ts";
 import type { PiRpcRecord } from "./rpc.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decode = Schema.decodeSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
@@ -209,15 +210,23 @@ const fakeAgentScope = () => {
   const stopped: Array<string> = [];
   const scope: typeof AgentScope.Service = {
     ...AgentScope.defaultValue(),
-    wrap: ({ command, args, survivesRestart, shared, threadId }) =>
-      Effect.sync(() => {
+    wrap: ({ command, args, survivesRestart, shared, threadId, env }) =>
+      Effect.gen(function* () {
+        const executable =
+          (yield* resolveCommandPath(command, env === undefined ? {} : { env }).pipe(
+            Effect.provide(NodeServices.layer),
+          )) ?? command;
         const unit = `t3code-dulli-${wraps.size + 1}.scope`;
         wraps.set(unit, {
           survivesRestart: survivesRestart === true,
           shared: shared === true,
           threadId,
         });
-        return { command, args: [`--unit=${unit}`, `--scope-of=${unit}`, ...args], unit };
+        return {
+          command: executable,
+          args: [`--unit=${unit}`, `--scope-of=${unit}`, ...args],
+          unit,
+        };
       }),
     stop: (unit) => Effect.sync(() => void stopped.push(unit)),
   };
@@ -740,6 +749,10 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
   it.effect("detaches and rpc-opens a different file or new chat without another writer", () =>
     Effect.gen(function* () {
       const f = yield* fixture(undefined, { type: "pi_sessions_state" });
+      const fs = yield* FileSystem.FileSystem;
+      const providerPi = `${f.home}/pi`;
+      yield* fs.writeFileString(providerPi, "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(providerPi, 0o755);
       const agentScope = fakeAgentScope();
       const instanceId = ProviderInstanceId.make("dulli");
       const threadId = ThreadId.make("rebind");
@@ -760,7 +773,7 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
           shareWithTerminal: true,
           customModels: [],
         },
-        environment: f.input.env,
+        environment: { ...f.input.env, PATH: f.home },
       }).pipe(
         Effect.provideService(
           ChildProcessSpawner.ChildProcessSpawner,
@@ -785,7 +798,6 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
         modelSelection: selection,
         runtimePolicy,
       });
-      const fs = yield* FileSystem.FileSystem;
       const otherFile = `${f.home}/other.jsonl`;
       yield* fs.writeFileString(otherFile, "");
       const different = yield* runtime.resumeThread({
@@ -813,6 +825,8 @@ it.layer(adapterLayers)("Dulli shared adapter", (it) => {
       const requests = yield* Queue.takeAll(f.requests);
       const opens = requests.filter((request) => request.type === "rpc-open");
       expect(opens).toHaveLength(3);
+      for (const request of opens)
+        expect((request.launch as { command: string[] }).command[0]).toBe(providerPi);
       expect(opens[1]?.sessionFile).toBe(otherFile);
       expect(opens[2]).not.toHaveProperty("sessionFile");
       // The terminal shares these Pis: each open gets its own restart-surviving unit,

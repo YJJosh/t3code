@@ -686,6 +686,7 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
           .wrap({
             command: piLaunch.command,
             args: [],
+            env: piLaunch.env,
             name: "dulli-shared",
             survivesRestart: true,
             shared: true,
