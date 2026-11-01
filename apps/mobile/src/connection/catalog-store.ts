@@ -48,7 +48,9 @@ interface CatalogStore {
   ) => Effect.Effect<void, ConnectionTransientError>;
 }
 
-export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(function* () {
+export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(function* (
+  onChange: (catalog: ConnectionCatalogDocumentType) => void = () => {},
+) {
   const storage = yield* MobileSecureStorage.MobileSecureStorage;
   const getItem = (key: string) =>
     storage.getItem(key).pipe(Effect.mapError((cause) => catalogError("load", cause)));
@@ -99,6 +101,7 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
     } else {
       catalog = yield* loadLegacyCatalog();
     }
+    yield* Effect.sync(() => onChange(catalog));
     yield* Ref.set(state, Option.some(catalog));
     return catalog;
   });
@@ -111,6 +114,7 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
           const next = transform(yield* loadUnlocked());
           const encoded = yield* encodeCatalog(next);
           yield* setItem(CONNECTION_CATALOG_KEY, encoded);
+          yield* Effect.sync(() => onChange(next));
           yield* Ref.set(state, Option.some(next));
         }),
       );

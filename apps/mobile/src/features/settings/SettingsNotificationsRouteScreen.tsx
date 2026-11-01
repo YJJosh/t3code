@@ -1,3 +1,4 @@
+import { SettingsPhoneNotifications } from "./SettingsPhoneNotifications";
 import * as Dialog from "../../components/ui/Dialog";
 import { AuthRelayWriteScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "../../state/session";
@@ -93,6 +94,9 @@ function useDeviceRegistered(): boolean {
 }
 
 export function SettingsNotificationsRouteScreen() {
+  if (Platform.OS === "android" && Constants.expoConfig?.extra?.appBrand === "dulli") {
+    return <SettingsPhoneNotifications />;
+  }
   if (!hasCloudPublicConfig()) {
     return (
       <SettingsScreen title="Notifications">

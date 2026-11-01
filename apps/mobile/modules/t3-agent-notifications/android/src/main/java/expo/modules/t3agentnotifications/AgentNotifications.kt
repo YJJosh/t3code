@@ -132,6 +132,29 @@ object AgentNotifications {
     }
   }
 
+  @Synchronized
+  fun phoneAlert(context: Context, scheme: String, id: String, title: String, body: String, path: String) {
+    if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
+    val resumed = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+    if (resumed && threadOnScreen == path) return
+    channels(context)
+    postAlert(context, scheme, mapOf("alert_title" to title, "alert_body" to body,
+      "alert_path" to path, "alert_group" to id), id)
+  }
+
+  fun clearPhoneAlert(context: Context, id: String) {
+    manager(context).cancel(ALERT_TAG, id.hashCode())
+  }
+
+  fun clearPhoneAlerts(context: Context, environment: String? = null) {
+    manager(context).activeNotifications.filter {
+      it.tag == ALERT_TAG && it.notification.group?.let { group ->
+        if (environment == null) group.startsWith("phone:")
+        else group.startsWith("phone:request:$environment/") || group.startsWith("phone:run:$environment/")
+      } == true
+    }.forEach { manager(context).cancel(it.tag, it.id) }
+  }
+
   private fun showAlert(
     context: Context,
     prefs: SharedPreferences,

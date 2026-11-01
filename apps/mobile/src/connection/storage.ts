@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import { configurePhoneConnections } from "../features/agent-awareness/androidNotifications";
 import * as CatalogStore from "./catalog-store";
 
 function targetPersistenceError(
@@ -41,7 +42,7 @@ function targetPersistenceError(
 
 export const layer = Layer.effectContext(
   Effect.gen(function* () {
-    const catalog = yield* CatalogStore.make();
+    const catalog = yield* CatalogStore.make(configurePhoneConnections);
     const githubRoutingPermissions = yield* makePullRequestRoutingPermissions({
       read: catalog.read.pipe(Effect.map((document) => document.githubRoutingPermissions ?? [])),
       write: (githubRoutingPermissions) =>

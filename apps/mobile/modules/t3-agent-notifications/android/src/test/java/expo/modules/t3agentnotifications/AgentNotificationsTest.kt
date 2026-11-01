@@ -79,6 +79,24 @@ class AgentNotificationsTest {
   }
 
   @Test
+  fun directPhoneAlertsSuppressTheVisibleThreadAndCanBeClearedIndependentlyOfRelay() {
+    lifecycle.currentState = Lifecycle.State.RESUMED
+    AgentNotifications.phoneAlert(context, "t3dulli", "phone:request:env/thread:one", "Question", "Input needed", "/threads/environment/thread")
+    assertTrue(manager.activeNotifications.isEmpty())
+    lifecycle.currentState = Lifecycle.State.CREATED
+    AgentNotifications.phoneAlert(context, "t3dulli", "phone:request:env/thread:two", "Question", "Input needed", "/threads/environment/thread")
+    val alert = manager.activeNotifications.single()
+    val tap = shadowOf(alert.notification.contentIntent).savedIntent
+    assertEquals("t3dulli://threads/environment/thread", tap.data.toString())
+    AgentNotifications.receive(context, update("relay", false))
+    AgentNotifications.clearPhoneAlert(context, "phone:request:env/thread:two")
+    assertEquals("relay".hashCode(), manager.activeNotifications.single().id)
+    AgentNotifications.phoneAlert(context, "t3dulli", "phone:run:env/thread:run", "Done", "Turn finished", "/threads/environment/thread")
+    AgentNotifications.clearPhoneAlerts(context)
+    assertEquals("relay".hashCode(), manager.activeNotifications.single().id)
+  }
+
+  @Test
   fun alertsStackByThreadGroup() {
     AgentNotifications.receive(context, update("grouped", false))
     assertEquals("environment/thread", manager.activeNotifications.single().notification.group)

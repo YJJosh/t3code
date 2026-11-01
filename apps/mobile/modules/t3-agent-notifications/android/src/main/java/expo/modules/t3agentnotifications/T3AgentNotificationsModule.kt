@@ -11,6 +11,30 @@ class T3AgentNotificationsModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("T3AgentNotifications")
 
+    Function("phoneNotificationsEnabled") {
+      appContext.reactContext?.let { PhoneConnectionStore.preferences(it).getBoolean("enabled", false) } ?: false
+    }
+
+    Function("setPhoneNotificationsEnabled") { enabled: Boolean ->
+      val context = requireNotNull(appContext.reactContext)
+      PhoneConnectionService.setEnabled(context, enabled)
+    }
+
+    Function("configurePhoneConnections") { connections: String, scheme: String ->
+      val context = requireNotNull(appContext.reactContext)
+      PhoneConnectionStore.save(context, connections, scheme)
+    }
+
+    Function("openPhoneBatterySettings") {
+      val context = requireNotNull(appContext.reactContext)
+      val power = context.getSystemService(android.os.PowerManager::class.java)
+      if (!power.isIgnoringBatteryOptimizations(context.packageName)) {
+        context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+          .setData(android.net.Uri.parse("package:${context.packageName}"))
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+      }
+    }
+
     Function("configure") {
         deviceId: String,
         userId: String,
