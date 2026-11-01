@@ -364,12 +364,12 @@ jobs:
           trap cleanup_sensitive_files EXIT
 
           printf '%s' "$CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
-          openssl pkcs12 \
-            -in "$certificate_path" \
-            -clcerts \
-            -nokeys \
-            -passin env:CERTIFICATE_PASSWORD \
-            -out "$certificate_pem_path"
+          # The certificate uses RC2; OpenSSL 3 (newer runner images) reads it only with -legacy.
+          read_certificate() {
+            openssl pkcs12 "$@" -in "$certificate_path" -clcerts -nokeys \
+              -passin env:CERTIFICATE_PASSWORD -out "$certificate_pem_path"
+          }
+          read_certificate 2>/dev/null || read_certificate -legacy
 
           security create-keychain -p "$keychain_password" "$keychain_path"
           security set-keychain-settings -lut 21600 "$keychain_path"
