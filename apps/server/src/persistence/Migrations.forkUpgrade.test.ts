@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
@@ -62,7 +63,7 @@ it.effect.each(["released", "dev"] as const)(
       });
       const before = yield* snapshot;
       assert.deepStrictEqual(yield* runMigrations(), [
-        ...(layout === "released" ? migrationManifest.filter(([id]) => id >= 63) : []),
+        ...migrationManifest.filter(([id]) => id > (layout === "released" ? 62 : 67)),
         ...dulliMigrationManifest,
       ]);
       assert.deepStrictEqual(yield* snapshot, before);
@@ -71,10 +72,10 @@ it.effect.each(["released", "dev"] as const)(
     }).pipe(Effect.provide(database)),
 );
 
-it.effect("adds only fork migrations to an upstream v0.1.1 ledger", () =>
+it.effect("adds only fork migrations to the current upstream ledger", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 67 });
+    yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
     const before = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     assert.deepStrictEqual(yield* runMigrations(), dulliMigrationManifest);
     assert.deepStrictEqual(
@@ -97,7 +98,7 @@ it.effect("installs upstream and fork migrations on a fresh database once", () =
   }).pipe(Effect.provide(database)),
 );
 
-it.effect("never removes another migration by id alone, including future upstream 68–71", () =>
+it.effect("never removes another migration by id alone, including upstream 68–71", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: 67 });
@@ -106,12 +107,16 @@ it.effect("never removes another migration by id alone, including future upstrea
       yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${id + 67}, ${`${name}Upstream`})`;
     }
     const before = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-    assert.deepStrictEqual(yield* runMigrations(), dulliMigrationManifest);
+    const exit = yield* Effect.exit(runMigrations());
+    assert.isTrue(Exit.isFailure(exit));
+    assert.include(
+      String(exit),
+      "68_ShellStopRequestIndex (recorded: ProjectionThreadMessagePhaseUpstream)",
+    );
     assert.deepStrictEqual(
       yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
       before,
     );
-    yield* verifyNoOp;
   }).pipe(Effect.provide(database)),
 );
 

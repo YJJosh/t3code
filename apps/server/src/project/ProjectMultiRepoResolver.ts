@@ -38,11 +38,9 @@ const NOT_A_MULTI_REPO_FOLDER: ProjectFolderRepositories = {
 };
 
 /**
- * Whether a project folder is a multi-repo project, with each member's remote.
- * Clients use the remotes to show the same project on every environment as
- * one, and to clone it onto another one, so a local-path remote counts as none.
- * For a plain folder it lists the repositories inside, so clients can offer to
- * make it a multi-repo project.
+ * Clients use member remotes to deduplicate projects across environments and clone
+ * them elsewhere, so local-path remotes count as absent. Plain folders expose
+ * contained repositories so clients can offer to make a multi-repo project.
  */
 export class ProjectMultiRepoResolver extends Context.Service<
   ProjectMultiRepoResolver,
@@ -54,7 +52,7 @@ export class ProjectMultiRepoResolver extends Context.Service<
   }
 >()("t3/project/ProjectMultiRepoResolver") {}
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

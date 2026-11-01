@@ -45,11 +45,13 @@ export function InteractiveBackgroundTerminal({
   const surface = useRef<GhosttyTerminalSurface | null>(null);
   const input = useRef<ReturnType<typeof createTerminalInputBatcher> | null>(null);
   const latest = useRef(terminal);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The asynchronously created Ghostty surface needs the latest committed screen on initialization.
   useLayoutEffect(() => {
     latest.current = terminal;
   }, [terminal]);
   const controlling = terminal.view.controller === clientId && terminal.view.status === "running";
   const controllingRef = useRef(controlling);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Retained Ghostty input handlers must follow committed ownership without recreating the terminal surface.
   useLayoutEffect(() => {
     controllingRef.current = controlling;
   }, [controlling]);
@@ -81,6 +83,7 @@ export function InteractiveBackgroundTerminal({
       }).catch(reportError);
   });
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Hold the server watch lease while the tab is visible, with a heartbeat and visibility listener until unmount.
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
@@ -124,6 +127,7 @@ export function InteractiveBackgroundTerminal({
     };
   }, [control, reportError]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Hold a terminal input batcher only while owning the server PTY, discarding queued keys when ownership ends.
   useEffect(() => {
     if (!controlling) {
       input.current?.dispose();
@@ -143,6 +147,7 @@ export function InteractiveBackgroundTerminal({
     };
   }, [controlling, control, resize, reportError]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Mount the imperative Ghostty DOM surface and theme observer, disposing both on unmount.
   useEffect(() => {
     const element = mount.current;
     if (!element) return;
@@ -190,6 +195,7 @@ export function InteractiveBackgroundTerminal({
     };
   }, [resize, reportError]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Write server screen updates into the mounted Ghostty surface.
   useEffect(() => {
     if (!terminal.screen || !surface.current) return;
     surface.current.setGridSizeOverride(terminal.screen.cols, terminal.screen.rows);

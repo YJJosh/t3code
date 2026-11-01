@@ -86,6 +86,7 @@ export async function loadMcpBridge(
       "t3_preview_future_operation",
       "html_render",
       "html_preview",
+      "t3_background_wait",
     ].map((name) => ({ name, description: "Pi-owned capability." })),
   ].map((tool) => ({
     ...tool,

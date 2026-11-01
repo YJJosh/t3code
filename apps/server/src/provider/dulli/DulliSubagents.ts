@@ -23,17 +23,19 @@ export const layer = Layer.effect(
   Effect.sync(() => {
     const sessions = new Map<ThreadId, { token: symbol; control: Control }>();
     return DulliSubagents.of({
-      register: (threadId, control) =>
+      register: Effect.fn("DulliSubagents.register")((threadId, control) =>
         Effect.sync(() => {
           const token = Symbol();
           sessions.set(threadId, { token, control });
           return token;
         }),
-      unregister: (threadId, token) =>
+      ),
+      unregister: Effect.fn("DulliSubagents.unregister")((threadId, token) =>
         Effect.sync(() => {
           if (sessions.get(threadId)?.token === token) sessions.delete(threadId);
         }),
-      control: (input) =>
+      ),
+      control: Effect.fn("DulliSubagents.control")((input) =>
         Effect.suspend(() => {
           const session = sessions.get(input.threadId);
           return session
@@ -46,6 +48,7 @@ export const layer = Layer.effect(
                 }),
               );
         }),
+      ),
     });
   }),
 );

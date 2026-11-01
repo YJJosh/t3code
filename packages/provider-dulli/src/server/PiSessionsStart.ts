@@ -8,6 +8,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type * as Path from "effect/Path";
+import { AgentScope } from "@t3tools/shared/AgentScope";
 import { piSessionsHome } from "./PiSessionsSocket.ts";
 
 const START_TIMEOUT_MS = 5_000;
@@ -121,7 +122,17 @@ export const startPiSessionsDaemon = Effect.fn(function* (
   const home = piSessionsHome(env, path);
   const command = readPiSessionsStartCommand(home, path);
   if (!command) return false;
-  const exited = spawnDaemon(home, command, path, env);
+  // Its own restart-surviving scope: otherwise systemd stops it, and every shared Pi it
+  // hosts, with T3's service or agent scope.
+  const scoped = yield* (yield* AgentScope).wrap({
+    command: command[0]!,
+    args: command.slice(1),
+    name: "pi-sessions",
+    env,
+    survivesRestart: true,
+    shared: true,
+  });
+  const exited = spawnDaemon(home, [scoped.command, ...scoped.args], path, env);
   if (!exited) return false;
   const socketPath = path.join(home, "daemon.sock");
   const deadline = (yield* Clock.currentTimeMillis) + START_TIMEOUT_MS;

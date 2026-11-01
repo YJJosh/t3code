@@ -9,25 +9,10 @@ import type {
 } from "@t3tools/contracts";
 
 /**
- * Pure client-side state model for Dulli shared-terminal events. Background
- * terminals have no discrete per-event activity log to replay: each
- * `DulliBackgroundTerminalView` already carries the *full* current stdout/stderr
- * text for that terminal, so a `terminal_upsert` (or a `snapshot`) can always
- * rebuild a terminal's output from scratch. `terminal_output` events instead
- * carry small incremental deltas so the common case (a running process
- * printing output) doesn't require re-sending the whole buffer on every line.
- * `terminal_screen` events replace a watched interactive terminal's bounded
- * screen grid wholesale.
- *
- * Design constraints handled here:
- * - Ordered manager sequences: every event carries `managerId` + monotonic
- *   `sequence`; duplicates (re-delivered after reconnect) are ignored.
- * - Authoritative snapshots: a `snapshot` event rebuilds the whole terminal
- *   set from its `terminals` list, discarding anything not present (e.g. a
- *   fresh manager after reconnect starts from an empty set).
- * - Browser-side UTF-8 byte-bounded retention per stream (independent of any
- *   server-side truncation) so a long-lived, chatty terminal cannot grow the
- *   client's memory without bound.
+ * Upserts/snapshots rebuild full output; output events append deltas and screens replace grids.
+ * Deduplicate by managerId and sequence; snapshots discard terminals absent from their list.
+ * Bound retained UTF-8 bytes per stream independently of server truncation so chatty
+ * long-lived terminals cannot grow client memory without limit.
  */
 
 export const DEFAULT_MAX_BACKGROUND_TERMINAL_OUTPUT_BYTES = 256 * 1024;
@@ -308,11 +293,9 @@ function applyOutputDelta(
   needsReconciliation: boolean,
 ): ReadonlyMap<string, BackgroundTerminalEntry> {
   const existing = terminals.get(terminalId);
-  // Output for a terminal whose view has not been seen yet is dropped rather
-  // than synthesizing a placeholder entry we cannot populate with metadata.
-  // Also drop a non-authoritative append after queue overflow: a later replace
-  // frame, upsert, or snapshot will heal the bounded stream without fabricating
-  // contiguous output across missing events.
+  // Drop output without a known view rather than fabricating metadata. After queue
+  // overflow, drop non-authoritative appends until a replace, upsert or snapshot heals
+  // the stream: missing events must not appear as contiguous output.
   if (existing === undefined || (needsReconciliation && !delta.replace)) {
     return terminals;
   }

@@ -3,13 +3,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { hasPendingDulliSubagentHistory } from "./DulliLegacyActivities.ts";
 
-/**
- * V2 databases start as a copy of the V1 database, and nothing reads these V1
- * projections after the copy. The V1 transcript import still reads threads,
- * messages and pull request links, so those stay. Builds before 0.1.0 read
- * `state.sqlite`, never this file, so dropping them does not affect a rollback.
- * The freed pages are reported as reclaimable space for `t3 doctor`.
- */
+// V2 never reads these copied V1 projections; pre-0.1.0 builds use state.sqlite, preserving rollback.
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 

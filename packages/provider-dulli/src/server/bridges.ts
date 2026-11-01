@@ -1,9 +1,7 @@
 /**
- * Session-local extension seam. Provide DulliBridgeRegistry with factories (never
- * singleton mutable handlers). Prefixes are claimed before ordinary UI handling.
- * Notify handlers must not await a reply delivered by the event pump; input
- * interceptors run in a scoped fiber and return the extension response fields.
- * onStart runs after native identity is known; onStop runs once on exit/close.
+ * Use session-local factories, never singleton mutable handlers; prefixes claim UI first.
+ * Notify handlers cannot await replies from the event pump; input interceptors run
+ * in scoped fibers. onStart requires native identity; onStop runs once on exit/close.
  */
 import type { DulliSettings } from "../settings.ts";
 import type {

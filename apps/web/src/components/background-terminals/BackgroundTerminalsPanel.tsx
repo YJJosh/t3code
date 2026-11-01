@@ -125,14 +125,7 @@ function StartTerminalForm({
   );
 }
 
-/**
- * Right-panel surface for a thread's shared (Dulli background) terminals: a
- * roster of running and settled terminals, the selected terminal's detail
- * (live PTY screen or output tail plus controls), and a form that starts a
- * new terminal inside the live Dulli session so both the user and Dulli can use it.
- * Mirrors the Agents inspector: split roster/detail when wide, stacked when
- * narrow.
- */
+/** The live Dulli session owns new shared terminals so the user and Pi see the same processes. */
 export function BackgroundTerminalsPanel({
   environmentId,
   threadId,

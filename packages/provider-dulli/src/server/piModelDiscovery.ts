@@ -1,20 +1,7 @@
 /**
- * Pi model discovery + auth status via the `@earendil-works/pi-coding-agent`
- * SDK.
- *
- * Uses Pi's SDK runtime-service loader (not CLI output parsing) so configured
- * extensions can register custom providers before
- * `ModelRegistry.getAvailable()` runs. T3 presents only models with configured
- * credentials, preventing unavailable built-ins from flooding the picker while
- * retaining extension providers such as `claude-agent-sdk`. Credentials
- * themselves are never read or exposed.
- *
- * The SDK is loaded via a dynamic import so it stays off the server's startup
- * path (discovery only runs during a provider probe). It prefers the SDK of the
- * Pi install that sessions launch, so every refresh lists that Pi version's
- * catalog; T3's bundled SDK is only the fallback.
- *
- * @module provider/pi/piModelDiscovery
+ * Load the launched Pi install’s SDK lazily, falling back to the bundled SDK.
+ * Use its runtime-service loader so extensions register providers before discovery.
+ * List only models with configured credentials; never read or expose credentials.
  */
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A worker deadline must survive a blocked SDK import.
 import * as NodeTimers from "node:timers";
@@ -240,11 +227,8 @@ function piProviderResources(resources: PiResourceSnapshot): {
 }
 
 /**
- * Build capabilities for a Pi model, annotating a `reasoning` (thinking-level)
- * select for reasoning-capable models. This mirrors Pi's
- * `getSupportedThinkingLevels`: its map is a partial override, not an exhaustive
- * allowlist. Normal levels are supported unless explicitly mapped to `null`;
- * extended `xhigh` and `max` levels require explicit map entries.
+ * Match Pi’s partial thinking-level overrides: ordinary levels are allowed unless
+ * mapped to null, but xhigh and max require explicit map entries.
  */
 export interface PiModelCapabilityOptions {
   readonly codexFastCommandAvailable?: boolean | undefined;
@@ -659,11 +643,8 @@ function piSdkEntry(manifest: typeof PiPackageManifest.Type): string {
 }
 
 /**
- * Locate the SDK of the Pi install that `binaryPath` launches, following a
- * symlinked bin into its package, an npm Windows shim to the adjacent
- * `node_modules`, or Pi's managed-install launcher to its current release.
- * Returns undefined for other installs, such as a compiled binary, so
- * discovery falls back to the bundled SDK.
+ * Follow symlinked bins, npm Windows shims and managed-install launchers to the SDK.
+ * Unknown installs (including compiled binaries) return undefined for bundled fallback.
  */
 const resolveInstalledPiSdkUrl = Effect.fn("resolveInstalledPiSdkUrl")(
   function* (binaryPath: string, environment: NodeJS.ProcessEnv | undefined) {

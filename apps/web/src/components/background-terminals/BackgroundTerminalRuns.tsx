@@ -65,6 +65,7 @@ function BackgroundTerminalElapsed({ terminal }: { terminal: BackgroundTerminalE
   const textRef = useRef<HTMLTimeElement>(null);
   const running = isBackgroundTerminalActive(terminal.view.status);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Update the elapsed-time DOM on a timer without rerendering terminal output every second.
   useEffect(() => {
     if (!running) return;
     const update = () => {
@@ -146,6 +147,7 @@ function BackgroundTerminalOutputPane({ buffer }: BackgroundTerminalOutputPanePr
   const truncated = isBackgroundTerminalOutputTruncated(buffer);
   const truncatedBytesLabel = formatBytes(backgroundTerminalTruncatedBytes(buffer));
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Track the mounted scroll viewport so live output follows only when the reader is at the bottom.
   useEffect(() => {
     const viewport = rootRef.current?.querySelector<HTMLElement>(
       '[data-slot="scroll-area-viewport"]',
@@ -161,7 +163,7 @@ function BackgroundTerminalOutputPane({ buffer }: BackgroundTerminalOutputPanePr
     return () => viewport.removeEventListener("scroll", updateStickiness);
   }, []);
 
-  // DOM measurements must follow the committed output, even when React reuses its text.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Scroll the DOM viewport after committed output, even when React reuses its text.
   useLayoutEffect(() => {
     if (!stickToBottomRef.current) {
       return;
@@ -388,15 +390,9 @@ export interface BackgroundTerminalRunsProps {
 }
 
 /**
- * Compact roster strip for a thread's Dulli background terminals, rendered
- * directly above the composer: running and settled (done, failed, killed)
- * terminals each collapse behind a summary row with their count so they
- * don't permanently eat composer space. Selecting a row opens the Shared
- * terminals surface in the right panel with that terminal selected; the
- * surface owns details, controls and starting new terminals.
- *
- * Renders nothing when there are no terminals so an idle/empty stream is
- * invisible.
+ * Collapse running and settled terminals separately to preserve composer space.
+ * Selection opens the Shared terminals panel, which owns details and controls.
+ * An empty stream stays invisible.
  */
 export function BackgroundTerminalRuns({
   environmentId,

@@ -4,6 +4,7 @@ import * as FileSystem from "effect/FileSystem";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ChatAttachmentId,
   CheckpointId,
   EnvironmentId,
   NodeId,
@@ -22,6 +23,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -35,6 +37,8 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -60,6 +64,7 @@ const layerTest = Layer.mergeAll(
   TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
 );
 
+const decodeAdapterEvent = Schema.decodeEffect(ProviderAdapter.ProviderAdapterV2Event);
 const decodeJsonLine = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeJsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const isJsonValue = Schema.is(Schema.Json);
@@ -552,6 +557,117 @@ const expectModelFailure = (errorMessage: string) =>
   }).pipe(Effect.scoped, Effect.provide(layerTest));
 
 describe("DulliAdapterV2", () => {
+  it.effect(
+    "retains image paths, extracted document text and unavailable attachments in prompts",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* ProviderHost.ProviderHost;
+        const fs = yield* FileSystem.FileSystem;
+        const attachments: ReadonlyArray<ChatAttachment> = [
+          {
+            id: ChatAttachmentId.make("image"),
+            type: "image",
+            name: "screen.png",
+            mimeType: "image/png",
+            sizeBytes: 3,
+          },
+          {
+            id: ChatAttachmentId.make("document"),
+            type: "file",
+            name: "notes.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 1,
+          },
+          {
+            id: ChatAttachmentId.make("missing"),
+            type: "file",
+            name: "lost.txt",
+            mimeType: "text/plain",
+            sizeBytes: 1,
+          },
+        ];
+        const imagePath = host.resolveAttachmentPath(attachments[0]!)!;
+        const documentPath = host.resolveAttachmentPath(attachments[1]!)!;
+        yield* fs.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+        const fake = yield* makeFakePi;
+        const { runtime } = yield* openRuntime(fake).pipe(
+          Effect.provideService(ProviderHost.ProviderHost, {
+            ...host,
+            resolveAttachmentPath: (attachment) =>
+              attachment.id === "missing" ? null : host.resolveAttachmentPath(attachment),
+            resolveExtractedTextPath: (path) =>
+              Effect.succeed(path === documentPath ? `${path}.txt` : undefined),
+          }),
+        );
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, providerThread, "default", attachments);
+        const prompt = yield* fake.takeRequest("prompt");
+        const message = String(prompt["message"]);
+        assert.include(message, imagePath);
+        assert.include(message, `${documentPath}.txt`);
+        assert.include(message, '"lost.txt" is unavailable');
+        assert.deepEqual(prompt["images"], [
+          { type: "image", data: "AQID", mimeType: "image/png" },
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect.each(["session", "process"] as const)("cleans up detached work on Pi %s exit", (exit) =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      const scopeStopped = yield* Deferred.make<void>();
+      let processReleased = false;
+      const stopped: Array<{ unit: string; processReleased: boolean }> = [];
+      yield* Effect.gen(function* () {
+        yield* openRuntime({
+          ...fake,
+          spawner: ChildProcessSpawner.make((command) =>
+            Effect.acquireRelease(
+              fake.spawner
+                .spawn(command)
+                .pipe(
+                  Effect.map((child) =>
+                    ChildProcessSpawner.makeHandle({ ...child, exitCode: Deferred.await(exited) }),
+                  ),
+                ),
+              () =>
+                Effect.sync(() => {
+                  processReleased = true;
+                }),
+            ),
+          ),
+        });
+        assert.deepStrictEqual(stopped, []);
+        if (exit === "process") {
+          // Stdout stays open as it would for a child holding the inherited pipe.
+          yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(19));
+          yield* Deferred.await(scopeStopped);
+          assert.isFalse(processReleased);
+        }
+      }).pipe(
+        Effect.scoped,
+        Effect.provideService(AgentScope, {
+          ...AgentScope.defaultValue(),
+          wrap: ({ command, args }) =>
+            Effect.succeed({ command, args, unit: "t3code-dulli-test.scope" }),
+          stop: (unit) =>
+            Effect.sync(() => void stopped.push({ unit, processReleased })).pipe(
+              Effect.andThen(Deferred.succeed(scopeStopped, undefined)),
+              Effect.asVoid,
+            ),
+        }),
+      );
+      assert.deepStrictEqual(stopped, [
+        { unit: "t3code-dulli-test.scope", processReleased: exit === "session" },
+      ]);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect.each([false, true])(
     "completes a resumed user turn before native wake events arrive, Pi streaming=%s",
     (streaming) =>
@@ -3296,39 +3412,45 @@ describe("DulliAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
-  it.effect("offers an explicit empty value for extension input dialogs", () =>
-    Effect.gen(function* () {
-      const fake = yield* makeFakePi;
-      const { runtime, takeEvent } = yield* openRuntime(fake);
-      yield* runtime.ensureThread({
-        threadId: THREAD_ID,
-        modelSelection: modelSelection("default"),
-        runtimePolicy,
-      });
-      yield* fake.emit({
-        type: "extension_ui_request",
-        id: "ui-input",
-        method: "input",
-        title: "Optional value",
-      });
-      const event = yield* takeEvent(
-        (event) =>
+  it.effect.each([undefined, "", "  "])(
+    "offers an explicit empty value for extension input dialogs (placeholder=%s)",
+    (placeholder) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* fake.emit({
+          type: "extension_ui_request",
+          id: "ui-input",
+          method: "input",
+          title: "Optional value",
+          message: placeholder,
+          placeholder,
+        });
+        const event = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+        );
+        assert.isTrue(
           event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
-      );
-      assert.isTrue(
-        event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
-      );
-      if (event.type !== "turn_item.updated" || event.turnItem.type !== "user_input_request")
-        return;
-      assert.equal(event.turnItem.questions[0]?.options[0]?.value, "");
-      yield* runtime.respondToRuntimeRequest({
-        requestId: event.turnItem.requestId,
-        answers: { "ui-input": "" },
-      });
-      const response = yield* fake.takeRequest("extension_ui_response");
-      assert.equal(response["value"], "");
-      assert.isUndefined(response["cancelled"]);
-    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+        );
+        if (event.type !== "turn_item.updated" || event.turnItem.type !== "user_input_request")
+          return;
+        assert.equal(event.turnItem.questions[0]?.question, "Optional value");
+        yield* decodeAdapterEvent(event);
+        assert.equal(event.turnItem.questions[0]?.options[0]?.value, "");
+        yield* runtime.respondToRuntimeRequest({
+          requestId: event.turnItem.requestId,
+          answers: { "ui-input": "" },
+        });
+        const response = yield* fake.takeRequest("extension_ui_response");
+        assert.equal(response["value"], "");
+        assert.isUndefined(response["cancelled"]);
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect("keeps the complete editor prefill editable and returns exact edited text", () =>
@@ -4797,7 +4919,7 @@ describe("Dulli fork policy", () => {
         // Production provides the registry to hydration, not to the later MCP
         // and orchestration facades that open sessions on the captured adapter.
         const adapter = yield* makeAdapter(fake).pipe(
-          Effect.provide(Layer.succeed(DulliBridgeRegistry, [factory])),
+          Effect.provideService(DulliBridgeRegistry, [factory]),
         );
         const runtime = yield* adapter.openSession({
           threadId: THREAD_ID,

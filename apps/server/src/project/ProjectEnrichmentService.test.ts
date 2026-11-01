@@ -26,14 +26,16 @@ const waitForAvailable = Effect.fn("ProjectEnrichmentServiceTest.waitForAvailabl
   workspaceRoot: string,
   predicate: (value: ProjectEnrichment.ProjectEnrichment) => boolean,
 ) {
-  const changes = yield* service.subscribeChanges;
-  const available = yield* service.peek(workspaceRoot);
-  if (predicate(available)) return available;
-  while (true) {
-    const change = yield* PubSub.take(changes);
-    if (change.workspaceRoot === workspaceRoot && predicate(change.enrichment))
-      return change.enrichment;
-  }
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const changes = yield* service.subscribeChanges;
+      for (;;) {
+        const available = yield* service.peek(workspaceRoot);
+        if (predicate(available)) return available;
+        yield* PubSub.take(changes);
+      }
+    }),
+  );
 });
 
 const layer = (
@@ -70,6 +72,7 @@ it.effect("publishes repository completion while favicon enrichment is still pen
       assert.equal(change.workspaceRoot, "/completed");
       assert.isTrue(change.repositoryIdentityResolved);
       assert.equal(change.enrichment.repositoryIdentity?.canonicalKey, "example.test/v1/completed");
+      assert.deepEqual(yield* service.readRepositoryIdentity("/completed"), identity("/completed"));
       assert.isNull(change.enrichment.faviconPath);
     }).pipe(Effect.provide(layer(layerMetadata)));
   }),
@@ -290,6 +293,7 @@ it.effect("enriches a group in the background without exposing its enclosing rep
       assert.deepEqual(change.enrichment.multiRepo, multiRepo);
       assert.isNull(change.enrichment.repositoryIdentity);
       assert.deepEqual((yield* service.peek("/group")).multiRepo, multiRepo);
+      assert.isNull(yield* service.readRepositoryIdentity("/group"));
     }).pipe(Effect.provide(testLayer));
   }),
 );

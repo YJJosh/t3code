@@ -30,11 +30,8 @@ export const BACKGROUND_TERMINAL_START_UNAVAILABLE =
   "Dulli is not running in this thread yet. Send a message first, then start a terminal.";
 
 /**
- * Starts a shared terminal inside the thread's live Dulli session through the
- * background-terminal control channel. The server only acknowledges the
- * control; the new terminal's id arrives in the runtime state as a
- * `control_result` carrying the returned request id, which callers use to
- * select it once it exists.
+ * The server acknowledges only the control request. Select the new terminal when
+ * its id arrives in a runtime `control_result` with the matching request id.
  */
 export function useStartBackgroundTerminal(input: {
   readonly environmentId: EnvironmentId | null;

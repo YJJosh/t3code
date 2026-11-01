@@ -73,6 +73,7 @@ function ToolCard({
   const ref = useRef<HTMLDetailsElement>(null);
   const [visible, setVisible] = useState(() => typeof IntersectionObserver === "undefined");
   const [open, setOpen] = useState(true);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Observe the tool card’s DOM visibility to defer fetching omitted output until it has been seen.
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
@@ -222,6 +223,7 @@ function AgentComposer({
   const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null);
   const messageId = useId();
   const mounted = useRef(true);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Bound in-flight task-control RPC feedback to this composer’s mounted lifetime.
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -363,6 +365,7 @@ export function AgentDetail({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const contentRef = useRef<HTMLDivElement>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Keep the live transcript DOM scrolled to its tail via scroll and resize listeners until unmount.
   useEffect(() => {
     // Only a live run follows its newest output. A settled run reads from the
     // prompt down, and opening its work must not jump to the end.
@@ -423,7 +426,9 @@ export function AgentDetail({
             <p className="mt-1 truncate font-mono text-3xs text-muted-foreground">
               {formatSubagentModelLabel(agent.model, agent.effort) ?? "Provider default"} ·{" "}
               <AgentElapsed agent={agent} /> ·{" "}
-              {agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok"}
+              {agent.usage
+                ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok`
+                : "Unknown tokens"}
               {agent.usage?.toolUses !== undefined ? ` · ${agent.usage.toolUses} tools` : ""}
             </p>
           </div>

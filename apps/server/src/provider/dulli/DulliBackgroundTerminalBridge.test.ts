@@ -41,7 +41,7 @@ const otherThread = ThreadId.make("other");
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const decodeEvent = Schema.decodeUnknownSync(DulliBackgroundTerminalEvent);
-const settings = Schema.decodeUnknownSync(DulliSettings)({});
+const settings = Schema.decodeSync(DulliSettings)({});
 const event = (sequence: number, managerId = "manager") =>
   decodeEvent({
     contractVersion: 1,

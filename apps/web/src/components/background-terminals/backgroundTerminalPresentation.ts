@@ -49,7 +49,7 @@ export function backgroundTerminalTitle(view: DulliBackgroundTerminalView): stri
 /** Accessible status string, calling out failures explicitly. */
 export function backgroundTerminalAccessibleStatus(status: DulliBackgroundTerminalStatus): string {
   const label = backgroundTerminalStatusLabel(status);
-  return status === "failed" ? `${label} — needs your attention` : label;
+  return status === "failed" ? `${label}: needs your attention` : label;
 }
 
 export type BackgroundTerminalRosterGroup = "running" | "settled";

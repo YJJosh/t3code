@@ -30,32 +30,13 @@ import {
 import { resolvePiSessionConfigSet } from "./piConfigSetDiscovery.ts";
 import { discoverPiProfileChoices } from "./piProfileDiscovery.ts";
 /**
- * DulliAdapterV2 — orchestrator-v2 adapter for the Pi coding agent
- * (https://pi.dev), driving `pi --mode rpc` over stdio JSONL via `PiRpc.ts`.
- *
- * Design intent: honor the user's Pi customizations. The process is spawned
- * with no `--no-*` flags, so the user's extensions, skills, prompt templates,
- * AGENTS.md / SYSTEM.md context, settings.json, custom models, and auth all
- * load exactly as they do in the `pi` TUI. Sessions are stored by Pi itself
- * (default `~/.pi/agent/sessions/`), and the session file path is the durable
- * `nativeThreadRef`, so a thread started in T3 can be resumed from the TUI
- * and vice versa.
- *
- * Turn lifecycle: `agent_settled` is the only terminal signal. `agent_end`
- * merely closes one low-level run — compaction retries, auto-retries, and
- * queued continuations may still follow it, so the turn stays open until Pi
- * reports the session settled. An extension can start detached compaction as
- * that signal unwinds, so the adapter confirms Pi is idle before terminalizing.
- *
- * Extension UI: Pi extensions raise dialogs through `extension_ui_request`.
- * Dialog methods become v2 runtime requests (`confirm` → approval_request,
- * `select`/`input`/`editor` → user_input_request); answers travel back as
- * `extension_ui_response`. `notify` becomes a completed activity item.
- * Terminal-only decoration such as status, widget, title, and editor-text
- * updates has no matching T3 surface and is ignored.
+ * Honor the user’s Pi: no --no-* flags, and Pi’s session file is the durable native ref.
+ * Only agent_settled ends a turn; agent_end can precede retries or continuations.
+ * Confirm idleness because extensions can start detached compaction during settlement.
+ * Extension dialogs use runtime requests; terminal-only decoration has no T3 surface.
  */
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { AgentScope } from "@t3tools/shared/AgentScope";
+import { AgentScope, type AgentScopeCommand } from "@t3tools/shared/AgentScope";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { readToolOutputImage } from "@t3tools/shared/toolOutput";
 import * as Predicate from "effect/Predicate";
@@ -94,6 +75,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { providerMessageTextWithAttachmentPaths } from "@t3tools/provider-core/server/attachmentPrompt";
 import { mcpToolPresentation } from "@t3tools/provider-core/server/mcpToolPresentation";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { parsePiCompactCommand, type PiCompactCommand } from "./commands.ts";
@@ -577,14 +559,18 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: options.instanceId,
     driver: DULLI_PROVIDER,
-    getCapabilities: () =>
-      Effect.succeed(
+    getCapabilities: Effect.fn("DulliAdapterV2.getCapabilities")(function () {
+      return Effect.succeed(
         options.settings.piSessions && options.settings.shareWithTerminal
           ? PiSharedProviderCapabilitiesV2
           : PiProviderCapabilitiesV2,
-      ),
-    planSelectionTransition: ({ current, target }) =>
-      Effect.succeed(
+      );
+    }),
+    planSelectionTransition: Effect.fn("DulliAdapterV2.planSelectionTransition")(function ({
+      current,
+      target,
+    }) {
+      return Effect.succeed(
         ["profile", "configSet"].some(
           (key) =>
             getModelSelectionStringOptionValue(current, key) !==
@@ -592,7 +578,8 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         )
           ? { type: "restart_session" as const }
           : turnScopedSelectionTransition(),
-      ),
+      );
+    }),
     openSession: Effect.fn("DulliAdapterV2.openSession")(function* (
       input: ProviderAdapter.ProviderAdapterV2OpenSessionInput,
     ) {
@@ -678,27 +665,61 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       const sessionsExtension = options.settings.piSessions
         ? findPiSessionsExtension(piSessionsHome(launch.env, paths), paths)
         : undefined;
-      const scopedLaunch = yield* agentScope.wrap({
+      const piLaunch = {
         command: options.settings.binaryPath || "pi",
         args: sessionsExtension ? [...launch.args, "-e", sessionsExtension] : launch.args,
-        name: "dulli",
-        threadId: input.threadId,
-        env: launch.env,
-      });
-      const spawnOptions = {
-        command: scopedLaunch.command,
-        args: scopedLaunch.args,
         cwd,
         env: launch.env,
       };
-      const daemonKey = piDaemonSkipKey(
-        { ...spawnOptions, command: options.settings.binaryPath || "pi" },
-        paths,
-      );
-      const owned = makePiRpcConnection(spawnOptions).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.map((connection) => ({ connection, shared: false, started: true })),
-      );
+      const daemonKey = piDaemonSkipKey(piLaunch, paths);
+      const wrapOwnedLaunch = agentScope.wrap({
+        ...piLaunch,
+        name: "dulli",
+        threadId: input.threadId,
+      });
+      // The daemon runs this Pi for the terminal too, so it must outlive a T3 restart
+      // and is never this thread's scope. The scope wrapper is a command prefix because
+      // /reloadx replays it with the Pi arguments; without a fixed unit name, the replay
+      // cannot collide with the old scope while that one is still stopping.
+      const daemonLaunch = (threadId: string) =>
+        agentScope
+          .wrap({
+            command: piLaunch.command,
+            args: [],
+            env: piLaunch.env,
+            name: "dulli-shared",
+            survivesRestart: true,
+            shared: true,
+          })
+          .pipe(
+            Effect.map((wrapped) => ({
+              ...piLaunch,
+              command: wrapped.command,
+              commandPrefix: wrapped.args.filter((arg) => !arg.startsWith("--unit=")),
+              threadId,
+            })),
+          );
+      const owned = Effect.fn("DulliAdapter.openOwnedPi")(function* (
+        ownedLaunch: AgentScopeCommand,
+      ) {
+        const unit = ownedLaunch.unit;
+        const stopScope =
+          unit === undefined ? Effect.void : yield* Effect.cached(agentScope.stop(unit));
+        // Finalizers run in reverse order: terminate Pi before reaping its detached work.
+        yield* Effect.addFinalizer(() => stopScope);
+        const connection = yield* makePiRpcConnection({
+          ...piLaunch,
+          command: ownedLaunch.command,
+          args: ownedLaunch.args,
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+        if (unit !== undefined) {
+          yield* connection.exited.pipe(
+            Effect.matchEffect({ onFailure: () => stopScope, onSuccess: () => stopScope }),
+            Effect.forkIn(scope),
+          );
+        }
+        return { connection, shared: false, started: true };
+      });
       if (input.attachOnly && !(options.settings.piSessions && options.settings.shareWithTerminal))
         return yield* protocolError("Shared sessions are disabled");
       const daemonScope = yield* Scope.make();
@@ -707,15 +728,15 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         options.settings.piSessions &&
         options.settings.shareWithTerminal &&
         (input.attachOnly || !(yield* isPiDaemonSkipped(daemonKey)))
-          ? makePiDaemonConnection(
-              { ...spawnOptions, threadId: input.threadId },
-              {
-                ...(input.attachOnly ? { attach: true } : {}),
-                ...(input.initialNativeThreadId
-                  ? { sessionFile: input.initialNativeThreadId }
-                  : {}),
-              },
-            ).pipe(
+          ? daemonLaunch(input.threadId).pipe(
+              Effect.flatMap((daemonInput) =>
+                makePiDaemonConnection(daemonInput, {
+                  ...(input.attachOnly ? { attach: true } : {}),
+                  ...(input.initialNativeThreadId
+                    ? { sessionFile: input.initialNativeThreadId }
+                    : {}),
+                }),
+              ),
               Effect.provideService(Path.Path, paths),
               Effect.provideService(Scope.Scope, daemonScope),
               Effect.map((result) => ({ ...result, shared: true })),
@@ -729,12 +750,12 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                       : (cause.detail?.includes("did not start in time")
                           ? skipPiDaemon(daemonKey)
                           : Effect.void
-                        ).pipe(Effect.andThen(owned)),
+                        ).pipe(Effect.andThen(wrapOwnedLaunch), Effect.flatMap(owned)),
                   ),
                 );
               }),
             )
-          : owned
+          : wrapOwnedLaunch.pipe(Effect.flatMap(owned))
       ).pipe(
         Effect.mapError(
           (cause) =>
@@ -1069,11 +1090,9 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
       };
 
       /**
-       * Pi only reports context usage through `get_session_stats`, so the
-       * settled turn carries it on the base's per-turn `tokenUsage` (#8144).
-       * Usage is secondary telemetry: the request is bounded and a provider
-       * version without stats simply leaves the turn without a report, which
-       * keeps the meter on the last turn that had one.
+       * Pi exposes context usage only through get_session_stats; attach it per settled turn.
+       * Bound this secondary telemetry request and tolerate versions without stats,
+       * leaving the meter on the last turn with a report.
        */
       const readTokenUsage = (fallbackUsedTokens: number | null, updatedAt: DateTime.Utc) =>
         opened.shared
@@ -2050,16 +2069,10 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             );
 
       /**
-       * Locate this turn's first user entry and the new leaf in pi's session
-       * tree. The user-entry id becomes the provider turn's native ref (the
-       * point `fork` rolls back to); the leaf becomes the conversation head.
-       * `get_entries` is append-ordered and keeps abandoned branches, so both
-       * come from walking the leaf's `parentId` chain, never from list order.
-       * A leaf that no longer descends from the previous one means something
-       * outside T3 rewound the session, such as an extension calling
-       * `navigateTree`. The user entries left on the active branch are then
-       * returned so orchestration can roll back runs that fell off it.
-       * Pure bookkeeping: failures degrade to the synthetic refs.
+       * Walk the leaf’s parentId chain, not append order: get_entries retains abandoned branches.
+       * The first user entry anchors fork rollback; the leaf anchors the conversation head.
+       * A rewind outside T3 returns surviving user entries so orchestration can drop lost runs.
+       * Listing failures degrade to synthetic refs.
        */
       const captureTurnTreeRefs = Effect.fn("DulliAdapter.captureTurnTreeRefs")(function* (
         timeoutMs = PI_REQUEST_TIMEOUT_MS,
@@ -2093,12 +2106,9 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             ? walkPiBranch(tree.entries, listing.leafId, null)
             : undefined;
         return {
-          // Without a trustworthy cursor the walk spans more than one turn, so
-          // its earliest user entry belongs to an earlier turn. Keep the
-          // synthetic ref rather than pointing rollback too far back; the next
-          // turn gets an accurate ref again. A turn that left nothing on the
-          // active branch (a command, or a rewind) gets no ref: a rollback
-          // past it needs no fork of its own.
+          // Without a trustworthy cursor, keep the synthetic ref rather than anchoring
+          // rollback to an earlier turn; the next turn recovers accuracy. A command or
+          // rewind leaving nothing on the active branch needs no fork ref.
           nativeTurnRef: cursorWasStale
             ? undefined
             : turnStartEntryId !== undefined
@@ -2355,10 +2365,10 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                       Effect.suspend(() =>
                         pendingWake === wake && threadState === state && !closed
                           ? dispatch.pipe(
-                              Effect.map(Option.some),
+                              Effect.asSome,
                               Effect.tapError(() => stopPendingWake(wake)),
                             )
-                          : Effect.succeed(Option.none()),
+                          : Effect.succeedNone,
                       ),
                     ),
                   clearIfCurrent: () => sessionEventPermit.withPermits(1)(stopPendingWake(wake)),
@@ -2648,11 +2658,8 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
               }
               return;
             }
-            // An overflow can surface as a model error (`message_end` with
-            // stopReason error) before Pi compacts and retries the turn. Clear
-            // that failure only when Pi confirms that compaction will retry;
-            // a successful non-retrying compaction must not erase an exhausted
-            // provider retry.
+            // Overflow may emit a model error before Pi compacts and retries. Clear it only
+            // when Pi confirms a retry; non-retrying compaction must preserve exhausted errors.
             if (event["willRetry"] === true) turn.failure = null;
             turn.latestCompactionAfterTokens =
               nonNegativeInteger(result, "estimatedTokensAfter") ?? null;
@@ -2821,11 +2828,9 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             const responseTurn =
               pendingPrompt?.providerTurnId === turn?.providerTurn.id ? turn : null;
             if (event["success"] === true) {
-              // Deferred success ack. Command-only prompts (pure extension
-              // slash commands) never start an agent run and never emit
-              // `agent_settled`, so probe for idleness. The probe result is
-              // re-queued behind any events Pi emitted before answering
-              // get_state, which keeps the check stream-ordered.
+              // Command-only prompts never emit agent_settled, so probe idleness after success.
+              // Requeue the result behind Pi events emitted before get_state replied to keep
+              // the check stream-ordered.
               if (
                 pendingPrompt?.kind === "turn_start" &&
                 responseTurn !== null &&
@@ -3107,10 +3112,13 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
             yield* opened.connection.terminate;
             // Never fall back to an owned process here: rpc-open is the
             // single-writer arbiter, including a failed/retried registration.
-            const next = yield* makePiDaemonConnection(
-              { ...spawnOptions, threadId: threadInput.threadId },
-              resumeId == null ? {} : { sessionFile: resumeId },
-            ).pipe(
+            const next = yield* daemonLaunch(threadInput.threadId).pipe(
+              Effect.flatMap((daemonInput) =>
+                makePiDaemonConnection(
+                  daemonInput,
+                  resumeId == null ? {} : { sessionFile: resumeId },
+                ),
+              ),
               Effect.provideService(Path.Path, paths),
               Effect.provideService(Scope.Scope, daemonScope),
             );
@@ -3369,7 +3377,12 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
         attachments: ReadonlyArray<ChatAttachment>,
       ) {
         const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
-        const extraLines: Array<string> = [];
+        const message = yield* providerMessageTextWithAttachmentPaths({
+          text,
+          attachments,
+          resolveAttachmentPath: host.resolveAttachmentPath,
+          resolveExtractedTextPath: host.resolveExtractedTextPath,
+        });
         for (const attachment of attachments) {
           const path = host.resolveAttachmentPath(attachment);
           if (path === null) continue;
@@ -3380,11 +3393,8 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
               data: Buffer.from(bytes).toString("base64"),
               mimeType: attachment.mimeType,
             });
-          } else {
-            extraLines.push(`[Attachment saved at ${path}]`);
           }
         }
-        const message = extraLines.length === 0 ? text : `${text}\n\n${extraLines.join("\n")}`;
         return { message, images };
       });
 
@@ -3507,13 +3517,9 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                 Effect.ignore,
               );
             }
-            // Resolved before the turn is installed: a failure here (an
-            // unreadable attachment) must not leave `activeTurn` set, which
-            // would reject every later turn as already active.
-            // Orchestration instructions reach pi through the T3 MCP
-            // extension's before_agent_start system-prompt hook, never by
-            // wrapping the user text: a wrapped first message would no
-            // longer start with "/" and slash commands would stop expanding.
+            // Resolve attachments before installing activeTurn so failures cannot block later turns.
+            // Send orchestration instructions through before_agent_start, not wrapped user text:
+            // slash commands must remain at the beginning of the message.
             const compactCommand = continuation
               ? null
               : parsePiCompactCommand(turnInput.message.text);
@@ -3692,13 +3698,9 @@ export const makeDulliAdapterV2 = Effect.fn("makeDulliAdapterV2")(function* (
                     steerInput.message.attachments,
                   )
                 : null;
-            // Prompt with streamingBehavior steer is atomic on Pi's side: it
-            // queues during an active run and starts a new run if settlement
-            // won the race. A direct `steer` sent after Pi became idle would
-            // remain queued forever. Send fire-and-forget under the session
-            // permit so a slash-command dialog cannot block the turn, and so
-            // settlement cannot overtake the active-turn check.
-            // /compact is not a prompt: Pi's compact RPC aborts the agent first.
+            // Prompt/steer atomically queues or starts a run; direct steer can strand input after idle.
+            // Send fire-and-forget under the session permit so dialogs cannot block the turn
+            // and settlement cannot overtake its check. /compact uses Pi’s aborting compact RPC.
             yield* sessionEventPermit.withPermits(1)(
               Effect.gen(function* () {
                 if (threadState?.activeTurn !== turn) {
@@ -4237,12 +4239,9 @@ function piSessionEntries(entries: unknown): ReadonlyMap<string, PiSessionEntry>
 }
 
 /**
- * Walk pi's active branch from `leafId` towards the root through `entries`,
- * stopping at `stopAt`. Returns how many entries it passed, the user entries
- * among them (newest first), and whether the walk reached `stopAt`. Leaving a
- * partial listing anywhere else means the branch does not descend from `stopAt`.
- * Returns null when the `parentId` chain loops, which only corrupted session
- * data can produce; callers treat that like a failed listing.
+ * Walk parentId from leafId to stopAt; append order includes abandoned branches.
+ * A partial listing not reaching stopAt means the branch diverged. Cycles indicate
+ * corruption and return null, which callers treat as a failed listing.
  */
 function walkPiBranch(
   entries: ReadonlyMap<string, PiSessionEntry>,
@@ -4268,12 +4267,9 @@ function walkPiBranch(
 }
 
 /**
- * Resolve the pi session-tree entry `fork` should re-root at for a rollback.
- * Turns without a ref left nothing on the active branch, so the boundary is
- * the first discarded turn that has one. Returns `null` when no such turn
- * follows the target (nothing to discard) and `undefined` when the boundary
- * turn has no captured entry ref (only turn-boundary refs recorded by
- * `captureTurnTreeRefs` are strong).
+ * Rollback forks at the first discarded turn with a ref; refless turns left no branch entry.
+ * Return null if nothing is discarded, undefined if the boundary lacks a captured
+ * entry ref. Only captureTurnTreeRefs turn-boundary refs are strong.
  */
 function piRollbackForkEntry(input: {
   readonly target:
@@ -4351,7 +4347,10 @@ function piQuestion(
               value: "",
             },
           ];
-  const question = recordString(event, "message") ?? recordString(event, "placeholder") ?? title;
+  const question =
+    [recordString(event, "message"), recordString(event, "placeholder")].find(
+      (text) => text !== undefined && text.trim().length > 0,
+    ) ?? title;
   return {
     id: questionId,
     header: title,

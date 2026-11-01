@@ -1,13 +1,6 @@
 /**
- * Watch the Pi agent directory for configuration changes that affect model
- * availability and run a refresh callback, so models added to `~/.pi/agent`
- * appear in the picker without waiting for the periodic snapshot refresh.
- *
- * The directory is watched non-recursively: the model/auth/profile files all
- * live at the agent-dir root. Changes inside `extensions/` are not observed
- * here; the periodic refresh still picks those up.
- *
- * @module provider/pi/piConfigWatch
+ * Watch the agent-dir root so model/auth/profile changes refresh the picker promptly.
+ * Nested extensions are not watched; periodic refresh still discovers their changes.
  */
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

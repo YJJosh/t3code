@@ -1,11 +1,7 @@
 import { watchPiModelConfig } from "./piConfigWatch.ts";
 /**
- * DulliDriver — `ProviderDriver` for the Pi coding agent, composing the
- * orchestrator-v2 adapter (`DulliAdapterV2`), the snapshot/probe layer
- * (`PiProvider`), and Pi-backed text generation.
- *
- * Pi state (sessions, settings, extensions, auth) lives in the user's own
- * `~/.pi/agent`, so continuation identity uses the default instance grouping.
+ * Pi keeps sessions, settings, extensions and auth in the user’s own ~/.pi/agent,
+ * so continuation identity uses the default instance grouping.
  */
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { DulliSettings } from "../settings.ts";

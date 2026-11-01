@@ -95,7 +95,7 @@ export class MultiRepoWorkspaces extends Context.Service<
   }
 >()("t3/vcs/MultiRepoWorkspaces") {}
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -152,11 +152,9 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
-  // Mirrors Workler's `discoverProjects`, which its `init` uses: folders with
-  // their own `.git` folder directly below `cwd` or one level deeper, skipping
-  // symbolic links, hidden folders (so `.worktrees`) and node_modules. Read
-  // with async calls here because snapshots ask about every plain project
-  // folder; `makeGroup` still lets Workler decide what it writes.
+  // Match Workler's discovery: `.git` directories one or two levels below cwd,
+  // skipping symlinks, hidden folders and node_modules. Use async reads because
+  // snapshots inspect every plain project; `makeGroup` still delegates writes to Workler.
   const findRepositories = Effect.fn("MultiRepoWorkspaces.findRepositories")(function* (
     dir: string,
     relative: string,
@@ -351,12 +349,9 @@ export const make = Effect.gen(function* () {
             : "A multi-repo workspace must live in the project's .worktrees folder.",
       });
     }
-    // Workler resolves `base` inside each member and checks every member before
-    // cloning, so a member without `origin/HEAD` fails with BAD_REF and nothing
-    // to undo; then every member starts from its current HEAD as a new branch.
-    // A recreate checks out the existing branch: a pushed branch may only be in
-    // the remote, so fetch first, and a missing branch fails instead of being
-    // made up from HEAD.
+    // Workler validates every member before cloning; missing origin/HEAD falls back
+    // to new branches at HEAD without leaving partial clones. Recreate fetches first
+    // because an existing branch may only be remote; never invent a missing branch.
     if (input.newRefName === undefined) {
       const memberPaths = yield* members(root);
       if (memberPaths !== null) {

@@ -59,6 +59,7 @@ export function AgentElapsed({ agent }: { agent: DulliInspectorAgent }) {
     agent.status === "running" || agent.status === "waiting" || agent.status === "pending";
   const startedAt = agent.startedAt;
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Update elapsed-time DOM on a mounted timer without rerendering the inspector every second.
   useEffect(() => {
     if (!live || !startedAt) return;
     const update = () => {

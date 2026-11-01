@@ -12,13 +12,7 @@ type CustomPublishOptions = Extract<
 >;
 type ProviderRuntimeOptions = ConstructorParameters<typeof GitHubProvider>[2];
 
-/**
- * GitHubProvider derives custom prerelease channels from the installed version.
- * A Pi install therefore cannot discover the first Dulli tag without checking
- * the Dulli channel explicitly. Once installed, Dulli follows its own channel
- * through the upstream provider as usual, including new upstream minor versions
- * (for example 0.0.45-dulli.9 -> 0.1.0-dulli.1) under normal SemVer ordering.
- */
+/** Pi installs must check the Dulli channel explicitly to discover the distribution handoff. */
 export class DulliGitHubProvider extends GitHubProvider {
   readonly #dulliProvider: GitHubProvider;
   readonly #updater: AppUpdater;
@@ -48,7 +42,7 @@ export class DulliGitHubProvider extends GitHubProvider {
     this.#dulliProvider.setRequestHeaders(value);
   }
 
-  override async getLatestVersion() {
+  override async getLatestVersion(): ReturnType<GitHubProvider["getLatestVersion"]> {
     if (this.#updater.channel !== null || this.#updater.currentVersion.prerelease[0] !== "pi") {
       return await super.getLatestVersion();
     }

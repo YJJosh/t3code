@@ -33,6 +33,7 @@ function panelAgents(model: DulliPanelModel): ReadonlyArray<DulliInspectorAgent>
 function useSplitInspectorLayout(root: HTMLDivElement | null): boolean {
   const [split, setSplit] = useState(false);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Observe the current panel DOM root’s width, including swaps between empty and inspector roots.
   useEffect(() => {
     if (!root) return;
     return observeResize(root, ([entry]) => {

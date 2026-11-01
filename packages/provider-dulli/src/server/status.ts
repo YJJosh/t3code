@@ -1,15 +1,8 @@
 import type { DulliSettings as PiSettings } from "../settings.ts";
 /**
- * PiProvider — snapshot + probe builders for the Pi driver.
- *
- * `buildInitialPiProviderSnapshot` produces the "checking…" draft shown before
- * the first probe; `checkPiProviderStatus` runs the live probe: `pi --version`
- * for installation/version, then SDK-based model discovery + auth status.
- *
- * Both return a `ServerProviderDraft` (no instance identity); the driver stamps
- * `instanceId` / `driver` before publishing.
- *
- * @module provider/Layers/PiProvider
+ * Snapshots have no instance identity: the driver stamps instanceId and driver.
+ * The live probe uses pi --version and SDK model/auth discovery; the initial draft
+ * shows checking until that probe completes.
  */
 import {
   PI_PROFILE_OPTION_ID,

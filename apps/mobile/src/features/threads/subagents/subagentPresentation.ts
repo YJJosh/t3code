@@ -36,10 +36,10 @@ export function formatSubagentDuration(
   startedAt: string | null,
   completedAt: string | null,
 ): string {
-  if (startedAt === null) return "—";
+  if (startedAt === null) return "Unknown";
   const start = Date.parse(startedAt);
   const end = completedAt === null ? Date.now() : Date.parse(completedAt);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return "—";
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return "Unknown";
   const seconds = Math.max(0, Math.floor((end - start) / 1_000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);

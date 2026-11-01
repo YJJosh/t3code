@@ -28,7 +28,11 @@ const isRecord = (value: unknown): value is PiRpcRecord =>
 
 /** Native framed RPC. Closing or terminating only detaches; the terminal owns Pi. */
 export const makePiDaemonConnection = Effect.fn("PiDaemonConnection.make")(function* (
-  input: PiRpcSpawnOptions & { readonly threadId: string },
+  input: PiRpcSpawnOptions & {
+    readonly threadId: string;
+    /** Arguments that stay in front of Pi's own, such as a scope wrapper, kept across /reloadx. */
+    readonly commandPrefix?: ReadonlyArray<string>;
+  },
   options: { readonly attach?: boolean; readonly sessionFile?: string } = {},
 ) {
   const path = yield* Path.Path;
@@ -72,7 +76,12 @@ export const makePiDaemonConnection = Effect.fn("PiDaemonConnection.make")(funct
             ? { sessionFile: session }
             : { sessionId: session }
           : {}),
-        launch: { command: [input.command], args, cwd: input.cwd, env },
+        launch: {
+          command: [input.command, ...(input.commandPrefix ?? [])],
+          args,
+          cwd: input.cwd,
+          env,
+        },
         t3: {
           thread: input.threadId,
           ...(env.PI_SESSIONS_T3_ENVIRONMENT
