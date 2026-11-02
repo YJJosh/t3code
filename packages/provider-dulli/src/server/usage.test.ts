@@ -73,12 +73,19 @@ describe("parsePiLine", () => {
         type: "message",
         id: "message-1",
         timestamp: "2026-08-14T10:00:05.000Z",
-        message: { role: "assistant", provider: "openai", model: "gpt-5.6", usage: { output: 12 } },
+        message: {
+          role: "assistant",
+          provider: "claude-agent-sdk",
+          model: "claude-opus-5-5",
+          usage: { output: 12 },
+        },
       }),
       state,
     );
 
-    expect(record?.model).toBe("openai/gpt-5.6");
+    expect(record?.model).toBe("claude-agent-sdk/claude-opus-5-5");
+    // Rate tables know the model, not Pi's provider route.
+    expect(record?.rateModel).toBe("claude-opus-5-5");
     expect(record?.dedupeKey).toBe("pi:message-1");
   });
 
