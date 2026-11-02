@@ -28,18 +28,19 @@ internal object PhoneConnectionStore {
   @Synchronized
   fun save(context: Context, connections: String, scheme: String) {
     val prefs = preferences(context)
+    val next = JSONArray(connections)
+    val environments = (0 until next.length()).map { next.getJSONObject(it).getString("environmentId") }.toSet()
+    PhoneNotificationState(prefs).retainEnvironments(environments)
     // The paired credentials are copied here only while the user has opted in.
     if (!prefs.getBoolean("enabled", false)) {
       prefs.edit().remove("connections").putString("scheme", scheme).commit()
       return
     }
     val previous = load(context)
-    val next = JSONArray(connections)
     if (previous.toString() == next.toString() && prefs.getString("scheme", null) == scheme) {
       if (prefs.getBoolean("enabled", false) && !PhoneConnectionService.active) PhoneConnectionService.start(context)
       return
     }
-    val environments = (0 until next.length()).map { next.getJSONObject(it).getString("environmentId") }.toSet()
     for (index in 0 until previous.length()) {
       val environment = previous.getJSONObject(index).getString("environmentId")
       if (environment !in environments) AgentNotifications.clearPhoneAlerts(context, environment)

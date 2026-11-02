@@ -58,4 +58,19 @@ class PhoneNotificationStateTest {
     assertEquals(listOf(second.id), state.thread("env", thread("next").put("archivedAt", "2026-01-01"), 0).clear)
     assertTrue(state.thread("env", thread("hidden").put("deletedAt", "2026-01-01"), 0).alerts.isEmpty())
   }
+  @Test fun reconciliationPrunesSeenHistoryEvenWithoutPendingRequests() {
+    val prefs = PhoneConnectionStore.preferences(context)
+    prefs.edit().putString("seen-request:env/gone", "request")
+      .putString("seen-run:env/gone", "run").putString("seen-run:env/kept", "run")
+      .putString("seen-run:other/thread", "run").commit()
+    state.reconcile("env", setOf("kept"))
+    assertFalse(prefs.contains("seen-request:env/gone"))
+    assertFalse(prefs.contains("seen-run:env/gone"))
+    assertTrue(prefs.contains("seen-run:env/kept"))
+    assertTrue(prefs.contains("seen-run:other/thread"))
+    PhoneConnectionStore.save(context, "[{\"environmentId\":\"other\"}]", "t3dulli")
+    assertFalse(prefs.contains("seen-run:env/kept"))
+    assertTrue(prefs.contains("seen-run:other/thread"))
+  }
+
 }
