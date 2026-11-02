@@ -230,8 +230,23 @@
       "location": "active"
     },
     {
+      "kind": "snapshot",
+      "snapshot": {
+        "schemaVersion": 1,
+        "snapshotSequence": 4,
+        "threads": [],
+        "archivedThreads": [],
+        "projects": [],
+        "olderSettled": {
+          "before": "2026-01-01T00:00:00.000Z",
+          "asOfSequence": 4,
+          "counts": []
+        }
+      }
+    },
+    {
       "kind": "thread.removed",
-      "sequence": 4,
+      "sequence": 5,
       "threadId": "thread",
       "location": "active"
     }

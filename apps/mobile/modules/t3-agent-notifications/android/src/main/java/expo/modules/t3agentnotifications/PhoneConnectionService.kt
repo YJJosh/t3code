@@ -285,8 +285,10 @@ class PhoneConnectionService : Service() {
             ids.add(thread.getString("id"))
             show(thread)
           }
+          val counts = snapshot.optJSONObject("olderSettled")?.optJSONArray("counts")
+          val omitsSettled = counts != null && (0 until counts.length()).any { counts.getJSONObject(it).optInt("count") > 0 }
           // Filtered-out settled rows are not deletions; explicit removals still prune their history.
-          state.reconcile(environment, ids, preserveRuns = snapshot.has("olderSettled")).forEach { AgentNotifications.clearPhoneAlert(this@PhoneConnectionService, it) }
+          state.reconcile(environment, ids, preserveRuns = omitsSettled).forEach { AgentNotifications.clearPhoneAlert(this@PhoneConnectionService, it) }
         }
         "thread.updated" -> show(item.getJSONObject("thread"))
         "thread.removed" -> state.remove(environment, item.getString("threadId"))
