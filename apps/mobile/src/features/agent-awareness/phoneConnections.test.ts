@@ -44,6 +44,7 @@ describe("phone connection selection", () => {
     expect(phoneConnections(document)).toEqual([
       {
         environmentId,
+        label: "Own server",
         protocolVersion: 2,
         httpBaseUrl: "http://host:13773",
         wsBaseUrl: "ws://host:13773",

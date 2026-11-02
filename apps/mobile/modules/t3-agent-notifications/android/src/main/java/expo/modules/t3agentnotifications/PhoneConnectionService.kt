@@ -118,8 +118,10 @@ class PhoneConnectionService : Service() {
   private fun updateStatus() {
     if (!running) return
     val count = connections.count { it.connected }
+    val blocked = connections.mapNotNull { it.blockedReason }.distinct().joinToString(" · ")
     getSystemService(NotificationManager::class.java).notify(ID, notification(
-      if (connections.isEmpty()) "Pair a server to receive notifications"
+      if (blocked.isNotEmpty()) blocked
+      else if (connections.isEmpty()) "Pair a server to receive notifications"
       else if (count == connections.size) "Listening to $count paired server(s)"
       else "Reconnecting · $count/${connections.size} servers online"
     ))
@@ -148,12 +150,14 @@ class PhoneConnectionService : Service() {
     private var closed = false
     private var attempt = 0
     private var generation = 0
+    var blockedReason: String? = null
+      private set
     var connected = false
     private val state = PhoneNotificationState(PhoneConnectionStore.preferences(this@PhoneConnectionService))
     private val retry = Runnable { connect() }
 
     fun connect(legacyTicket: Boolean = false) {
-      if (closed || !running) return
+      if (closed || !running || blockedReason != null) return
       val current = ++generation
       val base = config.getString("httpBaseUrl").trimEnd('/')
       val ticketPath = if (legacyTicket) "/api/auth/websocket-ticket" else "/api/auth/websocket-ticket/rpc"
@@ -172,6 +176,10 @@ class PhoneConnectionService : Service() {
               if (closed || current != generation) return@post
               // Older protocol-v2 servers predate ticket audiences; match the JS client's 404-only fallback.
               if (status == 404 && !legacyTicket) { connect(true); return@post }
+              if (status == 401) {
+                stopRetrying(current, "Re-pair ${config.optString("label", environment)} in Dulli")
+                return@post
+              }
               if (ticket == null) { failed(current); return@post }
               val url = phoneSocketUrl(config, ticket)
               socket = client.newWebSocket(Request.Builder().url(url).build(), listener(current))
@@ -212,7 +220,9 @@ class PhoneConnectionService : Service() {
         }
       }
       override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-        handler.post { failed(current) }
+        handler.post {
+          if (response?.code == 426) stopRetrying(current, "Open Dulli to update") else failed(current)
+        }
       }
       override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
         webSocket.close(code, reason)
@@ -252,6 +262,18 @@ class PhoneConnectionService : Service() {
       }
     }
 
+    private fun stopRetrying(current: Int, reason: String) {
+      if (closed || current != generation) return
+      blockedReason = reason
+      generation++
+      connected = false
+      handler.removeCallbacks(retry)
+      ticketCall?.cancel()
+      socket?.cancel()
+      socket = null
+      updateStatus()
+    }
+
     private fun failed(current: Int) {
       if (closed || current != generation) return
       generation++
@@ -265,7 +287,7 @@ class PhoneConnectionService : Service() {
     }
 
     fun networkAvailable() {
-      if (closed || !running) return
+      if (closed || !running || blockedReason != null) return
       generation++
       handler.removeCallbacks(retry)
       ticketCall?.cancel()

@@ -24,6 +24,7 @@ export function phoneConnections(document: ConnectionCatalogDocument) {
     return [
       {
         environmentId: target.environmentId,
+        label: target.label,
         protocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
         httpBaseUrl: profile.httpBaseUrl,
         wsBaseUrl: profile.wsBaseUrl,

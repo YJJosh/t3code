@@ -3,6 +3,9 @@ package expo.modules.t3agentnotifications
 import android.app.NotificationManager
 import android.app.Service
 import android.net.ConnectivityManager
+import android.net.Network
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import android.os.Looper
 import okhttp3.Call
 import okhttp3.OkHttpClient
@@ -56,12 +59,22 @@ class PhoneConnectionServiceTest {
             .put("httpBaseUrl", "http://server.test/proxy").put("token", "fixture-token"))
         connectionClass.getDeclaredMethods().single { it.name == "connect" }.apply { isAccessible = true }
           .invoke(connection, false)
+        val connections = PhoneConnectionService::class.java.getDeclaredField("connections").apply { isAccessible = true }
+          .get(service) as MutableList<Any>
+        connections.add(connection)
         completed.await()
         shadowOf(Looper.getMainLooper()).idle()
         val ticketCall = connectionClass.getDeclaredField("ticketCall").apply { isAccessible = true }.get(connection) as Call
         assertEquals(if (status == 404) "/proxy/api/auth/websocket-ticket" else "/proxy/api/auth/websocket-ticket/rpc",
           ticketCall.request().url.encodedPath)
         assertEquals("Bearer fixture-token", ticketCall.request().header("Authorization"))
+        if (status == 401) {
+          assertEquals("Re-pair env in Dulli", context.getSystemService(NotificationManager::class.java)
+            .activeNotifications.single().notification.extras.getString("android.text"))
+          connectionClass.getDeclaredMethods().single { it.name == "connect" }.apply { isAccessible = true }
+            .invoke(connection, false)
+          assertSame(ticketCall, connectionClass.getDeclaredField("ticketCall").apply { isAccessible = true }.get(connection))
+        }
         connectionClass.getDeclaredMethod("close").apply { isAccessible = true }.invoke(connection)
       } finally { controller.destroy() }
     }
@@ -105,10 +118,16 @@ class PhoneConnectionServiceTest {
     PhoneConnectionStore.preferences(context).edit().clear().putBoolean("enabled", true).commit()
     val controller = Robolectric.buildService(PhoneConnectionService::class.java).create()
     val connectivity = shadowOf(context.getSystemService(ConnectivityManager::class.java))
+    val release = CountDownLatch(1)
     try {
       val service = controller.get()
       service.onStartCommand(null, 0, 1)
       service.onStartCommand(null, 0, 2)
+      val client = OkHttpClient.Builder().addInterceptor {
+        release.await()
+        throw java.io.IOException("fixture offline")
+      }.build()
+      PhoneConnectionService::class.java.getDeclaredField("client").apply { isAccessible = true }.set(service, client)
       assertEquals(1, connectivity.networkCallbacks.size)
       val clazz = PhoneConnectionService::class.java.declaredClasses.single { it.simpleName == "Connection" }
       val connection = clazz.declaredConstructors.single().apply { isAccessible = true }
@@ -123,8 +142,40 @@ class PhoneConnectionServiceTest {
       shadowOf(Looper.getMainLooper()).idle()
       assertEquals(0, attempt.getInt(connection))
       assertNotNull(clazz.getDeclaredField("ticketCall").apply { isAccessible = true }.get(connection))
-    } finally { controller.destroy() }
+    } finally { controller.destroy(); release.countDown() }
     assertTrue(connectivity.networkCallbacks.isEmpty())
+  }
+
+  @Test fun protocolRejectionStopsRetriesAndShowsAnUpdateStatusUntilReload() {
+    val context = RuntimeEnvironment.getApplication()
+    PhoneConnectionStore.preferences(context).edit().clear().putBoolean("enabled", true).commit()
+    val controller = Robolectric.buildService(PhoneConnectionService::class.java).create()
+    try {
+      val service = controller.get()
+      service.onStartCommand(null, 0, 1)
+      val clazz = PhoneConnectionService::class.java.declaredClasses.single { it.simpleName == "Connection" }
+      val connection = clazz.declaredConstructors.single().apply { isAccessible = true }
+        .newInstance(service, JSONObject().put("environmentId", "env").put("label", "My server")
+          .put("httpBaseUrl", "http://127.0.0.1:1").put("token", "fixture"))
+      val connections = PhoneConnectionService::class.java.getDeclaredField("connections").apply { isAccessible = true }
+        .get(service) as MutableList<Any>
+      connections.add(connection)
+      val listener = clazz.getDeclaredMethod("listener", Int::class.javaPrimitiveType).apply { isAccessible = true }
+        .invoke(connection, 0) as WebSocketListener
+      val request = okhttp3.Request.Builder().url("http://server.test").build()
+      val socket = java.lang.reflect.Proxy.newProxyInstance(WebSocket::class.java.classLoader,
+        arrayOf(WebSocket::class.java)) { _, _, _ -> null } as WebSocket
+      listener.onFailure(socket, java.io.IOException("upgrade"), Response.Builder().request(request)
+        .protocol(Protocol.HTTP_1_1).code(426).message("Update").build())
+      shadowOf(Looper.getMainLooper()).idle()
+      val notification = context.getSystemService(NotificationManager::class.java).activeNotifications.single()
+      assertEquals("Open Dulli to update", notification.notification.extras.getString("android.text"))
+      clazz.getDeclaredMethods().single { it.name == "connect" }.apply { isAccessible = true }.invoke(connection, false)
+      assertNull(clazz.getDeclaredField("ticketCall").apply { isAccessible = true }.get(connection))
+      service.onStartCommand(null, 0, 2)
+      assertEquals("Pair a server to receive notifications", context.getSystemService(NotificationManager::class.java)
+        .activeNotifications.single().notification.extras.getString("android.text"))
+    } finally { controller.destroy() }
   }
 
   @Test fun optedInServiceStartsWithALowPriorityPersistentNotificationOnEverySupportedApi() {

@@ -16,6 +16,8 @@ class PhoneConnectionProtocolTest {
       val config = JSONObject().put("wsBaseUrl", base).put("protocolVersion", 2)
       val url = Uri.parse(phoneSocketUrl(config, "one+use/ticket"))
       assertEquals("2", url.getQueryParameter("orchestrationProtocol"))
+      config.put("protocolVersion", 1)
+      assertEquals("2", Uri.parse(phoneSocketUrl(config, "ticket")).getQueryParameter("orchestrationProtocol"))
       config.remove("protocolVersion")
       assertEquals("2", Uri.parse(phoneSocketUrl(config, "ticket")).getQueryParameter("orchestrationProtocol"))
       assertEquals("one+use/ticket", url.getQueryParameter("wsTicket"))
