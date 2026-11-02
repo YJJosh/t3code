@@ -137,7 +137,8 @@ object AgentNotifications {
   fun phoneAlert(context: Context, scheme: String, id: String, title: String, body: String, path: String): Boolean {
     if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
     val resumed = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-    if (resumed && threadOnScreen == path) return false
+    // The user is looking at it; reporting unseen would resurface it on the next snapshot after they leave.
+    if (resumed && threadOnScreen == path) return true
     return runCatching {
       val manager = manager(context)
       if (id.startsWith("phone:run:")) {

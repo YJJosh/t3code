@@ -81,7 +81,7 @@ class AgentNotificationsTest {
   @Test
   fun directPhoneAlertsSuppressTheVisibleThreadAndCanBeClearedIndependentlyOfRelay() {
     lifecycle.currentState = Lifecycle.State.RESUMED
-    AgentNotifications.phoneAlert(context, "t3dulli", "phone:request:env/thread:one", "Question", "Input needed", "/threads/environment/thread")
+    assertTrue(AgentNotifications.phoneAlert(context, "t3dulli", "phone:request:env/thread:one", "Question", "Input needed", "/threads/environment/thread"))
     assertTrue(manager.activeNotifications.isEmpty())
     lifecycle.currentState = Lifecycle.State.CREATED
     AgentNotifications.phoneAlert(context, "t3dulli", "phone:request:env/thread:two", "Question", "Input needed", "/threads/environment/thread")
