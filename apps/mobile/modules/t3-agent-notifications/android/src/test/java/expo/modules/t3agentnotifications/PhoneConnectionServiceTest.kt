@@ -146,7 +146,7 @@ class PhoneConnectionServiceTest {
     assertTrue(connectivity.networkCallbacks.isEmpty())
   }
 
-  @Test fun protocolRejectionStopsRetriesAndShowsAnUpdateStatusUntilReload() {
+  @Test fun protocolRejectionShowsAnUpdateStatusAndRetriesSlowly() {
     val context = RuntimeEnvironment.getApplication()
     PhoneConnectionStore.preferences(context).edit().clear().putBoolean("enabled", true).commit()
     val controller = Robolectric.buildService(PhoneConnectionService::class.java).create()
@@ -169,9 +169,12 @@ class PhoneConnectionServiceTest {
         .protocol(Protocol.HTTP_1_1).code(426).message("Update").build())
       shadowOf(Looper.getMainLooper()).idle()
       val notification = context.getSystemService(NotificationManager::class.java).activeNotifications.single()
-      assertEquals("Open Dulli to update", notification.notification.extras.getString("android.text"))
+      assertEquals("Update Dulli or My server", notification.notification.extras.getString("android.text"))
       clazz.getDeclaredMethods().single { it.name == "connect" }.apply { isAccessible = true }.invoke(connection, false)
       assertNull(clazz.getDeclaredField("ticketCall").apply { isAccessible = true }.get(connection))
+      // Either side may be the outdated one, so an upgraded server must be picked up without app action.
+      shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMinutes(15))
+      assertNotNull(clazz.getDeclaredField("ticketCall").apply { isAccessible = true }.get(connection))
       service.onStartCommand(null, 0, 2)
       assertEquals("Pair a server to receive notifications", context.getSystemService(NotificationManager::class.java)
         .activeNotifications.single().notification.extras.getString("android.text"))

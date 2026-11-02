@@ -157,7 +157,7 @@ class PhoneConnectionService : Service() {
       private set
     var connected = false
     private val state = PhoneNotificationState(PhoneConnectionStore.preferences(this@PhoneConnectionService))
-    private val retry = Runnable { connect() }
+    private val retry = Runnable { blockedReason = null; connect() }
 
     fun connect(legacyTicket: Boolean = false) {
       if (closed || !running || blockedReason != null) return
@@ -232,7 +232,12 @@ class PhoneConnectionService : Service() {
       }
       override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
         handler.post {
-          if (response?.code == 426) stopRetrying(current, "Open Dulli to update") else failed(current)
+          // The server demands an exact protocol match, so either side may need the update.
+          if (response?.code == 426) {
+            if (stopRetrying(current, "Update Dulli or ${config.optString("label", environment)}")) {
+              handler.postDelayed(retry, 15 * 60_000L)
+            }
+          } else failed(current)
         }
       }
       override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -296,8 +301,8 @@ class PhoneConnectionService : Service() {
       }
     }
 
-    private fun stopRetrying(current: Int, reason: String) {
-      if (closed || current != generation) return
+    private fun stopRetrying(current: Int, reason: String): Boolean {
+      if (closed || current != generation) return false
       blockedReason = reason
       generation++
       connected = false
@@ -306,6 +311,7 @@ class PhoneConnectionService : Service() {
       socket?.cancel()
       socket = null
       updateStatus()
+      return true
     }
 
     private fun failed(current: Int) {
