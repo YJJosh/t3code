@@ -92,8 +92,10 @@ class AgentNotificationsTest {
     AgentNotifications.clearPhoneAlert(context, "phone:request:env/thread:two")
     assertEquals("relay".hashCode(), manager.activeNotifications.single().id)
     AgentNotifications.phoneAlert(context, "t3dulli", "phone:run:env/thread:run", "Done", "Turn finished", "/threads/environment/thread")
+    AgentNotifications.clear(context)
+    assertEquals("phone:run:env/thread:run".hashCode(), manager.activeNotifications.single().id)
     AgentNotifications.clearPhoneAlerts(context)
-    assertEquals("relay".hashCode(), manager.activeNotifications.single().id)
+    assertTrue(manager.activeNotifications.isEmpty())
   }
 
   @Test

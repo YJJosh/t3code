@@ -136,22 +136,26 @@ class PhoneConnectionService : Service() {
     private val state = PhoneNotificationState(PhoneConnectionStore.preferences(this@PhoneConnectionService))
     private val retry = Runnable { connect() }
 
-    fun connect() {
+    fun connect(legacyTicket: Boolean = false) {
       if (closed || !running) return
       val current = ++generation
       val base = config.getString("httpBaseUrl").trimEnd('/')
-      val request = Request.Builder().url("$base/api/auth/websocket-ticket/rpc")
+      val ticketPath = if (legacyTicket) "/api/auth/websocket-ticket" else "/api/auth/websocket-ticket/rpc"
+      val request = Request.Builder().url("$base$ticketPath")
         .header("Authorization", "Bearer ${config.getString("token")}")
         .post(ByteArray(0).toRequestBody()).build()
       ticketCall = client.newCall(request).also { call ->
         call.enqueue(object : Callback {
           override fun onFailure(call: Call, e: IOException) { handler.post { failed(current) } }
           override fun onResponse(call: Call, response: Response) {
+            val status = response.code
             val ticket = response.use {
               if (it.isSuccessful) runCatching { JSONObject(it.body!!.string()).getString("ticket") }.getOrNull() else null
             }
             handler.post {
               if (closed || current != generation) return@post
+              // REVIEW: Older protocol-v2 servers predate ticket audiences; match the JS client's 404-only fallback.
+              if (status == 404 && !legacyTicket) { connect(true); return@post }
               if (ticket == null) { failed(current); return@post }
               val url = phoneSocketUrl(config, ticket)
               socket = client.newWebSocket(Request.Builder().url(url).build(), listener(current))
@@ -214,6 +218,8 @@ class PhoneConnectionService : Service() {
       }
       when (item.optString("kind")) {
         "snapshot" -> {
+          // REVIEW: Enrichment snapshots contain only project metadata, not an authoritative thread set.
+          if (item.has("resolvedRepositoryIdentityRoots")) return
           val snapshot = item.getJSONObject("snapshot")
           val threads = snapshot.getJSONArray("threads")
           val ids = mutableSetOf<String>()
