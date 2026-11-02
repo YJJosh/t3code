@@ -1,8 +1,14 @@
+import type { ConnectionCatalogDocument } from "@t3tools/client-runtime/platform";
+import { phoneConnections } from "./phoneConnections";
 import Constants from "expo-constants";
 import { requireOptionalNativeModule } from "expo";
 import { Linking, Platform } from "react-native";
 
 interface AndroidAgentNotifications {
+  phoneNotificationsEnabled?(): boolean;
+  setPhoneNotificationsEnabled?(enabled: boolean): void;
+  configurePhoneConnections?(connections: string, scheme: string): void;
+  openPhoneBatterySettings?(): void;
   configure(deviceId: string, userId: string, scheme: string, ongoingEnabled: boolean): void;
   clear(): void;
   setThreadOnScreen?(path: string | null): void;
@@ -54,4 +60,36 @@ export async function openAndroidLiveUpdateSettings(): Promise<void> {
   if (!native?.openLiveUpdateSettings?.()) {
     await Linking.openSettings();
   }
+}
+
+export function supportsPhoneNotifications(): boolean {
+  return (
+    Constants.expoConfig?.extra?.appBrand === "dulli" &&
+    typeof native?.setPhoneNotificationsEnabled === "function"
+  );
+}
+
+export function phoneNotificationsEnabled(): boolean {
+  return supportsPhoneNotifications() && native?.phoneNotificationsEnabled?.() === true;
+}
+
+// Native keeps the credentials only while enabled, so enabling resends the latest catalog.
+let latestCatalog: ConnectionCatalogDocument | null = null;
+
+export function setPhoneNotificationsEnabled(enabled: boolean): void {
+  if (!supportsPhoneNotifications())
+    throw new Error("Install a newer Dulli Android app to enable phone notifications.");
+  native?.setPhoneNotificationsEnabled?.(enabled);
+  if (enabled && latestCatalog) configurePhoneConnections(latestCatalog);
+}
+
+export function configurePhoneConnections(document: ConnectionCatalogDocument): void {
+  latestCatalog = document;
+  if (supportsPhoneNotifications()) {
+    native?.configurePhoneConnections?.(JSON.stringify(phoneConnections(document)), appScheme());
+  }
+}
+
+export function openPhoneBatterySettings(): void {
+  native?.openPhoneBatterySettings?.();
 }

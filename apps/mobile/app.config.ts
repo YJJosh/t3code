@@ -343,6 +343,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-asset",
+    "./plugins/withDulliPhoneNotifications.cjs",
     "react-native-pdf-jsi",
     [
       "expo-font",
