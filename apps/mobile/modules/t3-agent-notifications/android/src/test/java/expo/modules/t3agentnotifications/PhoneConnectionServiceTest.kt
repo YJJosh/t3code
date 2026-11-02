@@ -38,4 +38,16 @@ class PhoneConnectionServiceTest {
       assertTrue(notification.notification.flags and android.app.Notification.FLAG_ONGOING_EVENT != 0)
     } finally { controller.destroy() }
   }
+
+  @Test fun pairedCredentialsAreOnlyKeptWhileOptedIn() {
+    val context = RuntimeEnvironment.getApplication()
+    val prefs = PhoneConnectionStore.preferences(context)
+    prefs.edit().clear().commit()
+    PhoneConnectionStore.save(context, "[{\"environmentId\":\"env\",\"token\":\"secret\"}]", "t3dulli")
+    assertFalse(prefs.contains("connections"))
+
+    prefs.edit().putBoolean("enabled", true).putString("connections", "encrypted").commit()
+    PhoneConnectionService.setEnabled(context, false)
+    assertFalse(prefs.contains("connections"))
+  }
 }

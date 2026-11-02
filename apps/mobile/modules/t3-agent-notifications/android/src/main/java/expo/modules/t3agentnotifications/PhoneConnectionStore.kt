@@ -28,6 +28,11 @@ internal object PhoneConnectionStore {
   @Synchronized
   fun save(context: Context, connections: String, scheme: String) {
     val prefs = preferences(context)
+    // The paired credentials are copied here only while the user has opted in.
+    if (!prefs.getBoolean("enabled", false)) {
+      prefs.edit().remove("connections").putString("scheme", scheme).commit()
+      return
+    }
     val previous = load(context)
     val next = JSONArray(connections)
     if (previous.toString() == next.toString() && prefs.getString("scheme", null) == scheme) {

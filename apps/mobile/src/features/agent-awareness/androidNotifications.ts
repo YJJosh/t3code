@@ -73,13 +73,18 @@ export function phoneNotificationsEnabled(): boolean {
   return supportsPhoneNotifications() && native?.phoneNotificationsEnabled?.() === true;
 }
 
+// Native keeps the credentials only while enabled, so enabling resends the latest catalog.
+let latestCatalog: ConnectionCatalogDocument | null = null;
+
 export function setPhoneNotificationsEnabled(enabled: boolean): void {
   if (!supportsPhoneNotifications())
     throw new Error("Install a newer Dulli Android app to enable phone notifications.");
   native?.setPhoneNotificationsEnabled?.(enabled);
+  if (enabled && latestCatalog) configurePhoneConnections(latestCatalog);
 }
 
 export function configurePhoneConnections(document: ConnectionCatalogDocument): void {
+  latestCatalog = document;
   if (supportsPhoneNotifications()) {
     native?.configurePhoneConnections?.(JSON.stringify(phoneConnections(document)), appScheme());
   }

@@ -59,6 +59,7 @@ class PhoneConnectionService : Service() {
         }
       } else {
         context.stopService(Intent(context, PhoneConnectionService::class.java))
+        prefs.edit().remove("connections").commit()
         AgentNotifications.clearPhoneAlerts(context)
       }
     }
