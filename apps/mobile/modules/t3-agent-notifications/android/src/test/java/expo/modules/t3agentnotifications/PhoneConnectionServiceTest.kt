@@ -7,6 +7,9 @@ import android.net.Network
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import android.os.Looper
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.ProcessLifecycleOwner
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -228,6 +231,43 @@ class PhoneConnectionServiceTest {
       update()
       assertFalse(prefs.contains("seen-request:env/refused"))
     } finally { controller.destroy() }
+  }
+
+  @Test fun completionViewedInTheThreadDoesNotAlertAfterABackgroundReplay() {
+    val context = RuntimeEnvironment.getApplication()
+    val prefs = PhoneConnectionStore.preferences(context)
+    prefs.edit().clear().putBoolean("enabled", true).putLong("since", 0).commit()
+    val manager = context.getSystemService(NotificationManager::class.java)
+    shadowOf(manager).setNotificationsEnabled(true)
+    val lifecycle = ProcessLifecycleOwner.get().lifecycle as LifecycleRegistry
+    lifecycle.currentState = Lifecycle.State.RESUMED
+    AgentNotifications.setThreadOnScreen("/threads/env/thread")
+    val controller = Robolectric.buildService(PhoneConnectionService::class.java).create()
+    try {
+      val service = controller.get()
+      service.onStartCommand(null, 0, 1)
+      val clazz = PhoneConnectionService::class.java.declaredClasses.single { it.simpleName == "Connection" }
+      val connection = clazz.declaredConstructors.single().apply { isAccessible = true }
+        .newInstance(service, JSONObject().put("environmentId", "env"))
+      val receive = clazz.getDeclaredMethod("receive", JSONObject::class.java).apply { isAccessible = true }
+      val thread = JSONObject().put("id", "thread").put("title", "Viewed turn").put("status", "completed")
+        .put("latestRunId", "viewed").put("latestRunCompletedAt", "2026-01-01T00:00:00Z")
+      receive.invoke(connection, JSONObject().put("kind", "thread.updated").put("thread", thread))
+      assertFalse(manager.activeNotifications.any { it.notification.group?.startsWith("phone:") == true })
+      lifecycle.currentState = Lifecycle.State.CREATED
+      receive.invoke(connection, JSONObject().put("kind", "snapshot")
+        .put("snapshot", JSONObject().put("threads", JSONArray().put(thread))))
+      assertFalse("An already-viewed completion must not alert on replay",
+        manager.activeNotifications.any { it.notification.group?.startsWith("phone:") == true })
+      assertEquals("viewed", prefs.getString("seen-run:env/thread", null))
+      thread.put("latestRunId", "new-background-turn")
+      receive.invoke(connection, JSONObject().put("kind", "thread.updated").put("thread", thread))
+      assertTrue(manager.activeNotifications.any { it.notification.group == "phone:run:env/thread" })
+    } finally {
+      controller.destroy()
+      lifecycle.currentState = Lifecycle.State.CREATED
+      AgentNotifications.setThreadOnScreen(null)
+    }
   }
 
   @Test fun optedInServiceStartsWithALowPriorityPersistentNotificationOnEverySupportedApi() {
