@@ -27,6 +27,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.Executors
 import kotlin.math.min
 import kotlin.random.Random
 
@@ -70,6 +71,7 @@ class PhoneConnectionService : Service() {
   private val handler = Handler(Looper.getMainLooper())
   private val client = OkHttpClient.Builder().pingInterval(30, TimeUnit.SECONDS)
     .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+  private val parser = Executors.newSingleThreadExecutor()
   private val connections = mutableListOf<Connection>()
   private var running = false
   private var networkRegistered = false
@@ -137,6 +139,7 @@ class PhoneConnectionService : Service() {
     connections.forEach { it.close() }
     connections.clear()
     handler.removeCallbacksAndMessages(null)
+    parser.shutdownNow()
     client.dispatcher.cancelAll()
     client.connectionPool.evictAll()
     client.dispatcher.executorService.shutdown()
@@ -196,28 +199,36 @@ class PhoneConnectionService : Service() {
           connected = true
           attempt = 0
           updateStatus()
-          webSocket.send(JSONObject().put("_tag", "Request").put("id", "phone-shell")
-            .put("tag", "orchestration.subscribeShell").put("payload", JSONObject())
-            .put("headers", JSONArray()).toString())
+          request(webSocket, "phone-config", "server.getConfig", JSONObject())
         }
       }
       override fun onMessage(webSocket: WebSocket, text: String) {
-        handler.post {
-          if (closed || current != generation) return@post
-          runCatching {
-            val frame = JSONObject(text)
-            when (frame.optString("_tag")) {
-              "Ping" -> webSocket.send("{\"_tag\":\"Pong\"}")
-              "Chunk" -> {
-                if (frame.optString("requestId") != "phone-shell") return@runCatching
-                val values = frame.getJSONArray("values")
-                for (i in 0 until values.length()) receive(values.getJSONObject(i))
-                webSocket.send("{\"_tag\":\"Ack\",\"requestId\":\"phone-shell\"}")
-              }
-              "Exit", "Defect" -> failed(current)
+        runCatching {
+          parser.execute {
+            val parsed = runCatching { JSONObject(text) }
+            handler.post {
+              if (closed || current != generation) return@post
+              runCatching {
+                val frame = parsed.getOrThrow()
+                if (frame.optString("requestId") == "phone-config") {
+                  val exit = frame.optJSONObject("exit")
+                  subscribe(webSocket, if (exit?.optString("_tag") == "Success") exit.optJSONObject("value") else null)
+                  return@runCatching
+                }
+                when (frame.optString("_tag")) {
+                  "Ping" -> webSocket.send("{\"_tag\":\"Pong\"}")
+                  "Chunk" -> {
+                    if (frame.optString("requestId") != "phone-shell") return@runCatching
+                    val values = frame.getJSONArray("values")
+                    for (i in 0 until values.length()) receive(values.getJSONObject(i))
+                    webSocket.send("{\"_tag\":\"Ack\",\"requestId\":\"phone-shell\"}")
+                  }
+                  "Exit", "Defect" -> failed(current)
+                }
+              }.onFailure { failed(current) }
             }
-          }.onFailure { failed(current) }
-        }
+          }
+        }.onFailure { handler.post { failed(current) } }
       }
       override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
         handler.post {
@@ -230,6 +241,20 @@ class PhoneConnectionService : Service() {
       override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
         handler.post { failed(current) }
       }
+    }
+
+    private fun request(webSocket: WebSocket, id: String, tag: String, payload: JSONObject) {
+      webSocket.send(JSONObject().put("_tag", "Request").put("id", id)
+        .put("tag", tag).put("payload", payload).put("headers", JSONArray()).toString())
+    }
+
+    private fun subscribe(webSocket: WebSocket, config: JSONObject?) {
+      val payload = JSONObject()
+      if (config?.optBoolean("shellThreadFamilies") == true) {
+        payload.put("omitIdleSubagents", true)
+        if (config.optBoolean("shellOlderSettled")) payload.put("omitOlderSettled", true)
+      }
+      request(webSocket, "phone-shell", "orchestration.subscribeShell", payload)
     }
 
     private fun receive(item: JSONObject) {
@@ -254,7 +279,14 @@ class PhoneConnectionService : Service() {
             ids.add(thread.getString("id"))
             show(thread)
           }
-          state.reconcile(environment, ids).forEach { AgentNotifications.clearPhoneAlert(this@PhoneConnectionService, it) }
+          val archived = snapshot.optJSONArray("archivedThreads") ?: JSONArray()
+          for (i in 0 until archived.length()) {
+            val thread = archived.getJSONObject(i)
+            ids.add(thread.getString("id"))
+            show(thread)
+          }
+          // Filtered-out settled rows are not deletions; explicit removals still prune their history.
+          state.reconcile(environment, ids, preserveRuns = snapshot.has("olderSettled")).forEach { AgentNotifications.clearPhoneAlert(this@PhoneConnectionService, it) }
         }
         "thread.updated" -> show(item.getJSONObject("thread"))
         "thread.removed" -> state.remove(environment, item.getString("threadId"))

@@ -51,21 +51,23 @@ internal class PhoneNotificationState(private val prefs: SharedPreferences) {
     prefs.edit().putString(alert.seenKey, alert.value).apply()
   }
 
-  fun remove(environment: String, threadId: String): List<String> {
+  fun remove(environment: String, threadId: String, preserveRun: Boolean = false): List<String> {
     val key = "$environment/$threadId"
     val request = prefs.getString("pending:$key", null)
     val run = prefs.getString("seen-run:$key", null)
-    prefs.edit().remove("pending:$key").remove("seen-request:$key").remove("seen-run:$key").apply()
-    return listOfNotNull(request?.let { "phone:request:$key:$it" }, run?.let { "phone:run:$key" })
+    prefs.edit().remove("pending:$key").remove("seen-request:$key").apply {
+      if (!preserveRun) remove("seen-run:$key")
+    }.apply()
+    return listOfNotNull(request?.let { "phone:request:$key:$it" }, run?.takeUnless { preserveRun }?.let { "phone:run:$key" })
   }
 
   private fun threadKeys(): Set<String> = prefs.all.keys.mapNotNull { key ->
     listOf("pending:", "seen-request:", "seen-run:").firstOrNull { key.startsWith(it) }?.let { key.removePrefix(it) }
   }.toSet()
 
-  fun reconcile(environment: String, ids: Set<String>): List<String> = threadKeys()
+  fun reconcile(environment: String, ids: Set<String>, preserveRuns: Boolean = false): List<String> = threadKeys()
     .filter { it.startsWith("$environment/") && it.removePrefix("$environment/") !in ids }
-    .flatMap { remove(environment, it.removePrefix("$environment/")) }
+    .flatMap { remove(environment, it.removePrefix("$environment/"), preserveRuns) }
 
   fun retainEnvironments(environments: Set<String>) {
     threadKeys().filter { it.substringBefore('/') !in environments }.forEach {
