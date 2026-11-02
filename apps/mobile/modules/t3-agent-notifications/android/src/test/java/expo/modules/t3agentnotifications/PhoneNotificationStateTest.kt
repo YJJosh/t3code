@@ -45,6 +45,11 @@ class PhoneNotificationStateTest {
     assertEquals("Turn finished", state.thread("env", thread(run = "one", status = "completed"), 0).alerts.single().body)
     assertTrue(state.thread("env", thread(run = "one", status = "completed"), 0).alerts.isEmpty())
     assertEquals("Turn failed", state.thread("env", thread(run = "two", status = "failed"), 0).alerts.single().body)
+    val subagent = { run: String -> thread(run = run, status = "completed")
+      .put("lineage", JSONObject().put("relationshipToParent", "subagent")) }
+    assertTrue(state.thread("env", subagent("three"), 0).alerts.isEmpty())
+    assertEquals(1, state.thread("env", subagent("four").put("pendingRuntimeRequest",
+      JSONObject().put("id", "approval").put("kind", "command_approval")), 0).alerts.size)
   }
   @Test fun removedAndArchivedRequestsClearEvenAfterAnOfflineReconnect() {
     val first = state.thread("env", thread("question"), 0).alerts.single()
