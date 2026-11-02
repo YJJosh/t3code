@@ -2,6 +2,7 @@ package expo.modules.t3agentnotifications
 
 import android.app.NotificationManager
 import android.app.Service
+import android.net.ConnectivityManager
 import android.os.Looper
 import okhttp3.Call
 import okhttp3.OkHttpClient
@@ -97,6 +98,33 @@ class PhoneConnectionServiceTest {
         .put("snapshot", JSONObject().put("threads", JSONArray())))
       assertFalse(manager.activeNotifications.any { it.id == alertId })
     } finally { controller.destroy() }
+  }
+
+  @Test fun defaultNetworkReturnReconnectsImmediatelyAndStopUnregisters() {
+    val context = RuntimeEnvironment.getApplication()
+    PhoneConnectionStore.preferences(context).edit().clear().putBoolean("enabled", true).commit()
+    val controller = Robolectric.buildService(PhoneConnectionService::class.java).create()
+    val connectivity = shadowOf(context.getSystemService(ConnectivityManager::class.java))
+    try {
+      val service = controller.get()
+      service.onStartCommand(null, 0, 1)
+      service.onStartCommand(null, 0, 2)
+      assertEquals(1, connectivity.networkCallbacks.size)
+      val clazz = PhoneConnectionService::class.java.declaredClasses.single { it.simpleName == "Connection" }
+      val connection = clazz.declaredConstructors.single().apply { isAccessible = true }
+        .newInstance(service, JSONObject().put("environmentId", "env")
+          .put("httpBaseUrl", "http://127.0.0.1:1").put("token", "fixture"))
+      val connections = PhoneConnectionService::class.java.getDeclaredField("connections").apply { isAccessible = true }
+        .get(service) as MutableList<Any>
+      connections.add(connection)
+      val attempt = clazz.getDeclaredField("attempt").apply { isAccessible = true }
+      attempt.setInt(connection, 6)
+      connectivity.networkCallbacks.single().onAvailable(org.robolectric.shadows.ShadowNetwork.newInstance(42))
+      shadowOf(Looper.getMainLooper()).idle()
+      assertEquals(0, attempt.getInt(connection))
+      assertNotNull(clazz.getDeclaredField("ticketCall").apply { isAccessible = true }.get(connection))
+    } finally { controller.destroy() }
+    assertTrue(connectivity.networkCallbacks.isEmpty())
   }
 
   @Test fun optedInServiceStartsWithALowPriorityPersistentNotificationOnEverySupportedApi() {

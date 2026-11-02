@@ -7,6 +7,8 @@ import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -70,6 +72,12 @@ class PhoneConnectionService : Service() {
     .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
   private val connections = mutableListOf<Connection>()
   private var running = false
+  private var networkRegistered = false
+  private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+    override fun onAvailable(network: Network) {
+      handler.post { if (running) connections.forEach { it.networkAvailable() } }
+    }
+  }
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -79,6 +87,10 @@ class PhoneConnectionService : Service() {
     }
     running = true
     active = true
+    if (!networkRegistered) {
+      getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
+      networkRegistered = true
+    }
     val manager = getSystemService(NotificationManager::class.java)
     if (Build.VERSION.SDK_INT >= 26) {
       manager.createNotificationChannel(NotificationChannel(CHANNEL, "Dulli connection", NotificationManager.IMPORTANCE_LOW))
@@ -116,6 +128,10 @@ class PhoneConnectionService : Service() {
   override fun onDestroy() {
     running = false
     active = false
+    if (networkRegistered) {
+      getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback)
+      networkRegistered = false
+    }
     connections.forEach { it.close() }
     connections.clear()
     handler.removeCallbacksAndMessages(null)
@@ -246,6 +262,19 @@ class PhoneConnectionService : Service() {
       handler.removeCallbacks(retry)
       val delay = min(60_000L, 1_000L * (1L shl min(attempt++, 6)))
       handler.postDelayed(retry, delay + Random.nextLong(delay / 4 + 1))
+    }
+
+    fun networkAvailable() {
+      if (closed || !running) return
+      generation++
+      handler.removeCallbacks(retry)
+      ticketCall?.cancel()
+      socket?.cancel()
+      socket = null
+      connected = false
+      attempt = 0
+      connect()
+      updateStatus()
     }
 
     fun close() {
