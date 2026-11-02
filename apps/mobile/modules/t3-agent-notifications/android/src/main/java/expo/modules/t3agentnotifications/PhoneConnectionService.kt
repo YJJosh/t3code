@@ -79,7 +79,9 @@ class PhoneConnectionService : Service() {
     running = true
     active = true
     val manager = getSystemService(NotificationManager::class.java)
-    manager.createNotificationChannel(NotificationChannel(CHANNEL, "Dulli connection", NotificationManager.IMPORTANCE_LOW))
+    if (Build.VERSION.SDK_INT >= 26) {
+      manager.createNotificationChannel(NotificationChannel(CHANNEL, "Dulli connection", NotificationManager.IMPORTANCE_LOW))
+    }
     startForeground(ID, notification("Connecting to paired servers"))
     connections.forEach { it.close() }
     connections.clear()

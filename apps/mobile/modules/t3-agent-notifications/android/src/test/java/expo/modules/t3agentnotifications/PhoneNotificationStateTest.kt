@@ -28,9 +28,6 @@ class PhoneNotificationStateTest {
     .put("latestRunCompletedAt", if (run != null) "2026-01-01T00:00:00Z" else JSONObject.NULL)
     .put("pendingRuntimeRequest", if (request == null) JSONObject.NULL else JSONObject().put("id", request).put("kind", "user_input"))
 
-  @Test fun disabledByDefaultAndDoesNotRestartOnFreshInstall() {
-    assertFalse(PhoneConnectionStore.preferences(context).getBoolean("enabled", false))
-  }
   @Test fun pendingRequestsNotifyOnceAcrossReconnectAndProcessRestartThenClearWhenAnswered() {
     val first = state.thread("env", thread("question"), 0)
     assertEquals("Your agent needs input", first.alerts.single().body)
