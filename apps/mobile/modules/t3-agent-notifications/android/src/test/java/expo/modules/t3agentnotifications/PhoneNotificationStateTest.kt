@@ -3,7 +3,9 @@ package expo.modules.t3agentnotifications
 import android.app.Application
 import android.content.Context
 import org.json.JSONObject
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -16,17 +18,31 @@ import org.robolectric.annotation.Config
 class PhoneNotificationStateTest {
   private lateinit var context: Application
   private lateinit var state: PhoneNotificationState
+
   @Before fun setup() {
     context = RuntimeEnvironment.getApplication()
     PhoneConnectionStore.preferences(context).edit().clear().commit()
     state = PhoneNotificationState(PhoneConnectionStore.preferences(context))
   }
-  private fun thread(request: String? = null, run: String? = null, status: String = "running") = JSONObject()
+  private fun thread(
+    request: String? = null,
+    run: String? = null,
+    status: String = "running"
+  ) = JSONObject()
     .put("id", "thread").put("title", "A task").put("status", status)
     .put("archivedAt", JSONObject.NULL).put("deletedAt", JSONObject.NULL)
     .put("latestRunId", run ?: JSONObject.NULL)
     .put("latestRunCompletedAt", if (run != null) "2026-01-01T00:00:00Z" else JSONObject.NULL)
-    .put("pendingRuntimeRequest", if (request == null) JSONObject.NULL else JSONObject().put("id", request).put("kind", "user_input"))
+    .put(
+      "pendingRuntimeRequest",
+      if (request ==
+        null
+      ) {
+        JSONObject.NULL
+      } else {
+        JSONObject().put("id", request).put("kind", "user_input")
+      }
+    )
 
   @Test fun pendingRequestsNotifyOnceAcrossReconnectAndProcessRestartThenClearWhenAnswered() {
     val first = state.thread("env", thread("question"), 0)
@@ -41,27 +57,59 @@ class PhoneNotificationStateTest {
     assertEquals(1, state.thread("env", thread("next-question"), 0).alerts.size)
     assertEquals(1, state.thread("other-env", thread("question"), 0).alerts.size)
   }
+
   @Test fun completionOnlyNotifiesNewFinishedRunsAndNeverRunningTurnsOrOldHistory() {
     assertTrue(state.thread("env", thread(run = "one"), 0).alerts.isEmpty())
-    assertTrue(state.thread("env", thread(run = "one", status = "completed"), Long.MAX_VALUE).alerts.isEmpty())
-    val completed = state.thread("env", thread(run = "one", status = "completed"), 0).alerts.single()
+    assertTrue(
+      state.thread(
+        "env",
+        thread(run = "one", status = "completed"),
+        Long.MAX_VALUE
+      ).alerts.isEmpty()
+    )
+    val completed = state.thread(
+      "env",
+      thread(run = "one", status = "completed"),
+      0
+    ).alerts.single()
     assertEquals("Turn finished", completed.body)
     state.posted(completed)
     assertTrue(state.thread("env", thread(run = "one", status = "completed"), 0).alerts.isEmpty())
-    assertEquals("Turn failed", state.thread("env", thread(run = "two", status = "failed"), 0).alerts.single().body)
-    val subagent = { run: String -> thread(run = run, status = "completed")
-      .put("lineage", JSONObject().put("relationshipToParent", "subagent")) }
+    assertEquals(
+      "Turn failed",
+      state.thread("env", thread(run = "two", status = "failed"), 0).alerts.single().body
+    )
+    val subagent = { run: String ->
+      thread(run = run, status = "completed")
+        .put("lineage", JSONObject().put("relationshipToParent", "subagent"))
+    }
     assertTrue(state.thread("env", subagent("three"), 0).alerts.isEmpty())
-    assertEquals(1, state.thread("env", subagent("four").put("pendingRuntimeRequest",
-      JSONObject().put("id", "approval").put("kind", "command_approval")), 0).alerts.size)
+    assertEquals(
+      1,
+      state.thread(
+        "env",
+        subagent("four").put(
+          "pendingRuntimeRequest",
+          JSONObject().put("id", "approval").put("kind", "command_approval")
+        ),
+        0
+      ).alerts.size
+    )
   }
+
   @Test fun removedAndArchivedRequestsClearEvenAfterAnOfflineReconnect() {
     val first = state.thread("env", thread("question"), 0).alerts.single()
     assertEquals(listOf(first.id), state.reconcile("env", emptySet()))
     val second = state.thread("env", thread("next"), 0).alerts.single()
-    assertEquals(listOf(second.id), state.thread("env", thread("next").put("archivedAt", "2026-01-01"), 0).clear)
-    assertTrue(state.thread("env", thread("hidden").put("deletedAt", "2026-01-01"), 0).alerts.isEmpty())
+    assertEquals(
+      listOf(second.id),
+      state.thread("env", thread("next").put("archivedAt", "2026-01-01"), 0).clear
+    )
+    assertTrue(
+      state.thread("env", thread("hidden").put("deletedAt", "2026-01-01"), 0).alerts.isEmpty()
+    )
   }
+
   @Test fun reconciliationPrunesSeenHistoryEvenWithoutPendingRequests() {
     val prefs = PhoneConnectionStore.preferences(context)
     prefs.edit().putString("seen-request:env/gone", "request")

@@ -15,16 +15,21 @@ import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SettingsRow } from "./components/SettingsRow";
 
+function batterySettings() {
+  try {
+    openPhoneBatterySettings();
+  } catch {
+    void Linking.openSettings();
+  }
+}
+
 export function SettingsPhoneNotifications() {
   const [enabled, setEnabled] = useState(phoneNotificationsEnabled);
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const available = supportsPhoneNotifications();
 
-  async function toggle(next: boolean) {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setBusy(true);
+  async function applyToggle(next: boolean) {
     try {
       if (next) {
         const permission = await runtime.runPromise(requestAgentNotificationPermission);
@@ -58,18 +63,18 @@ export function SettingsPhoneNotifications() {
         "Couldn't update notifications",
         error instanceof Error ? error.message : String(error),
       );
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
     }
   }
 
-  function batterySettings() {
-    try {
-      openPhoneBatterySettings();
-    } catch {
-      void Linking.openSettings();
-    }
+  function toggle(next: boolean) {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    // Promise.finally instead of try/finally: the React Compiler cannot lower a finally clause.
+    void applyToggle(next).finally(() => {
+      inFlight.current = false;
+      setBusy(false);
+    });
   }
 
   return (
@@ -89,7 +94,7 @@ export function SettingsPhoneNotifications() {
             }
             value={enabled}
             disabled={!available || busy}
-            onValueChange={(next) => void toggle(next)}
+            onValueChange={toggle}
           />
           {enabled ? (
             <SettingsRow

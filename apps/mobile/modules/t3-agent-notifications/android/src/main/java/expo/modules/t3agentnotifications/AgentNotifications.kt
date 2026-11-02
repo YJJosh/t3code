@@ -86,7 +86,8 @@ object AgentNotifications {
     val manager = manager(context)
     manager.activeNotifications.filter {
       // Cloud sign-out and cloud-disabled startup must not remove direct-server alerts.
-      it.tag == ACTIVITY_TAG || (it.tag == ALERT_TAG && it.notification.group?.startsWith("phone:") != true) ||
+      it.tag == ACTIVITY_TAG ||
+        (it.tag == ALERT_TAG && it.notification.group?.startsWith("phone:") != true) ||
         it.tag?.startsWith("$ALERT_TAG-summary:") == true
     }
       .forEach { manager.cancel(it.tag, it.id) }
@@ -134,9 +135,19 @@ object AgentNotifications {
   }
 
   @Synchronized
-  fun phoneAlert(context: Context, scheme: String, id: String, title: String, body: String, path: String): Boolean {
+  @Suppress("LongParameterList", "ReturnCount")
+  fun phoneAlert(
+    context: Context,
+    scheme: String,
+    id: String,
+    title: String,
+    body: String,
+    path: String
+  ): Boolean {
     if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
-    val resumed = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+    val resumed = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(
+      Lifecycle.State.RESUMED
+    )
     // The user is looking at it; reporting unseen would resurface it on the next snapshot after they leave.
     if (resumed && threadOnScreen == path) return true
     return runCatching {
@@ -147,13 +158,25 @@ object AgentNotifications {
         }.forEach { manager.cancel(it.tag, it.id) }
       }
       val finished = manager.activeNotifications.filter {
-        it.tag == ALERT_TAG && it.notification.group?.startsWith("phone:run:") == true && it.id != id.hashCode()
+        it.tag == ALERT_TAG && it.notification.group?.startsWith("phone:run:") == true &&
+          it.id != id.hashCode()
       }.sortedBy { it.postTime }
       val limit = if (id.startsWith("phone:run:")) 19 else 20
-      finished.take((finished.size - limit).coerceAtLeast(0)).forEach { manager.cancel(it.tag, it.id) }
+      finished.take((finished.size - limit).coerceAtLeast(0)).forEach {
+        manager.cancel(it.tag, it.id)
+      }
       channels(context)
-      postAlert(context, scheme, mapOf("alert_title" to title, "alert_body" to body,
-        "alert_path" to path, "alert_group" to id), id)
+      postAlert(
+        context,
+        scheme,
+        mapOf(
+          "alert_title" to title,
+          "alert_body" to body,
+          "alert_path" to path,
+          "alert_group" to id
+        ),
+        id
+      )
       // Android can silently refuse posts at its per-package quota.
       manager.activeNotifications.any { it.tag == ALERT_TAG && it.id == id.hashCode() }
     }.getOrDefault(false)
@@ -166,8 +189,12 @@ object AgentNotifications {
   fun clearPhoneAlerts(context: Context, environment: String? = null) {
     manager(context).activeNotifications.filter {
       it.tag == ALERT_TAG && it.notification.group?.let { group ->
-        if (environment == null) group.startsWith("phone:")
-        else group.startsWith("phone:request:$environment/") || group.startsWith("phone:run:$environment/")
+        if (environment == null) {
+          group.startsWith("phone:")
+        } else {
+          group.startsWith("phone:request:$environment/") ||
+            group.startsWith("phone:run:$environment/")
+        }
       } == true
     }.forEach { manager(context).cancel(it.tag, it.id) }
   }

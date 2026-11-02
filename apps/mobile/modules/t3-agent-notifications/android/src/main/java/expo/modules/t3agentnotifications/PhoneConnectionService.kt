@@ -34,7 +34,8 @@ import kotlin.random.Random
 class PhoneConnectionBootReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent) {
     if (intent.action in listOf(Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED) &&
-      PhoneConnectionStore.preferences(context).getBoolean("enabled", false)) {
+      PhoneConnectionStore.preferences(context).getBoolean("enabled", false)
+    ) {
       PhoneConnectionService.start(context)
     }
   }
@@ -44,10 +45,14 @@ class PhoneConnectionService : Service() {
   companion object {
     private const val ID = 73002
     private const val CHANNEL = "dulli-connection"
+
     @Volatile var active = false
       private set
     fun start(context: Context) {
-      ContextCompat.startForegroundService(context, Intent(context, PhoneConnectionService::class.java))
+      ContextCompat.startForegroundService(
+        context,
+        Intent(context, PhoneConnectionService::class.java)
+      )
     }
     fun setEnabled(context: Context, enabled: Boolean) {
       val prefs = PhoneConnectionStore.preferences(context)
@@ -56,7 +61,10 @@ class PhoneConnectionService : Service() {
         if (enabled && !wasEnabled) putLong("since", System.currentTimeMillis())
       }.commit()
       if (enabled) {
-        try { start(context) } catch (error: Exception) {
+        @Suppress("TooGenericExceptionCaught") // Restore the switch before rethrowing.
+        try {
+          start(context)
+        } catch (error: Exception) {
           prefs.edit().putBoolean("enabled", wasEnabled).commit()
           throw error
         }
@@ -90,43 +98,70 @@ class PhoneConnectionService : Service() {
     running = true
     active = true
     if (!networkRegistered) {
-      getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
+      getSystemService(
+        ConnectivityManager::class.java
+      ).registerDefaultNetworkCallback(networkCallback)
       networkRegistered = true
     }
     val manager = getSystemService(NotificationManager::class.java)
     if (Build.VERSION.SDK_INT >= 26) {
-      manager.createNotificationChannel(NotificationChannel(CHANNEL, "Dulli connection", NotificationManager.IMPORTANCE_LOW))
+      manager.createNotificationChannel(
+        NotificationChannel(CHANNEL, "Dulli connection", NotificationManager.IMPORTANCE_LOW)
+      )
     }
     startForeground(ID, notification("Connecting to paired servers"))
     connections.forEach { it.close() }
     connections.clear()
     val configs = PhoneConnectionStore.load(this)
-    for (index in 0 until configs.length()) connections.add(Connection(configs.getJSONObject(index)))
+    for (index in 0 until configs.length()) {
+      connections.add(
+        Connection(configs.getJSONObject(index))
+      )
+    }
     connections.forEach { it.connect() }
     updateStatus()
     return START_STICKY
   }
 
   private fun notification(detail: String) = NotificationCompat.Builder(this, CHANNEL)
-    .setSmallIcon(resources.getIdentifier("notification_icon", "drawable", packageName).takeIf { it != 0 }
-      ?: android.R.drawable.ic_dialog_info)
+    .setSmallIcon(
+      resources.getIdentifier("notification_icon", "drawable", packageName).takeIf {
+        it != 0
+      }
+        ?: android.R.drawable.ic_dialog_info
+    )
     .setContentTitle("Dulli connected").setContentText(detail)
     .setOngoing(true).setSilent(true).setOnlyAlertOnce(true)
     .setPriority(NotificationCompat.PRIORITY_LOW)
-    .setContentIntent(packageManager.getLaunchIntentForPackage(packageName)?.let {
-      PendingIntent.getActivity(this, ID, it, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-    }).build()
+    .setContentIntent(
+      packageManager.getLaunchIntentForPackage(packageName)?.let {
+        PendingIntent.getActivity(
+          this,
+          ID,
+          it,
+          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+      }
+    ).build()
 
   private fun updateStatus() {
     if (!running) return
     val count = connections.count { it.connected }
     val blocked = connections.mapNotNull { it.blockedReason }.distinct().joinToString(" · ")
-    getSystemService(NotificationManager::class.java).notify(ID, notification(
-      if (blocked.isNotEmpty()) blocked
-      else if (connections.isEmpty()) "Pair a server to receive notifications"
-      else if (count == connections.size) "Listening to $count paired server(s)"
-      else "Reconnecting · $count/${connections.size} servers online"
-    ))
+    getSystemService(NotificationManager::class.java).notify(
+      ID,
+      notification(
+        if (blocked.isNotEmpty()) {
+          blocked
+        } else if (connections.isEmpty()) {
+          "Pair a server to receive notifications"
+        } else if (count == connections.size) {
+          "Listening to $count paired server(s)"
+        } else {
+          "Reconnecting · $count/${connections.size} servers online"
+        }
+      )
+    )
   }
 
   override fun onDestroy() {
@@ -156,34 +191,53 @@ class PhoneConnectionService : Service() {
     var blockedReason: String? = null
       private set
     var connected = false
-    private val state = PhoneNotificationState(PhoneConnectionStore.preferences(this@PhoneConnectionService))
-    private val retry = Runnable { blockedReason = null; connect() }
+    private val state =
+      PhoneNotificationState(PhoneConnectionStore.preferences(this@PhoneConnectionService))
+    private val retry = Runnable {
+      blockedReason = null
+      connect()
+    }
 
     fun connect(legacyTicket: Boolean = false) {
       if (closed || !running || blockedReason != null) return
       val current = ++generation
       val base = config.getString("httpBaseUrl").trimEnd('/')
-      val ticketPath = if (legacyTicket) "/api/auth/websocket-ticket" else "/api/auth/websocket-ticket/rpc"
+      val ticketPath =
+        if (legacyTicket) "/api/auth/websocket-ticket" else "/api/auth/websocket-ticket/rpc"
       val request = Request.Builder().url("$base$ticketPath")
         .header("Authorization", "Bearer ${config.getString("token")}")
         .post(ByteArray(0).toRequestBody()).build()
       ticketCall = client.newCall(request).also { call ->
         call.enqueue(object : Callback {
-          override fun onFailure(call: Call, e: IOException) { handler.post { failed(current) } }
+          override fun onFailure(call: Call, e: IOException) {
+            handler.post { failed(current) }
+          }
           override fun onResponse(call: Call, response: Response) {
             val status = response.code
             val ticket = response.use {
-              if (it.isSuccessful) runCatching { JSONObject(it.body!!.string()).getString("ticket") }.getOrNull() else null
+              if (it.isSuccessful) {
+                runCatching {
+                  JSONObject(it.body!!.string()).getString("ticket")
+                }.getOrNull()
+              } else {
+                null
+              }
             }
             handler.post {
               if (closed || current != generation) return@post
               // Older protocol-v2 servers predate ticket audiences; match the JS client's 404-only fallback.
-              if (status == 404 && !legacyTicket) { connect(true); return@post }
+              if (status == 404 && !legacyTicket) {
+                connect(true)
+                return@post
+              }
               if (status == 401) {
                 stopRetrying(current, "Re-pair ${config.optString("label", environment)} in Dulli")
                 return@post
               }
-              if (ticket == null) { failed(current); return@post }
+              if (ticket == null) {
+                failed(current)
+                return@post
+              }
               val url = phoneSocketUrl(config, ticket)
               socket = client.newWebSocket(Request.Builder().url(url).build(), listener(current))
             }
@@ -195,7 +249,10 @@ class PhoneConnectionService : Service() {
     private fun listener(current: Int) = object : WebSocketListener() {
       override fun onOpen(webSocket: WebSocket, response: Response) {
         handler.post {
-          if (closed || current != generation) { webSocket.cancel(); return@post }
+          if (closed || current != generation) {
+            webSocket.cancel()
+            return@post
+          }
           connected = true
           attempt = 0
           updateStatus()
@@ -212,7 +269,16 @@ class PhoneConnectionService : Service() {
                 val frame = parsed.getOrThrow()
                 if (frame.optString("requestId") == "phone-config") {
                   val exit = frame.optJSONObject("exit")
-                  subscribe(webSocket, if (exit?.optString("_tag") == "Success") exit.optJSONObject("value") else null)
+                  subscribe(
+                    webSocket,
+                    if (exit?.optString("_tag") ==
+                      "Success"
+                    ) {
+                      exit.optJSONObject("value")
+                    } else {
+                      null
+                    }
+                  )
                   return@runCatching
                 }
                 when (frame.optString("_tag")) {
@@ -234,10 +300,16 @@ class PhoneConnectionService : Service() {
         handler.post {
           // The server demands an exact protocol match, so either side may need the update.
           if (response?.code == 426) {
-            if (stopRetrying(current, "Update Dulli or ${config.optString("label", environment)}")) {
+            if (stopRetrying(
+                current,
+                "Update Dulli or ${config.optString("label", environment)}"
+              )
+            ) {
               handler.postDelayed(retry, 15 * 60_000L)
             }
-          } else failed(current)
+          } else {
+            failed(current)
+          }
         }
       }
       override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -249,8 +321,10 @@ class PhoneConnectionService : Service() {
     }
 
     private fun request(webSocket: WebSocket, id: String, tag: String, payload: JSONObject) {
-      webSocket.send(JSONObject().put("_tag", "Request").put("id", id)
-        .put("tag", tag).put("payload", payload).put("headers", JSONArray()).toString())
+      webSocket.send(
+        JSONObject().put("_tag", "Request").put("id", id)
+          .put("tag", tag).put("payload", payload).put("headers", JSONArray()).toString()
+      )
     }
 
     private fun subscribe(webSocket: WebSocket, config: JSONObject?) {
@@ -262,14 +336,26 @@ class PhoneConnectionService : Service() {
       request(webSocket, "phone-shell", "orchestration.subscribeShell", payload)
     }
 
+    @Suppress("CyclomaticComplexMethod") // One branch per RPC frame kind.
     private fun receive(item: JSONObject) {
       val prefs = PhoneConnectionStore.preferences(this@PhoneConnectionService)
       fun show(thread: JSONObject) {
         val decision = state.thread(environment, thread, prefs.getLong("since", Long.MAX_VALUE))
-        decision.clear.forEach { AgentNotifications.clearPhoneAlert(this@PhoneConnectionService, it) }
+        decision.clear.forEach {
+          AgentNotifications.clearPhoneAlert(this@PhoneConnectionService, it)
+        }
         decision.alerts.forEach {
-          if (AgentNotifications.phoneAlert(this@PhoneConnectionService, prefs.getString("scheme", "t3dulli")!!,
-            it.id, it.title, it.body, "/threads/$environment/${thread.getString("id")}")) state.posted(it)
+          if (AgentNotifications.phoneAlert(
+              this@PhoneConnectionService,
+              prefs.getString("scheme", "t3dulli")!!,
+              it.id,
+              it.title,
+              it.body,
+              "/threads/$environment/${thread.getString("id")}"
+            )
+          ) {
+            state.posted(it)
+          }
         }
       }
       when (item.optString("kind")) {
@@ -291,9 +377,13 @@ class PhoneConnectionService : Service() {
             show(thread)
           }
           val counts = snapshot.optJSONObject("olderSettled")?.optJSONArray("counts")
-          val omitsSettled = counts != null && (0 until counts.length()).any { counts.getJSONObject(it).optInt("count") > 0 }
+          val omitsSettled =
+            counts != null &&
+              (0 until counts.length()).any { counts.getJSONObject(it).optInt("count") > 0 }
           // Filtered-out settled rows are not deletions; explicit removals still prune their history.
-          state.reconcile(environment, ids, preserveRuns = omitsSettled).forEach { AgentNotifications.clearPhoneAlert(this@PhoneConnectionService, it) }
+          state.reconcile(environment, ids, preserveRuns = omitsSettled).forEach {
+            AgentNotifications.clearPhoneAlert(this@PhoneConnectionService, it)
+          }
         }
         "thread.updated" -> show(item.getJSONObject("thread"))
         "thread.removed" -> state.remove(environment, item.getString("threadId"))

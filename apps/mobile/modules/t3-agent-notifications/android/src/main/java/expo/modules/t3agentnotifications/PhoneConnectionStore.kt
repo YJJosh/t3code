@@ -13,15 +13,25 @@ import javax.crypto.spec.GCMParameterSpec
 
 internal object PhoneConnectionStore {
   private const val ALIAS = "t3-phone-connections"
-  fun preferences(context: Context) = context.getSharedPreferences("t3-phone-connection", Context.MODE_PRIVATE)
+  fun preferences(
+    context: Context
+  ) = context.getSharedPreferences("t3-phone-connection", Context.MODE_PRIVATE)
 
   private fun key(): SecretKey {
     val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
     return (store.getKey(ALIAS, null) as? SecretKey) ?: KeyGenerator.getInstance(
-      KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore"
+      KeyProperties.KEY_ALGORITHM_AES,
+      "AndroidKeyStore"
     ).apply {
-      init(KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-        .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
+      init(
+        KeyGenParameterSpec.Builder(
+          ALIAS,
+          KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+        )
+          .setBlockModes(
+            KeyProperties.BLOCK_MODE_GCM
+          ).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build()
+      )
     }.generateKey()
   }
 
@@ -29,7 +39,9 @@ internal object PhoneConnectionStore {
   fun save(context: Context, connections: String, scheme: String) {
     val prefs = preferences(context)
     val next = JSONArray(connections)
-    val environments = (0 until next.length()).map { next.getJSONObject(it).getString("environmentId") }.toSet()
+    val environments = (0 until next.length()).map {
+      next.getJSONObject(it).getString("environmentId")
+    }.toSet()
     PhoneNotificationState(prefs).retainEnvironments(environments)
     // The paired credentials are copied here only while the user has opted in.
     if (!prefs.getBoolean("enabled", false)) {
@@ -38,7 +50,11 @@ internal object PhoneConnectionStore {
     }
     val previous = load(context)
     if (previous.toString() == next.toString() && prefs.getString("scheme", null) == scheme) {
-      if (prefs.getBoolean("enabled", false) && !PhoneConnectionService.active) PhoneConnectionService.start(context)
+      if (prefs.getBoolean("enabled", false) &&
+        !PhoneConnectionService.active
+      ) {
+        PhoneConnectionService.start(context)
+      }
       return
     }
     for (index in 0 until previous.length()) {
@@ -47,7 +63,10 @@ internal object PhoneConnectionStore {
     }
     val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
     val encrypted = cipher.doFinal(connections.toByteArray(Charsets.UTF_8))
-    prefs.edit().putString("connections", Base64.encodeToString(cipher.iv + encrypted, Base64.NO_WRAP))
+    prefs.edit().putString(
+      "connections",
+      Base64.encodeToString(cipher.iv + encrypted, Base64.NO_WRAP)
+    )
       .putString("scheme", scheme).commit()
     if (prefs.getBoolean("enabled", false)) PhoneConnectionService.start(context)
   }

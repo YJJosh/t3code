@@ -8,7 +8,13 @@ internal fun phoneSocketUrl(config: JSONObject, ticket: String): String {
   return uri.buildUpon().apply {
     if (uri.path.isNullOrEmpty() || uri.path == "/") path("/ws")
   }.appendQueryParameter("wsTicket", ticket)
-    .appendQueryParameter("orchestrationProtocol", maxOf(config.optInt("protocolVersion", 0), BuildConfig.ORCHESTRATION_PROTOCOL_VERSION).toString())
+    .appendQueryParameter(
+      "orchestrationProtocol",
+      maxOf(
+        config.optInt("protocolVersion", 0),
+        BuildConfig.ORCHESTRATION_PROTOCOL_VERSION
+      ).toString()
+    )
     .appendQueryParameter("clientSurface", "mobile")
     .appendQueryParameter("clientDeviceType", "phone").build().toString()
 }

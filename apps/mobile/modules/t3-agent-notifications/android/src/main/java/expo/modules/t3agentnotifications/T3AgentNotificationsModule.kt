@@ -12,7 +12,10 @@ class T3AgentNotificationsModule : Module() {
     Name("T3AgentNotifications")
 
     Function("phoneNotificationsEnabled") {
-      appContext.reactContext?.let { PhoneConnectionStore.preferences(it).getBoolean("enabled", false) } ?: false
+      appContext.reactContext?.let {
+        PhoneConnectionStore.preferences(it).getBoolean("enabled", false)
+      }
+        ?: false
     }
 
     Function("setPhoneNotificationsEnabled") { enabled: Boolean ->
@@ -29,9 +32,11 @@ class T3AgentNotificationsModule : Module() {
       val context = requireNotNull(appContext.reactContext)
       val power = context.getSystemService(android.os.PowerManager::class.java)
       if (!power.isIgnoringBatteryOptimizations(context.packageName)) {
-        context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-          .setData(android.net.Uri.parse("package:${context.packageName}"))
-          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        context.startActivity(
+          Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            .setData(android.net.Uri.parse("package:${context.packageName}"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
       }
     }
 

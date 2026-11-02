@@ -17,9 +17,15 @@ class PhoneConnectionProtocolTest {
       val url = Uri.parse(phoneSocketUrl(config, "one+use/ticket"))
       assertEquals("2", url.getQueryParameter("orchestrationProtocol"))
       config.put("protocolVersion", 1)
-      assertEquals("2", Uri.parse(phoneSocketUrl(config, "ticket")).getQueryParameter("orchestrationProtocol"))
+      assertEquals(
+        "2",
+        Uri.parse(phoneSocketUrl(config, "ticket")).getQueryParameter("orchestrationProtocol")
+      )
       config.remove("protocolVersion")
-      assertEquals("2", Uri.parse(phoneSocketUrl(config, "ticket")).getQueryParameter("orchestrationProtocol"))
+      assertEquals(
+        "2",
+        Uri.parse(phoneSocketUrl(config, "ticket")).getQueryParameter("orchestrationProtocol")
+      )
       assertEquals("one+use/ticket", url.getQueryParameter("wsTicket"))
       assertEquals(if (base.endsWith("/t3/ws")) "/t3/ws" else "/ws", url.path)
     }

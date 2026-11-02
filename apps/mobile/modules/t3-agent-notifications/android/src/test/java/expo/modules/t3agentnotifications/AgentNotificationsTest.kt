@@ -26,6 +26,7 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [24, 26, 33, 36], manifest = Config.NONE)
+@Suppress("LargeClass")
 class AgentNotificationsTest {
   private lateinit var context: Application
   private lateinit var manager: NotificationManager
@@ -81,17 +82,40 @@ class AgentNotificationsTest {
   @Test
   fun directPhoneAlertsSuppressTheVisibleThreadAndCanBeClearedIndependentlyOfRelay() {
     lifecycle.currentState = Lifecycle.State.RESUMED
-    assertTrue(AgentNotifications.phoneAlert(context, "t3dulli", "phone:request:env/thread:one", "Question", "Input needed", "/threads/environment/thread"))
+    assertTrue(
+      AgentNotifications.phoneAlert(
+        context,
+        "t3dulli",
+        "phone:request:env/thread:one",
+        "Question",
+        "Input needed",
+        "/threads/environment/thread"
+      )
+    )
     assertTrue(manager.activeNotifications.isEmpty())
     lifecycle.currentState = Lifecycle.State.CREATED
-    AgentNotifications.phoneAlert(context, "t3dulli", "phone:request:env/thread:two", "Question", "Input needed", "/threads/environment/thread")
+    AgentNotifications.phoneAlert(
+      context,
+      "t3dulli",
+      "phone:request:env/thread:two",
+      "Question",
+      "Input needed",
+      "/threads/environment/thread"
+    )
     val alert = manager.activeNotifications.single()
     val tap = shadowOf(alert.notification.contentIntent).savedIntent
     assertEquals("t3dulli://threads/environment/thread", tap.data.toString())
     AgentNotifications.receive(context, update("relay", false))
     AgentNotifications.clearPhoneAlert(context, "phone:request:env/thread:two")
     assertEquals("relay".hashCode(), manager.activeNotifications.single().id)
-    AgentNotifications.phoneAlert(context, "t3dulli", "phone:run:env/thread:run", "Done", "Turn finished", "/threads/environment/thread")
+    AgentNotifications.phoneAlert(
+      context,
+      "t3dulli",
+      "phone:run:env/thread:run",
+      "Done",
+      "Turn finished",
+      "/threads/environment/thread"
+    )
     AgentNotifications.clear(context)
     assertEquals("phone:run:env/thread:run".hashCode(), manager.activeNotifications.single().id)
     AgentNotifications.clearPhoneAlerts(context)
