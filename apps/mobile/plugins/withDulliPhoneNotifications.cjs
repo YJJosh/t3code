@@ -1,4 +1,6 @@
-const { withAndroidManifest } = require("expo/config-plugins");
+const fs = require("node:fs/promises");
+const path = require("node:path");
+const { withAndroidManifest, withDangerousMod } = require("expo/config-plugins");
 
 function applyDulliPhoneManifest(brand, manifest) {
   if (brand !== "dulli") {
@@ -10,6 +12,10 @@ function applyDulliPhoneManifest(brand, manifest) {
         ].includes(entry.$["android:name"]),
     );
     const application = manifest.application[0];
+    if (application.$?.["android:fullBackupContent"] === "@xml/dulli_backup_rules") {
+      application.$["android:fullBackupContent"] = "@xml/secure_store_backup_rules";
+      application.$["android:dataExtractionRules"] = "@xml/secure_store_data_extraction_rules";
+    }
     application.service = application.service?.filter(
       (entry) =>
         entry.$["android:name"] !== "expo.modules.t3agentnotifications.PhoneConnectionService",
@@ -32,6 +38,9 @@ function applyDulliPhoneManifest(brand, manifest) {
     }
   }
   const application = manifest.application[0];
+  application.$ ??= {};
+  application.$["android:fullBackupContent"] = "@xml/dulli_backup_rules";
+  application.$["android:dataExtractionRules"] = "@xml/dulli_data_extraction_rules";
   const services = (application.service ??= []);
   const serviceName = "expo.modules.t3agentnotifications.PhoneConnectionService";
   if (!services.some((entry) => entry.$["android:name"] === serviceName)) {
@@ -72,9 +81,37 @@ function applyDulliPhoneManifest(brand, manifest) {
 }
 
 module.exports = function withDulliPhoneNotifications(config) {
+  if (config.extra?.appBrand === "dulli") {
+    config = withDangerousMod(config, [
+      "android",
+      async (next) => {
+        const directory = path.join(next.modRequest.platformProjectRoot, "app/src/main/res/xml");
+        await fs.mkdir(directory, { recursive: true });
+        for (const [name, content] of Object.entries(backupRules)) {
+          await fs.writeFile(path.join(directory, `${name}.xml`), content);
+        }
+        return next;
+      },
+    ]);
+  }
   return withAndroidManifest(config, (next) => {
     applyDulliPhoneManifest(config.extra?.appBrand, next.modResults.manifest);
     return next;
   });
 };
 module.exports.applyDulliPhoneManifest = applyDulliPhoneManifest;
+
+const exclusions = ["SecureStore", "t3-phone-connection.xml", "t3-agent-notifications.xml"]
+  .map((name) => `<exclude domain="sharedpref" path="${name}"/>`)
+  .join("\n");
+const sharedPreferences = `<include domain="sharedpref" path="."/>\n${exclusions}`;
+const backupRules = {
+  dulli_backup_rules: `<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>${sharedPreferences}</full-backup-content>`,
+  dulli_data_extraction_rules: `<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+<cloud-backup>${sharedPreferences}</cloud-backup>
+<device-transfer>${sharedPreferences}</device-transfer>
+</data-extraction-rules>`,
+};
+module.exports.backupRules = backupRules;

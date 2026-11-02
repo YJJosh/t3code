@@ -2,7 +2,8 @@ import * as NodeModule from "node:module";
 import { describe, expect, it } from "vite-plus/test";
 
 const require = NodeModule.createRequire(import.meta.url);
-const { applyDulliPhoneManifest } = require("./withDulliPhoneNotifications.cjs") as {
+const { applyDulliPhoneManifest, backupRules } = require("./withDulliPhoneNotifications.cjs") as {
+  readonly backupRules: Record<string, string>;
   readonly applyDulliPhoneManifest: <T>(brand: string, manifest: T) => T;
 };
 
@@ -56,6 +57,14 @@ describe("Dulli phone service manifest", () => {
         }),
       }),
     ]);
+    expect(once.application[0]).toEqual(
+      expect.objectContaining({
+        $: expect.objectContaining({
+          "android:fullBackupContent": "@xml/dulli_backup_rules",
+          "android:dataExtractionRules": "@xml/dulli_data_extraction_rules",
+        }),
+      }),
+    );
     expect(once.application[0]?.receiver).toEqual([
       expect.objectContaining({
         "intent-filter": [
@@ -69,4 +78,21 @@ describe("Dulli phone service manifest", () => {
       }),
     ]);
   });
+});
+
+it("excludes native state and SecureStore from cloud and device-transfer backups", async () => {
+  const { XML } = require("expo/config-plugins");
+  const backup = await XML.parseXMLAsync(backupRules.dulli_backup_rules);
+  const extraction = await XML.parseXMLAsync(backupRules.dulli_data_extraction_rules);
+  for (const rules of [
+    backup["full-backup-content"],
+    extraction["data-extraction-rules"]["cloud-backup"][0],
+    extraction["data-extraction-rules"]["device-transfer"][0],
+  ]) {
+    expect(rules.exclude).toEqual(
+      ["SecureStore", "t3-phone-connection.xml", "t3-agent-notifications.xml"].map((name) => ({
+        $: { domain: "sharedpref", path: name },
+      })),
+    );
+  }
 });
