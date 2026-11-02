@@ -134,13 +134,28 @@ object AgentNotifications {
   }
 
   @Synchronized
-  fun phoneAlert(context: Context, scheme: String, id: String, title: String, body: String, path: String) {
-    if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
+  fun phoneAlert(context: Context, scheme: String, id: String, title: String, body: String, path: String): Boolean {
+    if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
     val resumed = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-    if (resumed && threadOnScreen == path) return
-    channels(context)
-    postAlert(context, scheme, mapOf("alert_title" to title, "alert_body" to body,
-      "alert_path" to path, "alert_group" to id), id)
+    if (resumed && threadOnScreen == path) return false
+    return runCatching {
+      val manager = manager(context)
+      if (id.startsWith("phone:run:")) {
+        manager.activeNotifications.filter {
+          it.tag == ALERT_TAG && it.notification.group?.startsWith("$id:") == true
+        }.forEach { manager.cancel(it.tag, it.id) }
+      }
+      val finished = manager.activeNotifications.filter {
+        it.tag == ALERT_TAG && it.notification.group?.startsWith("phone:run:") == true && it.id != id.hashCode()
+      }.sortedBy { it.postTime }
+      val limit = if (id.startsWith("phone:run:")) 19 else 20
+      finished.take((finished.size - limit).coerceAtLeast(0)).forEach { manager.cancel(it.tag, it.id) }
+      channels(context)
+      postAlert(context, scheme, mapOf("alert_title" to title, "alert_body" to body,
+        "alert_path" to path, "alert_group" to id), id)
+      // Android can silently refuse posts at its per-package quota.
+      manager.activeNotifications.any { it.tag == ALERT_TAG && it.id == id.hashCode() }
+    }.getOrDefault(false)
   }
 
   fun clearPhoneAlert(context: Context, id: String) {

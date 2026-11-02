@@ -31,6 +31,8 @@ class PhoneNotificationStateTest {
   @Test fun pendingRequestsNotifyOnceAcrossReconnectAndProcessRestartThenClearWhenAnswered() {
     val first = state.thread("env", thread("question"), 0)
     assertEquals("Your agent needs input", first.alerts.single().body)
+    assertEquals(1, state.thread("env", thread("question"), 0).alerts.size)
+    state.posted(first.alerts.single())
     assertTrue(state.thread("env", thread("question"), 0).alerts.isEmpty())
     state = PhoneNotificationState(PhoneConnectionStore.preferences(context))
     assertTrue(state.thread("env", thread("question"), 0).alerts.isEmpty())
@@ -42,7 +44,9 @@ class PhoneNotificationStateTest {
   @Test fun completionOnlyNotifiesNewFinishedRunsAndNeverRunningTurnsOrOldHistory() {
     assertTrue(state.thread("env", thread(run = "one"), 0).alerts.isEmpty())
     assertTrue(state.thread("env", thread(run = "one", status = "completed"), Long.MAX_VALUE).alerts.isEmpty())
-    assertEquals("Turn finished", state.thread("env", thread(run = "one", status = "completed"), 0).alerts.single().body)
+    val completed = state.thread("env", thread(run = "one", status = "completed"), 0).alerts.single()
+    assertEquals("Turn finished", completed.body)
+    state.posted(completed)
     assertTrue(state.thread("env", thread(run = "one", status = "completed"), 0).alerts.isEmpty())
     assertEquals("Turn failed", state.thread("env", thread(run = "two", status = "failed"), 0).alerts.single().body)
     val subagent = { run: String -> thread(run = run, status = "completed")

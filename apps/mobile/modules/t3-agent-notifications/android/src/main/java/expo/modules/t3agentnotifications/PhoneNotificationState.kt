@@ -8,7 +8,7 @@ import java.util.TimeZone
 
 /** Shell snapshots replay on reconnect; history must outlive both the socket and JS. */
 internal class PhoneNotificationState(private val prefs: SharedPreferences) {
-  data class Alert(val id: String, val title: String, val body: String)
+  data class Alert(val id: String, val title: String, val body: String, val seenKey: String, val value: String)
   data class Decision(val alerts: List<Alert>, val clear: List<String>)
 
   fun thread(environment: String, thread: JSONObject, since: Long): Decision {
@@ -24,8 +24,7 @@ internal class PhoneNotificationState(private val prefs: SharedPreferences) {
     val editor = prefs.edit()
     if (!hidden && request != null && prefs.getString("seen-request:$key", null) != request) {
       alerts.add(Alert("phone:request:$key:$request", thread.optString("title"),
-        if (pending.optString("kind") == "user_input") "Your agent needs input" else "Your agent needs approval"))
-      editor.putString("seen-request:$key", request)
+        if (pending.optString("kind") == "user_input") "Your agent needs input" else "Your agent needs approval", "seen-request:$key", request))
     }
     val run = thread.optString("latestRunId").takeUnless { it == "null" || it.isEmpty() }
     val completed = listOf("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "yyyy-MM-dd'T'HH:mm:ss'Z'")
@@ -40,13 +39,16 @@ internal class PhoneNotificationState(private val prefs: SharedPreferences) {
     if (!hidden && !subagent && run != null && completed != null && completed >= since &&
       thread.optString("status") in setOf("completed", "failed", "interrupted", "cancelled", "rolled_back") &&
       prefs.getString("seen-run:$key", null) != run) {
-      alerts.add(Alert("phone:run:$key:$run", thread.optString("title"),
-        if (thread.optString("status") == "completed") "Turn finished" else "Turn ${thread.optString("status")}"))
-      editor.putString("seen-run:$key", run)
+      alerts.add(Alert("phone:run:$key", thread.optString("title"),
+        if (thread.optString("status") == "completed") "Turn finished" else "Turn ${thread.optString("status")}", "seen-run:$key", run))
     }
     if (request == null || hidden) editor.remove("pending:$key") else editor.putString("pending:$key", request)
     editor.apply()
     return Decision(alerts, clear + if (hidden && request != null) listOf("phone:request:$key:$request") else emptyList())
+  }
+
+  fun posted(alert: Alert) {
+    prefs.edit().putString(alert.seenKey, alert.value).apply()
   }
 
   fun remove(environment: String, threadId: String): List<String> {
@@ -54,7 +56,7 @@ internal class PhoneNotificationState(private val prefs: SharedPreferences) {
     val request = prefs.getString("pending:$key", null)
     val run = prefs.getString("seen-run:$key", null)
     prefs.edit().remove("pending:$key").remove("seen-request:$key").remove("seen-run:$key").apply()
-    return listOfNotNull(request?.let { "phone:request:$key:$it" }, run?.let { "phone:run:$key:$it" })
+    return listOfNotNull(request?.let { "phone:request:$key:$it" }, run?.let { "phone:run:$key" })
   }
 
   private fun threadKeys(): Set<String> = prefs.all.keys.mapNotNull { key ->

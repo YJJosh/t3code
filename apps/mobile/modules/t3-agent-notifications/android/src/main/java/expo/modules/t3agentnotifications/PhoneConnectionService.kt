@@ -238,8 +238,8 @@ class PhoneConnectionService : Service() {
         val decision = state.thread(environment, thread, prefs.getLong("since", Long.MAX_VALUE))
         decision.clear.forEach { AgentNotifications.clearPhoneAlert(this@PhoneConnectionService, it) }
         decision.alerts.forEach {
-          AgentNotifications.phoneAlert(this@PhoneConnectionService, prefs.getString("scheme", "t3dulli")!!,
-            it.id, it.title, it.body, "/threads/$environment/${thread.getString("id")}")
+          if (AgentNotifications.phoneAlert(this@PhoneConnectionService, prefs.getString("scheme", "t3dulli")!!,
+            it.id, it.title, it.body, "/threads/$environment/${thread.getString("id")}")) state.posted(it)
         }
       }
       when (item.optString("kind")) {

@@ -178,6 +178,55 @@ class PhoneConnectionServiceTest {
     } finally { controller.destroy() }
   }
 
+  @Test fun refusedPostsRemainEligibleAndFinishedCardsReplacePerThreadWithABound() {
+    val context = RuntimeEnvironment.getApplication()
+    val prefs = PhoneConnectionStore.preferences(context)
+    prefs.edit().clear().putBoolean("enabled", true).putLong("since", 0).commit()
+    val manager = context.getSystemService(NotificationManager::class.java)
+    shadowOf(manager).setNotificationsEnabled(false)
+    val controller = Robolectric.buildService(PhoneConnectionService::class.java).create()
+    try {
+      val service = controller.get()
+      service.onStartCommand(null, 0, 1)
+      val clazz = PhoneConnectionService::class.java.declaredClasses.single { it.simpleName == "Connection" }
+      val connection = clazz.declaredConstructors.single().apply { isAccessible = true }
+        .newInstance(service, JSONObject().put("environmentId", "env"))
+      val receive = clazz.getDeclaredMethod("receive", JSONObject::class.java).apply { isAccessible = true }
+      val thread = JSONObject().put("id", "thread").put("title", "Question")
+        .put("pendingRuntimeRequest", JSONObject().put("id", "request").put("kind", "user_input"))
+      fun update() {
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(1))
+        receive.invoke(connection, JSONObject().put("kind", "thread.updated").put("thread", thread))
+      }
+      update()
+      val refusedWasSeen = prefs.contains("seen-request:env/thread")
+      shadowOf(manager).setNotificationsEnabled(true)
+      update()
+      assertEquals("request", prefs.getString("seen-request:env/thread", null))
+      val retriedRequestPosted = manager.activeNotifications.any { it.notification.group == "phone:request:env/thread:request" }
+      thread.put("pendingRuntimeRequest", JSONObject.NULL).put("status", "completed")
+        .put("latestRunCompletedAt", "2026-01-01T00:00:00Z")
+      for (run in listOf("one", "two")) { thread.put("latestRunId", run); update() }
+      val sameThreadFinished = manager.activeNotifications.count { it.notification.group?.startsWith("phone:run:") == true }
+      for (index in 0..24) { thread.put("id", "other-$index").put("latestRunId", "run-$index"); update() }
+      val finished = manager.activeNotifications.filter { it.notification.group?.startsWith("phone:run:") == true }
+      assertEquals("per-thread=$sameThreadFinished; total=${finished.size}", 20, finished.size)
+      assertEquals(1, sameThreadFinished)
+      assertFalse(refusedWasSeen)
+      assertTrue(retriedRequestPosted)
+      assertFalse(finished.any { it.notification.group == "phone:run:env/thread" })
+      thread.put("id", "action").put("pendingRuntimeRequest", JSONObject().put("id", "new").put("kind", "command_approval"))
+      update()
+      assertTrue(manager.activeNotifications.any { it.notification.group == "phone:request:env/action:new" })
+      shadowOf(manager).setEnforceMaxNotificationLimit(true)
+      for (index in 0..24) manager.notify("unrelated", index, android.app.Notification())
+      thread.put("id", "refused").put("latestRunId", JSONObject.NULL)
+        .put("pendingRuntimeRequest", JSONObject().put("id", "refused").put("kind", "user_input"))
+      update()
+      assertFalse(prefs.contains("seen-request:env/refused"))
+    } finally { controller.destroy() }
+  }
+
   @Test fun optedInServiceStartsWithALowPriorityPersistentNotificationOnEverySupportedApi() {
     val context = RuntimeEnvironment.getApplication()
     PhoneConnectionStore.preferences(context).edit().clear().putBoolean("enabled", true).commit()
