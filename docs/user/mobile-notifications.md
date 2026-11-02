@@ -9,10 +9,15 @@ connected to your tailnet and your server must be running. No Google Play servic
 T3 Connect, or third-party push server is needed.
 
 Dulli keeps a background connection and shows a low-priority **Dulli connected** notification
-with connection status. It alerts for pending approvals and questions (including Pi extension
+with connection status. If it says **Re-pair**, pair that server again in Dulli; **Open Dulli to
+update** means the installed app and server need compatible versions. A rejected connection stays
+paused until its pairing changes or you toggle the switch. Network changes reconnect immediately.
+It alerts for pending approvals and questions (including Pi extension
 dialogs) and finished turns. Tap an alert to open its thread. Alerts for the thread currently
 visible in Dulli are suppressed; answering a request on another device clears its alert when
-the server connection is available again. Reconnecting does not repeat alerts.
+the server connection is available again. Reconnecting does not repeat delivered alerts. Only the
+latest finished-turn notification per thread is kept, with at most 20 finished notifications total;
+older finished notifications are removed to leave room for questions and approvals.
 
 Turn the switch off to stop the service and remove its notifications. Android may still delay
 or stop delivery in Doze or under manufacturer battery restrictions, even with the exemption.
