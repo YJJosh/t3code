@@ -44,6 +44,7 @@ describe("phone connection selection", () => {
     expect(phoneConnections(document)).toEqual([
       {
         environmentId,
+        protocolVersion: 2,
         httpBaseUrl: "http://host:13773",
         wsBaseUrl: "ws://host:13773",
         token: "test-credential",

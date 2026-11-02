@@ -1,3 +1,4 @@
+import { ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import type { ConnectionCatalogDocument } from "@t3tools/client-runtime/platform";
 
 export function phoneConnections(document: ConnectionCatalogDocument) {
@@ -23,6 +24,7 @@ export function phoneConnections(document: ConnectionCatalogDocument) {
     return [
       {
         environmentId: target.environmentId,
+        protocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
         httpBaseUrl: profile.httpBaseUrl,
         wsBaseUrl: profile.wsBaseUrl,
         token: credential.credential.token,

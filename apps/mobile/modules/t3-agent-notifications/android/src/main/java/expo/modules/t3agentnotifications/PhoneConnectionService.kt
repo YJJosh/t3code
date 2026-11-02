@@ -150,11 +150,7 @@ class PhoneConnectionService : Service() {
             handler.post {
               if (closed || current != generation) return@post
               if (ticket == null) { failed(current); return@post }
-              val uri = android.net.Uri.parse(config.getString("wsBaseUrl"))
-              val url = uri.buildUpon().apply {
-                if (uri.path.isNullOrEmpty() || uri.path == "/") path("/ws")
-              }.appendQueryParameter("wsTicket", ticket).appendQueryParameter("clientSurface", "mobile")
-                .appendQueryParameter("clientDeviceType", "phone").build().toString()
+              val url = phoneSocketUrl(config, ticket)
               socket = client.newWebSocket(Request.Builder().url(url).build(), listener(current))
             }
           }
