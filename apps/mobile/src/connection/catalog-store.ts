@@ -82,6 +82,14 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
     return catalog;
   });
 
+  // Listeners mirror the catalog elsewhere; their failures must not block loading connections.
+  const notify = (catalog: ConnectionCatalogDocumentType) =>
+    Effect.try(() => onChange(catalog)).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Mobile connection catalog listener failed", error),
+      ),
+    );
+
   const loadUnlocked = Effect.fn("mobile.connectionStorage.loadCatalog")(function* () {
     const cached = yield* Ref.get(state);
     if (Option.isSome(cached)) {
@@ -101,8 +109,8 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
     } else {
       catalog = yield* loadLegacyCatalog();
     }
-    yield* Effect.sync(() => onChange(catalog));
     yield* Ref.set(state, Option.some(catalog));
+    yield* notify(catalog);
     return catalog;
   });
 
@@ -114,8 +122,8 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
           const next = transform(yield* loadUnlocked());
           const encoded = yield* encodeCatalog(next);
           yield* setItem(CONNECTION_CATALOG_KEY, encoded);
-          yield* Effect.sync(() => onChange(next));
           yield* Ref.set(state, Option.some(next));
+          yield* notify(next);
         }),
       );
     },

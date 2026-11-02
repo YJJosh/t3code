@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { vi } from "vite-plus/test";
 
@@ -92,6 +93,22 @@ describe("mobile connection catalog storage", () => {
       yield* catalog.update((document) => document);
       expect(memory.values.has(CONNECTION_CATALOG_KEY)).toBe(true);
       expect(memory.values.has(LEGACY_CONNECTIONS_KEY)).toBe(false);
+    }),
+  );
+
+  it.effect("keeps loading and saving connections when the change listener throws", () =>
+    Effect.gen(function* () {
+      const memory = makeStorage({});
+      const catalog = yield* make(() => {
+        throw new Error("background service start not allowed");
+      }).pipe(Effect.provideService(MobileSecureStorage.MobileSecureStorage, memory.storage));
+
+      expect((yield* catalog.read).targets).toEqual([]);
+      yield* catalog.update((document) => ({
+        ...document,
+        disabledEnvironmentIds: [EnvironmentId.make("env")],
+      }));
+      expect((yield* catalog.read).disabledEnvironmentIds).toEqual(["env"]);
     }),
   );
 });
