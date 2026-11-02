@@ -386,7 +386,7 @@ class PhoneConnectionService : Service() {
           }
         }
         "thread.updated" -> show(item.getJSONObject("thread"))
-        "thread.removed" -> state.remove(environment, item.getString("threadId"))
+        "thread.removed" -> state.removed(environment, item.getString("threadId"))
           .forEach { AgentNotifications.clearPhoneAlert(this@PhoneConnectionService, it) }
       }
     }

@@ -128,4 +128,12 @@ class PhoneNotificationStateTest {
     assertTrue(prefs.contains("seen-run:other/thread"))
   }
 
+  @Test fun archivingClearsAlertsButAnUnarchivedThreadDoesNotRepeatItsFinishedTurn() {
+    val finished = thread(run = "one", status = "completed")
+    val alert = state.thread("env", finished, 0).alerts.single()
+    state.posted(alert)
+    // The server sends thread.removed for archiving as well as deletion.
+    assertEquals(listOf("phone:run:env/thread"), state.removed("env", "thread"))
+    assertTrue(state.thread("env", finished, 0).alerts.isEmpty())
+  }
 }

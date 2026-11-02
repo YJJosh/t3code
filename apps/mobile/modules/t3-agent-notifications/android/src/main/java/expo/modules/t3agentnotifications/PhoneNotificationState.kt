@@ -115,6 +115,10 @@ internal class PhoneNotificationState(private val prefs: SharedPreferences) {
     )
   }
 
+  /** A live `thread.removed` (deleted or archived): clear its alerts, but remember the finished run. */
+  fun removed(environment: String, threadId: String): List<String> =
+    remove(environment, threadId, preserveRun = true) + "phone:run:$environment/$threadId"
+
   private fun threadKeys(): Set<String> = prefs.all.keys.mapNotNull { key ->
     listOf("pending:", "seen-request:", "seen-run:").firstOrNull {
       key.startsWith(it)
