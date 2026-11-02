@@ -97,6 +97,8 @@ function parseRecord(parsed: unknown, state: DulliScanState): UsageRecord | null
     // Pi models are provider-scoped; qualify with the provider when known so
     // two providers' same-named models never collapse into one row.
     model: state.provider.length > 0 ? `${state.provider}/${state.model}` : state.model,
+    // Pi provider ids such as `claude-agent-sdk` are not rate-table prefixes.
+    rateModel: state.model,
     sessionId: state.sessionId,
     totals,
     reportedCostUsd: typeof totalCost === "number" && Number.isFinite(totalCost) ? totalCost : null,

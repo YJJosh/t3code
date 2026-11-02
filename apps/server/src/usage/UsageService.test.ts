@@ -487,7 +487,7 @@ describe("Codex usage history", () => {
 
 describe("UsageService", () => {
   it.live(
-    "assigns shared physical Pi/Dulli roots to Dulli, including aliases and fork copies",
+    "assigns shared physical Pi/Dulli roots to Dulli, including aliases, fork copies and retained v10 history",
     () =>
       Effect.gen(function* () {
         const { home, settings } = yield* setup;
@@ -580,11 +580,34 @@ describe("UsageService", () => {
               );
             }
             yield* service.awaitPersisted;
+            // Downgrade to v10 so the restart migrates with only cached headers left.
+            if (restart === 0) {
+              const { stateDir } = yield* ServerConfig.ServerConfig;
+              yield* Effect.promise(async () => {
+                const cachePath = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
+                const document = decodeUnknownJsonString(
+                  await NodeFSP.readFile(cachePath, "utf8"),
+                ) as {
+                  files: Record<string, { r: unknown[][]; t: unknown[][] }>;
+                };
+                for (const file of Object.values(document.files)) {
+                  file.r = file.r.map((row) => row.slice(0, 11));
+                  file.t = file.t.map((row) => row.slice(0, 11));
+                }
+                await NodeFSP.writeFile(
+                  NodePath.join(stateDir, "usage-scan-cache-v10.json"),
+                  encodeUnknownJsonString({ ...document, version: 10 }),
+                );
+                await NodeFSP.rm(cachePath);
+              });
+            }
           }).pipe(Effect.scoped, Effect.provide(Layer.fresh(testLayer)));
-          // Header-derived roots and attribution survive a restart after cleanup.
-          yield* Effect.promise(() =>
-            NodeFSP.rm(NodePath.join(child, "child.jsonl"), { force: true }),
-          );
+          yield* Effect.promise(async () => {
+            await NodeFSP.rm(NodePath.join(child, "child.jsonl"), { force: true });
+            await NodeFSP.rm(NodePath.join(sessions, "project", "main.jsonl"), { force: true });
+            await NodeFSP.rm(NodePath.join(sessions, "project", "fork.jsonl"), { force: true });
+            await NodeFSP.rm(NodePath.join(agent, "legacy.jsonl"), { force: true });
+          });
         }
       }).pipe(Effect.scoped),
   );
@@ -2335,7 +2358,7 @@ describe("UsageService", () => {
             60 + 20 * (version === 4 ? 1 : 2),
           );
           yield* upgraded.awaitPersisted;
-          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v10.json");
+          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v11.json");
           assert.strictEqual(
             yield* Effect.promise(() => NodeFSP.readFile(legacyPath, "utf8")),
             legacy,
@@ -2808,7 +2831,7 @@ describe("UsageService", () => {
 
 describe("generic source coverage", () => {
   it.live.each([5, 6])(
-    "imports a v%s cache into v10 without replacing its legacy file",
+    "imports a v%s cache into v11 without replacing its legacy file",
     (version) =>
       Effect.gen(function* () {
         const { home, settings, transcript } = yield* setup;
@@ -2840,7 +2863,7 @@ describe("generic source coverage", () => {
           const migrated = decodeUnknownJsonString(
             yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8")),
           ) as { version: number };
-          assert.strictEqual(migrated.version, 10);
+          assert.strictEqual(migrated.version, 11);
         }).pipe(Effect.provide(layerService({ prefix: "coverage-cache-upgrade", home, settings })));
       }).pipe(Effect.scoped),
   );

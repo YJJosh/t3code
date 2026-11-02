@@ -163,7 +163,7 @@ describe("scan cache round trip", () => {
     expect(restored).toEqual(original);
   });
 
-  it.each([5, 6, 7, 8, 9])(
+  it.each([5, 6, 7, 8, 9, 10])(
     "retains v%s history and compatible positions but invalidates obsolete state",
     (version) => {
       const original = cacheWith([["/gone.jsonl", 100, [record({ speed: "fast" })]]]);
@@ -193,6 +193,16 @@ describe("scan cache round trip", () => {
         malformedRecords: 3,
         position: position({ state: { sessionId: "session-a" } }),
       });
+      original.set("/dulli.jsonl", {
+        ...original.get("/gone.jsonl")!,
+        provider: "dulli",
+        records: [record({ provider: "dulli", model: "claude-agent-sdk/claude-opus-5-5" })],
+        position: position({ state: TEST_FORMAT_MAP.get("dulli")!.state!.initial() }),
+      });
+      original.set("/invalid-dulli.jsonl", {
+        ...original.get("/dulli.jsonl")!,
+        position: position({ state: { projectPath: 42 } }),
+      });
       const cleanCodex = {
         ...original.get("/gone-codex.jsonl")!,
         malformedRecords: 0,
@@ -221,11 +231,15 @@ describe("scan cache round trip", () => {
 
       const restored = decodeScanCache(JSON.parse(JSON.stringify(legacy)), TEST_FORMAT_MAP);
       // Pre-v10 Claude entries may hold Pi-driven usage, so live files re-parse.
-      expect(restored.get("/gone.jsonl")).toEqual({
-        ...original.get("/gone.jsonl"),
-        size: -1,
-        position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
-      });
+      expect(restored.get("/gone.jsonl")).toEqual(
+        version >= 10
+          ? original.get("/gone.jsonl")
+          : {
+              ...original.get("/gone.jsonl"),
+              size: -1,
+              position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
+            },
+      );
       expect(restored.get("/gone-codex.jsonl")).toEqual(
         version >= 9
           ? original.get("/gone-codex.jsonl")
@@ -244,6 +258,22 @@ describe("scan cache round trip", () => {
               position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
             },
       );
+      // Pre-v11 Dulli files re-parse but keep valid headers for child-session discovery.
+      expect(restored.get("/dulli.jsonl")).toEqual({
+        ...original.get("/dulli.jsonl"),
+        size: -1,
+        position: {
+          resumeOffset: 0,
+          guardLength: 0,
+          guardHash: 0,
+          state: original.get("/dulli.jsonl")!.position.state,
+        },
+      });
+      expect(restored.get("/invalid-dulli.jsonl")).toEqual({
+        ...original.get("/invalid-dulli.jsonl"),
+        size: -1,
+        position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
+      });
       expect(restored.get("/gone-pi.jsonl")).toEqual(
         version >= 6
           ? original.get("/gone-pi.jsonl")
@@ -360,6 +390,6 @@ describe("colliding legacy cache layouts", () => {
     expect(restored.get("/codex.jsonl")?.size).toBe(-1);
     expect(restored.get("/codex.jsonl")?.position.resumeOffset).toBe(0);
     expect(restored.has("/pi.jsonl")).toBe(false);
-    expect(encodeScanCache(restored).version).toBe(10);
+    expect(encodeScanCache(restored).version).toBe(11);
   });
 });
