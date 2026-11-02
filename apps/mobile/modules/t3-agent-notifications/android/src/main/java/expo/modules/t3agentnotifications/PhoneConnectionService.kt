@@ -154,7 +154,7 @@ class PhoneConnectionService : Service() {
             }
             handler.post {
               if (closed || current != generation) return@post
-              // REVIEW: Older protocol-v2 servers predate ticket audiences; match the JS client's 404-only fallback.
+              // Older protocol-v2 servers predate ticket audiences; match the JS client's 404-only fallback.
               if (status == 404 && !legacyTicket) { connect(true); return@post }
               if (ticket == null) { failed(current); return@post }
               val url = phoneSocketUrl(config, ticket)
@@ -218,7 +218,7 @@ class PhoneConnectionService : Service() {
       }
       when (item.optString("kind")) {
         "snapshot" -> {
-          // REVIEW: Enrichment snapshots contain only project metadata, not an authoritative thread set.
+          // Enrichment snapshots contain only project metadata, not an authoritative thread set.
           if (item.has("resolvedRepositoryIdentityRoots")) return
           val snapshot = item.getJSONObject("snapshot")
           val threads = snapshot.getJSONArray("threads")

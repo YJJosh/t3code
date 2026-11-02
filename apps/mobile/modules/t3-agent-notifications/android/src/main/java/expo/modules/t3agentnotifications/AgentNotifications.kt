@@ -85,7 +85,7 @@ object AgentNotifications {
     context.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit().clear().apply()
     val manager = manager(context)
     manager.activeNotifications.filter {
-      // REVIEW: Cloud sign-out and cloud-disabled startup must not remove direct-server alerts.
+      // Cloud sign-out and cloud-disabled startup must not remove direct-server alerts.
       it.tag == ACTIVITY_TAG || (it.tag == ALERT_TAG && it.notification.group?.startsWith("phone:") != true) ||
         it.tag?.startsWith("$ALERT_TAG-summary:") == true
     }
