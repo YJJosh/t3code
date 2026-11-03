@@ -149,6 +149,13 @@ const DULLI_ASSETS = {
 
 const variant = VARIANT_CONFIG[APP_VARIANT];
 const assets = dulliFork === undefined ? variant.assets : DULLI_ASSETS;
+
+// Observe's native module throws on first lookup without an EAS project ID, which the fork omits,
+// and expo-image looks it up on import, so a linked copy stops the fork app before it renders.
+const withoutObservePlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
+  "./plugins/withAndroidAutolinkingExclude.cjs",
+  ["expo-observe", "expo-app-metrics"],
+];
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
   : variant.iosBundleIdentifier;
@@ -472,6 +479,7 @@ const config: ExpoConfig = {
     "./plugins/withAndroidPredictiveBackCompat.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
     ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
+    ...(dulliFork === undefined ? [] : [withoutObservePlugin]),
   ],
   extra: {
     appVariant: APP_VARIANT,
