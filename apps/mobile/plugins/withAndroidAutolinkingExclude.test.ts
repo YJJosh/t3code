@@ -16,15 +16,21 @@ rootProject.name = 'T3 Dulli'
 `;
 
 describe("withAndroidAutolinkingExclude", () => {
-  it("excludes packages before Expo modules are resolved, once", () => {
-    const once = applyAndroidAutolinkingExclude(SETTINGS_TEMPLATE, ["expo-observe"]);
-    const again = applyAndroidAutolinkingExclude(once, ["expo-observe", "expo-app-metrics"]);
+  it.each(["\n", "\r\n"])(
+    "excludes packages before Expo modules are resolved, once (%j)",
+    (lineEnding) => {
+      const once = applyAndroidAutolinkingExclude(SETTINGS_TEMPLATE, ["expo-observe"]);
+      const again = applyAndroidAutolinkingExclude(once.replaceAll("\n", lineEnding), [
+        "expo-observe",
+        "expo-app-metrics",
+      ]);
 
-    expect(again).toContain(
-      `expoAutolinking.exclude = ["expo-observe","expo-app-metrics"]\nexpoAutolinking.useExpoModules()`,
-    );
-    expect(again.match(/expoAutolinking\.exclude/g)).toHaveLength(1);
-  });
+      expect(again).toContain(
+        `expoAutolinking.exclude = ["expo-observe","expo-app-metrics"]\nexpoAutolinking.useExpoModules()`,
+      );
+      expect(again.match(/expoAutolinking\.exclude/g)).toHaveLength(1);
+    },
+  );
 
   it("fails when the template no longer resolves Expo modules", () => {
     expect(() => applyAndroidAutolinkingExclude("rootProject.name = 'x'\n", ["a"])).toThrow(

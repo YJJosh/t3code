@@ -5,8 +5,8 @@ const appVariant: unknown = Constants.expoConfig?.extra?.appVariant;
 const easProjectId: unknown = Constants.expoConfig?.extra?.eas?.projectId;
 
 // Fork builds such as T3 Dulli have no EAS project ID, so app.config.ts leaves Observe's native
-// module out of them; requiring it there would throw before the app registers. Loading it
-// installs its global JS error handler; reports leave only through the relay.
+// module out of their Android build; requiring it there would throw before the app registers.
+// Loading it installs its global JS error handler; reports leave only through the relay.
 const Observe =
   typeof easProjectId === "string" && easProjectId !== ""
     ? (require("expo-observe") as typeof import("expo-observe")).Observe
