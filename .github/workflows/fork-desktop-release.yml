@@ -125,6 +125,7 @@ jobs:
             packages/provider-dulli/src/server/commands.test.ts \
             apps/web/src/branding.test.ts \
             apps/web/src/components/settings/ProviderSettingsForm.test.ts \
+            apps/mobile/plugins/withAndroidAutolinkingExclude.test.ts \
             apps/mobile/plugins/withAndroidReleaseSigning.test.ts \
             apps/mobile/scripts/dulli-fork-version.test.ts \
             apps/mobile/src/lib/modelOptions.test.ts
