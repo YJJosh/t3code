@@ -934,11 +934,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
-  const selectedModelSelection: ModelSelection = createModelSelection(
-    selectedInstanceId,
-    selectedModel,
-    selectedModelOptionsForDispatch,
-  );
+  const selectedProfileId =
+    composerDraft.modelSelectionByProvider[selectedInstanceId]?.profileId !== undefined
+      ? composerDraft.modelSelectionByProvider[selectedInstanceId]?.profileId
+      : activeThreadModelSelection?.profileId;
+  const selectedModelSelection: ModelSelection = {
+    ...createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
+    ...(selectedProfileId === undefined ? {} : { profileId: selectedProfileId }),
+  };
   const selectedModelForPicker = selectedModel;
   const modelOptionsByInstance = new Map<ProviderInstanceId, ReadonlyArray<AppModelOption>>();
   for (const entry of providerInstanceEntries) {

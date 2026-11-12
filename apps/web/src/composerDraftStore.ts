@@ -1001,9 +1001,16 @@ function normalizeModelSelection(
   if (!model) {
     return null;
   }
+  const profileId =
+    typeof candidate?.profileId === "string" || candidate?.profileId === null
+      ? { profileId: candidate.profileId }
+      : {};
   if (Array.isArray(candidate?.options)) {
     const selections = coerceProviderOptionSelections(candidate.options);
-    return createModelSelection(instanceId, model, selections) as NormalizedModelSelection;
+    return {
+      ...createModelSelection(instanceId, model, selections),
+      ...profileId,
+    } as NormalizedModelSelection;
   }
   const kindForLegacyOptions = normalizeProviderDriverKind(instanceId);
   const modelOptions = kindForLegacyOptions
@@ -1014,7 +1021,10 @@ function normalizeModelSelection(
       )
     : null;
   const options = kindForLegacyOptions ? modelOptions?.[kindForLegacyOptions] : undefined;
-  return createModelSelection(instanceId, model, options) as NormalizedModelSelection;
+  return {
+    ...createModelSelection(instanceId, model, options),
+    ...profileId,
+  } as NormalizedModelSelection;
 }
 
 type NormalizedModelSelection = Omit<ModelSelection, "instanceId"> & {
@@ -3018,8 +3028,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (threadKey.length === 0) {
             return;
           }
-          const normalized = normalizeModelSelection(modelSelection);
+          const incoming = normalizeModelSelection(modelSelection);
           set((state) => {
+            const normalized = incoming === null ? null : { ...incoming };
             const existing = state.draftsByThreadKey[threadKey];
             if (!existing && normalized === null) {
               return state;
@@ -3028,14 +3039,18 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextMap = { ...base.modelSelectionByProvider };
             if (normalized) {
               const current = nextMap[normalized.instanceId];
+              const priorProfile = base.activeProvider
+                ? nextMap[base.activeProvider]?.profileId
+                : undefined;
+              if (normalized.profileId === undefined && priorProfile !== undefined)
+                normalized.profileId = priorProfile;
               if (normalized.options !== undefined || opts?.replaceOptions) {
                 nextMap[normalized.instanceId] = normalized as ModelSelection;
               } else {
-                nextMap[normalized.instanceId] = createModelSelection(
-                  normalized.instanceId,
-                  normalized.model,
-                  current?.options,
-                );
+                nextMap[normalized.instanceId] = {
+                  ...normalized,
+                  ...(current?.options === undefined ? {} : { options: current.options }),
+                };
               }
             }
             const nextActiveProvider = normalized?.instanceId ?? base.activeProvider;
@@ -3105,11 +3120,15 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
 
             const nextMap = { ...base.modelSelectionByProvider };
             const currentForProvider = nextMap[instanceKey];
-            nextMap[instanceKey] = createModelSelection(
-              instanceKey,
-              currentForProvider?.model ?? fallbackModel,
-              providerOpts,
-            );
+            nextMap[instanceKey] = {
+              ...currentForProvider,
+              ...createModelSelection(
+                instanceKey,
+                currentForProvider?.model ?? fallbackModel,
+                providerOpts,
+              ),
+              options: providerOpts ?? [],
+            };
 
             let nextStickyMap = state.stickyModelSelectionByProvider;
             let nextOptionsByModel = state.stickyOptionsByModelByProvider;

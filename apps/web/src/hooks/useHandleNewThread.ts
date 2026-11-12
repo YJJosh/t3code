@@ -1,3 +1,4 @@
+import { selectProfile } from "@t3tools/shared/profiles";
 import {
   scopedProjectKey,
   scopeProjectRef,
@@ -182,14 +183,25 @@ export function createNewThreadHandler(router: AnyRouter) {
       ? fallbackResolution.selection
       : configuredDefaultModelSelection;
     const defaultRuntimeMode = projectSettings.settings.defaultRuntimeMode;
-    const resolveModelSelectionOverride = (destinationDraftId: DraftId) =>
-      resolveNewThreadModelSelectionOverride({
-        projectDefaultSelection: projectDefaultModelSelection ?? null,
-        carrySelection: carryModelSelection,
-        carrySourceDraftId:
-          currentRouteTarget?.kind === "draft" ? currentRouteTarget.draftId : null,
-        destinationDraftId,
-      });
+    const resolveModelSelectionOverride = (destinationDraftId: DraftId) => {
+      const base =
+        resolveNewThreadModelSelectionOverride({
+          projectDefaultSelection: projectDefaultModelSelection ?? null,
+          carrySelection: carryModelSelection,
+          carrySourceDraftId:
+            currentRouteTarget?.kind === "draft" ? currentRouteTarget.draftId : null,
+          destinationDraftId,
+        }) ?? fallbackResolution.selection;
+      if (!base) return base;
+      const config = environmentServerConfigs.get(projectRef.environmentId);
+      const id = targetServerSettings.defaultProfile ?? config?.profiles?.default;
+      return selectProfile(
+        base,
+        id || null,
+        id ? config?.profiles?.profiles[id] : undefined,
+        config?.providers ?? [],
+      ).selection;
+    };
     const resolveDefaultEnvMode = async (): Promise<DraftThreadEnvMode> => {
       // Environment queries wait for a connection, so reading the project file on an
       // offline machine would never settle and the draft would never open.

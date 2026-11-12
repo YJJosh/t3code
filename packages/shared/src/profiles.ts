@@ -13,7 +13,7 @@ export function selectProfile(
   if (id === null || profile === undefined) return { selection: { ...current, profileId: id } };
   const named = profile.provider;
   const exact = providers.find((provider) => provider.instanceId === named);
-  // Portable instance ids use the driver's id as a prefix, e.g. claude-lean.
+  // Portable instance ids use the driver's id as a prefix, e.g. claudeAgent-lean.
   const fallback =
     named && !exact
       ? providers.find(
@@ -29,17 +29,23 @@ export function selectProfile(
     (instanceId === current.instanceId
       ? current.model
       : (provider?.models[0]?.slug ?? current.model));
+  const driver =
+    provider?.driver ?? providers.find((entry) => entry.instanceId === instanceId)?.driver;
+  const effortId =
+    driver === "claudeAgent" ? "effort" : driver === "pi" ? "thinking" : "reasoningEffort";
+  const options = instanceId === current.instanceId ? (current.options ?? []) : [];
   return {
     selection: {
       ...current,
       profileId: id,
       instanceId,
       model,
+      options,
       ...(profile.effort
         ? {
             options: [
-              ...(current.options ?? []).filter((option) => option.id !== "reasoningEffort"),
-              { id: "reasoningEffort", value: profile.effort },
+              ...options.filter((option) => option.id !== effortId),
+              { id: effortId, value: profile.effort },
             ],
           }
         : {}),

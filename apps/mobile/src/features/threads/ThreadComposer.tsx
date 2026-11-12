@@ -1,3 +1,4 @@
+import { ProfilePicker } from "./ProfilePicker";
 import { useSidebarWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
@@ -880,6 +881,13 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
           />
         ) : null}
 
+        <ProfilePicker
+          environmentId={props.environmentId}
+          threadId={props.selectedThread.id}
+          selection={currentModelSelection}
+          config={props.serverConfig}
+          disabled={!props.canOperateThread}
+        />
         <ComposerSurface
           animateLayout={false}
           style={{

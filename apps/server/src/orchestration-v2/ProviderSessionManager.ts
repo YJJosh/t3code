@@ -1,3 +1,4 @@
+import { supportsProfiles } from "@t3tools/shared/profiles";
 import * as Profiles from "../profiles/Profiles.ts";
 import * as ServerConfig from "../config.ts";
 import * as Path from "effect/Path";
@@ -2461,6 +2462,13 @@ export const layerWithOptions = (
               );
               let profileInstructions: string | undefined;
               const profileId = input.modelSelection.profileId;
+              if (profileId && !supportsProfiles(adapter.driver))
+                return yield* new ProviderSessionOpenError({
+                  instanceId: input.modelSelection.instanceId,
+                  providerSessionId: input.providerSessionId,
+                  cause:
+                    "Profiles are not supported by this provider. Choose No profile before starting.",
+                });
               if (profileId && Option.isSome(config) && Option.isSome(serverSettings)) {
                 const settings = yield* serverSettings.value.getSettings.pipe(
                   Effect.mapError(
@@ -2485,6 +2493,13 @@ export const layerWithOptions = (
                       `Profile ${profileId} no longer exists. Select another profile or No profile.`,
                   });
               }
+              if (profileInstructions !== undefined)
+                yield* Effect.logInfo("Profile applied to provider session", {
+                  profileId,
+                  threadId: input.threadId,
+                  providerSessionId: input.providerSessionId,
+                  instructionCharacters: profileInstructions.length,
+                });
               const openedWithLinkedEnvironments = yield* readLinkedEnvironments;
               const prepared = yield* prepareMcpSession(
                 input.threadId,
