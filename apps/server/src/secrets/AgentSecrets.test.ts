@@ -6,13 +6,13 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as NodeCrypto from "node:crypto";
 import * as Settings from "../serverSettings.ts";
 import * as AgentSecrets from "./AgentSecrets.ts";
 import { MaskedOutput } from "./secretProcess.ts";
 
 const harness = Effect.gen(function* () {
-  const environment = yield* HostProcess.Environment;
   const fs = yield* FileSystem.FileSystem;
   const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agent-secrets-" });
   const key = NodeCrypto.generateKeyPairSync("ed25519");
@@ -80,7 +80,7 @@ if (args.includes('list')) {
     layer: layer.pipe(
       Layer.provide(
         Layer.succeed(HostProcess.Environment, {
-          PATH: `${dir}:${environment.PATH}`,
+          PATH: `${dir}:/usr/bin:/bin:/usr/sbin:/sbin`,
           HOME: dir,
           OP_SERVICE_ACCOUNT_TOKEN: "ambient-token",
           PI_1PASSWORD_AUTO_TOKEN: "ambient-token",
@@ -95,6 +95,11 @@ it.live(
   () =>
     Effect.gen(function* () {
       const { dir, layer } = yield* harness;
+      const fs = yield* FileSystem.FileSystem;
+      const logs: unknown[] = [];
+      const logger = Logger.make((entry) => {
+        logs.push(entry.message);
+      });
       yield* Effect.gen(function* () {
         const service = yield* AgentSecrets.AgentSecrets;
         assert.deepEqual(yield* service.list("alpha"), [
@@ -105,6 +110,7 @@ it.live(
             fields: [{ label: "password", reference: "op://alpha/item/password" }],
           },
         ]);
+        assert.equal((yield* service.list()).length, 2);
         const run = yield* service.run({
           cwd: dir,
           command:
@@ -127,6 +133,18 @@ it.live(
           "invalid_reference",
         );
         assert.equal((yield* Effect.flip(service.list("private"))).reason, "unshared_vault");
+        for (const name of ["OP_SERVICE_ACCOUNT_TOKEN", "SSH_AUTH_SOCK", "PATH", "bad-name"]) {
+          assert.equal(
+            (yield* Effect.flip(
+              service.run({
+                cwd: dir,
+                command: "exit 0",
+                env: { [name]: "op://alpha/item/password" },
+              }),
+            )).reason,
+            "invalid_environment",
+          );
+        }
         const error = yield* Effect.flip(
           service.run({ cwd: dir, command: "exit 0", env: { A: "op://alpha/missing/password" } }),
         );
@@ -147,7 +165,13 @@ it.live(
         });
         assert.equal(ssh.code, 0, ssh.stderr);
         assert.include(ssh.stdout, "ED25519");
-      }).pipe(Effect.provide(layer));
+        yield* fs.remove(`${dir}/op`);
+        assert.equal((yield* Effect.flip(service.list("alpha"))).reason, "missing_binary");
+        assert.notInclude(JSON.stringify(logs), "token-alpha");
+        assert.notInclude(JSON.stringify(logs), "token-beta");
+      }).pipe(
+        Effect.provide(Layer.merge(layer, Logger.layer([logger], { mergeWithExisting: false }))),
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
