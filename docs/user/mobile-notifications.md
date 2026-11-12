@@ -1,5 +1,33 @@
 # Mobile notifications
 
+## T3 Dulli on Android
+
+Pair your own server, then enable **Settings → Notifications → Background phone notifications**.
+This is off by default. Allow Android notification permission and, when offered, exempt Dulli
+from battery optimization for more timely delivery with the screen off. Your phone must remain
+connected to your tailnet and your server must be running. No Google Play services, Firebase,
+T3 Connect, or third-party push server is needed.
+
+Dulli keeps a background connection and shows a low-priority **Dulli connected** notification
+with connection status. If it says **Re-pair**, pair that server again in Dulli; that server stays
+paused until its pairing changes or you toggle the switch. **Update** means the installed app and
+that server run different versions; Dulli checks again every 15 minutes. Network changes reconnect
+immediately.
+It alerts for pending approvals and questions and finished turns. Child agents can request input, but their
+completed work is reported through the parent rather than posting another finished-turn alert. Tap an alert to open its thread. Alerts for the thread currently
+visible in Dulli are suppressed; answering a request on another device clears its alert when
+the server connection is available again. Reconnecting does not repeat delivered alerts. Only the
+latest finished-turn notification per thread is kept, with at most 20 finished notifications total;
+older finished notifications are removed to leave room for questions and approvals.
+
+Turn the switch off to stop the service and remove its notifications. Android may still delay
+or stop delivery in Doze or under manufacturer battery restrictions, even with the exemption.
+Swiping away the app normally leaves the service running; force-stopping it in Android Settings
+stops delivery until you reopen it. When enabled, it restarts after boot and unlock. While offline,
+only the latest finished turn per thread can be recovered from the server's current state.
+
+## T3 Connect push notifications
+
 Sign in to T3 Connect, link your environments, and enable **Device Notifications** in **Settings → Notifications** to receive alerts when an agent finishes, fails, needs approval, or asks for input. Tap a notification to open its thread. Your environment must have agent activity publishing enabled.
 
 Enable **Live Activity Updates** on iOS, **Agent Live Updates** on Android 16 and newer, or **Ongoing Agent Activity** on older Android versions to follow work without opening the app. Finished results remain visible for up to 15 minutes. You can dismiss an Android activity card without disabling alerts; turn off the same switch to stop future cards.

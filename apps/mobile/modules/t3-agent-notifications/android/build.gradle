@@ -6,11 +6,17 @@ plugins {
 group = 'com.t3tools.agentnotifications'
 version = '0.0.0'
 
+def protocolSource = file('../../../../../packages/contracts/src/environment.ts').text
+def protocolMatch = protocolSource =~ /export const ORCHESTRATION_PROTOCOL_VERSION = (\d+);/
+if (!protocolMatch.find()) throw new GradleException('Cannot read orchestration protocol version from contracts')
+
 android {
+  buildFeatures { buildConfig = true }
   namespace 'expo.modules.t3agentnotifications'
   defaultConfig {
     versionCode 1
     versionName '0.0.0'
+    buildConfigField 'int', 'ORCHESTRATION_PROTOCOL_VERSION', protocolMatch.group(1)
   }
   testOptions {
     unitTests.includeAndroidResources = true
@@ -19,6 +25,7 @@ android {
 
 dependencies {
   implementation project(':expo-notifications')
+  implementation 'com.squareup.okhttp3:okhttp:4.12.0'
   implementation 'com.google.firebase:firebase-messaging:25.0.1'
   implementation 'androidx.core:core:1.17.0'
   implementation 'androidx.lifecycle:lifecycle-process:2.9.3'

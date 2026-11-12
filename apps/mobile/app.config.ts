@@ -358,6 +358,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-asset",
+    "./plugins/withDulliPhoneNotifications.cjs",
     [
       "expo-font",
       {
