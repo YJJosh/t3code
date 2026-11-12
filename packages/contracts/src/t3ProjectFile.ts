@@ -118,7 +118,7 @@ export type T3ProjectFile = typeof T3ProjectFile.Type;
 
 /** Keys must be nullable in ServerSettings so both environment and project overrides can inherit t3.json. */
 export const PROJECT_FILE_BACKED_SETTINGS = {
-  defaultThreadEnvMode: { field: "defaultThreadEnvMode", builtIn: "local" },
+  defaultThreadEnvMode: { field: "defaultThreadEnvMode", builtIn: "worktree" },
   worktreeSubmodules: { field: "worktreeSubmodules", builtIn: "recursive" },
 } as const satisfies {
   // providerInstances overrides individual fields, so it cannot use whole-setting file inheritance.

@@ -1,3 +1,6 @@
+import * as Path from "effect/Path";
+import { isNetworkGitRemoteUrl } from "@t3tools/shared/git";
+import type { GitCloneProgressLine } from "./gitCloneProgress.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import type {
   ProjectCloneSnapshot,
@@ -89,12 +92,21 @@ interface TrackedClone {
     readonly destinationPath: string;
     readonly repository: SourceControlRepositoryInfo | null;
     readonly protocol: SourceControlCloneProtocol;
+    readonly multiRepo: SourceControlRepositoryService.SourceControlPreparedMultiRepoClone | null;
   };
 }
 
 /** @public */
 export const make = Effect.gen(function* () {
   const repositories = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+  const path = yield* Path.Path;
+  const containsDestination = (parent: string, child: string) => {
+    const relative = path.relative(parent, child);
+    return (
+      relative === "" ||
+      (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+    );
+  };
   const clones = yield* Ref.make(new Map<ProjectId, TrackedClone>());
   const changes = yield* PubSub.unbounded<ReadonlyArray<ProjectCloneSnapshot>>();
   const retentionFibers = new Map<ProjectId, Fiber.Fiber<unknown, never>>();
@@ -219,18 +231,21 @@ export const make = Effect.gen(function* () {
   ) {
     const pulses = yield* Queue.sliding<void>(1);
     yield* watchForStall(projectId, pulses).pipe(Effect.forkScoped);
-    return yield* repositories.cloneRepository(
-      {
-        remoteUrl: tracked.input.cloneUrl,
-        destinationPath: tracked.input.destinationPath,
-        protocol: tracked.input.protocol,
-      },
-      {
-        onProgress: (update) =>
-          Queue.offer(pulses, undefined).pipe(Effect.andThen(progress(projectId, update))),
-        timeoutMs: null,
-      },
-    );
+    const options = {
+      onProgress: (update: GitCloneProgressLine) =>
+        Queue.offer(pulses, undefined).pipe(Effect.andThen(progress(projectId, update))),
+      timeoutMs: null,
+    };
+    return yield* tracked.input.multiRepo
+      ? repositories.cloneMultiRepo(tracked.input.multiRepo, options)
+      : repositories.cloneRepository(
+          {
+            remoteUrl: tracked.input.cloneUrl,
+            destinationPath: tracked.input.destinationPath,
+            protocol: tracked.input.protocol,
+          },
+          options,
+        );
   }, Effect.scoped);
 
   /**
@@ -253,6 +268,13 @@ export const make = Effect.gen(function* () {
       ),
       Effect.ignoreCause(),
     );
+
+  const discardCheckout = Effect.fn("ProjectCloneTracker.discardCheckout")(
+    (tracked: TrackedClone) =>
+      tracked.input.multiRepo
+        ? repositories.discardMultiRepoClone(tracked.input.multiRepo)
+        : repositories.discardClone(tracked.input.destinationPath),
+  );
 
   const launch = Effect.fn("ProjectCloneTracker.launch")(function* (projectId: ProjectId) {
     const current = yield* Ref.get(clones);
@@ -280,7 +302,32 @@ export const make = Effect.gen(function* () {
 
   const start: ProjectCloneTracker["Service"]["start"] = Effect.fn("ProjectCloneTracker.start")(
     function* (input, hooks) {
-      const prepared = yield* repositories.prepareClone(input);
+      // Members are listed by another machine, so only a remote this machine can reach is valid.
+      const local = input.members?.find((member) => !isNetworkGitRemoteUrl(member.remoteUrl));
+      if (local) {
+        return yield* new SourceControlRepositoryError({
+          operation: "cloneRepository",
+          provider: SourceControlProviderKind.make("unknown"),
+          detail: `'${local.path}' has no network remote to clone from.`,
+        });
+      }
+      const prepared = input.members
+        ? yield* repositories
+            .prepareMultiRepoClone({
+              destinationPath: input.destinationPath,
+              members: input.members,
+            })
+            .pipe(
+              // The snapshot shows one remote; while cloning it is the first member's.
+              Effect.map((multiRepo) => ({
+                destinationPath: multiRepo.destinationPath,
+                remoteUrl: multiRepo.members[0]!.remoteUrl,
+                cloneUrl: multiRepo.members[0]!.cloneUrl,
+                repository: null,
+                multiRepo,
+              })),
+            )
+        : { ...(yield* repositories.prepareClone(input)), multiRepo: null };
       const startedAt = yield* nowIso;
       const snapshot: ProjectCloneSnapshot = {
         projectId: input.projectId,
@@ -301,7 +348,8 @@ export const make = Effect.gen(function* () {
         const conflict = Array.from(current.values()).some(
           (tracked) =>
             tracked.snapshot.projectId === input.projectId ||
-            tracked.input.destinationPath === prepared.destinationPath,
+            containsDestination(tracked.input.destinationPath, prepared.destinationPath) ||
+            containsDestination(prepared.destinationPath, tracked.input.destinationPath),
         );
         if (conflict) return [false, current] as const;
         const next = new Map(current);
@@ -314,6 +362,7 @@ export const make = Effect.gen(function* () {
             destinationPath: prepared.destinationPath,
             repository: prepared.repository,
             protocol: input.protocol ?? "auto",
+            multiRepo: prepared.multiRepo,
           },
         });
         return [true, next] as const;
@@ -378,7 +427,7 @@ export const make = Effect.gen(function* () {
           const after = yield* get(projectId);
           if (after?.phase === "done") return;
           if (after?.phase === "running") yield* finish(projectId, "cancelled", null);
-          yield* repositories.discardClone(tracked.input.destinationPath).pipe(Effect.ignore);
+          yield* discardCheckout(tracked).pipe(Effect.ignore);
         }),
       );
       return true;
@@ -395,7 +444,7 @@ export const make = Effect.gen(function* () {
       ) {
         return false;
       }
-      yield* repositories.discardClone(tracked.input.destinationPath);
+      yield* discardCheckout(tracked);
       const startedAt = yield* nowIso;
       yield* modify(projectId, (entry) => ({
         ...entry,
@@ -427,7 +476,7 @@ export const make = Effect.gen(function* () {
     // is going away either way, but a complete checkout is the user's.
     const after = yield* get(projectId);
     if (after?.phase !== "done") {
-      yield* repositories.discardClone(tracked.input.destinationPath).pipe(Effect.ignore);
+      yield* discardCheckout(tracked).pipe(Effect.ignore);
     }
     yield* clearRetention(projectId);
     yield* remove(projectId);

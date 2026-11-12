@@ -753,6 +753,7 @@ export function useComposerSend(input: ComposerSendInput) {
       sendEnvMode,
       worktreePath: activeThread.worktreePath,
       activeThreadBranch,
+      isMultiRepoProject: activeProject?.multiRepo != null,
       resumeCompactionTokens,
       keepFullHistory,
       phase,

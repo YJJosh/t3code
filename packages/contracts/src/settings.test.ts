@@ -350,6 +350,15 @@ describe("provider enabled defaults", () => {
 describe("ServerSettings worktree defaults", () => {
   it("defaults the thread env mode to inherit and keeps stored values", () => {
     expect(decodeServerSettings({}).defaultThreadEnvMode).toBeNull();
+    expect(decodeServerSettings({}).useWorklerForNewWorkspaces).toBe(true);
+    expect(
+      decodeServerSettings({ useWorklerForNewWorkspaces: false }).useWorklerForNewWorkspaces,
+    ).toBe(false);
+    expect(
+      decodeServerSettingsPatch({ useWorklerForNewWorkspaces: false }).useWorklerForNewWorkspaces,
+    ).toBe(false);
+    expect(decodeServerSettings({}).branchNamingMode).toBe("semantic");
+    expect(decodeServerSettings({ branchNamingMode: "static" }).branchNamingMode).toBe("static");
     expect(decodeServerSettings({ defaultThreadEnvMode: "worktree" }).defaultThreadEnvMode).toBe(
       "worktree",
     );

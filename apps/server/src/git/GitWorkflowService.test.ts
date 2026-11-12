@@ -1,3 +1,4 @@
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -14,6 +15,45 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowService", (it) => {
+  it.effect("routes a group before probing its non-Git root", () =>
+    Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const created = yield* workflow.createWorktree({
+        cwd: "/group",
+        refName: "HEAD",
+        newRefName: "feature/shared",
+        path: null,
+      });
+      assert.equal(created.worktree.path, "/group/.worktrees/shared");
+      assert.equal(
+        yield* workflow.resolveWorktreeBaseRemote({ cwd: "/group", refName: "HEAD" }),
+        null,
+      );
+      assert.equal(yield* workflow.hasCommit({ cwd: "/group", refName: "refs/heads/t3" }), false);
+      yield* workflow.pruneWorktrees({ cwd: "/group" });
+      assert.deepEqual(yield* workflow.listLocalBranchNames("/group"), ["feature/shared"]);
+    }).pipe(
+      Effect.provide(
+        GitWorkflowService.layer.pipe(
+          Layer.provide(Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({})),
+          Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+          Layer.provide(Layer.mock(GitManager.GitManager)({})),
+          Layer.provide(
+            Layer.mock(MultiRepoWorkspaces.MultiRepoWorkspaces)({
+              members: () => Effect.succeed(["api", "web"]),
+              fetchMembers: () => Effect.succeed([]),
+              listLocalBranchNames: () => Effect.succeed(["feature/shared"]),
+              createWorkspace: () =>
+                Effect.succeed({
+                  worktree: { path: "/group/.worktrees/shared", refName: "feature/shared" },
+                }),
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+
   it.effect("finds a name among the refs of every namespace", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

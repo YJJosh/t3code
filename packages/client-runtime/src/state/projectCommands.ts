@@ -201,6 +201,18 @@ export function createProjectEnvironmentAtoms<R, E>(
       scheduler: projectScheduler,
       concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
     }),
+    makeMultiRepo: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:make-multi-repo",
+      tag: WS_METHODS.projectsMakeMultiRepo,
+      scheduler: projectScheduler,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
+    inspectMultiRepoFolder: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:inspect-multi-repo-folder",
+      tag: WS_METHODS.projectsInspectMultiRepoFolder,
+      scheduler: projectScheduler,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
     createFromThread: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:projects:create-from-thread",
       tag: WS_METHODS.projectsCreateFromThread,

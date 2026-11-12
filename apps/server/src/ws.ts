@@ -1267,13 +1267,21 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
           const identities = new Map(
             Array.from(changes, (change) => [
               change.workspaceRoot,
-              change.enrichment.repositoryIdentity,
+              {
+                repositoryIdentity: change.enrichment.repositoryIdentity,
+                ...(change.enrichment.multiRepo !== undefined
+                  ? { multiRepo: change.enrichment.multiRepo }
+                  : {}),
+                ...(change.enrichment.nestedRepositories !== undefined
+                  ? { nestedRepositories: change.enrichment.nestedRepositories }
+                  : {}),
+              },
             ]),
           );
           const snapshotSequence = yield* applicationEvents.latestApplicationSequence;
           const changedProjects = (yield* projects.listShells()).flatMap((project) =>
             identities.has(project.workspaceRoot)
-              ? [{ ...project, repositoryIdentity: identities.get(project.workspaceRoot) ?? null }]
+              ? [{ ...project, ...identities.get(project.workspaceRoot) }]
               : [],
           );
           return shellStreamItemFromEnrichmentRefresh({
@@ -2934,6 +2942,22 @@ export const layerWsRpc = (
               (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
             ),
           ),
+        [WS_METHODS.projectsMakeMultiRepo]: (input) =>
+          projectService
+            .makeMultiRepo(input.projectId)
+            .pipe(
+              Effect.mapError(
+                (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
+              ),
+            ),
+        [WS_METHODS.projectsInspectMultiRepoFolder]: (input) =>
+          projectService
+            .inspectMultiRepoFolder(input.path)
+            .pipe(
+              Effect.mapError(
+                (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
+              ),
+            ),
         [WS_METHODS.projectsCreateNew]: (input) =>
           managedFolders
             .createNamedProject(input)

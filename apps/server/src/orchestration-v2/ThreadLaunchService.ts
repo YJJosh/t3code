@@ -39,6 +39,7 @@ import {
   WORKTREE_BRANCH_PREFIX,
 } from "@t3tools/shared/git";
 
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
@@ -207,6 +208,9 @@ const make = Effect.gen(function* () {
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
   const terminals = yield* TerminalManager.TerminalManager;
   const git = yield* GitWorkflow.GitWorkflowService;
+  const multiRepo = yield* Effect.serviceOption(MultiRepoWorkspaces.MultiRepoWorkspaces);
+  const groupMembers = (cwd: string) =>
+    Option.isSome(multiRepo) ? multiRepo.value.members(cwd) : Effect.succeed(null);
   const setupScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -270,6 +274,7 @@ const make = Effect.gen(function* () {
       const project = Option.getOrUndefined(yield* projects.getById(input.projectId));
       if (project === undefined) return undefined;
       const cwd = project.workspaceRoot;
+      if ((yield* groupMembers(cwd)) !== null) return undefined;
       // `git worktree add` reads `-` as the previous checkout.
       if (yield* git.hasCommit({ cwd, refName: baseRef === "-" ? "@{-1}" : baseRef }))
         return undefined;
@@ -397,9 +402,23 @@ const make = Effect.gen(function* () {
             .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
         }
         let startRef = input.workspaceStrategy.baseRef;
+        const members = yield* groupMembers(project.workspaceRoot);
+        if (
+          members !== null &&
+          input.workspaceStrategy.startFromOrigin === true &&
+          Option.isSome(multiRepo)
+        ) {
+          yield* setupTracker.stageStatus(threadId, "fetch", "running");
+          const failed = yield* multiRepo.value.fetchMembers(project.workspaceRoot, members);
+          if (failed.length > 0)
+            yield* Effect.logWarning("Some multi-repo members could not fetch origin", {
+              members: failed,
+            });
+          yield* setupTracker.stageStatus(threadId, "fetch", "done");
+        }
         let baseRefName = input.workspaceStrategy.baseRef;
         const remote =
-          input.workspaceStrategy.startFromOrigin === true
+          members === null && input.workspaceStrategy.startFromOrigin === true
             ? yield* git
                 .resolveWorktreeBaseRemote({
                   cwd: project.workspaceRoot,
@@ -408,7 +427,8 @@ const make = Effect.gen(function* () {
                 .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)))
             : null;
         const shouldFetch = remote !== null;
-        yield* setupTracker.stageStatus(threadId, "fetch", shouldFetch ? "running" : "skipped");
+        if (members === null || input.workspaceStrategy.startFromOrigin !== true)
+          yield* setupTracker.stageStatus(threadId, "fetch", shouldFetch ? "running" : "skipped");
         if (remote !== null) {
           const remoteBase = yield* git
             .fetchWorktreeBaseCommit({
@@ -424,6 +444,7 @@ const make = Effect.gen(function* () {
         }
         if (shouldFetch) yield* setupTracker.stageStatus(threadId, "fetch", "done");
         if (
+          members === null &&
           branch !== null &&
           isTemporaryWorktreeBranch(branch) &&
           (yield* git
@@ -446,6 +467,8 @@ const make = Effect.gen(function* () {
               path: null,
             },
             {
+              submodules: resolveProjectSettings(yield* serverSettings.getSettings, input.projectId)
+                .settings.worktreeSubmodules,
               progress: {
                 onWorktreeClaimed: (path) =>
                   Effect.sync(() => {

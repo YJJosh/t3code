@@ -50,3 +50,6 @@ node_modules/
 
 # pnpm content-addressable store; never belongs in the repo.
 .pnpm-store/
+
+# Workler independent workspace clones
+.worktrees/

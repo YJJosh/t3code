@@ -1,3 +1,4 @@
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -118,6 +119,7 @@ const claudeAdapter = {
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
 interface HarnessOptions {
+  readonly multiRepo?: Partial<MultiRepoWorkspaces.MultiRepoWorkspaces["Service"]>;
   readonly closeTerminal?: TerminalManager.TerminalManager["Service"]["close"];
   readonly adapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
@@ -180,9 +182,15 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   const layerExternalServices = Layer.mergeAll(
     WorktreeSetupTracker.layer,
+    Layer.mock(MultiRepoWorkspaces.MultiRepoWorkspaces)({
+      members: () => Effect.succeed(null),
+      ...options.multiRepo,
+    }),
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: closeTerminal }),
     Layer.succeed(ProjectService.ProjectService, {
+      makeMultiRepo: () => Effect.die("unused"),
+      inspectMultiRepoFolder: () => Effect.die("unused"),
       create: () => Effect.die("unused"),
       bootstrap: () => Effect.die("unused"),
       update: () => Effect.die("unused"),
@@ -2502,3 +2510,60 @@ it.effect("replays an accepted send after the project disables the instance", ()
     }
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
+
+it.effect(
+  "launches a multi-repo group without probing its root as Git and renames using upstream naming",
+  () =>
+    Effect.gen(function* () {
+      const fetched: string[] = [];
+      const harness = makeHarness({
+        multiRepo: {
+          members: () => Effect.succeed(["api", "web"]),
+          fetchMembers: (cwd, members) =>
+            Effect.sync(() => {
+              fetched.push(...members.map((member) => `${cwd}/${member}`));
+              return ["web"]; // A failed member fetch is a warning, not a failed launch.
+            }),
+        },
+        git: {
+          hasCommit: () => Effect.die("must not probe group root"),
+          hasRefNamed: () => Effect.die("must not validate a single group base"),
+          remoteExists: () => Effect.die("must fetch group members, not the root"),
+        },
+        generateBranchName: () => Effect.succeed({ branch: "feat/shared-name" }),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const input = launchInput({
+          command: "command:launch:group",
+          thread: "thread:launch:group",
+          message: "Build in both repositories",
+          workspace: {
+            type: "worktree",
+            baseRef: "not-shared-between-members",
+            startFromOrigin: true,
+          },
+        });
+        yield* launches.checkWorktreeBase(input);
+        const launched = yield* launches.launch(input);
+        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "thread.metadata-updated" &&
+              stored.event.payload.branch === "feat/shared-name",
+          ),
+          Stream.runHead,
+        );
+        assert.deepEqual(fetched, ["/repo/api", "/repo/web"]);
+        const projection = yield* threads.getThreadProjection(launched.threadId);
+        assert.equal(projection.thread.branch, "feat/shared-name");
+        assert.equal(projection.thread.worktreePath, "/repo-worktrees/feature");
+        assert.match(
+          harness.createWorktree.mock.calls[0]?.[0]?.newRefName ?? "",
+          /^t3\/[0-9a-f]{8}$/u,
+        );
+        assert.equal(harness.renameBranch.mock.calls[0]?.[0]?.newBranch, "feat/shared-name");
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);

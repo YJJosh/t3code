@@ -30,6 +30,8 @@ import {
 } from "@t3tools/contracts";
 
 import * as GitManager from "./GitManager.ts";
+import * as Option from "effect/Option";
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -176,6 +178,24 @@ export const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
   const fileSystem = yield* FileSystem.FileSystem;
+  const multiRepo = yield* Effect.serviceOption(MultiRepoWorkspaces.MultiRepoWorkspaces);
+  const unlessMultiRepo = <A, E>(
+    cwd: string,
+    onGroup: (
+      service: MultiRepoWorkspaces.MultiRepoWorkspaces["Service"],
+      members: ReadonlyArray<string>,
+    ) => Effect.Effect<A, E>,
+    otherwise: Effect.Effect<A, E>,
+  ) =>
+    Option.isNone(multiRepo)
+      ? otherwise
+      : multiRepo.value
+          .members(cwd)
+          .pipe(
+            Effect.flatMap((members) =>
+              members === null ? otherwise : onGroup(multiRepo.value, members),
+            ),
+          );
 
   // Nested projects and path aliases must share the checkout's branch-mutation lease.
   const withCheckoutLease = <A, E, R>(rootPath: string, effect: Effect.Effect<A, E, R>) =>
@@ -286,16 +306,20 @@ export const make = Effect.gen(function* () {
       );
     }),
     hasCommit: Effect.fn("GitWorkflowService.hasCommit")(function (input) {
-      return ensureGitCommand("GitWorkflowService.hasCommit", input.cwd).pipe(
-        Effect.andThen(
-          git.execute({
-            operation: "GitWorkflowService.hasCommit",
-            cwd: input.cwd,
-            args: ["rev-parse", "--verify", `${input.refName}^{commit}`],
-            allowNonZeroExit: true,
-          }),
+      return unlessMultiRepo(
+        input.cwd,
+        () => Effect.succeed(false),
+        ensureGitCommand("GitWorkflowService.hasCommit", input.cwd).pipe(
+          Effect.andThen(
+            git.execute({
+              operation: "GitWorkflowService.hasCommit",
+              cwd: input.cwd,
+              args: ["rev-parse", "--verify", `${input.refName}^{commit}`],
+              allowNonZeroExit: true,
+            }),
+          ),
+          Effect.map((result) => result.exitCode === 0),
         ),
-        Effect.map((result) => result.exitCode === 0),
       );
     }),
     hasRefNamed: Effect.fn("GitWorkflowService.hasRefNamed")(function (input) {
@@ -404,20 +428,32 @@ export const make = Effect.gen(function* () {
       },
     ),
     listRefs: Effect.fn("GitWorkflowService.listRefs")(function (input) {
-      return detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
+      return unlessMultiRepo(
+        input.cwd,
+        () => git.listRefs(input),
+        detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
+          Effect.flatMap((isGitRepository) =>
+            isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
+          ),
         ),
       );
     }),
     createWorktree: Effect.fn("GitWorkflowService.createWorktree")(function (input, options) {
-      return ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
-        Effect.andThen(gitManager.createWorktree(input, options)),
+      return unlessMultiRepo(
+        input.cwd,
+        (service) => service.createWorkspace(input, options),
+        ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
+          Effect.andThen(gitManager.createWorktree(input, options)),
+        ),
       );
     }),
     listLocalBranchNames: Effect.fn("GitWorkflowService.listLocalBranchNames")(function (cwd) {
-      return ensureGitCommand("GitWorkflowService.listLocalBranchNames", cwd).pipe(
-        Effect.andThen(git.listLocalBranchNames(cwd)),
+      return unlessMultiRepo(
+        cwd,
+        (service, members) => service.listLocalBranchNames(cwd, members),
+        ensureGitCommand("GitWorkflowService.listLocalBranchNames", cwd).pipe(
+          Effect.andThen(git.listLocalBranchNames(cwd)),
+        ),
       );
     }),
     fetchRemote: Effect.fn("GitWorkflowService.fetchRemote")(function (input) {
@@ -444,8 +480,12 @@ export const make = Effect.gen(function* () {
     ),
     resolveWorktreeBaseRemote: Effect.fn("GitWorkflowService.resolveWorktreeBaseRemote")(
       function (input) {
-        return ensureGitCommand("GitWorkflowService.resolveWorktreeBaseRemote", input.cwd).pipe(
-          Effect.andThen(git.resolveWorktreeBaseRemote(input)),
+        return unlessMultiRepo(
+          input.cwd,
+          () => Effect.succeed(null),
+          ensureGitCommand("GitWorkflowService.resolveWorktreeBaseRemote", input.cwd).pipe(
+            Effect.andThen(git.resolveWorktreeBaseRemote(input)),
+          ),
         );
       },
     ),
@@ -457,13 +497,21 @@ export const make = Effect.gen(function* () {
       },
     ),
     removeWorktree: Effect.fn("GitWorkflowService.removeWorktree")(function (input) {
-      return ensureGitCommand("GitWorkflowService.removeWorktree", input.cwd).pipe(
-        Effect.andThen(git.removeWorktree(input)),
+      return unlessMultiRepo(
+        input.cwd,
+        (service) => service.removeWorkspace(input),
+        ensureGitCommand("GitWorkflowService.removeWorktree", input.cwd).pipe(
+          Effect.andThen(git.removeWorktree(input)),
+        ),
       );
     }),
     pruneWorktrees: Effect.fn("GitWorkflowService.pruneWorktrees")(function (input) {
-      return ensureGitCommand("GitWorkflowService.pruneWorktrees", input.cwd).pipe(
-        Effect.andThen(git.pruneWorktrees(input)),
+      return unlessMultiRepo(
+        input.cwd,
+        () => Effect.void,
+        ensureGitCommand("GitWorkflowService.pruneWorktrees", input.cwd).pipe(
+          Effect.andThen(git.pruneWorktrees(input)),
+        ),
       );
     }),
     deleteLocalBranch: Effect.fn("GitWorkflowService.deleteLocalBranch")(function (input) {
@@ -488,8 +536,12 @@ export const make = Effect.gen(function* () {
       );
     }),
     renameBranch: Effect.fn("GitWorkflowService.renameBranch")(function (input) {
-      return ensureGit("GitWorkflowService.renameBranch", input.cwd).pipe(
-        Effect.andThen(git.renameBranch(input)),
+      return unlessMultiRepo(
+        input.cwd,
+        (service, members) => service.renameBranch({ ...input, members }),
+        ensureGit("GitWorkflowService.renameBranch", input.cwd).pipe(
+          Effect.andThen(git.renameBranch(input)),
+        ),
       );
     }),
   });

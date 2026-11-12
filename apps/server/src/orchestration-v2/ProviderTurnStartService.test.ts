@@ -225,6 +225,22 @@ it.each([
     recreated: true,
   },
   {
+    label: "a Workler workspace below its project",
+    worktreePath: "/tmp/provider-turn-start-project/.worktrees/feature-restore",
+    recreated: true,
+  },
+  {
+    label: "a Workler workspace below another project",
+    worktreePath: "/tmp/other-project/.worktrees/feature-restore",
+    recreated: false,
+  },
+  {
+    label: "a symlinked Workler workspace leading out",
+    worktreePath: "/tmp/provider-turn-start-project/.worktrees/feature-restore",
+    realPaths: { "/tmp/provider-turn-start-project/.worktrees": "/tmp/other-project" },
+    recreated: false,
+  },
+  {
     label: "a path outside the managed folder",
     worktreePath: "/tmp/provider-turn-start-project/.git/hooks",
     recreated: false,

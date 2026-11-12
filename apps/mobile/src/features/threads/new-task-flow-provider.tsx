@@ -134,6 +134,7 @@ type NewTaskFlowContextValue = {
   readonly selectedModelKey: string | null;
   readonly workspaceMode: WorkspaceMode;
   readonly isGitRepo: boolean;
+  readonly isMultiRepoProject: boolean;
   readonly isGitRepoKnown: boolean;
   readonly canChooseWorkspace: boolean;
   readonly selectedBranchName: string | null;
@@ -373,7 +374,8 @@ export function NewTaskFlowProvider(
     cwd: selectedProject?.workspaceRoot || null,
   });
   const knownIsGitRepo = projectGitStatus.data?.isRepo ?? projectBranches.data?.isRepo ?? null;
-  const isGitRepo = knownIsGitRepo ?? true;
+  const isMultiRepoProject = selectedProject?.multiRepo != null;
+  const isGitRepo = !isMultiRepoProject && (knownIsGitRepo ?? true);
   const projectSettings = projectDefaults.projectSettings;
   const canChooseWorkspace = !isScratchDraft;
   const defaultWorkspaceMode: WorkspaceMode = projectDefaults.defaultWorkspaceMode;
@@ -388,16 +390,20 @@ export function NewTaskFlowProvider(
     Arr.filter((branch) => !branch.isRemote),
   );
 
-  const resolveWorkspaceSelection = (selection: ComposerDraftWorkspaceSelection | undefined) =>
-    resolveNewTaskDraftWorkspace({
+  const resolveWorkspaceSelection = (selection: ComposerDraftWorkspaceSelection | undefined) => {
+    const workspace = resolveNewTaskDraftWorkspace({
       selection,
       canChooseWorkspace,
       defaultMode: defaultWorkspaceMode,
       defaultModeSettled: projectDefaults.defaultWorkspaceModeSettled,
-      isGitRepo,
+      isGitRepo: isGitRepo || isMultiRepoProject,
       branches: allBranchRefs,
       projectCwd: selectedProject?.workspaceRoot ?? null,
     });
+    return isMultiRepoProject
+      ? { ...workspace, branch: workspace.mode === "worktree" ? "HEAD" : null }
+      : workspace;
+  };
   const workspaceSelection = resolveWorkspaceSelection(selectedProjectDraft.workspaceSelection);
   const workspaceMode = workspaceSelection.mode;
   const selectedBranchName = workspaceSelection.branch;
@@ -407,7 +413,8 @@ export function NewTaskFlowProvider(
   // value keeps tracking the server setting when the config loads late.
   const draftStartFromOrigin = selectedProjectDraft.workspaceSelection?.startFromOrigin;
   const startFromOrigin =
-    isGitRepo && (draftStartFromOrigin ?? projectSettings.settings.newWorktreesStartFromOrigin);
+    (isGitRepo || isMultiRepoProject) &&
+    (draftStartFromOrigin ?? projectSettings.settings.newWorktreesStartFromOrigin);
   const defaultRuntimeMode = projectSettings.settings.defaultRuntimeMode;
   const managedPolicy = selectedEnvironmentServerConfig?.managedPolicy;
   const runtimeMode = resolveNewThreadRuntimeMode(
@@ -852,7 +859,8 @@ export function NewTaskFlowProvider(
     selectedModelKey,
     workspaceMode,
     isGitRepo,
-    isGitRepoKnown: knownIsGitRepo !== null,
+    isMultiRepoProject,
+    isGitRepoKnown: isMultiRepoProject || knownIsGitRepo !== null,
     canChooseWorkspace,
     selectedBranchName,
     selectedWorktreePath,

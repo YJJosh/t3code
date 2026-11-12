@@ -1,9 +1,11 @@
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import {
   CommandId,
   type OrchestrationProjectShell,
   ProjectId,
   type Project,
   type ProjectCreatePayload,
+  type ProjectInspectMultiRepoFolderResult,
   type ProjectUpdatePayload,
   type ProjectSnapshot,
   type ThreadId,
@@ -127,6 +129,12 @@ export type ProjectServiceError =
 export class ProjectService extends Context.Service<
   ProjectService,
   {
+    readonly makeMultiRepo: (
+      projectId: ProjectId,
+    ) => Effect.Effect<{ readonly members: ReadonlyArray<string> }, ProjectServiceError>;
+    readonly inspectMultiRepoFolder: (
+      path: string,
+    ) => Effect.Effect<ProjectInspectMultiRepoFolderResult, ProjectServiceError>;
     readonly create: (input: ProjectCreateInput) => Effect.Effect<Project, ProjectServiceError>;
     readonly bootstrap: (
       input: ProjectBootstrapInput,
@@ -172,6 +180,7 @@ export class ProjectService extends Context.Service<
 
 export const make = Effect.gen(function* () {
   const projects = yield* ProjectStore.ProjectStoreV2;
+  const multiRepo = yield* Effect.serviceOption(MultiRepoWorkspaces.MultiRepoWorkspaces);
   const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const threadProjections = yield* ProjectionStore.ProjectionStoreV2;
@@ -193,6 +202,10 @@ export const make = Effect.gen(function* () {
     title: row.title,
     workspaceRoot: row.workspaceRoot,
     repositoryIdentity: enrichment?.repositoryIdentity ?? null,
+    ...(enrichment?.multiRepo !== undefined ? { multiRepo: enrichment.multiRepo } : {}),
+    ...(enrichment?.nestedRepositories !== undefined
+      ? { nestedRepositories: enrichment.nestedRepositories }
+      : {}),
     faviconPath: row.faviconPath ?? enrichment?.faviconPath ?? null,
     defaultModelSelection: row.defaultModelSelection,
     defaultThreadEnvMode: row.defaultThreadEnvMode,
@@ -343,7 +356,6 @@ export const make = Effect.gen(function* () {
   const workspaceScanDirectory = Effect.fn("ProjectService.workspaceScanDirectory")(
     function* (cwd: string) {
       if (yield* fileSystem.exists(cwd).pipe(Effect.orElseSucceed(() => true))) return cwd;
-      if (!(yield* isManagedWorktreePath(cwd))) return cwd;
       const snapshot = yield* Effect.flatten(
         threadProjections.readShellSnapshot({ worktreePath: cwd }),
       );
@@ -351,7 +363,10 @@ export const make = Effect.gen(function* () {
         (candidate) => candidate.branch !== null,
       );
       if (thread === undefined) return cwd;
-      return Option.getOrUndefined(yield* readRow(thread.projectId))?.workspaceRoot ?? cwd;
+      const projectRoot = Option.getOrUndefined(yield* readRow(thread.projectId))?.workspaceRoot;
+      return projectRoot !== undefined && (yield* isManagedWorktreePath(cwd, projectRoot))
+        ? projectRoot
+        : cwd;
     },
     (effect, cwd) => Effect.orElseSucceed(effect, () => cwd),
   );
@@ -564,6 +579,10 @@ export const make = Effect.gen(function* () {
       Effect.map((enrichment) => ({
         ...shell,
         repositoryIdentity: enrichment.repositoryIdentity,
+        ...(enrichment.multiRepo !== undefined ? { multiRepo: enrichment.multiRepo } : {}),
+        ...(enrichment.nestedRepositories !== undefined
+          ? { nestedRepositories: enrichment.nestedRepositories }
+          : {}),
       })),
     );
 
@@ -629,7 +648,36 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const requireMultiRepo = Effect.fromOption(multiRepo).pipe(
+    Effect.mapError(
+      () =>
+        new ProjectOperationError({
+          operation: "read-project",
+          cause: "Multi-repo workspaces are unavailable.",
+        }),
+    ),
+  );
+  const makeMultiRepo = Effect.fn("ProjectService.makeMultiRepo")(function* (projectId: ProjectId) {
+    const project = yield* getById(projectId);
+    if (Option.isNone(project)) return yield* new ProjectNotFoundError({ projectId });
+    const service = yield* requireMultiRepo;
+    const members = yield* service
+      .makeGroup(project.value.workspaceRoot)
+      .pipe(
+        Effect.mapError((cause) => new ProjectInvalidError({ projectId, detail: cause.detail })),
+      );
+    yield* projectEnrichment.invalidate([project.value.workspaceRoot]);
+    yield* projectEnrichment.request(project.value.workspaceRoot);
+    return { members };
+  });
+  const inspectMultiRepoFolder = Effect.fn("ProjectService.inspectMultiRepoFolder")(function* (
+    folder: string,
+  ) {
+    return yield* (yield* requireMultiRepo).inspectFolder(folder);
+  });
   return ProjectService.of({
+    makeMultiRepo,
+    inspectMultiRepoFolder,
     create,
     bootstrap,
     update,

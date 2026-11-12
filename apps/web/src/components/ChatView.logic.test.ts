@@ -1080,6 +1080,9 @@ describe("planComposerTurn", () => {
   };
 
   it("prepares a worktree from the selected branch on a new thread", () => {
+    expect(
+      planComposerTurn({ ...base, activeThreadBranch: null, isMultiRepoProject: true }),
+    ).toMatchObject({ missingWorktreeBaseBranch: false, baseBranchForWorktree: "HEAD" });
     expect(planComposerTurn(base)).toMatchObject({
       missingWorktreeBaseBranch: false,
       baseBranchForWorktree: "main",

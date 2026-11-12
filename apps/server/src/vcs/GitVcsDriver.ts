@@ -42,6 +42,9 @@ import {
   PATCH_RENDER_PREFIX_ARGS,
   splitNullSeparatedGitStdoutPaths,
 } from "./GitVcsDriverCore.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import { withWorklerWorkspaceSupport } from "./WorklerGitWorkspaceDriver.ts";
+import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
 import * as CheckoutCloner from "./CheckoutCloner.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
@@ -621,6 +624,14 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
   const detectRepository: VcsDriver.VcsDriver["Service"]["detectRepository"] = Effect.fn(
     "detectRepository",
   )(function* (cwd) {
+    if (
+      !(yield* fileSystem.exists(path.join(cwd, ".git")).pipe(Effect.orElseSucceed(() => false)))
+    ) {
+      const config = yield* fileSystem
+        .readFileString(path.join(cwd, ".workler"))
+        .pipe(Effect.orElseSucceed(() => ""));
+      if (/^\s*project\s/m.test(config)) return null;
+    }
     // One spawn answers all three; outside a work tree it exits non-zero or prints "false".
     const result = yield* gitCommand(
       vcsProcess,
@@ -1621,8 +1632,21 @@ export const makeVcsDriver = Effect.gen(function* () {
 
 export const make = Effect.gen(function* () {
   const git = yield* makeGitVcsDriverCore();
-  return GitVcsDriver.of(git);
+  const workler = yield* Effect.serviceOption(WorklerWorkspaceService.WorklerWorkspaceService);
+  if (Option.isNone(workler)) return GitVcsDriver.of(git);
+  const settings = yield* Effect.serviceOption(ServerSettingsService);
+  return GitVcsDriver.of(
+    withWorklerWorkspaceSupport({
+      git,
+      workler: workler.value,
+      path: yield* Path.Path,
+      fileSystem: yield* FileSystem.FileSystem,
+      ...(Option.isSome(settings) ? { settings: settings.value } : {}),
+    }),
+  );
 });
 
 export const layerVcs = Layer.effect(VcsDriver.VcsDriver, makeVcsDriver);
-export const layer = Layer.effect(GitVcsDriver, make).pipe(Layer.provide(CheckoutCloner.layer));
+export const layer = Layer.effect(GitVcsDriver, make).pipe(
+  Layer.provide([CheckoutCloner.layer, WorklerWorkspaceService.layer]),
+);

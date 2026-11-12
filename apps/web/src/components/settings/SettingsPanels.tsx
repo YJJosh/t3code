@@ -152,6 +152,9 @@ const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
   "double-click": "Double press",
 };
 
+// Avoid React Compiler hook-name inference for the use-prefixed setting.
+const DEFAULT_WORKLER_WORKSPACES_ENABLED = DEFAULT_UNIFIED_SETTINGS.useWorklerForNewWorkspaces;
+
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 function AboutVersionSection() {
   const updateState = useDesktopUpdateState();
@@ -562,6 +565,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin
       ? ["New worktrees start from remote"]
       : []),
+    ...(settings.useWorklerForNewWorkspaces !== DEFAULT_WORKLER_WORKSPACES_ENABLED
+      ? ["Create new workspaces with Workler"]
+      : []),
     ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
       ? ["Add project base directory"]
       : []),
@@ -681,6 +687,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       providerHealthRefreshInterval: DEFAULT_UNIFIED_SETTINGS.providerHealthRefreshInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+      useWorklerForNewWorkspaces: DEFAULT_WORKLER_WORKSPACES_ENABLED,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       ghqCloneLayout: DEFAULT_UNIFIED_SETTINGS.ghqCloneLayout,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
@@ -769,7 +776,36 @@ export function GeneralSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsSection id="fork-features" title="Fork features">
+        <SettingsRow
+          {...searchableSetting("workler-workspaces")}
+          description="Create automatically located workspaces as independent clones and apply this repository's Workler copy/link rules. Explicit worktree paths still use Git."
+          resetAction={
+            settings.useWorklerForNewWorkspaces !== DEFAULT_WORKLER_WORKSPACES_ENABLED ? (
+              <SettingResetButton
+                label="create new workspaces with Workler"
+                onClick={() =>
+                  updateSettings({
+                    useWorklerForNewWorkspaces: DEFAULT_WORKLER_WORKSPACES_ENABLED,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.useWorklerForNewWorkspaces}
+              onCheckedChange={(checked) =>
+                updateSettings({ useWorklerForNewWorkspaces: Boolean(checked) })
+              }
+              aria-label="Create new workspaces with Workler"
+            />
+          }
+        />
+      </SettingsSection>
+
       <ProfilesSettings />
+
       <SettingsSection id="notifications" title="Notifications">
         <NotificationSettings />
         <SettingsRow

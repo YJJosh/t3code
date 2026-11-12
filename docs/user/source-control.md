@@ -355,3 +355,34 @@ the scope and merge strategy. GitHub rebases the remaining stack after merging.
 It can rewrite history and restart checks. If a layer fails, earlier updates remain; resolve that
 layer before retrying. GitHub may require manual conflict resolution after a lower layer is amended,
 even when its changes look independent. Stack actions require an environment that supports them.
+
+## Workler workspaces
+
+New threads default to an isolated Workler workspace. Workler creates an independent
+clone under the project's `.worktrees` directory and applies `.workler` copy/link rules.
+The normal project setup script still runs; Workler setup commands do not run twice.
+New branches start from the fetched remote by default. Choose the base branch in the
+composer, or change **Settings → Worktrees → Start from remote** to use local commits.
+
+To use regular Git worktrees instead, turn off **Settings → General → Fork features →
+Create new workspaces with Workler**. Explicit worktree paths always use Git. Existing
+Workler workspaces remain accessible after disabling the setting. Removal preserves
+branches, tags and checkpoints in the source repository, and refuses to delete a
+workspace when that would lose work.
+
+Generated branch names use semantic prefixes by default. Adjust branch naming under
+Settings to use a fixed prefix instead.
+
+## Multi-repository projects
+
+Choose **Add project → Multi-repo project** to use several Git repositories as one
+project. Select a folder containing repositories to group them, or an empty folder
+and supply Git URLs or `owner/repo` names to clone its members. Existing projects
+on another connected environment can supply the same member list; choose the
+folder on the destination machine rather than reusing a path from another machine.
+
+A new workspace clones every member onto the same branch, starting from each
+repository's own remote default branch. If any member has no usable remote default,
+the group falls back to its members' current local branches. Git actions at the group
+root are hidden: run repository-specific Git operations in a member folder. Group membership lives in the folder's `.workler`
+file, so it travels with the project rather than being tied to one machine's database.

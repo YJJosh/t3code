@@ -72,6 +72,7 @@ import { McpAppFullscreenScreen } from "./features/threads/McpAppFullscreenScree
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
 import { AddProjectDestinationRoute } from "./features/projects/AddProjectDestinationRoute";
+import { AddProjectMultiRepoRoute } from "./features/projects/AddProjectMultiRepoRoute";
 import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
 import { AddProjectNewRoute } from "./features/projects/AddProjectNewRoute";
 import { AddProjectRepositoryRoute } from "./features/projects/AddProjectRepositoryRoute";
@@ -581,6 +582,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
       linking: "new/add-project/destination",
       screen: AddProjectDestinationRoute,
       options: pageRoute(),
+    }),
+    AddProjectMultiRepo: createNativeStackScreen({
+      linking: "new/add-project/multi-repo",
+      options: pageRoute({ title: "Multi-repo project" }),
+      screen: AddProjectMultiRepoRoute,
     }),
     AddProjectLocal: createNativeStackScreen({
       linking: "new/add-project/local",

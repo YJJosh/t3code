@@ -1,7 +1,9 @@
+import { normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import { scopedProjectKey, scopeProjectRef } from "../environment/scoped.ts";
 import {
   repositoryGroupingDisplayNameOf,
   repositoryGroupingKeyOf,
+  type ProjectMultiRepo,
   type EnvironmentId,
   type ScopedProjectRef,
   type SidebarProjectGroupingMode,
@@ -126,10 +128,72 @@ function deriveRepositoryScopedKey(
     : `${canonicalKey}::${relativeProjectPath}`;
 }
 
+/**
+ * Cross-environment key of a multi-repo project: its members' remotes, so the
+ * same repositories set up on two machines are one project, whatever folders
+ * they sit in. Null when a member has no remote, since nothing else can match.
+ */
+export function deriveMultiRepoKey(multiRepo: ProjectMultiRepo | null | undefined): string | null {
+  const members = multiRepo?.members ?? [];
+  if (members.length === 0) {
+    return null;
+  }
+  // Repeated remotes count as separate members (two checkouts of one repo), and
+  // JSON keeps member boundaries unambiguous.
+  const remotes: string[] = [];
+  for (const member of members) {
+    if (!member.remoteUrl) {
+      return null;
+    }
+    remotes.push(normalizeGitRemoteUrl(member.remoteUrl));
+  }
+  return `multi-repo:${JSON.stringify(remotes.sort())}`;
+}
+
+/** A multi-repo project another environment has, ready to clone into a new one. */
+export interface MultiRepoProjectSetup {
+  readonly key: string;
+  readonly source: EnvironmentProject;
+  readonly members: ReadonlyArray<{ readonly path: string; readonly remoteUrl: string }>;
+}
+
+/**
+ * Multi-repo projects that other environments have and `environmentId` does
+ * not, one per project. Members without a remote cannot be cloned, so those
+ * projects are left out.
+ */
+export function listMultiRepoProjectsToSetUp(
+  projects: ReadonlyArray<EnvironmentProject>,
+  environmentId: EnvironmentId,
+): ReadonlyArray<MultiRepoProjectSetup> {
+  const presentKeys = new Set<string>();
+  for (const project of projects) {
+    if (project.environmentId !== environmentId) continue;
+    const key = deriveMultiRepoKey(project.multiRepo);
+    if (key !== null) presentKeys.add(key);
+  }
+  const setups = new Map<string, MultiRepoProjectSetup>();
+  for (const project of projects) {
+    if (project.environmentId === environmentId) continue;
+    const key = deriveMultiRepoKey(project.multiRepo);
+    if (key === null || presentKeys.has(key) || setups.has(key)) continue;
+    setups.set(key, {
+      key,
+      source: project,
+      members: (project.multiRepo?.members ?? []).flatMap((member) =>
+        member.remoteUrl ? [{ path: member.path, remoteUrl: member.remoteUrl }] : [],
+      ),
+    });
+  }
+  return [...setups.values()].sort((left, right) =>
+    left.source.title.localeCompare(right.source.title),
+  );
+}
+
 function deriveLogicalProjectKey(
   project: Pick<
     EnvironmentProject,
-    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "isScratch"
+    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "isScratch" | "multiRepo"
   >,
   options?: {
     readonly groupingMode?: SidebarProjectGroupingMode;
@@ -143,6 +207,7 @@ function deriveLogicalProjectKey(
   }
 
   return (
+    deriveMultiRepoKey(project.multiRepo) ??
     deriveRepositoryScopedKey(project, groupingMode) ??
     derivePhysicalProjectKey(project) ??
     scopedProjectKey(scopeProjectRef(project.environmentId, project.id))
@@ -152,7 +217,7 @@ function deriveLogicalProjectKey(
 export function deriveLogicalProjectKeyFromSettings(
   project: Pick<
     EnvironmentProject,
-    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "isScratch"
+    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "isScratch" | "multiRepo"
   >,
   settings: ProjectGroupingSettings,
   options?: { readonly groupScratchProjects?: boolean },
@@ -168,7 +233,7 @@ export function resolveScratchProjectScopeKey(
   projects: ReadonlyArray<
     Pick<
       EnvironmentProject,
-      "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "isScratch"
+      "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "isScratch" | "multiRepo"
     >
   >,
   settings: ProjectGroupingSettings = {
@@ -276,13 +341,15 @@ function selectProjectIdentitySource<TProject extends EnvironmentProject>(
   projects: ReadonlyArray<TProject>,
   winner: TProject,
 ): TProject {
-  if (winner.repositoryIdentity !== null) {
+  const isIdentified = (project: TProject) =>
+    project.repositoryIdentity !== null || (project.multiRepo ?? null) !== null;
+  if (isIdentified(winner)) {
     return winner;
   }
 
   let freshestIdentifiedProject: TProject | null = null;
   for (const project of projects) {
-    if (project.repositoryIdentity === null) {
+    if (!isIdentified(project)) {
       continue;
     }
     if (

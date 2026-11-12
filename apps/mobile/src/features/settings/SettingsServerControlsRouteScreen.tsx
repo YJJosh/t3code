@@ -447,6 +447,21 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
 
             {props.page === "worktrees" ? (
               <>
+                {!projectSelected ? (
+                  <SettingsSection title="Fork features">
+                    <SettingsSwitchRow
+                      icon="folder"
+                      label="Create new workspaces with Workler"
+                      subtitle={managedSubtitle(
+                        "useWorklerForNewWorkspaces",
+                        "Use independent clones with repository copy/link rules. Turn off to use Git worktrees.",
+                      )}
+                      value={uniform("useWorklerForNewWorkspaces")}
+                      disabled={disabledFor("useWorklerForNewWorkspaces")}
+                      onValueChange={(value) => write({ useWorklerForNewWorkspaces: value })}
+                    />
+                  </SettingsSection>
+                ) : null}
                 <SettingsSection title="New worktrees">
                   <SettingsSwitchRow
                     icon="arrow.triangle.branch"

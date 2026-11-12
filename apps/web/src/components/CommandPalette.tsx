@@ -1,3 +1,4 @@
+import { MultiRepoProjectForm } from "./MultiRepoProjectForm";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -517,6 +518,7 @@ function OpenCommandPaletteDialog(props: {
   const [addProjectEnvironmentId, setAddProjectEnvironmentId] = useState<EnvironmentId | null>(
     null,
   );
+  const [multiRepoEnvironment, setMultiRepoEnvironment] = useState<EnvironmentId | null>(null);
   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
   const [newProjectFlow, setNewProjectFlow] = useState<{
@@ -1052,6 +1054,24 @@ function OpenCommandPaletteDialog(props: {
         keepOpen: true,
         run: async () => {
           startNewProject(environmentId, environmentId);
+        },
+      });
+    }
+
+    if (
+      environments.find((environment) => environment.environmentId === environmentId)?.serverConfig
+        ?.environment.capabilities.multiRepoProjects === true
+    ) {
+      sourceItems.push({
+        kind: "action",
+        value: `action:add-project:${environmentId}:multi-repo`,
+        title: "Multi-repo project",
+        description: "One workspace across several repositories",
+        searchTerms: ["multi repo workler group"],
+        icon: <FolderGit2Icon className={ITEM_ICON_CLASS} />,
+        keepOpen: true,
+        run: async () => {
+          setMultiRepoEnvironment(environmentId);
         },
       });
     }
@@ -2874,6 +2894,24 @@ function OpenCommandPaletteDialog(props: {
     // still arrive below it.
     <span className="text-muted-foreground text-xs">Searching messages…</span>
   ) : null;
+
+  if (multiRepoEnvironment !== null)
+    return (
+      <MultiRepoProjectForm
+        environmentId={multiRepoEnvironment}
+        projects={projects}
+        onBack={() => setMultiRepoEnvironment(null)}
+        onCreated={async (projectRef) => {
+          if (!(await waitForProject(projectRef, 15_000))) {
+            throw new Error(
+              "Project creation started, but this client has not received it yet. Check the project list before trying again.",
+            );
+          }
+          await handleNewThread(projectRef);
+          setOpen(false);
+        }}
+      />
+    );
 
   return (
     <CommandPaletteContent
