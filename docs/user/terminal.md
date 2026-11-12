@@ -20,6 +20,24 @@ Jump to latest in the context menu returns to the current output.
 On iPhone and iPad, long-press the terminal to paste or to choose Select Text.
 Select Text shows the visible output, where you can copy text or tap a link.
 
+## Sharing terminals with agents
+
+Agents can open terminals in their thread for servers, long jobs, and interactive
+programs. Those terminals appear in the thread's terminal drawer, and you take turns
+with the agent: whoever has control types. The terminal toolbar on web and desktop,
+and the terminal options menu on mobile, show when the agent has control.
+
+- **Take over**, or just start typing, to take control from the agent. The agent
+  can still read the terminal but cannot type until you give it back.
+- **Give to agent** hands control of any terminal in the thread to its agent,
+  including one you opened.
+
+Agents can read every terminal in their thread. Starting, typing into, and closing
+terminals need the thread to be in **Full access**; in other
+[permission modes](./permission-modes.md) agents use their own approval-gated
+shell tools. Busy, agent, and finished terminals collapse into running and settled
+groups above the composer; choose one to open it.
+
 ## fish
 
 T3 Code starts fish with `no-query-term`, avoiding startup waits for terminal

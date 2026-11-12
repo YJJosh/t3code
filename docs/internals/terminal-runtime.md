@@ -42,3 +42,7 @@ device queries can otherwise provoke fresh replies that appear as junk at the
 prompt. The server strips query/response traffic from retained history, and the
 [web renderer](../../apps/web/src/terminal/ghostty/core.ts) detaches its PTY writer
 during replay. Preserve both protections when changing retention or renderer code.
+
+Renderer replies also share the user's write path. A user write takes control from the
+agent only when it holds more than replies ([`terminalInput.ts`](../../apps/server/src/terminal/terminalInput.ts)),
+so a focus report or cursor-position answer never flips the controller.

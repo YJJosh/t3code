@@ -16,7 +16,6 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -50,10 +49,13 @@ class FakePtyProcess implements PtyAdapter.PtyProcess {
   private readonly dataListeners = new Set<(data: string) => void>();
   private readonly exitListeners = new Set<(event: PtyAdapter.PtyExitEvent) => void>();
 
-  constructor(
-    readonly pid: number,
-    private readonly prompt: string,
-  ) {}
+  readonly pid: number;
+  private readonly prompt: string;
+
+  constructor(pid: number, prompt: string) {
+    this.pid = pid;
+    this.prompt = prompt;
+  }
 
   write(data: string) {
     this.writes.push(data);
@@ -118,7 +120,7 @@ const makeFixture = (options: { readonly runtimeMode?: RuntimeMode } = {}) =>
             getThreadShell: (id) => Effect.succeed(id === threadId ? shell : null),
           }),
           Layer.mock(ProjectService.ProjectService)({
-            getById: () => Effect.succeed(Option.some({ workspaceRoot: baseDir } as Project)),
+            getById: () => Effect.succeedSome({ workspaceRoot: baseDir } as Project),
           }),
         ),
       ),
