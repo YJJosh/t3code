@@ -1,4 +1,4 @@
-import type { RepositoryIdentity } from "@t3tools/contracts";
+import type { RepositoryIdentity, ProjectMultiRepo } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -13,6 +13,7 @@ import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
+import * as ProjectMultiRepoResolver from "./ProjectMultiRepoResolver.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 
 const DEFAULT_CACHE_CAPACITY = 512;
@@ -23,7 +24,13 @@ const DEFAULT_SUCCESS_TTL = Duration.minutes(1);
 const DEFAULT_FAVICON_TTL = Duration.minutes(15);
 const DEFAULT_FAILURE_TTL = Duration.seconds(5);
 
-export interface ProjectEnrichment {
+interface ProjectSources {
+  readonly repositoryIdentity: RepositoryIdentity | null;
+  readonly multiRepo?: ProjectMultiRepo | null;
+  readonly nestedRepositories?: ReadonlyArray<string>;
+}
+
+export interface ProjectEnrichment extends ProjectSources {
   readonly repositoryIdentity: RepositoryIdentity | null;
   readonly faviconPath: string | null;
   readonly repositoryIdentityResolved: boolean;
@@ -86,26 +93,31 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   options: ProjectEnrichmentServiceOptions = {},
 ) {
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+  const multiRepoResolver = yield* Effect.serviceOption(
+    ProjectMultiRepoResolver.ProjectMultiRepoResolver,
+  );
   const faviconResolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
   const cacheCapacity = Math.max(1, options.cacheCapacity ?? DEFAULT_CACHE_CAPACITY);
   const maxPending = Math.max(1, options.maxPending ?? DEFAULT_MAX_PENDING);
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
 
   // Outlives the cache entry so an expired or refreshing identity still reads as its last value.
-  const lastRepositoryIdentities = new Map<string, RepositoryIdentity>();
+  const lastRepositoryIdentities = new Map<string, ProjectSources>();
   // `invalidate` drops a root's in-flight lookup so its late result cannot overwrite a newer one.
   const lookupsInFlight = new Map<string, object>();
-  const rememberRepositoryIdentity = (
-    workspaceRoot: string,
-    repositoryIdentity: RepositoryIdentity | null,
-  ) => {
+  const rememberRepositoryIdentity = (workspaceRoot: string, sources: ProjectSources) => {
     lastRepositoryIdentities.delete(workspaceRoot);
-    if (repositoryIdentity === null) return;
+    if (
+      sources.repositoryIdentity === null &&
+      sources.multiRepo == null &&
+      !sources.nestedRepositories?.length
+    )
+      return;
     if (lastRepositoryIdentities.size >= cacheCapacity) {
       const oldestRoot = lastRepositoryIdentities.keys().next().value;
       if (oldestRoot !== undefined) lastRepositoryIdentities.delete(oldestRoot);
     }
-    lastRepositoryIdentities.set(workspaceRoot, repositoryIdentity);
+    lastRepositoryIdentities.set(workspaceRoot, sources);
   };
 
   const repositoryIdentityCache = yield* Cache.makeWith(
@@ -114,7 +126,22 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         const lookup = {};
         lookupsInFlight.set(workspaceRoot, lookup);
         const isCurrent = () => lookupsInFlight.get(workspaceRoot) === lookup;
-        return Effect.exit(repositoryIdentityResolver.resolve(workspaceRoot)).pipe(
+        return Effect.exit(
+          Effect.gen(function* (): Effect.fn.Return<ProjectSources> {
+            const folder = Option.isSome(multiRepoResolver)
+              ? yield* multiRepoResolver.value.resolve(workspaceRoot)
+              : null;
+            const repositoryIdentity = folder?.multiRepo
+              ? null
+              : yield* repositoryIdentityResolver.resolve(workspaceRoot);
+            return {
+              repositoryIdentity,
+              ...(folder
+                ? { multiRepo: folder.multiRepo, nestedRepositories: folder.nestedRepositories }
+                : {}),
+            };
+          }),
+        ).pipe(
           Effect.tap((result) =>
             Effect.sync(() => {
               if (Exit.isSuccess(result) && isCurrent()) {
@@ -202,7 +229,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         workspaceRoot,
         repositoryIdentityResolved,
         enrichment: {
-          repositoryIdentity: availableValue(Option.some(repositoryIdentity)),
+          ...(availableValue(Option.some(repositoryIdentity)) ?? { repositoryIdentity: null }),
           faviconPath: availableValue(faviconPath),
           repositoryIdentityResolved,
         },
@@ -276,9 +303,9 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
       );
       const repositoryIdentityResolved = isSuccessfullyResolved(repositoryIdentity);
       return {
-        repositoryIdentity: repositoryIdentityResolved
+        ...((repositoryIdentityResolved
           ? availableValue(repositoryIdentity)
-          : (lastRepositoryIdentities.get(workspaceRoot) ?? null),
+          : lastRepositoryIdentities.get(workspaceRoot)) ?? { repositoryIdentity: null }),
         faviconPath: availableValue(faviconPath),
         repositoryIdentityResolved,
       };
@@ -314,7 +341,7 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   const readRepositoryIdentity: ProjectEnrichmentService["Service"]["readRepositoryIdentity"] =
     Effect.fn("ProjectEnrichmentService.readRepositoryIdentity")(function* (workspaceRoot) {
       const resolved = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
-      return Exit.isSuccess(resolved) ? resolved.value : null;
+      return Exit.isSuccess(resolved) ? resolved.value.repositoryIdentity : null;
     });
 
   const invalidate: ProjectEnrichmentService["Service"]["invalidate"] = Effect.fn(
@@ -333,6 +360,9 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
             Cache.invalidate(faviconCache, workspaceRoot),
             // The resolver keeps its own misses, which would outlive a clone filling the folder.
             faviconResolver.invalidate(workspaceRoot),
+            Option.isSome(multiRepoResolver)
+              ? multiRepoResolver.value.invalidate(workspaceRoot)
+              : Effect.void,
           ],
           { concurrency: "unbounded", discard: true },
         ),

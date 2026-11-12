@@ -8,6 +8,8 @@ import {
   deriveLogicalProjectKeyFromSettings,
   pickableProjectGroups,
   derivePhysicalProjectKey,
+  deriveMultiRepoKey,
+  listMultiRepoProjectsToSetUp,
   resolveScratchProjectScopeKey,
   sortProjectsByGroupOrder,
   type ProjectGroupingSettings,
@@ -419,5 +421,92 @@ describe("sortProjectsByGroupOrder", () => {
       [{ memberProjectRefs: [ref("shared", remote)] }, { memberProjectRefs: [ref("shared")] }],
     );
     expect(sorted.map((entry) => entry.environmentId)).toEqual([remote, environmentId]);
+  });
+});
+
+it("groups a multi-repo project across machines by its members' remotes", () => {
+  const multiRepo = (...remotes: Array<string | null>) => ({
+    members: remotes.map((remoteUrl, index) => ({ path: `repo-${index}`, remoteUrl })),
+  });
+  const projects = [
+    makeProject("pc-a", "/work/product", {
+      repositoryIdentity: null,
+      multiRepo: multiRepo("git@github.com:x/api.git", "https://github.com/x/web.git"),
+    }),
+    makeProject("pc-b", "/home/me/product", {
+      environmentId: EnvironmentId.make("other"),
+      repositoryIdentity: null,
+      multiRepo: multiRepo("https://github.com/x/web", "https://github.com/x/api.git"),
+    }),
+    makeProject("no-remote", "/work/scratch", {
+      repositoryIdentity: null,
+      multiRepo: multiRepo("git@github.com:x/api.git", null),
+    }),
+  ];
+
+  const groups = buildProjectGroups({ projects, settings: settings("repository") });
+  expect(groups.map((group) => group.members.map((member) => member.project.id))).toEqual([
+    ["pc-a", "pc-b"],
+    ["no-remote"],
+  ]);
+});
+
+describe("deriveMultiRepoKey", () => {
+  const group = (...remotes: string[]) => ({
+    members: remotes.map((remoteUrl, index) => ({ path: `member-${index}`, remoteUrl })),
+  });
+
+  it("keeps repeated repositories as distinct members", () => {
+    expect(deriveMultiRepoKey(group("https://host/org/api"))).not.toBe(
+      deriveMultiRepoKey(group("https://host/org/api", "git@host:org/api.git")),
+    );
+  });
+
+  it("does not treat a plus in one URL as a member separator", () => {
+    expect(deriveMultiRepoKey(group("https://host/org/api+host/org/web"))).not.toBe(
+      deriveMultiRepoKey(group("https://host/org/api", "https://host/org/web")),
+    );
+  });
+});
+
+describe("listMultiRepoProjectsToSetUp", () => {
+  const pcB = EnvironmentId.make("pc-b");
+  const multiRepo = (...remotes: Array<string | null>) => ({
+    members: remotes.map((remoteUrl, index) => ({ path: `repo-${index}`, remoteUrl })),
+  });
+
+  it("offers multi-repo projects from other machines that this one lacks, once each", () => {
+    const projects = [
+      makeProject("product", "/work/product", {
+        repositoryIdentity: null,
+        multiRepo: multiRepo("git@github.com:x/api.git", "git@github.com:x/web.git"),
+      }),
+      makeProject("product-copy", "/work/product-copy", {
+        environmentId: EnvironmentId.make("pc-c"),
+        repositoryIdentity: null,
+        multiRepo: multiRepo("https://github.com/x/web", "https://github.com/x/api"),
+      }),
+      makeProject("already-here-a", "/work/tools", {
+        repositoryIdentity: null,
+        multiRepo: multiRepo("git@github.com:x/cli.git"),
+      }),
+      makeProject("already-here-b", "/home/me/tools", {
+        environmentId: pcB,
+        repositoryIdentity: null,
+        multiRepo: multiRepo("https://github.com/x/cli.git"),
+      }),
+      makeProject("no-remote", "/work/scratch", {
+        repositoryIdentity: null,
+        multiRepo: multiRepo("git@github.com:x/api.git", null),
+      }),
+      makeProject("single-repo", "/work/t3code"),
+    ];
+
+    const setups = listMultiRepoProjectsToSetUp(projects, pcB);
+    expect(setups.map((setup) => setup.source.id)).toEqual(["product"]);
+    expect(setups[0]?.members).toEqual([
+      { path: "repo-0", remoteUrl: "git@github.com:x/api.git" },
+      { path: "repo-1", remoteUrl: "git@github.com:x/web.git" },
+    ]);
   });
 });

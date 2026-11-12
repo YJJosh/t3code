@@ -38,7 +38,7 @@ export function sanitizeWorklerWorkspaceName(value: string): string {
   return WINDOWS_RESERVED_NAME.test(safeName) ? `workspace-${safeName}` : safeName;
 }
 
-function mapWorklerError(
+export function mapWorklerError(
   operation: string,
   cwd: string,
   error: WorklerWorkspaceService.WorklerWorkspaceError,
@@ -58,7 +58,7 @@ function mapWorklerError(
  * Keep the clone if preservation would overwrite a source branch (including the
  * current branch needed for resume), or if it contains stashes or unbranched commits.
  */
-const keepWorklerCloneRefs = Effect.fn("WorklerGitWorkspaceDriver.keepCloneRefs")(function* (
+export const keepWorklerCloneRefs = Effect.fn("WorklerGitWorkspaceDriver.keepCloneRefs")(function* (
   git: Pick<GitVcsDriver.GitVcsDriver["Service"], "execute">,
   input: { readonly source: string; readonly clone: string },
 ) {

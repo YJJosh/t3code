@@ -2,7 +2,7 @@ import * as NodeModule from "node:module";
 import * as NodeWorkerThreads from "node:worker_threads";
 
 import * as Context from "effect/Context";
-import * as Data from "effect/Data";
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
@@ -28,11 +28,11 @@ export type WorklerWorkspaceErrorCode =
   | "UNEXPECTED";
 
 /** What one Workler library call threw, in a form that survives a worker thread. */
-class WorklerCallFailure extends Data.TaggedError("WorklerCallFailure")<{
-  readonly code: WorklerWorkspaceErrorCode;
-  readonly detail: string;
-  readonly cause?: unknown;
-}> {}
+class WorklerCallFailure extends Schema.TaggedError<WorklerCallFailure>()("WorklerCallFailure", {
+  code: Schema.String,
+  detail: Schema.String,
+  cause: Schema.optionalKey(Schema.Defect()),
+}) {}
 
 /** Runs one Workler library call. */
 export type WorklerRunner = <M extends WorklerMethod>(
@@ -40,13 +40,16 @@ export type WorklerRunner = <M extends WorklerMethod>(
   args: Parameters<WorklerLibrary[M]>,
 ) => Effect.Effect<ReturnType<WorklerLibrary[M]>, WorklerCallFailure>;
 
-export class WorklerWorkspaceError extends Data.TaggedError("WorklerWorkspaceError")<{
-  readonly operation: string;
-  readonly root: string;
-  readonly code: WorklerWorkspaceErrorCode;
-  readonly detail: string;
-  readonly cause?: unknown;
-}> {
+export class WorklerWorkspaceError extends Schema.TaggedError<WorklerWorkspaceError>()(
+  "WorklerWorkspaceError",
+  {
+    operation: Schema.String,
+    root: Schema.String,
+    code: Schema.String,
+    detail: Schema.String,
+    cause: Schema.optionalKey(Schema.Defect()),
+  },
+) {
   override get message(): string {
     return `Workler workspace operation failed in ${this.operation} (${this.root}): ${this.detail}`;
   }
@@ -114,7 +117,7 @@ export class WorklerWorkspaceService extends Context.Service<
  * Its `init` skips other repositories, and with none left writes a
  * single-repository template instead of a group.
  */
-function canWriteProjectPath(value: string): boolean {
+export function canWriteProjectPath(value: string): boolean {
   return !/[\r\n\\]/.test(value) && !(value.includes('"') && value.includes("'"));
 }
 
@@ -315,9 +318,10 @@ export const makeFromLibrary = (
 ): WorklerWorkspaceService["Service"] => makeFromRunner(runInProcess(library));
 
 /** The worker could not start or load Workler, so nothing has run yet. */
-class WorklerWorkerUnavailable extends Data.TaggedError("WorklerWorkerUnavailable")<{
-  readonly cause: unknown;
-}> {}
+class WorklerWorkerUnavailable extends Schema.TaggedError<WorklerWorkerUnavailable>()(
+  "WorklerWorkerUnavailable",
+  { cause: Schema.Defect() },
+) {}
 
 // Workler shells out to git synchronously. One call can take seconds (cloning
 // every member of a group) and even a listing runs several git commands per

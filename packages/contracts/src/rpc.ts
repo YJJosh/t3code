@@ -235,6 +235,10 @@ import {
   OrchestrationV2ThreadLaunchError,
 } from "./orchestrationV2.ts";
 import {
+  ProjectMakeMultiRepoInput,
+  ProjectMakeMultiRepoResult,
+  ProjectInspectMultiRepoFolderInput,
+  ProjectInspectMultiRepoFolderResult,
   ProjectCreateNewInput,
   ProjectCreateNewResult,
   ProjectCreateFromThreadInput,
@@ -422,6 +426,8 @@ export const WS_METHODS = {
   projectsMutate: "projects.mutate",
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
+  projectsMakeMultiRepo: "projects.makeMultiRepo",
+  projectsInspectMultiRepoFolder: "projects.inspectMultiRepoFolder",
   projectsCreateFromThread: "projects.createFromThread",
 
   shellOpenInEditor: "shell.openInEditor",
@@ -1387,6 +1393,17 @@ const WsProjectsCreateNewRpc = Rpc.make(WS_METHODS.projectsCreateNew, {
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsProjectsMakeMultiRepoRpc = Rpc.make(WS_METHODS.projectsMakeMultiRepo, {
+  payload: ProjectMakeMultiRepoInput,
+  success: ProjectMakeMultiRepoResult,
+  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+});
+const WsProjectsInspectMultiRepoFolderRpc = Rpc.make(WS_METHODS.projectsInspectMultiRepoFolder, {
+  payload: ProjectInspectMultiRepoFolderInput,
+  success: ProjectInspectMultiRepoFolderResult,
+  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+});
+
 const WsProjectsCreateFromThreadRpc = Rpc.make(WS_METHODS.projectsCreateFromThread, {
   payload: ProjectCreateFromThreadInput,
   success: ProjectCreateFromThreadResult,
@@ -2190,6 +2207,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,
   WsProjectsCreateNewRpc,
+  WsProjectsMakeMultiRepoRpc,
+  WsProjectsInspectMultiRepoFolderRpc,
   WsProjectsCreateFromThreadRpc,
   WsProjectsWriteFileRpc,
   WsProjectsMutateRpc,

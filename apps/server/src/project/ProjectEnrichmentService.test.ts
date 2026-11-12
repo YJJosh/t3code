@@ -1,3 +1,4 @@
+import * as ProjectMultiRepoResolver from "./ProjectMultiRepoResolver.ts";
 import { assert, it } from "@effect/vitest";
 import type { RepositoryIdentity } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -387,4 +388,42 @@ it.effect("keeps a lookup's identity when another root is invalidated mid-flight
       assert.equal(expired.repositoryIdentity?.canonicalKey, "example.test/v1/widgets");
     }).pipe(Effect.provide(layer(layerMetadata)));
   }),
+);
+
+it.effect("publishes group sources without the enclosing repository identity", () =>
+  Effect.gen(function* () {
+    const service = yield* ProjectEnrichment.ProjectEnrichmentService;
+    const changes = yield* service.subscribeChanges;
+    yield* service.request("/group");
+    const change = yield* PubSub.take(changes);
+    assert.isNull(change.enrichment.repositoryIdentity);
+    assert.deepEqual(change.enrichment.multiRepo?.members, [
+      { path: "api", remoteUrl: "https://host/api.git" },
+    ]);
+    assert.deepEqual(
+      (yield* service.getAvailable("/group")).multiRepo,
+      change.enrichment.multiRepo,
+    );
+  }).pipe(
+    Effect.provide(
+      layer(
+        Layer.mergeAll(
+          Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({}),
+          Layer.mock(ProjectFaviconResolver.ProjectFaviconResolver)({
+            resolvePath: () => Effect.succeed(null),
+          }),
+        ),
+      ).pipe(
+        Layer.provide(
+          Layer.mock(ProjectMultiRepoResolver.ProjectMultiRepoResolver)({
+            resolve: () =>
+              Effect.succeed({
+                multiRepo: { members: [{ path: "api", remoteUrl: "https://host/api.git" }] },
+                nestedRepositories: [],
+              }),
+          }),
+        ),
+      ),
+    ),
+  ),
 );

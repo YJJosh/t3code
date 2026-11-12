@@ -624,6 +624,14 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
   const detectRepository: VcsDriver.VcsDriver["Service"]["detectRepository"] = Effect.fn(
     "detectRepository",
   )(function* (cwd) {
+    if (
+      !(yield* fileSystem.exists(path.join(cwd, ".git")).pipe(Effect.orElseSucceed(() => false)))
+    ) {
+      const config = yield* fileSystem
+        .readFileString(path.join(cwd, ".workler"))
+        .pipe(Effect.orElseSucceed(() => ""));
+      if (/^\s*project\s/m.test(config)) return null;
+    }
     // One spawn answers all three; outside a work tree it exits non-zero or prints "false".
     const result = yield* gitCommand(
       vcsProcess,
