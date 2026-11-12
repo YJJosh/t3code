@@ -372,3 +372,17 @@ workspace when that would lose work.
 
 Generated branch names use semantic prefixes by default. Adjust branch naming under
 Settings to use a fixed prefix instead.
+
+## Multi-repository projects
+
+Choose **Add project → Multi-repo project** to use several Git repositories as one
+project. Select a folder containing repositories to group them, or an empty folder
+and supply Git URLs or `owner/repo` names to clone its members. Existing projects
+on another connected environment can supply the same member list; choose the
+folder on the destination machine rather than reusing a path from another machine.
+
+A new workspace clones every member onto the same branch, starting from each
+repository's own remote default branch (or its current local branch when there is
+no remote default). Git actions at the group root are hidden: run repository-specific
+Git operations in a member folder. Group membership lives in the folder's `.workler`
+file, so it travels with the project rather than being tied to one machine's database.

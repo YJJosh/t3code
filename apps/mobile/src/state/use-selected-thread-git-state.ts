@@ -10,7 +10,7 @@ import { useThreadSelection } from "./use-thread-selection";
 import { useSelectedThreadWorktree } from "./use-selected-thread-worktree";
 
 export function useSelectedThreadGitState() {
-  const { selectedThread } = useThreadSelection();
+  const { selectedThread, selectedThreadProject } = useThreadSelection();
   const { selectedThreadCwd } = useSelectedThreadWorktree();
 
   const selectedThreadGitTarget = {
@@ -42,6 +42,7 @@ export function useSelectedThreadGitState() {
   );
 
   return {
+    isMultiRepoProject: selectedThreadProject?.multiRepo != null,
     gitOperationLabel: gitActionState.currentLabel,
     sourceControlDiscovery,
     selectedThreadBranches,

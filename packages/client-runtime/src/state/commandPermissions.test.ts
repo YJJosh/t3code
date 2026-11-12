@@ -9,6 +9,7 @@ import { vi } from "vite-plus/test";
 import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
+  AuthFilesystemReadScope,
   AuthEnvironmentMaintainScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -159,6 +160,8 @@ describe("command permissions", () => {
   );
 
   it.effect.each([
+    { method: WS_METHODS.projectsMakeMultiRepo, scope: AuthSourceControlWriteScope },
+    { method: WS_METHODS.projectsInspectMultiRepoFolder, scope: AuthFilesystemReadScope },
     { method: WS_METHODS.serverRunStorageCleanup, scope: AuthSettingsWriteScope },
     { method: WS_METHODS.serverReclaimDatabaseSpace, scope: AuthEnvironmentMaintainScope },
   ])("requires the destination $scope grant for $method", ({ method, scope }) =>

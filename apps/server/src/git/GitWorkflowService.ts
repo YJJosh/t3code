@@ -428,9 +428,13 @@ export const make = Effect.gen(function* () {
       },
     ),
     listRefs: Effect.fn("GitWorkflowService.listRefs")(function (input) {
-      return detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
-        Effect.flatMap((isGitRepository) =>
-          isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
+      return unlessMultiRepo(
+        input.cwd,
+        () => git.listRefs(input),
+        detectGitRepositoryForCommand("GitWorkflowService.listRefs", input.cwd).pipe(
+          Effect.flatMap((isGitRepository) =>
+            isGitRepository ? git.listRefs(input) : Effect.succeed(nonRepositoryListRefs()),
+          ),
         ),
       );
     }),

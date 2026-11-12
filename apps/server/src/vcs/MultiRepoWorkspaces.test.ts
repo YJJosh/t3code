@@ -293,6 +293,14 @@ it.layer(TestLayer)("MultiRepoWorkspaces", (it) => {
       assert.deepEqual(yield* currentBranches(workspace), ["t3code/abc12345", "t3code/abc12345"]);
       const members = yield* workspaces.members(workspace);
       assert.deepEqual(members, ["api", "web"]);
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      assert.include(yield* driver.listWorktreePaths(group), workspace);
+      const refs = yield* driver.listRefs({ cwd: workspace });
+      assert.isFalse(refs.isRepo);
+      assert.deepEqual(
+        refs.refs.map((ref) => ({ name: ref.name, worktreePath: ref.worktreePath })),
+        [{ name: "t3code/abc12345", worktreePath: workspace }],
+      );
 
       const renamed = yield* workspaces.renameBranch({
         cwd: workspace,

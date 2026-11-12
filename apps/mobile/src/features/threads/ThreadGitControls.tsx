@@ -78,6 +78,7 @@ type QuickActionIcon =
   | "arrow.up.circle";
 
 export type ThreadGitMenuProps = {
+  readonly isMultiRepoProject?: boolean;
   readonly environmentId: EnvironmentId | string;
   readonly threadId: ThreadId | string;
   readonly currentBranch: string | null;
@@ -304,6 +305,7 @@ export function threadTerminalMenu(props: ThreadGitControlsProps): AppBarMenu | 
 /** The thread's git menu, shared by the thread bar and Review. */
 export function useThreadGitMenuDefinition(props: ThreadGitMenuProps): AppBarMenu | null {
   const model = useThreadGitControlModel(props);
+  if (props.isMultiRepoProject) return null;
   return {
     title: "Git controls",
     icon: "point.topleft.down.curvedto.point.bottomright.up",

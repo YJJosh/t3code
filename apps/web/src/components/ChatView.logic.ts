@@ -1294,6 +1294,7 @@ export type ComposerSendSnapshot = ReturnType<typeof snapshotComposerSend>;
 
 /** How a composer send dispatches: where it runs and whether it waits behind other work. */
 export function planComposerTurn(input: {
+  readonly isMultiRepoProject?: boolean;
   readonly messageText: string;
   readonly sendQueuesBehindSetup: boolean;
   readonly isServerThread: boolean;
@@ -1327,8 +1328,13 @@ export function planComposerTurn(input: {
   return {
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
-    missingWorktreeBaseBranch: shouldCreateWorktree && !input.activeThreadBranch,
-    baseBranchForWorktree: shouldCreateWorktree ? input.activeThreadBranch : null,
+    missingWorktreeBaseBranch:
+      shouldCreateWorktree && !input.isMultiRepoProject && !input.activeThreadBranch,
+    baseBranchForWorktree: shouldCreateWorktree
+      ? input.isMultiRepoProject
+        ? "HEAD"
+        : input.activeThreadBranch
+      : null,
     compactBeforeSend,
     turnDispatchMode:
       compactBeforeSend || input.sendQueuesBehindSetup ? ("queue" as const) : dispatchMode,
