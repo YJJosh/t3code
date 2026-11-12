@@ -648,7 +648,7 @@ const make = Effect.gen(function* () {
 
   const localChangesReason = Effect.fn("StorageCleanup.localChangesReason")(function* (
     cwd: string,
-    rules: WorktreeCleanupRules,
+    rules: Pick<WorktreeCleanupRules, "worktreeKeepWhen">,
   ) {
     const status = yield* git.execute({
       operation: "StorageCleanup.localChanges",
@@ -687,7 +687,7 @@ const make = Effect.gen(function* () {
   });
 
   const submoduleRemoval = Effect.fn("StorageCleanup.submoduleRemoval")(
-    function* (cwd: string, rules: WorktreeCleanupRules) {
+    function* (cwd: string, rules: Pick<WorktreeCleanupRules, "worktreeKeepWhen">) {
       const inspect = (args: string[], maxOutputBytes = 64 * 1024) =>
         git.execute({
           operation: "StorageCleanup.submodules",
@@ -901,6 +901,9 @@ const make = Effect.gen(function* () {
   ) {
     const status = yield* git.statusDetailsLocal(repo);
     if (!status.isRepo || status.branch !== branch || status.hasWorkingTreeChanges) return null;
+    // Deleting a clone also deletes its submodules, including their ignored files and local history.
+    const submodules = yield* submoduleRemoval(repo, { worktreeKeepWhen: "any-local-files" });
+    if (submodules.reason !== null) return null;
     const head = yield* git.resolveCommit({ cwd: repo, revision: "HEAD" });
     const ignored = yield* git.execute({
       operation: "StorageCleanup.ignoredFiles",

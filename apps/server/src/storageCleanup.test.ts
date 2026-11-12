@@ -2942,12 +2942,39 @@ describe("Workler cleanup safety on v2 threads", () => {
     (kind) =>
       runCleanupTest(
         Effect.gen(function* () {
-          const { service, worktree, fs, command } = yield* cleanupFixture(undefined, kind);
+          const { service, repo, worktree, fs, command } = yield* cleanupFixture(undefined, kind);
           const cwd = kind === "group" ? `${worktree}/web` : worktree;
+          const source = kind === "group" ? `${repo}/web` : repo;
           yield* fs.writeFileString(`${cwd}/.env`, "must survive");
           yield* service.runNow;
           expect(yield* fs.exists(worktree)).toBe(true);
           yield* fs.remove(`${cwd}/.env`);
+          yield* command(cwd, [
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            source,
+            "module",
+          ]);
+          yield* command(cwd, [
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-am",
+            "add module",
+          ]);
+          yield* command(cwd, ["push", source, "HEAD:feature"]);
+          yield* fs.writeFileString(`${cwd}/module/.env`, "submodule secret must survive");
+          expect(
+            (yield* service.runNow).entries.find((entry) => entry.path === worktree),
+          ).toMatchObject({ outcome: "kept" });
+          expect(yield* fs.readFileString(`${cwd}/module/.env`)).toBe(
+            "submodule secret must survive",
+          );
+          yield* fs.remove(`${cwd}/module/.env`);
           yield* command(cwd, [
             "-c",
             "user.name=Test",
