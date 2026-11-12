@@ -117,7 +117,13 @@ export const launcherPath = (environment: DesktopEnvironment.DesktopEnvironment[
   environment.path.join(
     environment.baseDir,
     "bin",
-    environment.platform === "win32" ? "t3.cmd" : "t3",
+    environment.isDulli
+      ? environment.platform === "win32"
+        ? "t3-dulli.cmd"
+        : "t3-dulli"
+      : environment.platform === "win32"
+        ? "t3.cmd"
+        : "t3",
   );
 
 export const install = Effect.gen(function* () {
