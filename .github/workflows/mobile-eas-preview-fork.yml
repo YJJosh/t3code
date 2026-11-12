@@ -10,8 +10,7 @@ name: Mobile EAS Preview (Fork)
 # Same-repo PRs deploy on every push while labeled, via mobile-eas-preview.yml.
 
 on:
-  pull_request_target:
-    types: [labeled]
+  workflow_dispatch: null
 
 permissions:
   contents: read
@@ -20,9 +19,8 @@ jobs:
   preview:
     name: EAS Preview
     if: >-
-      github.event.pull_request.head.repo.full_name != github.repository &&
-      github.event.label.name == '🚀 Mobile Continuous Deployment'
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+      ${{ github.repository == 'pingdotgg/t3code' && (github.event.pull_request.head.repo.full_name != github.repository && github.event.label.name == '🚀 Mobile Continuous Deployment') }}
+    runs-on: ubuntu-24.04
     concurrency:
       group: mobile-eas-preview-fork-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -81,7 +79,7 @@ jobs:
           fetch-depth: 0
           # No sparse-checkout: see mobile-eas-preview.yml.
 
-      # The comment script comes from main, not from the PR.
+          # The comment script comes from main, not from the PR.
       - name: Checkout trusted scripts
         if: steps.expo-token.outputs.present == 'true'
         uses: actions/checkout@v6
@@ -234,8 +232,8 @@ jobs:
   android-build:
     name: Android preview client
     needs: preview
-    if: needs.preview.outputs.build == 'true'
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    if: ${{ github.repository == 'pingdotgg/t3code' && (needs.preview.outputs.build == 'true') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read

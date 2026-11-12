@@ -2,6 +2,8 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 
+import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createPackageWithOptions, extractFile } from "@electron/asar";
 import { assert, it } from "@effect/vitest";
@@ -37,6 +39,12 @@ import {
   MissingMacPasskeyProvisioningProfileError,
   packWindowsServerAsar,
   preflightWindowsDesktopBuild,
+  renderMacCommunityEntitlements,
+  resolveMacCommunitySigningIdentity,
+  resolveDesktopBuildBrandMetadata,
+  resolveDesktopBuildIconAssets,
+  resolveDesktopProductName,
+  resolveGitHubPublishConfig,
   renderMacPasskeyEntitlements,
   resolveMacFileExclusions,
   resolveMacWebAuthnEntitlements,
@@ -138,6 +146,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
   readonly wslRuntime?: "valid" | "loose-server-tree" | "missing-pty" | "bad-digest";
   readonly targetArch?: "x64" | "arm64";
   readonly ptyPrebuildArch?: "x64" | "arm64";
+  readonly wslRuntimeExtraMembers?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -176,6 +185,12 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
 
   if (input.wslRuntime !== undefined) {
     const stem = wslRuntimeArchiveStem(WINDOWS_PAYLOAD_FIXTURE_VERSION, input.targetArch ?? "x64");
+    const extraMembers = [
+      ...(input.ptyPrebuildArch !== undefined
+        ? [`${stem}/node_modules/node-pty/prebuilds/linux-${input.ptyPrebuildArch}/pty.node`]
+        : []),
+      ...(input.wslRuntimeExtraMembers ?? []),
+    ];
     const sourceArchivePath =
       input.wslRuntime === "loose-server-tree"
         ? yield* makeLinuxCliArchiveFixture({
@@ -190,13 +205,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
             ...(input.wslRuntime === "missing-pty" || input.ptyPrebuildArch !== undefined
               ? { omitMembers: [`${stem}/node_modules/node-pty/build/Release/pty.node`] }
               : {}),
-            ...(input.ptyPrebuildArch !== undefined
-              ? {
-                  extraMembers: [
-                    `${stem}/node_modules/node-pty/prebuilds/linux-${input.ptyPrebuildArch}/pty.node`,
-                  ],
-                }
-              : {}),
+            ...(extraMembers.length > 0 ? { extraMembers } : {}),
           });
     const archivePath = path.join(resourcesDir, WSL_RUNTIME_ARCHIVE_NAME);
     const hashPath = path.join(resourcesDir, WSL_RUNTIME_ARCHIVE_HASH_NAME);
@@ -377,7 +386,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   );
 
   it.effect(
-    "builds web, server and desktop with the resolved version, restores changed manifests and preserves edits to matching ones",
+    "builds branded web, server and desktop with the resolved version, restores changed manifests and preserves edits to matching ones",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -413,16 +422,17 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             process.env.APP_VERSION,
             require("./apps/web/package.json").version,
             require("./apps/server/package.json").version,
-            require("./apps/desktop/package.json").version
+            require("./apps/desktop/package.json").version,
+            process.env.VITE_DESKTOP_BUILD_BRAND
           ].join("\\n"));
           const manifest = require("./${matchingPath}");
           manifest.description = "edited during compilation";
           require("node:fs").writeFileSync("${matchingPath}", JSON.stringify(manifest) + "\\n");`,
         );
-        yield* buildDesktopBundles(root, version, false);
+        yield* buildDesktopBundles(root, version, false, "dulli");
         assert.equal(
           yield* fs.readFileString(path.join(root, "version.txt")),
-          [version, version, version, version].join("\n"),
+          [version, version, version, version, "dulli"].join("\n"),
         );
         for (const { relativePath, contents } of afterBuild) {
           assert.equal(yield* fs.readFileString(path.join(root, relativePath)), contents);
@@ -494,6 +504,49 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       for (const relativePath of releasePackageFiles.slice(1)) {
         assert.equal(yield* fs.readFileString(path.join(root, relativePath)), original);
       }
+    }),
+  );
+
+  it("uses the Dulli product name for fork builds", () => {
+    assert.equal(resolveDesktopProductName("0.0.36-pi.1", "dulli"), "T3 Dulli");
+  });
+
+  it("resolves the complete isolated Dulli package identity", () => {
+    assert.deepStrictEqual(resolveDesktopBuildBrandMetadata("dulli", "0.0.36-pi.1"), {
+      appId: "com.yjjosh.t3dulli",
+      artifactName: "T3-Dulli-${version}-${arch}.${ext}",
+      author: "YJJosh",
+      description: "T3 Dulli desktop build",
+      executableName: "t3-dulli-clean",
+      linuxDesktopEntryName: "t3-dulli-clean.desktop",
+      linuxWmClass: "t3-dulli",
+      packageName: "t3-dulli",
+      productName: "T3 Dulli",
+      updateRepository: "YJJosh/t3code",
+      usesPrereleaseFeed: true,
+    });
+  });
+
+  it("uses the Dulli artwork for fork builds", () => {
+    assert.deepStrictEqual(resolveDesktopBuildIconAssets("0.0.36-pi.1", "dulli"), {
+      macIconPng: BRAND_ASSET_PATHS.dulliMacIconPng,
+      linuxIconPng: BRAND_ASSET_PATHS.dulliLinuxIconPng,
+      windowsIconIco: BRAND_ASSET_PATHS.dulliWindowsIconIco,
+    });
+  });
+
+  it.effect("defaults Dulli desktop publishing to the fork prerelease feed", () =>
+    Effect.gen(function* () {
+      const dulliConfig = yield* resolveGitHubPublishConfig("latest", {
+        defaultRepository: "YJJosh/t3code",
+        releaseType: "prerelease",
+      }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))));
+      assert.deepStrictEqual(dulliConfig, {
+        provider: "github",
+        owner: "YJJosh",
+        repo: "t3code",
+        releaseType: "prerelease",
+      });
     }),
   );
 
@@ -591,6 +644,78 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         );
       }
     }),
+  );
+
+  it.effect("builds Dulli artifacts with isolated identity and a prerelease feed", () =>
+    Effect.gen(function* () {
+      const linux = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "0.0.40-dulli.2",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "dulli",
+      );
+      const mac = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.40-dulli.2",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "dulli",
+      );
+
+      assert.equal(linux.appId, "com.yjjosh.t3dulli");
+      assert.equal(linux.productName, "T3 Dulli");
+      assert.equal(linux.artifactName, "T3-Dulli-${version}-${arch}.${ext}");
+      assert.deepStrictEqual(linux.publish, [
+        {
+          provider: "github",
+          owner: "YJJosh",
+          repo: "t3code",
+          releaseType: "prerelease",
+        },
+      ]);
+      assert.deepStrictEqual(linux.linux, {
+        target: ["AppImage", "deb"],
+        executableName: "t3-dulli-clean",
+        synopsis: "Desktop GUI for coding agents",
+        maintainer: "YJJosh",
+        icon: "icons",
+        category: "Development",
+        desktop: { entry: { StartupWMClass: "t3-dulli" } },
+      });
+      assert.deepStrictEqual(mac.dmg, {
+        title: "T3 Dulli 0.0.40-dulli.2 Installer",
+        background: "dmg/dmg-background-dulli.png",
+        window: { width: 640, height: 432 },
+        contents: [
+          { x: 166, y: 214, type: "file" },
+          { x: 474, y: 214, type: "link", path: "/Applications" },
+        ],
+        iconSize: 120,
+        iconTextSize: 12,
+      });
+      const macOptions = mac.mac as Record<string, unknown>;
+      const macUsageDescriptions = macOptions.extendInfo as Record<string, unknown>;
+      assert.equal(
+        macUsageDescriptions.NSCameraUsageDescription,
+        "T3 Dulli lets commands run by terminals and coding agents use the camera.",
+      );
+      assert.equal(
+        macUsageDescriptions.NSMicrophoneUsageDescription,
+        "T3 Dulli lets commands run by terminals and coding agents use the microphone.",
+      );
+      assert.deepStrictEqual(macOptions.protocols, [
+        { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
+      ]);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
   it("stages only the externals of both bundles in merged packages", () => {
@@ -943,6 +1068,51 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.deepStrictEqual(secondAsar, firstAsar);
       }),
     ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+  );
+
+  it.effect("accepts dependency bin.mjs files in the embedded archive's node_modules", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const stem = wslRuntimeArchiveStem(WINDOWS_PAYLOAD_FIXTURE_VERSION, "x64");
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          wslRuntime: "valid",
+          wslRuntimeExtraMembers: [`${stem}/node_modules/yaml/bin.mjs`],
+        });
+        const result = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+          expectWslRuntime: true,
+        });
+
+        assert.equal(result.packagedAppDir, fixture.packagedAppDir);
+      }),
+    ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+  );
+
+  it.effect("rejects an embedded archive that carries a loose server bundle", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const stem = wslRuntimeArchiveStem(WINDOWS_PAYLOAD_FIXTURE_VERSION, "x64");
+        const fixture = yield* makeWindowsPayloadFixture({
+          copyUnpackedNatives: true,
+          wslRuntime: "valid",
+          wslRuntimeExtraMembers: [`${stem}/apps/server/dist/bin.mjs`],
+        });
+        const error = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+          expectWslRuntime: true,
+        }).pipe(Effect.flip);
+
+        assert.instanceOf(error, WindowsPackagedPayloadValidationError);
+        assert.equal(error.reason, "wsl-runtime-invalid");
+      }),
+    ),
   );
 
   it.effect.each(["x64", "arm64"] as const)(
@@ -1452,6 +1622,34 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
   });
 
+  it("resolves an optional persistent macOS community signing identity", () => {
+    assert.equal(
+      resolveMacCommunitySigningIdentity({
+        T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY: " 0123456789ABCDEF0123456789ABCDEF01234567 ",
+      }),
+      "0123456789ABCDEF0123456789ABCDEF01234567",
+    );
+    assert.isUndefined(
+      resolveMacCommunitySigningIdentity({
+        T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY: "   ",
+      }),
+    );
+  });
+
+  it("renders the runtime entitlements required by community Electron signatures", () => {
+    const entitlements = renderMacCommunityEntitlements();
+
+    assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
+    assert.include(
+      entitlements,
+      "<key>com.apple.security.cs.allow-unsigned-executable-memory</key>",
+    );
+    assert.include(entitlements, "<key>com.apple.security.cs.disable-library-validation</key>");
+    assert.match(entitlements, /<key>com\.apple\.security\.device\.camera<\/key>\s*<true\/>/u);
+    assert.match(entitlements, /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/u);
+    assert.notInclude(entitlements, "com.apple.developer.team-identifier");
+  });
+
   it("normalizes explicit macOS passkey RP domains and renders required entitlements", () => {
     const configuration = resolveMacPasskeySigningConfiguration({
       T3CODE_APPLE_TEAM_ID: "ABC1234567",
@@ -1615,6 +1813,37 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.notInclude(error.message, secret);
   });
 
+  it.effect("pins persistent community signing for Dulli macOS builds", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.36-pi.1",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "dulli",
+        {
+          identity: "0123456789ABCDEF0123456789ABCDEF01234567",
+          entitlementsPath: "/tmp/entitlements.mac.plist",
+        },
+      );
+
+      const mac = config.mac as Record<string, unknown>;
+      assert.equal(config.forceCodeSigning, true);
+      assert.equal(mac.identity, "0123456789ABCDEF0123456789ABCDEF01234567");
+      assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
+      assert.equal(mac.entitlementsInherit, "/tmp/entitlements.mac.plist");
+      assert.equal(mac.notarize, false);
+      assert.notProperty(mac, "sign");
+      assert.deepStrictEqual(mac.protocols, [
+        { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
+      ]);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
   it.effect("signs Windows builds with signtool on Windows and the jsign hook elsewhere", () =>
     Effect.gen(function* () {
       const signedWinConfig = (hostPlatform: string) =>
@@ -1688,6 +1917,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       for (const platform of ["linux", "win"] as const) {
         const error = yield* Effect.flip(
           resolveBuildOptions({
+            brand: Option.none(),
             platform: Option.some(platform),
             target: Option.none(),
             arch: Option.some("universal"),
@@ -1712,6 +1942,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it.effect("preserves explicit false boolean flags over true env defaults", () =>
     Effect.gen(function* () {
       const resolved = yield* resolveBuildOptions({
+        brand: Option.none(),
         platform: Option.some("mac"),
         target: Option.none(),
         arch: Option.some("arm64"),
@@ -1729,6 +1960,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
+                T3CODE_DESKTOP_BRAND: "dulli",
                 T3CODE_DESKTOP_SKIP_BUILD: "true",
                 T3CODE_DESKTOP_KEEP_STAGE: "true",
                 T3CODE_DESKTOP_SIGNED: "true",
@@ -1740,6 +1972,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       );
 
+      assert.equal(resolved.brand, "dulli");
       assert.equal(resolved.skipBuild, false);
       assert.equal(resolved.keepStage, false);
       assert.equal(resolved.signed, false);

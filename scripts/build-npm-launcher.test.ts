@@ -127,9 +127,9 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         const manifest = yield* decodeManifest(
           yield* fs.readFileString(path.join(output.packageDir, "package.json")),
         );
-        assert.equal(manifest.name, "t3");
+        assert.equal(manifest.name, "t3-dulli");
         assert.equal(manifest.version, VERSION);
-        assert.deepStrictEqual(manifest.bin, { t3: "./bin/t3.mjs" });
+        assert.deepStrictEqual(manifest.bin, { "t3-dulli": "./bin/t3.mjs" });
         assert.isUndefined(manifest.dependencies);
         assert.isUndefined(manifest.optionalDependencies);
         assert.isAbove(npmReleaseDatabaseMigration(manifest) ?? 0, 0);
@@ -153,7 +153,7 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
           T3CODE_TEST_CALLS: path.join(root, "calls"),
           T3CODE_RELEASE_BASE_URL: release.baseUrl,
         };
-        const launcher = path.join(packageDir, "bin/t3.mjs");
+        const launcher = yield* fs.realPath(path.join(packageDir, "bin/t3.mjs"));
         const first = yield* run(process.execPath, [launcher, "serve", "a b"], {
           cwd: root,
           env,

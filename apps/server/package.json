@@ -1,6 +1,7 @@
 {
   "name": "t3",
   "version": "0.1.8",
+  "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -8,7 +9,7 @@
     "directory": "apps/server"
   },
   "bin": {
-    "t3": "./dist/bin.mjs"
+    "t3-dulli": "./dist/bin.mjs"
   },
   "files": [
     "dist"

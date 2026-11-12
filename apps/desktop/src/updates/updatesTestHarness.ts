@@ -20,6 +20,7 @@ import * as DesktopUpdates from "./DesktopUpdates.ts";
 export const flushCallbacks = Effect.yieldNow;
 
 export interface UpdatesHarnessOptions {
+  readonly appName?: string;
   readonly checkForUpdates?: Effect.Effect<
     void,
     ElectronUpdater.ElectronUpdaterCheckForUpdatesError
@@ -50,6 +51,8 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   let quitAndInstallCount = 0;
   let downloadCount = 0;
   let allowDowngrade = false;
+  let updaterChannel = "latest";
+  let allowsPrerelease = false;
   const checkAllowedDowngrade: boolean[] = [];
   let fullChangelog = false;
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
@@ -81,8 +84,14 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       }),
     setAutoDownload: () => Effect.void,
     setAutoInstallOnAppQuit: () => Effect.void,
-    setChannel: () => Effect.void,
-    setAllowPrerelease: () => Effect.void,
+    setChannel: (channel) =>
+      Effect.sync(() => {
+        updaterChannel = channel;
+      }),
+    setAllowPrerelease: (value) =>
+      Effect.sync(() => {
+        allowsPrerelease = value;
+      }),
     allowDowngrade: Effect.sync(() => allowDowngrade),
     setAllowDowngrade: (value) =>
       Effect.sync(() => {
@@ -173,6 +182,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   );
 
   const layerEnvironment = DesktopEnvironment.layer({
+    ...(options.appName === undefined ? {} : { appName: options.appName }),
     dirname: "/repo/apps/desktop/src",
     homeDirectory: `/tmp/t3-desktop-updates-home-${process.pid}`,
     platform: options.platform ?? "darwin",
@@ -294,6 +304,8 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
 
   return {
     layer,
+    updaterChannel: () => updaterChannel,
+    allowsPrerelease: () => allowsPrerelease,
     checkCount: () => checkCount,
     quitAndInstalls: () => quitAndInstallCount,
     installSteps,

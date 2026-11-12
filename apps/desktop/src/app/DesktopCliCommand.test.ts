@@ -15,12 +15,19 @@ import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
 const environmentFor = (
   path: Path.Path,
-  input: { home: string; baseDir: string; platform?: NodeJS.Platform; isPackaged?: boolean },
+  input: {
+    home: string;
+    baseDir: string;
+    platform?: NodeJS.Platform;
+    isPackaged?: boolean;
+    isDulli?: boolean;
+  },
 ) =>
   DesktopEnvironment.DesktopEnvironment.of({
     path,
     platform: input.platform ?? "linux",
     isPackaged: input.isPackaged ?? true,
+    isDulli: input.isDulli ?? false,
     homeDirectory: input.home,
     baseDir: input.baseDir,
     stateDir: path.join(input.baseDir, "userdata"),
@@ -35,6 +42,7 @@ const commandIn = (
     baseDir?: string;
     platform?: NodeJS.Platform;
     isPackaged?: boolean;
+    isDulli?: boolean;
     env?: NodeJS.ProcessEnv;
   },
   spawner?: ChildProcessSpawner.ChildProcessSpawner["Service"],
@@ -94,6 +102,28 @@ const fakePowerShell = (initial: string, inherited: Record<string, string> = {})
 };
 
 it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
+  it.effect("installs and removes Dulli's command without replacing upstream t3", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped();
+      const bin = path.join(home, ".local/bin");
+      yield* fs.makeDirectory(bin, { recursive: true });
+      const upstream = path.join(bin, "t3");
+      yield* fs.writeFileString(upstream, "upstream command");
+      const command = yield* commandIn({
+        home,
+        baseDir: path.join(home, ".t3-dulli"),
+        isDulli: true,
+      });
+      yield* command.installOnFirstLaunch;
+      expect((yield* command.state).installedPath).toBe(path.join(bin, "t3-dulli"));
+      yield* command.uninstall;
+      expect(yield* fs.exists(path.join(bin, "t3-dulli"))).toBe(false);
+      expect(yield* fs.readFileString(upstream)).toBe("upstream command");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("links the launcher onto PATH and removes only that link", () =>
     Effect.gen(function* () {
       const env: NodeJS.ProcessEnv = { PATH: "", SHELL: "/bin/zsh" };

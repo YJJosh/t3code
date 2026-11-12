@@ -31,6 +31,7 @@ const {
 
 vi.mock("electron", () => ({
   app: {
+    name: "T3 Code",
     setDesktopName: setDesktopNameMock,
     getVersion: () => "0.0.37",
     isPackaged: true,
@@ -243,6 +244,12 @@ describe("DesktopPreReadyPlatform", () => {
         });
         assert.deepEqual(events, ["pre-ready", "clerk"]);
         assert.equal(registerSchemesMock.mock.calls.length, 1);
+        assert.deepEqual(
+          registerSchemesMock.mock.calls[0]?.[0].map(
+            (registration: { readonly scheme: string }) => registration.scheme,
+          ),
+          ["t3code", "t3code-dev", "t3dulli"],
+        );
         assert.equal(appendSwitchMock.mock.calls.length, 0);
         assert.equal(setDesktopNameMock.mock.calls.length, 0);
       }),

@@ -35,9 +35,21 @@ export const BRAND_ASSET_PATHS = {
   developmentWebAppleTouchIconPng: "assets/dev/blueprint-web-apple-touch-180.png",
   developmentWebIcon192Png: "assets/dev/blueprint-web-icon-192x192.png",
   developmentWebIcon512Png: "assets/dev/blueprint-web-icon-512x512.png",
+
+  dulliMacIconPng: "assets/dulli/dulli-macos-1024.png",
+  dulliLinuxIconPng: "assets/dulli/dulli-universal-1024.png",
+  dulliWindowsIconIco: "assets/dulli/dulli-windows.ico",
+  dulliWebFaviconIco: "assets/dulli/dulli-web-favicon.ico",
+  dulliWebFavicon16Png: "assets/dulli/dulli-web-favicon-16x16.png",
+  dulliWebFavicon32Png: "assets/dulli/dulli-web-favicon-32x32.png",
+  dulliWebAppleTouchIconPng: "assets/dulli/dulli-web-apple-touch-180.png",
+  dulliWebIcon192Png: "assets/dulli/dulli-web-icon-192x192.png",
+  dulliWebIcon512Png: "assets/dulli/dulli-web-icon-512x512.png",
+  dulliAndroidMarkPng: "assets/dulli/dulli-android-mark-432.png",
+  dulliAndroidNotificationPng: "assets/dulli/dulli-android-notification-96.png",
 } as const;
 
-export type WebAssetBrand = "development" | "nightly" | "production";
+export type WebAssetBrand = "development" | "nightly" | "production" | "dulli";
 
 export const WEB_ASSET_CHANNELS = ["latest", "nightly"] as const;
 
@@ -85,6 +97,14 @@ const WEB_ICON_SOURCE_PATHS_BY_BRAND = {
     appleTouchIconPng: BRAND_ASSET_PATHS.productionWebAppleTouchIconPng,
     icon192Png: BRAND_ASSET_PATHS.productionWebIcon192Png,
     icon512Png: BRAND_ASSET_PATHS.productionWebIcon512Png,
+  },
+  dulli: {
+    faviconIco: BRAND_ASSET_PATHS.dulliWebFaviconIco,
+    favicon16Png: BRAND_ASSET_PATHS.dulliWebFavicon16Png,
+    favicon32Png: BRAND_ASSET_PATHS.dulliWebFavicon32Png,
+    appleTouchIconPng: BRAND_ASSET_PATHS.dulliWebAppleTouchIconPng,
+    icon192Png: BRAND_ASSET_PATHS.dulliWebIcon192Png,
+    icon512Png: BRAND_ASSET_PATHS.dulliWebIcon512Png,
   },
 } as const satisfies Record<WebAssetBrand, Record<keyof typeof WEB_ICON_TARGET_FILENAMES, string>>;
 

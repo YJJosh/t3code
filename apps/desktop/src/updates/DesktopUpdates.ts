@@ -518,8 +518,10 @@ export const make = Effect.gen(function* () {
     channel: DesktopUpdateChannel,
   ) {
     yield* Effect.annotateCurrentSpan({ channel });
-    const allowsPrerelease = channel === "nightly";
-    yield* electronUpdater.setChannel(channel);
+    const allowsPrerelease = channel === "nightly" || environment.allowsPrereleaseUpdates;
+    yield* electronUpdater.setChannel(
+      environment.isDulli && channel === "latest" ? "dulli" : channel,
+    );
     yield* electronUpdater.setAllowPrerelease(allowsPrerelease);
     // An older build can lack migrations this one ran. Only a guarded track switch's own check
     // may offer one.

@@ -11,12 +11,13 @@ function normalizeConfiguredBaseDir(t3Home: Option.Option<string>): Option.Optio
 }
 
 export function resolveDesktopBaseDir(input: {
+  readonly defaultBaseDirName?: string;
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
   readonly t3Home: Option.Option<string>;
 }): string {
   return Option.getOrElse(normalizeConfiguredBaseDir(input.t3Home), () =>
-    input.joinPath(input.homeDirectory, ".t3"),
+    input.joinPath(input.homeDirectory, input.defaultBaseDirName ?? ".t3"),
   );
 }
 

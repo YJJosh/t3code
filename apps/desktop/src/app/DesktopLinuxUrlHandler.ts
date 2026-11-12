@@ -121,7 +121,7 @@ export const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const assets = yield* DesktopAssets.DesktopAssets;
 
-  const scheme = ElectronProtocol.getDesktopScheme(environment.isDevelopment);
+  const scheme = ElectronProtocol.getDesktopScheme(environment.isDevelopment, environment.isDulli);
   const desktopEntryPath = environment.path.join(
     environment.linuxApplicationsDir,
     environment.linuxDesktopEntryName,
@@ -287,7 +287,7 @@ export const make = Effect.gen(function* () {
   );
 
   const register = Effect.gen(function* () {
-    if (environment.platform !== "linux") {
+    if (environment.platform !== "linux" || environment.isDulli) {
       return;
     }
     yield* writeDesktopEntry;

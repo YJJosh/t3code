@@ -9,12 +9,7 @@ name: Clean up relay preview
 # come from the default branch. No PR code runs here, which is why it needs no
 # reviewer approval and why a PR cannot edit its own teardown to reach secrets.
 on:
-  pull_request_target:
-    types: [unlabeled, closed]
-  schedule:
-    - cron: "17 7 * * *"
-  workflow_dispatch:
-
+  workflow_dispatch: null
 permissions:
   contents: read
   issues: read
@@ -24,12 +19,10 @@ jobs:
   cleanup_pr:
     name: Tear down relay preview
     if: >-
-      github.ref == 'refs/heads/main' &&
-      github.event_name == 'pull_request_target' &&
-      (
+      ${{ github.repository == 'pingdotgg/t3code' && (github.ref == 'refs/heads/main' && github.event_name == 'pull_request_target' && (
         (github.event.action == 'unlabeled' && github.event.label.name == 'relay:preview') ||
         (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'relay:preview'))
-      )
+      )) }}
     # Job-level so that events which skip this job, such as a closed PR without
     # the label, never take the group's pending slot. GitHub replaces a pending
     # run in a group with a newer one, which would drop a queued teardown.
@@ -40,7 +33,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment:
       name: relay-preview-cleanup
@@ -100,8 +93,8 @@ jobs:
 
   list_closed_previews:
     name: List closed relay previews
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request_target'
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.ref == 'refs/heads/main' && github.event_name != 'pull_request_target') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       numbers: ${{ steps.list.outputs.numbers }}
@@ -124,8 +117,8 @@ jobs:
   sweep_pr:
     name: Retry teardown for PR ${{ matrix.number }}
     needs: list_closed_previews
-    if: github.ref == 'refs/heads/main' && needs.list_closed_previews.outputs.numbers != '[]'
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.ref == 'refs/heads/main' && needs.list_closed_previews.outputs.numbers != '[]') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false

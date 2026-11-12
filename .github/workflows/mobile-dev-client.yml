@@ -13,46 +13,7 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && format('Dev client {0}
 #   waits for the client in the cache. The run name is how it finds its run.
 # - pull_request (this file or the script): builds without sharing, as a check.
 on:
-  push:
-    branches: [main]
-    paths:
-      - apps/mobile/**
-      - packages/client-runtime/**
-      - packages/contracts/**
-      - packages/shared/**
-      - assets/**
-      - patches/**
-      - scripts/mobile-native-client.ts
-      - package.json
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - .github/workflows/mobile-dev-client.yml
-  pull_request:
-    paths:
-      - .github/workflows/mobile-dev-client.yml
-      - scripts/mobile-native-client.ts
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: Commit to build (default main)
-        required: false
-        type: string
-      platform:
-        description: Platform
-        required: true
-        default: android
-        type: choice
-        options: [android, ios]
-      abi:
-        description: Android ABI of the device
-        required: true
-        default: x86_64
-        type: choice
-        options: [x86_64, arm64-v8a]
-      fingerprint:
-        description: Native fingerprint the caller expects; the run fails when the commit's differs
-        required: false
-        type: string
+  workflow_dispatch: null
 
 permissions:
   contents: read
@@ -60,8 +21,8 @@ permissions:
 jobs:
   android:
     name: Android ${{ matrix.abi }}
-    if: github.repository == 'pingdotgg/t3code' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'android')
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.repository == 'pingdotgg/t3code' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'android')) }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -218,8 +179,8 @@ jobs:
 
   ios:
     name: iOS simulator
-    if: github.repository == 'pingdotgg/t3code' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'ios')
-    runs-on: blacksmith-12vcpu-macos-26
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.repository == 'pingdotgg/t3code' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'ios')) }}
+    runs-on: macos-26
     timeout-minutes: 60
     concurrency:
       group: mobile-dev-client-ios-${{ github.event_name == 'pull_request' && github.event.pull_request.number || inputs.fingerprint || github.sha }}

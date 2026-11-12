@@ -3,6 +3,7 @@ import * as NodePath from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 
 import {
+  resolveEarlyLinuxElectronOptions,
   restoreEarlyLinuxDeviceScaleFactor,
   resolveEarlyLinuxPasswordStorePreference,
   resolveLinuxDisableFeaturesSwitch,
@@ -50,6 +51,27 @@ describe("DesktopEarlyElectronStartup", () => {
     });
 
     assert.equal(preference, "auto");
+  });
+
+  it("uses Dulli state and WM class before packaged Linux startup", () => {
+    const options = resolveEarlyLinuxElectronOptions({
+      appName: "T3 Dulli",
+      env: {},
+      homeDirectory: "/home/user",
+      joinPath,
+      readFileString: (path) => {
+        assert.equal(path, "/home/user/.t3-dulli/userdata/desktop-settings.json");
+        return JSON.stringify({ linuxPasswordStore: "kwallet6" });
+      },
+    });
+
+    assert.deepEqual(options, {
+      isDevelopment: false,
+      isDulli: true,
+      linuxDesktopEntryName: "t3-dulli-clean.desktop",
+      linuxWmClass: "t3-dulli",
+      passwordStore: "kwallet6",
+    });
   });
 
   describe("resolveLinuxDisableFeaturesSwitch", () => {
