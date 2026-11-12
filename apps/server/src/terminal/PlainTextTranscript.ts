@@ -147,10 +147,10 @@ export class PlainTextTranscript {
         return;
       }
       case "G":
-        this.column = count - 1;
+        this.column = Math.min(MAX_LINE_CHARS - 1, count - 1);
         return;
       case "C":
-        this.column += count;
+        this.column = Math.min(MAX_LINE_CHARS - 1, this.column + count);
         return;
       case "D":
         this.column = Math.max(0, this.column - count);

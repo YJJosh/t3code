@@ -40,6 +40,13 @@ describe("PlainTextTranscript", () => {
     });
   });
 
+  it.each(["\x1b[10000G", "\x1b[10000C"])("bounds cursor movement %j", (move) => {
+    const transcript = new PlainTextTranscript();
+    transcript.append(`${move}Z\n`);
+    assert.isAtMost(transcript.end, 4_098);
+    assert.include(transcript.read(undefined, 10_000).text, "Z");
+  });
+
   it("caps reads in bytes and keeps the end", () => {
     const transcript = new PlainTextTranscript();
     transcript.append(`${"a".repeat(300)}\n${"é".repeat(10)}\n`);
