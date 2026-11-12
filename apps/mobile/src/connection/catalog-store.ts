@@ -83,12 +83,17 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
   });
 
   // Native mirroring failures must not prevent loading the authoritative secure catalog.
-  const notify = (catalog: ConnectionCatalogDocumentType) =>
-    Effect.try(() => onChange(catalog)).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("Mobile connection catalog listener failed", error),
+  const notify = Effect.fn("mobile.connectionStorage.notifyCatalog")(
+    (catalog: ConnectionCatalogDocumentType) =>
+      Effect.try({
+        try: () => onChange(catalog),
+        catch: (cause) => catalogError("mirror", cause),
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("Mobile connection catalog listener failed", error),
+        ),
       ),
-    );
+  );
 
   const loadUnlocked = Effect.fn("mobile.connectionStorage.loadCatalog")(function* () {
     const cached = yield* Ref.get(state);
