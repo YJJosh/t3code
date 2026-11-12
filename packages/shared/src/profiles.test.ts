@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import { selectProfile, supportsProfiles } from "./profiles.ts";
 
 it("applies portable provider instances, warns on fallback, and keeps explicit opt-outs", () => {
@@ -7,9 +7,11 @@ it("applies portable provider instances, warns on fallback, and keeps explicit o
     {
       instanceId: ProviderInstanceId.make("claudeAgent"),
       driver: ProviderDriverKind.make("claudeAgent"),
-      models: [{ slug: "haiku" }],
+      models: [
+        { slug: "haiku", name: "Haiku", isCustom: false, capabilities: { optionDescriptors: [] } },
+      ],
     },
-  ] as ReadonlyArray<ServerProvider>;
+  ] satisfies Parameters<typeof selectProfile>[3];
   const current = { instanceId: ProviderInstanceId.make("codex"), model: "luna" };
   const profile = {
     prompts: [],

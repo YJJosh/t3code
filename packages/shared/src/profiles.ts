@@ -8,7 +8,7 @@ export function selectProfile(
   current: ModelSelection,
   id: string | null,
   profile: Profile | undefined,
-  providers: ReadonlyArray<ServerProvider>,
+  providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver" | "models">>,
 ): { selection: ModelSelection; notice?: string } {
   if (id === null || profile === undefined) return { selection: { ...current, profileId: id } };
   const named = profile.provider;
