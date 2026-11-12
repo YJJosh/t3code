@@ -774,6 +774,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["default workspace mode draft local worktree"],
   },
   {
+    id: "workler-workspaces",
+    title: "Create new workspaces with Workler",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["fork features workspace clone copy link rules git worktree"],
+  },
+  {
     id: "worktree-submodules",
     title: "Submodules",
     to: "/settings/worktrees",

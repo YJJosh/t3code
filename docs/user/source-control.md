@@ -355,3 +355,20 @@ the scope and merge strategy. GitHub rebases the remaining stack after merging.
 It can rewrite history and restart checks. If a layer fails, earlier updates remain; resolve that
 layer before retrying. GitHub may require manual conflict resolution after a lower layer is amended,
 even when its changes look independent. Stack actions require an environment that supports them.
+
+## Workler workspaces
+
+New threads default to an isolated Workler workspace. Workler creates an independent
+clone under the project's `.worktrees` directory and applies `.workler` copy/link rules.
+The normal project setup script still runs; Workler setup commands do not run twice.
+New branches start from the fetched remote by default. Choose the base branch in the
+composer, or change **Settings → Worktrees → Start from remote** to use local commits.
+
+To use regular Git worktrees instead, turn off **Settings → General → Fork features →
+Create new workspaces with Workler**. Explicit worktree paths always use Git. Existing
+Workler workspaces remain accessible after disabling the setting. Removal preserves
+branches, tags and checkpoints in the source repository, and refuses to delete a
+workspace when that would lose work.
+
+Generated branch names use semantic prefixes by default. Adjust branch naming under
+Settings to use a fixed prefix instead.
