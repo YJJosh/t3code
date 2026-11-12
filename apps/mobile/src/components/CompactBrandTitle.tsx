@@ -6,7 +6,11 @@ import { Platform, View } from "react-native";
 import { AppText as Text } from "./ui/AppText";
 import { T3Wordmark } from "./T3Wordmark";
 import { IPAD_HOME_TITLE_OFFSET } from "../lib/layoutMetrics";
-import { resolveMobileStageLabel } from "../lib/mobileBranding";
+import {
+  resolveMobileBrandName,
+  resolveMobileBrandWord,
+  resolveMobileStageLabel,
+} from "../lib/mobileBranding";
 import { useAndroidControlSizing } from "./ui/useAndroidControlSizing";
 
 const BRAND_MAX_FONT_SCALE = 1.4;
@@ -39,7 +43,10 @@ export function CompactBrandTitle(
         props.fit && showStage ? (event) => setFullWidth(event.nativeEvent.layout.width) : undefined
       }
       aria-level={1}
-      accessibilityLabel={props.accessibilityLabel ?? "T3 Code, Threads"}
+      accessibilityLabel={
+        props.accessibilityLabel ??
+        `${resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand)}, Threads`
+      }
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"
@@ -57,7 +64,7 @@ export function CompactBrandTitle(
         className="font-t3-medium text-foreground-muted"
         style={{ fontSize: 21 * scale, letterSpacing: -0.5 * scale }}
       >
-        Code
+        {resolveMobileBrandWord(Constants.expoConfig?.extra?.appBrand)}
       </Text>
       {showStage ? (
         <View

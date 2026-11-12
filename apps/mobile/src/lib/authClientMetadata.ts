@@ -2,12 +2,17 @@ import type { AuthClientPresentationMetadata } from "@t3tools/contracts";
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 
-export function authClientMetadata(appVersion?: string): AuthClientPresentationMetadata {
+import { resolveMobileBrandName } from "./mobileBranding";
+
+export function authClientMetadata(
+  appVersion?: string,
+  appBrand: unknown = process.env.EXPO_PUBLIC_T3CODE_MOBILE_BRAND,
+): AuthClientPresentationMetadata {
   const osMajorVersion = Number.parseInt(Device.osVersion?.split(".")[0] ?? "", 10);
   const deviceModel = Device.modelName?.trim();
 
   return {
-    label: "T3 Code Mobile",
+    label: `${resolveMobileBrandName(appBrand)} Mobile`,
     deviceType:
       Device.deviceType === Device.DeviceType.TABLET
         ? "tablet"

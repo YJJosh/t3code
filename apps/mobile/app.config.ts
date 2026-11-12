@@ -3,6 +3,8 @@ import type { ExpoConfig } from "expo/config";
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
+import { resolveDulliForkVersion } from "./scripts/dulli-fork-version.ts";
+
 type AppVariant = "development" | "preview" | "production";
 
 const repoEnv = loadRepoEnv();
@@ -117,7 +119,34 @@ function resolveAppVariant(value: string | undefined): AppVariant {
   }
 }
 
+const forkBrand = repoEnv.T3CODE_MOBILE_FORK_BRAND?.trim();
+if (forkBrand && forkBrand !== "dulli") {
+  throw new Error(`Unknown T3CODE_MOBILE_FORK_BRAND '${forkBrand}'; only 'dulli' is supported.`);
+}
+const dulliFork =
+  forkBrand === "dulli"
+    ? {
+        appName: "T3 Dulli",
+        scheme: "t3dulli",
+        androidPackage: "com.yjjosh.t3dulli",
+        ...resolveDulliForkVersion(repoEnv.T3CODE_MOBILE_FORK_VERSION),
+      }
+    : undefined;
+const DULLI_ASSETS = {
+  appIcon: "./assets/dulli/dulli-universal-1024.png",
+  iosIcon: "./assets/dulli/dulli-universal-1024.png",
+  splashIcon: "./assets/dulli/dulli-universal-1024.png",
+  androidSplashIcon: "./assets/dulli/dulli-universal-1024.png",
+  androidAdaptiveForeground: "./assets/dulli/dulli-android-mark-432.png",
+  androidAdaptiveBackgroundColor: "#000000",
+  androidAdaptiveBackgroundImage: undefined,
+  androidMonochromeIcon: "./assets/dulli/dulli-android-mark-432.png",
+  androidNotificationIcon: "./assets/dulli/dulli-android-notification-96.png",
+  androidNotificationColor: "#FFFFFF",
+} as const;
+
 const variant = VARIANT_CONFIG[APP_VARIANT];
+const assets = dulliFork === undefined ? variant.assets : DULLI_ASSETS;
 // Copied thread links open the app. app.t3.codes/.well-known lists every variant's identifiers.
 const HOSTED_APP_HOST = "app.t3.codes";
 const iosBundleIdentifier = isIosPersonalTeamBuild
@@ -233,26 +262,26 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
 // Match iOS PostScript names on Android so RN and the native composer share fonts before runtime loading.
 
 const config: ExpoConfig = {
-  name: variant.appName,
+  name: dulliFork?.appName ?? variant.appName,
   slug: "t3-code",
   platforms: ["ios", "android"],
-  scheme: variant.scheme,
-  version: repoEnv.T3CODE_MOBILE_VERSION ?? "2.3.0",
+  scheme: dulliFork?.scheme ?? variant.scheme,
+  version: dulliFork?.versionName ?? repoEnv.T3CODE_MOBILE_VERSION ?? "2.3.0",
   runtimeVersion: {
     // Skip costly fingerprinting on dev launches; preview and production OTAs require matching native projects.
     policy: runtimeVersionPolicy,
   },
   orientation: "portrait",
-  icon: variant.assets.appIcon,
+  icon: assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
+    enabled: dulliFork === undefined && repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
     url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
   ios: {
-    icon: variant.assets.iosIcon,
+    icon: assets.iosIcon,
     supportsTablet: true,
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
@@ -295,37 +324,41 @@ const config: ExpoConfig = {
     },
   },
   android: {
-    icon: variant.assets.appIcon,
-    package: variant.androidPackage,
+    icon: assets.appIcon,
+    package: dulliFork?.androidPackage ?? variant.androidPackage,
+    ...(dulliFork ? { versionCode: dulliFork.versionCode } : {}),
     ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
       ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
       : {}),
     adaptiveIcon: {
-      backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
-      ...(variant.assets.androidAdaptiveBackgroundImage
-        ? { backgroundImage: variant.assets.androidAdaptiveBackgroundImage }
+      backgroundColor: assets.androidAdaptiveBackgroundColor,
+      ...(assets.androidAdaptiveBackgroundImage
+        ? { backgroundImage: assets.androidAdaptiveBackgroundImage }
         : {}),
-      foregroundImage: variant.assets.androidAdaptiveForeground,
-      monochromeImage: variant.assets.androidMonochromeIcon,
+      foregroundImage: assets.androidAdaptiveForeground,
+      monochromeImage: assets.androidMonochromeIcon,
     },
     // JS back dispatch needs RN's Android 16 shim and withAndroidPredictiveBackCompat on Android 13-15.
     predictiveBackGestureEnabled: true,
     // expo-sensors declares this for its pedometer, which the app does not use.
     blockedPermissions: ["android.permission.ACTIVITY_RECOGNITION"],
-    intentFilters: [
-      {
-        action: "VIEW",
-        autoVerify: true,
-        data: [{ scheme: "https", host: HOSTED_APP_HOST, pathPrefix: "/threads/" }],
-        category: ["BROWSABLE", "DEFAULT"],
-      },
-    ],
+    intentFilters: dulliFork
+      ? []
+      : [
+          {
+            action: "VIEW",
+            autoVerify: true,
+            data: [{ scheme: "https", host: HOSTED_APP_HOST, pathPrefix: "/threads/" }],
+            category: ["BROWSABLE", "DEFAULT"],
+          },
+        ],
   },
   web: {
-    favicon: variant.assets.appIcon,
+    favicon: assets.appIcon,
   },
   plugins: [
     "expo-asset",
+    "./plugins/withDulliPhoneNotifications.cjs",
     [
       "expo-font",
       {
@@ -358,8 +391,8 @@ const config: ExpoConfig = {
     [
       "expo-notifications",
       {
-        icon: variant.assets.androidNotificationIcon,
-        color: variant.assets.androidNotificationColor,
+        icon: assets.androidNotificationIcon,
+        color: assets.androidNotificationColor,
         mode: APP_VARIANT === "development" ? "development" : "production",
       },
     ],
@@ -371,10 +404,10 @@ const config: ExpoConfig = {
       {
         androidIcons: {
           shortcut_icon: {
-            foregroundImage: variant.assets.androidAdaptiveForeground,
-            backgroundColor: variant.assets.androidAdaptiveBackgroundColor,
-            ...(variant.assets.androidAdaptiveBackgroundImage
-              ? { backgroundImage: variant.assets.androidAdaptiveBackgroundImage }
+            foregroundImage: assets.androidAdaptiveForeground,
+            backgroundColor: assets.androidAdaptiveBackgroundColor,
+            ...(assets.androidAdaptiveBackgroundImage
+              ? { backgroundImage: assets.androidAdaptiveBackgroundImage }
               : {}),
           },
         },
@@ -409,19 +442,19 @@ const config: ExpoConfig = {
     [
       "expo-splash-screen",
       {
-        image: variant.assets.splashIcon,
+        image: assets.splashIcon,
         resizeMode: "contain",
         backgroundColor: "#ffffff",
         imageWidth: 220,
         dark: {
-          image: variant.assets.splashIcon,
+          image: assets.splashIcon,
           backgroundColor: "#0a0a0a",
         },
         android: {
           // Android 12+ masks the central two thirds of the 288dp canvas; adaptive layers avoid clipped corners.
-          image: variant.assets.androidSplashIcon,
+          image: assets.androidSplashIcon,
           imageWidth: 288,
-          dark: { image: variant.assets.androidSplashIcon },
+          dark: { image: assets.androidSplashIcon },
         },
       },
     ],
@@ -452,6 +485,15 @@ const config: ExpoConfig = {
     // Mods run in reverse order; expo-widgets must create and wipe the target before assets are added.
     ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
     "./plugins/withAndroidNetworkSecurityConfig.cjs",
+    "./plugins/withAndroidReleaseSigning.cjs",
+    ...(dulliFork
+      ? [
+          [
+            "./plugins/withAndroidAutolinkingExclude.cjs",
+            ["expo-observe", "expo-app-metrics"],
+          ] as NonNullable<ExpoConfig["plugins"]>[number],
+        ]
+      : []),
     "./plugins/withAndroidGradleHeap.cjs",
     "./plugins/withAndroidInputBackground.cjs",
     "./plugins/withAndroidModernPopupMenu.cjs",
@@ -464,6 +506,7 @@ const config: ExpoConfig = {
   ],
   extra: {
     appVariant: APP_VARIANT,
+    appBrand: dulliFork ? "dulli" : "t3code",
     secretsFeatureEnabled: ["1", "true"].includes(
       process.env.T3CODE_FEATURE_SECRETS?.trim().toLowerCase() ?? "",
     ),
@@ -485,12 +528,16 @@ const config: ExpoConfig = {
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
-    eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-      observe: { endpointUrl: observeEndpointUrl },
-    },
+    ...(dulliFork
+      ? {}
+      : {
+          eas: {
+            projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+            observe: { endpointUrl: observeEndpointUrl },
+          },
+        }),
   },
-  owner: "pingdotgg",
+  ...(dulliFork ? {} : { owner: "pingdotgg" }),
   experiments: {
     // Metro only runs babel-plugin-react-compiler when this is set; see src/reactCompilerCoverage.test.ts.
     reactCompiler: true,

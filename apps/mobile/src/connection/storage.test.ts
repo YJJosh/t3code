@@ -1,3 +1,4 @@
+import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { vi } from "vite-plus/test";
@@ -34,6 +35,24 @@ function makeStorage(initial: Readonly<Record<string, string>>) {
 }
 
 describe("mobile connection catalog storage", () => {
+  it.effect("keeps loading and saving connections when the change listener throws", () =>
+    Effect.gen(function* () {
+      const memory = makeStorage({});
+      const mirrored: unknown[] = [];
+      const catalog = yield* make((document) => {
+        mirrored.push(document.disabledEnvironmentIds);
+        throw new Error("background service start not allowed");
+      }).pipe(Effect.provideService(MobileSecureStorage.MobileSecureStorage, memory.storage));
+
+      expect((yield* catalog.read).targets).toEqual([]);
+      yield* catalog.update((document) => ({
+        ...document,
+        disabledEnvironmentIds: [EnvironmentId.make("env")],
+      }));
+      expect((yield* catalog.read).disabledEnvironmentIds).toEqual(["env"]);
+      expect(mirrored).toEqual([[], ["env"]]);
+    }),
+  );
   it.effect("recovers from a corrupt current catalog", () =>
     Effect.gen(function* () {
       const memory = makeStorage({

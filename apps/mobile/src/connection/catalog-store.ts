@@ -48,7 +48,9 @@ interface CatalogStore {
   ) => Effect.Effect<void, ConnectionTransientError>;
 }
 
-export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(function* () {
+export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(function* (
+  onChange: (catalog: ConnectionCatalogDocumentType) => void = () => {},
+) {
   const storage = yield* MobileSecureStorage.MobileSecureStorage;
   const getItem = (key: string) =>
     storage.getItem(key).pipe(Effect.mapError((cause) => catalogError("load", cause)));
@@ -80,6 +82,19 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
     return catalog;
   });
 
+  // Native mirroring failures must not prevent loading the authoritative secure catalog.
+  const notify = Effect.fn("mobile.connectionStorage.notifyCatalog")(
+    (catalog: ConnectionCatalogDocumentType) =>
+      Effect.try({
+        try: () => onChange(catalog),
+        catch: (cause) => catalogError("mirror", cause),
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("Mobile connection catalog listener failed", error),
+        ),
+      ),
+  );
+
   const loadUnlocked = Effect.fn("mobile.connectionStorage.loadCatalog")(function* () {
     const cached = yield* Ref.get(state);
     if (Option.isSome(cached)) {
@@ -100,6 +115,7 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
       catalog = yield* loadLegacyCatalog();
     }
     yield* Ref.set(state, Option.some(catalog));
+    yield* notify(catalog);
     return catalog;
   });
 
@@ -112,6 +128,7 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
           const encoded = yield* encodeCatalog(next);
           yield* setItem(CONNECTION_CATALOG_KEY, encoded);
           yield* Ref.set(state, Option.some(next));
+          yield* notify(next);
         }),
       );
     },

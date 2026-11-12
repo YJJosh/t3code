@@ -79,7 +79,12 @@ export function useStartTriage() {
     }
     const prepared = await prepare({
       environmentId,
-      input: { client: authClientMetadata(Constants.expoConfig?.version) },
+      input: {
+        client: authClientMetadata(
+          Constants.expoConfig?.version,
+          Constants.expoConfig?.extra?.appBrand,
+        ),
+      },
     });
     if (prepared._tag === "Failure") {
       if (!isAtomCommandInterrupted(prepared)) {

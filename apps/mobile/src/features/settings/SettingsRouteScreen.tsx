@@ -1,3 +1,5 @@
+import Constants from "expo-constants";
+import { resolveMobileBrandName } from "../../lib/mobileBranding";
 import {
   navigationCustomizationAvailable,
   overflowNavigationTabs,
@@ -143,7 +145,23 @@ function ConfiguredSettingsRouteScreen() {
 
 function LocalSettingsRouteScreen() {
   const { savedConnectionsById } = useSavedRemoteConnections();
-  return <SettingsList connections={[environmentsRow(Object.keys(savedConnectionsById).length)]} />;
+  return (
+    <SettingsList
+      connections={[
+        environmentsRow(Object.keys(savedConnectionsById).length),
+        ...(Platform.OS === "android" && Constants.expoConfig?.extra?.appBrand === "dulli"
+          ? [
+              {
+                id: "SettingsNotifications",
+                icon: "bell.badge" as const,
+                label: "Notifications",
+                target: "SettingsNotifications" as const,
+              },
+            ]
+          : []),
+      ]}
+    />
+  );
 }
 
 function environmentsRow(count: number): SettingsListRow {
@@ -275,7 +293,11 @@ function useSettingsIndexSections(): SettingsListSection[] {
       rows: [
         serverPage("SettingsEnvironmentMaintenance", "arrow.clockwise", "Maintenance"),
         page("SettingsLabs", "flask", "Labs"),
-        page("SettingsAbout", "info.circle", "About"),
+        page(
+          "SettingsAbout",
+          "info.circle",
+          `About ${resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand)}`,
+        ),
         page("SettingsArchive", "archivebox", "Archive"),
       ],
     },
