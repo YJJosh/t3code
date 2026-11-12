@@ -214,7 +214,10 @@ const layerCapabilities = Layer.effectContext(
       Context.add(
         ClientCapabilities.ClientPresentation,
         ClientCapabilities.ClientPresentation.of({
-          metadata: authClientMetadata(Constants.expoConfig?.version),
+          metadata: authClientMetadata(
+            Constants.expoConfig?.version,
+            Constants.expoConfig?.extra?.appBrand,
+          ),
         }),
       ),
       Context.add(

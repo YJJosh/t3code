@@ -6,7 +6,12 @@ import assetLinks from "../web/public/.well-known/assetlinks.json";
 
 // Keep config parsing independent of local env files and build credentials.
 vi.mock("../../scripts/lib/public-config.ts", () => ({
-  loadRepoEnv: () => ({ APP_VARIANT: process.env.APP_VARIANT }),
+  loadRepoEnv: () =>
+    Object.fromEntries(
+      ["APP_VARIANT", "T3CODE_MOBILE_FORK_BRAND", "T3CODE_MOBILE_FORK_VERSION"].flatMap((key) =>
+        process.env[key] === undefined ? [] : [[key, process.env[key]]],
+      ),
+    ),
 }));
 
 afterEach(() => {
@@ -44,4 +49,23 @@ it.each([
     { scheme: "https", host, pathPrefix: "/threads/" },
   ]);
   expect(assetLinks.map((link) => link.target.package_name)).toContain(identifier);
+});
+
+it("isolates the sideloaded Dulli APK from upstream identity, links and OTA updates", async () => {
+  vi.stubEnv("T3CODE_MOBILE_FORK_BRAND", "dulli");
+  vi.stubEnv("T3CODE_MOBILE_FORK_VERSION", "0.1.9-dulli.1");
+  const config = await loadConfig("production");
+  expect(config.name).toBe("T3 Dulli");
+  expect(config.scheme).toBe("t3dulli");
+  expect(config.android?.package).toBe("com.yjjosh.t3dulli");
+  expect(config.version).toBe("0.1.9-dulli.1");
+  expect(config.android?.versionCode).toBe(10_090_001);
+  expect(config.android?.intentFilters).toEqual([]);
+  expect(config.updates?.enabled).toBe(false);
+  expect(config.owner).toBeUndefined();
+  expect(config.extra?.eas).toBeUndefined();
+  expect(config.plugins).toContainEqual([
+    "./plugins/withAndroidAutolinkingExclude.cjs",
+    ["expo-observe", "expo-app-metrics"],
+  ]);
 });

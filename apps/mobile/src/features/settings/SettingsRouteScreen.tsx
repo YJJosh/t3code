@@ -1,3 +1,5 @@
+import Constants from "expo-constants";
+import { resolveMobileBrandName } from "../../lib/mobileBranding";
 import {
   navigationCustomizationAvailable,
   overflowNavigationTabs,
@@ -275,7 +277,11 @@ function useSettingsIndexSections(): SettingsListSection[] {
       rows: [
         serverPage("SettingsEnvironmentMaintenance", "arrow.clockwise", "Maintenance"),
         page("SettingsLabs", "flask", "Labs"),
-        page("SettingsAbout", "info.circle", "About"),
+        page(
+          "SettingsAbout",
+          "info.circle",
+          `About ${resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand)}`,
+        ),
         page("SettingsArchive", "archivebox", "Archive"),
       ],
     },
