@@ -67,6 +67,7 @@ export type T3McpToolSummaryAction =
   | "read-pr-guide"
   | "browser"
   | "device"
+  | "terminal"
   | "html-preview"
   | "html-render";
 
@@ -370,6 +371,11 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "attachment-discard",
   ),
   t3_thread_send_attachments: tool(["Send", "Sending", "Sent", "attachments"], "attachment-send"),
+  terminal_start: tool(["Start", "Starting", "Started", "a shared terminal"], "terminal"),
+  terminal_send: tool(["Type", "Typing", "Typed", "into a terminal"], "terminal"),
+  terminal_read: tool(["Read", "Reading", "Read", "a terminal"], "terminal"),
+  terminal_list: tool(["List", "Listing", "Listed", "terminals"], "terminal"),
+  terminal_close: tool(["Close", "Closing", "Closed", "a terminal"], "terminal"),
   html_preview: tool(["Preview", "Previewing", "Previewed", "an HTML page"], "html-preview"),
   html_render: tool(["Render", "Rendering", "Rendered", "an HTML page"], "html-render"),
 };
