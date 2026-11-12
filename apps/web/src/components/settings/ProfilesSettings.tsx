@@ -69,7 +69,11 @@ function EnvironmentProfilesSettings({ environmentId }: { environmentId: Environ
             }}
           >
             <SelectTrigger size="sm" aria-label="Default profile for new threads">
-              <SelectValue />
+              <SelectValue>
+                {settings.defaultProfile === null
+                  ? "Folder default"
+                  : settings.defaultProfile || "No profile"}
+              </SelectValue>
             </SelectTrigger>
             <SelectPopup>
               <SelectItem value="__folder__">Folder default</SelectItem>
