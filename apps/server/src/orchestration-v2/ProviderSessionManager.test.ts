@@ -4697,6 +4697,10 @@ it.effect("loads profiles only when opening a session and rereads them after clo
       yield* manager.open({ ...input, modelSelection: { ...modelSelection, profileId: null } });
       assert.isUndefined(opened.at(-1));
       yield* manager.close(providerSessionId);
+      const missing = yield* manager
+        .open({ ...input, modelSelection: { ...modelSelection, profileId: "constructor" } })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(missing));
       yield* fs.remove(`${root}/profiles/prompts/coding.md`);
       const result = yield* manager.open(input).pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(result));
