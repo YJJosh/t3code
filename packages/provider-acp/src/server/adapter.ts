@@ -8024,6 +8024,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               type: "text",
               text: buildRuntimeInstructions({
                 harness: flavor.runtimeHarness ?? driver,
+                profileInstructions: input.profileInstructions,
                 model: turnInput.modelSelection.model,
                 pullRequestLinking:
                   sessionSetup === null ||

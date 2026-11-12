@@ -1754,6 +1754,7 @@ const subagentDeviceInstructions: HookCallback = () =>
   });
 
 export function makeClaudeQueryOptions(input: {
+  readonly profileInstructions?: string;
   readonly modelSelection: ModelSelection;
   readonly modelCatalog?: ClaudeModelCatalog;
   readonly nativeThreadId: string;
@@ -1890,7 +1891,10 @@ export function makeClaudeQueryOptions(input: {
       type: "preset" as const,
       preset: "claude_code" as const,
       append: [
-        buildRuntimeInstructions({ harness: "Claude Code" }) +
+        buildRuntimeInstructions({
+          harness: "Claude Code",
+          profileInstructions: input.profileInstructions,
+        }) +
           (input.mcpServers === undefined
             ? ""
             : T3_CODE_ORCHESTRATION_INSTRUCTIONS +
@@ -11037,6 +11041,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             launchArgSettings,
           );
           const queryOptions = makeClaudeQueryOptions({
+            ...(input.profileInstructions === undefined
+              ? {}
+              : { profileInstructions: input.profileInstructions }),
             modelSelection: turnInput.modelSelection,
             modelCatalog,
             nativeThreadId,

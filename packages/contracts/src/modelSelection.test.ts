@@ -13,10 +13,16 @@ it.effect("ModelSelection migrates legacy `provider` field to `instanceId`", () 
     const parsed = yield* decodeModelSelection({
       provider: "codex",
       model: "gpt-5-codex",
+      profileId: "coder",
       options: [{ id: "reasoningEffort", value: "high" }],
     });
     assert.strictEqual(parsed.instanceId, ProviderInstanceId.make("codex"));
     assert.strictEqual(parsed.model, "gpt-5-codex");
+    assert.strictEqual(parsed.profileId, "coder");
+    assert.deepStrictEqual(
+      yield* decodeModelSelection(yield* encodeModelSelection(parsed)),
+      parsed,
+    );
     assert.deepStrictEqual(parsed.options, [{ id: "reasoningEffort", value: "high" }]);
   }),
 );

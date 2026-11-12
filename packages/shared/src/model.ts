@@ -103,7 +103,11 @@ function canonicalModelSelectionOptions(
 }
 
 export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection): boolean {
-  if (left.instanceId !== right.instanceId || left.model !== right.model) {
+  if (
+    left.instanceId !== right.instanceId ||
+    left.model !== right.model ||
+    left.profileId !== right.profileId
+  ) {
     return false;
   }
   const leftOptions = canonicalModelSelectionOptions(left);
@@ -121,12 +125,12 @@ export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection
  * `fastMode: false` for models with a fast toggle while mobile omits it, so off counts as unset.
  */
 export function draftModelPickMatchesThread(pick: ModelSelection, thread: ModelSelection): boolean {
-  const withoutFastModeOff = (selection: ModelSelection) =>
-    createModelSelection(
-      selection.instanceId,
-      selection.model,
-      selection.options?.filter((option) => option.id !== "fastMode" || option.value !== false),
-    );
+  const withoutFastModeOff = (selection: ModelSelection) => ({
+    ...selection,
+    options:
+      selection.options?.filter((option) => option.id !== "fastMode" || option.value !== false) ??
+      [],
+  });
   return modelSelectionsEqual(withoutFastModeOff(pick), withoutFastModeOff(thread));
 }
 

@@ -246,6 +246,7 @@ describe("CodexAdapterV2 runtime policy", () => {
         runtimePolicy: policy,
         modelSelection,
         hasT3Mcp: true,
+        profileInstructions: "Profile instruction 🐈".repeat(500),
         appContext,
       });
       assert.deepEqual(withT3.additionalContext?.["mcp_app_todos_list_todos_item-1"], {
@@ -253,6 +254,19 @@ describe("CodexAdapterV2 runtime policy", () => {
         value: "Filtered to overdue",
       });
       assert.isDefined(withT3.additionalContext?.["t3_code_runtime"]);
+      const profileEntries = Object.entries(withT3.additionalContext ?? {}).filter(([key]) =>
+        key.startsWith("t3_profile_"),
+      );
+      assert.equal(
+        profileEntries.map(([, entry]) => entry.value).join(""),
+        "Profile instruction 🐈".repeat(500),
+      );
+      assert.isTrue(
+        profileEntries.every(
+          ([, entry]) =>
+            entry.kind === "application" && Buffer.byteLength(entry.value, "utf8") <= 4000,
+        ),
+      );
     }),
   );
 });

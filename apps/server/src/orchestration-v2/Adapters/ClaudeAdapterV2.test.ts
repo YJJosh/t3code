@@ -677,6 +677,25 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
     assert.notInclude(JSON.stringify(logged), "secret-claude-token");
   });
 
+  it("appends a profile without replacing Claude's preset or isolated settings", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent-lean"),
+        model: "claude-haiku-4-5",
+      },
+      nativeThreadId: "profile-test",
+      resume: false,
+      cwd: null,
+      profileInstructions: "Profile instruction",
+      environment: { CLAUDE_CONFIG_DIR: "/home/user/claude-lean" },
+      sdkSettings: { disableBundledSkills: true },
+    });
+    assert.deepInclude(options.systemPrompt, { type: "preset", preset: "claude_code" });
+    assert.include((options.systemPrompt as { append: string }).append, "Profile instruction");
+    assert.equal(options.env?.CLAUDE_CONFIG_DIR, "/home/user/claude-lean");
+    assert.deepInclude(options.settings, { disableBundledSkills: true });
+  });
+
   it("logs --settings key names without their values", () => {
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: CLAUDE_TEST_MODEL_SELECTION,

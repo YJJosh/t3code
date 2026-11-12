@@ -767,6 +767,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly modelSelection: ModelSelection;
     readonly hasT3Mcp?: boolean;
+    readonly profileInstructions?: string;
     readonly browserToolsAvailable?: boolean;
     readonly deviceToolsAvailable?: boolean;
     /** ChatGPT token sharing does not accept service tiers. */
@@ -808,10 +809,26 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
             },
           )
         : undefined;
+    const profileContext = Object.fromEntries(
+      Array.from(input.profileInstructions ?? "")
+        .reduce<string[]>((chunks, char) => {
+          const last = chunks.at(-1);
+          if (last === undefined || Buffer.byteLength(last + char, "utf8") > 3800)
+            chunks.push(char);
+          else chunks[chunks.length - 1] = last + char;
+          return chunks;
+        }, [])
+        .map((value, index) => [
+          `t3_profile_${String(index).padStart(5, "0")}`,
+          { kind: "application" as const, value },
+        ]),
+    );
     const additionalContext =
-      t3Context === undefined && Object.keys(appContext).length === 0
+      t3Context === undefined &&
+      Object.keys(appContext).length === 0 &&
+      Object.keys(profileContext).length === 0
         ? undefined
-        : { ...t3Context, ...appContext };
+        : { ...t3Context, ...appContext, ...profileContext };
     return yield* decodeCodexTurnStartParamsWithCollaborationMode({
       threadId: input.nativeThreadId,
       input: input.codexInput,
@@ -6998,6 +7015,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimePolicy: turnInput.runtimePolicy,
               modelSelection: turnInput.modelSelection,
               hasT3Mcp: mcpSession !== undefined,
+              ...(input.profileInstructions === undefined
+                ? {}
+                : { profileInstructions: input.profileInstructions }),
               browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
               omitServiceTier: adapterOptions.resolveRuntime !== undefined,

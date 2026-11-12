@@ -2187,6 +2187,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                     type: "text",
                     text: buildRuntimeInstructions({
                       harness: "Muse Code",
+                      profileInstructions: input.profileInstructions,
                       model: session.model ?? undefined,
                       reasoningEffort: effort,
                     }),

@@ -229,6 +229,7 @@ const makeHarness = Effect.fnUntraced(function* (
     providerSessionId: ProviderSessionId.make(`session-${instanceId}`),
     modelSelection: modelSelection(instanceId),
     runtimePolicy: policy,
+    profileInstructions: "Profile instruction",
     ...(initialNativeThreadId ? { initialNativeThreadId } : {}),
   });
   const emitted = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
@@ -595,6 +596,7 @@ describe("MuseAdapterV2", () => {
       const sessionStart = fake.calls.find((call) => call.method === "session/start");
       const turnStart = fake.calls.find((call) => call.method === "turn/start");
       assert.strictEqual(sessionStart?.params.workspaceRoot, "/workspace/eevee");
+      assert.include(JSON.stringify(turnStart?.params.input), "Profile instruction");
       assert.deepStrictEqual(turnStart?.params.workspaceRoots, [
         sessionStart?.params.workspaceRoot,
       ]);
