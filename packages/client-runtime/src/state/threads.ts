@@ -1088,6 +1088,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           if (!retryOverHttp) yield* setStreamError(formatThreadError(cause));
         }),
         retryExpectedFailureAfter: "250 millis",
+        retryDefectAfter: "1 second",
         resubscribe: Stream.merge(foregroundResubscriptions, Stream.fromQueue(httpRetries)),
       },
     ).pipe(Stream.runForEachArray(applyItems)),

@@ -78,6 +78,20 @@ Read ports from the `[dev-runner]` output. Worktrees derive stable preferences f
 but occupied ports can shift them. `T3CODE_PORT_OFFSET` or `T3CODE_DEV_INSTANCE` can select a
 different preference when needed.
 
+### Portler preview
+
+With Node 26.12.1, repository dependencies, and [Portler](https://yjjosh.github.io/Portler/)
+installed, run `portler up -d` from the checkout root. Portler allocates the server and
+web ports; `portler ps` shows them. Open the pairing URL in `portler logs server`.
+Browser auto-open stays disabled so it cannot consume the one-time token.
+
+This preview uses `.t3/portler` for application state without automatically copying an
+installed database. Vite proxies backend requests through the web origin; do not set
+`VITE_HTTP_URL` or `VITE_WS_URL`. For another pairing URL, run
+`node apps/server/src/bin.ts pair --base-dir .t3/portler`.
+Stop the checkout's stack with `portler down`. Its application data survives;
+`.portler/` holds only disposable process and port metadata.
+
 ### Replay provider
 
 `vp run dev` registers `Replay (dev)`, a local ACP agent at

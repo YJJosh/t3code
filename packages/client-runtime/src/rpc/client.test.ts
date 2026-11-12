@@ -483,3 +483,44 @@ it.effect("binds branch capability selection and execution to one session", () =
     yield* Deferred.await(executed);
   }).pipe(Effect.scoped),
 );
+
+it.effect("caps defect backoff, resets after a value and cancels pending retries", () =>
+  Effect.gen(function* () {
+    const subscribed = yield* Queue.unbounded<number>();
+    let attempts = 0;
+    const client = {
+      [WS_METHODS.subscribeTerminalMetadata]: () => {
+        const attempt = ++attempts;
+        return Stream.fromEffect(Queue.offer(subscribed, attempt)).pipe(
+          Stream.drain,
+          Stream.concat(attempt === 7 ? Stream.succeed({}) : Stream.empty),
+          Stream.concat(Stream.die(new Error("Failed to encode response"))),
+        );
+      },
+    } as unknown as WsRpcProtocolClient;
+    const { activeSession, supervisor } = yield* makeHarness();
+    yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+    const fiber = yield* subscribeDynamicWithSession(
+      WS_METHODS.subscribeTerminalMetadata,
+      () => Effect.succeed({}),
+      { retryDefectAfter: "1 second" },
+    ).pipe(
+      Stream.runDrain,
+      Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      Effect.forkChild,
+    );
+
+    expect(yield* Queue.take(subscribed)).toBe(1);
+    const retryDelays = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 1_000];
+    for (const [index, delay] of retryDelays.entries()) {
+      yield* TestClock.adjust(delay - 1);
+      expect(fiber.pollUnsafe()).toBeUndefined();
+      expect(yield* Queue.size(subscribed)).toBe(0);
+      yield* TestClock.adjust(1);
+      expect(yield* Queue.take(subscribed)).toBe(index + 2);
+    }
+    yield* Fiber.interrupt(fiber);
+    yield* TestClock.adjust("1 minute");
+    expect(yield* Queue.size(subscribed)).toBe(0);
+  }),
+);

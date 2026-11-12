@@ -808,7 +808,7 @@ describe("EnvironmentThreads", () => {
       status: "deleted",
       loads: [0, 1],
     },
-    // A defect never retries on its own, so the socket-only open resubscribes once.
+    // A socket-only defect asks HTTP immediately instead of waiting for backoff.
     {
       label: "a socket-only open that hits a defect asks HTTP",
       socketSnapshots: true,
@@ -2445,3 +2445,43 @@ describe("EnvironmentThreads", () => {
     }),
   );
 });
+
+it.effect("resumes after a server defect from the applied cursor and clears the sync error", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeHarness({ cached: BASE_PROJECTION, completionMarker: true });
+    yield* Queue.offer(harness.inputs, snapshot(BASE_PROJECTION, CACHED_SNAPSHOT_SEQUENCE));
+    yield* Queue.offer(harness.inputs, { kind: "synchronized" });
+    yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+    yield* Queue.offer(harness.inputs, titleUpdated("Before defect", 8));
+    yield* awaitThreadState(
+      harness.observed,
+      (value) => Option.isSome(value.data) && value.data.value.thread.title === "Before defect",
+    );
+
+    yield* Queue.offer(harness.inputs, TEST_DEFECT);
+    const failed = yield* awaitThreadState(harness.observed, (value) => Option.isSome(value.error));
+    expect(Option.getOrThrow(failed.error)).toBe("Could not synchronize the thread.");
+    expect(Option.getOrThrow(failed.data).thread.title).toBe("Before defect");
+    yield* TestClock.adjust("1 second");
+    yield* awaitThreadState(
+      harness.observed,
+      (value) => value.status === "synchronizing" && Option.isNone(value.error),
+    );
+    expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(8);
+    expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(2);
+
+    yield* Queue.offer(harness.inputs, titleUpdated("Duplicate must not apply", 8));
+    yield* Queue.offer(harness.inputs, { kind: "synchronized" });
+    const replayed = yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+    expect(Option.getOrThrow(replayed.data).thread.title).toBe("Before defect");
+    expect(Option.isNone(replayed.error)).toBe(true);
+    yield* Queue.offer(harness.inputs, titleUpdated("Recovered", 9));
+    const recovered = yield* awaitThreadState(
+      harness.observed,
+      (value) => Option.isSome(value.data) && value.data.value.thread.title === "Recovered",
+    );
+    expect(recovered.status).toBe("live");
+    expect(Option.isNone(recovered.error)).toBe(true);
+    expect(yield* Ref.get(harness.retryCount)).toBe(0);
+  }),
+);

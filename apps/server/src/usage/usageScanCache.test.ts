@@ -308,17 +308,26 @@ describe("scan cache round trip", () => {
       ),
     );
     const rows = encoded.files["/a.jsonl"]!.r;
-    const poisoned = {
-      ...encoded,
-      files: {
-        "/a.jsonl": {
-          ...encoded.files["/a.jsonl"]!,
-          r: [rows[0]!, [...rows[1]!.slice(0, 3), "not-a-number", ...rows[1]!.slice(4)]],
+    for (const [index, value] of [
+      [3, "not-a-number"],
+      [2, -1],
+      [2, 0.5],
+      [2, encoded.sessions.length],
+      [2, "0"],
+      [8, 123],
+      [9, "0.25"],
+      [9, Infinity],
+    ] as const) {
+      const corruptRow = [...rows[1]!];
+      corruptRow[index] = value;
+      const poisoned = {
+        ...encoded,
+        files: {
+          "/a.jsonl": { ...encoded.files["/a.jsonl"]!, r: [rows[0]!, corruptRow] },
         },
-      },
-    };
-
-    const restored = decodeScanCache(JSON.parse(JSON.stringify(poisoned)), TEST_FORMAT_MAP);
-    expect(restored.has("/a.jsonl")).toBe(false);
+      };
+      const restored = decodeScanCache(poisoned, TEST_FORMAT_MAP);
+      expect(restored.has("/a.jsonl"), `column ${index}: ${value}`).toBe(false);
+    }
   });
 });
