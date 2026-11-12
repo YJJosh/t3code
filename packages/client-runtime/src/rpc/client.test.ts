@@ -489,7 +489,7 @@ it.effect("caps defect backoff, resets after a value and cancels pending retries
     const subscribed = yield* Queue.unbounded<number>();
     let attempts = 0;
     const client = {
-      [WS_METHODS.subscribeTerminalEvents]: () => {
+      [WS_METHODS.subscribeTerminalMetadata]: () => {
         const attempt = ++attempts;
         return Stream.fromEffect(Queue.offer(subscribed, attempt)).pipe(
           Stream.drain,
@@ -501,7 +501,7 @@ it.effect("caps defect backoff, resets after a value and cancels pending retries
     const { activeSession, supervisor } = yield* makeHarness();
     yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
     const fiber = yield* subscribeDynamicWithSession(
-      WS_METHODS.subscribeTerminalEvents,
+      WS_METHODS.subscribeTerminalMetadata,
       () => Effect.succeed({}),
       { retryDefectAfter: "1 second" },
     ).pipe(
