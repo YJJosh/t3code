@@ -40,6 +40,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { projectEnvironment } from "../../state/projects";
 import { useLinkedEnvironments } from "../../state/peerLinks";
 import { useEnvironmentQuery } from "../../state/query";
+import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   appendComposerDraftAttachments,
@@ -324,6 +325,11 @@ export function NewTaskFlowProvider(
   const modelSelectionNow = useNowMinuteMs();
   const projectDefaults = useNewTaskProjectDefaults(selectedProject);
   const selectedEnvironmentServerConfig = projectDefaults.serverConfig;
+  const freshProfiles = useEnvironmentQuery(
+    props.active !== false && selectedEnvironmentId !== null
+      ? serverEnvironment.profileConfig({ environmentId: selectedEnvironmentId, input: {} })
+      : null,
+  );
   const isScratchDraft = projectDefaults.isScratch;
   const serverConfigs = useServerConfigs();
   const { connectedEnvironments } = useRemoteConnectionStatus();
@@ -465,17 +471,15 @@ export function NewTaskFlowProvider(
     projectId: selectedProject?.id ?? null,
     now: modelSelectionNow,
   }).selection;
+  const profileCatalog = freshProfiles.data?.profiles ?? selectedEnvironmentServerConfig?.profiles;
   const defaultProfileId =
-    selectedEnvironmentServerConfig?.settings.defaultProfile ??
-    selectedEnvironmentServerConfig?.profiles?.default;
+    selectedEnvironmentServerConfig?.settings.defaultProfile ?? profileCatalog?.default;
   const profilePick =
     resolvedModel && draftModelSelection?.profileId === undefined
       ? selectProfile(
           resolvedModel,
           defaultProfileId || null,
-          defaultProfileId
-            ? selectedEnvironmentServerConfig?.profiles?.profiles[defaultProfileId]
-            : undefined,
+          defaultProfileId ? profileCatalog?.profiles[defaultProfileId] : undefined,
           selectedEnvironmentServerConfig?.providers ?? [],
         )
       : null;

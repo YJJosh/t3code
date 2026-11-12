@@ -5,6 +5,8 @@ import { Menu } from "../../components/ui/Menu";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { selectThreadModel } from "../../state/thread-model-selection";
+import { useEnvironmentQuery } from "../../state/query";
+import { serverEnvironment } from "../../state/server";
 
 export function ProfilePicker(props: {
   environmentId: EnvironmentId;
@@ -14,7 +16,11 @@ export function ProfilePicker(props: {
   disabled: boolean;
   draftKey?: string;
 }) {
-  const catalog = props.config?.profiles;
+  // Settings → Refresh updates this query, not the connection's config copy.
+  const fresh = useEnvironmentQuery(
+    serverEnvironment.profileConfig({ environmentId: props.environmentId, input: {} }),
+  );
+  const catalog = fresh.data?.profiles ?? props.config?.profiles;
   if (!catalog || (Object.keys(catalog.profiles).length === 0 && !props.selection.profileId))
     return null;
   const providers = props.config?.providers ?? [];
