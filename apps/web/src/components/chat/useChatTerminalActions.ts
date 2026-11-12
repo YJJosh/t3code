@@ -403,6 +403,21 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
     });
   };
   const requestClosePanelTerminalStable = useStableCallback(requestClosePanelTerminal);
+  const revealTerminal = (terminalId: string) => {
+    if (!activeThreadRef) return;
+    const panel = useRightPanelStore.getState();
+    const surface = selectThreadRightPanelState(panel.byThreadKey, activeThreadRef).surfaces.find(
+      (entry) => entry.kind === "terminal" && entry.terminalIds.includes(terminalId),
+    );
+    if (surface) {
+      panel.activateTerminal(activeThreadRef, surface.id, terminalId);
+      panel.show(activeThreadRef);
+    } else {
+      storeEnsureTerminal(activeThreadRef, terminalId, { open: true, active: true });
+    }
+    focusTerminal(activeThreadRef, terminalId);
+  };
+  const revealTerminalStable = useStableCallback(revealTerminal);
   const openTerminalIfClosed = () => {
     if (!terminalUiState.terminalOpen) setTerminalOpen(true);
   };
@@ -454,6 +469,7 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
     lastInvokedScriptByProjectId,
     requestClosePanelTerminalStable,
     requestCloseTerminalStable,
+    revealTerminalStable,
     runProjectScriptStable,
     runShellCommandStable,
     setTerminalOpenStable,

@@ -719,6 +719,69 @@ it.layer(
     }),
   );
 
+  it.effect("takes turns: user typing takes control from the agent until it is given back", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter, getEvents } = yield* createManager();
+      yield* manager.open(openInput({ terminalId: "agent-1" }), {
+        controller: "agent",
+        title: "Build",
+      });
+      yield* manager.open(openInput({ terminalId: "term-1" }));
+      const agentProcess = ptyAdapter.processes[0];
+      if (!agentProcess) return expect.fail("agent terminal did not spawn");
+      const target = { threadId: "thread-1", terminalId: "agent-1" };
+      const controllers = () =>
+        manager
+          .listThread("thread-1")
+          .pipe(
+            Effect.map((terminals) =>
+              Object.fromEntries(terminals.map((t) => [t.terminalId, [t.controller, t.label]])),
+            ),
+          );
+
+      expect(yield* controllers()).toEqual({
+        "agent-1": ["agent", "Build"],
+        "term-1": ["user", "Terminal 1"],
+      });
+      yield* manager.writeAsAgent({ ...target, data: "make\r" });
+      // Renderer replies and focus reports are not the user taking a turn.
+      yield* manager.write({ ...target, data: "\x1b[3;1R\x1b[I" }, "user");
+      expect((yield* controllers())["agent-1"]?.[0]).toBe("agent");
+
+      yield* manager.write({ ...target, data: "q" }, "user");
+      expect((yield* controllers())["agent-1"]?.[0]).toBe("user");
+      const refused = yield* manager
+        .writeAsAgent({ ...target, data: "rm -rf build\r" })
+        .pipe(Effect.flip);
+      expect(refused._tag).toBe("TerminalControlledByUserError");
+      expect(agentProcess.writes).toEqual(["make\r", "\x1b[3;1R\x1b[I", "q"]);
+      const activity = (yield* getEvents).filter(
+        (event) => event.type === "activity" && event.terminalId === "agent-1",
+      );
+      expect(activity).toHaveLength(1);
+
+      yield* manager.setController({ ...target, controller: "agent" });
+      yield* manager.writeAsAgent({ ...target, data: "make test\r" });
+      expect(agentProcess.writes.at(-1)).toBe("make test\r");
+
+      const userTerminal = yield* manager
+        .writeAsAgent({ threadId: "thread-1", terminalId: "term-1", data: "ls\r" })
+        .pipe(Effect.flip);
+      expect(userTerminal._tag).toBe("TerminalControlledByUserError");
+      yield* manager.setController({
+        threadId: "thread-1",
+        terminalId: "term-1",
+        controller: "agent",
+      });
+      yield* manager.setController({
+        threadId: "thread-1",
+        terminalId: "term-1",
+        controller: "user",
+      });
+      expect((yield* controllers())["term-1"]?.[0]).toBe("user");
+    }),
+  );
+
   it.effect("supports multiple terminals per thread independently", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();

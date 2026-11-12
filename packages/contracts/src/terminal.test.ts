@@ -6,7 +6,9 @@ import {
   TerminalError,
   TerminalOpenInput,
   TerminalProviderEnvironmentError,
+  TerminalSummary,
 } from "./terminal.ts";
+import { TERMINAL_MCP_MAX_WAIT_MS, TerminalMcpReadInput } from "./terminalMcp.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const encodeTerminalError = Schema.encodeUnknownSync(TerminalError);
@@ -47,5 +49,41 @@ describe("TerminalOpenInput", () => {
       env: { "bad-key": "1", GOOD_KEY: "2" },
     });
     expect(parsed.env).toEqual({ GOOD_KEY: "2" });
+  });
+});
+
+describe("TerminalSummary", () => {
+  const summary = {
+    threadId: "thread-1",
+    terminalId: "agent-1a2b3c4d",
+    cwd: "/tmp/project",
+    worktreePath: null,
+    status: "running",
+    pid: 42,
+    exitCode: null,
+    exitSignal: null,
+    hasRunningSubprocess: false,
+    label: "Build",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("decodes summaries from servers without a controller", () => {
+    expect(decodeSync(TerminalSummary, summary).controller).toBeUndefined();
+    expect(decodeSync(TerminalSummary, { ...summary, controller: "agent" }).controller).toBe(
+      "agent",
+    );
+    expect(() => decodeSync(TerminalSummary, { ...summary, controller: "both" })).toThrow();
+  });
+});
+
+describe("TerminalMcpReadInput", () => {
+  it("caps waits", () => {
+    const input = { terminalId: "agent-1a2b3c4d", waitFor: "exit" };
+    expect(
+      decodeSync(TerminalMcpReadInput, { ...input, timeoutMs: TERMINAL_MCP_MAX_WAIT_MS }),
+    ).toMatchObject({ timeoutMs: TERMINAL_MCP_MAX_WAIT_MS });
+    expect(() =>
+      decodeSync(TerminalMcpReadInput, { ...input, timeoutMs: TERMINAL_MCP_MAX_WAIT_MS + 1 }),
+    ).toThrow();
   });
 });

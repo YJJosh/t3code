@@ -1,4 +1,5 @@
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
+import { ThreadTerminalGroups } from "./chat/ThreadTerminalGroups";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
@@ -1877,6 +1878,7 @@ export default function ChatView(props: ChatViewProps) {
     addTerminalSurfaceStable,
     closePanelTerminalStable,
     lastInvokedScriptByProjectId,
+    revealTerminalStable,
     runProjectScriptStable,
     runShellCommandStable,
     splitPanelTerminalStable,
@@ -3529,6 +3531,11 @@ export default function ChatView(props: ChatViewProps) {
                         : undefined
                     }
                   >
+                    <ThreadTerminalGroups
+                      key={activeThreadKey ?? "none"}
+                      sessions={activeThreadKnownSessions}
+                      onOpenTerminal={revealTerminalStable}
+                    />
                     <ChildThreadApprovals threadRef={activeThreadRef} />
                     <div className="relative">
                       <ComposerSurface.Shell contextRow={showComposerContextStrip}>

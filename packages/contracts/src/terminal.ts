@@ -89,6 +89,16 @@ export type TerminalCloseInput = typeof TerminalCloseInput.Type;
 export const TerminalSessionStatus = Schema.Literals(["starting", "running", "exited", "error"]);
 export type TerminalSessionStatus = typeof TerminalSessionStatus.Type;
 
+/** Who may type into a terminal. User and agent take turns; absent from older servers means `user`. */
+export const TerminalController = Schema.Literals(["agent", "user"]);
+export type TerminalController = typeof TerminalController.Type;
+
+export const TerminalSetControllerInput = Schema.Struct({
+  ...TerminalSessionInput.fields,
+  controller: TerminalController,
+});
+export type TerminalSetControllerInput = typeof TerminalSetControllerInput.Type;
+
 export const TerminalSessionSnapshot = Schema.Struct({
   threadId: Schema.String.check(Schema.isNonEmpty()),
   terminalId: Schema.String.check(Schema.isNonEmpty()),
@@ -120,6 +130,7 @@ export const TerminalSummary = Schema.Struct({
   hasRunningSubprocess: Schema.Boolean,
   label: Schema.String.check(Schema.isMaxLength(128)),
   updatedAt: Schema.String,
+  controller: Schema.optional(TerminalController),
 });
 export type TerminalSummary = typeof TerminalSummary.Type;
 
