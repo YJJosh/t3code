@@ -7,6 +7,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
+import { backupBeforeDulliRetirement, finishDulliRetirement } from "./DulliUpgrade.ts";
 import * as ServerConfig from "../config.ts";
 
 const WAL_SIZE_LIMIT_BYTES = 128 * 1024 * 1024;
@@ -48,9 +49,10 @@ export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (d
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+  yield* backupBeforeDulliRetirement(dbPath);
 
   return Layer.provideMerge(
-    layerSetup,
+    Layer.effectDiscard(finishDulliRetirement(dbPath)).pipe(Layer.provideMerge(layerSetup)),
     NodeSqliteClient.layer({
       filename: dbPath,
       readerWorker: true,

@@ -84,6 +84,18 @@ Updates from the previous orchestration system preserve conversation transcripts
 every kind of runtime history forward. Read [Threads from older T3 Code versions](./thread-migration.md)
 before continuing an important older thread.
 
+## Upgrading an older T3 Dulli installation
+
+The stable-based T3 Dulli release keeps your existing `~/.t3-dulli` home, but retires the old
+Dulli provider. Its threads, subagent history, and provider settings are removed; threads belonging
+to other providers stay. Native Pi is separate and does not inherit Dulli sessions.
+
+Before removing anything, the server saves `statev2.sqlite.before-dulli-retirement` beside the
+existing database in `userdata`, and saves changed settings as `settings.json.before-dulli-retirement`.
+Allow extra disk space for a full database copy and time for the first startup. These backups are
+not deleted automatically. Keep them until you have checked the upgrade; restoring them requires
+stopping the server and using the older release. Your project files and worktrees are not deleted.
+
 ## When versions don't match
 
 A client and server must speak the same orchestration protocol. If they do not, the connection is
