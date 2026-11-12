@@ -63,6 +63,9 @@ export default Effect.gen(function* () {
       SELECT node_id FROM retired_dulli_nodes
       UNION SELECT child.node_id FROM orchestration_v2_projection_nodes AS child JOIN descendants ON child.parent_node_id = descendants.node_id
     ) SELECT node_id FROM descendants`;
+  yield* sql`DELETE FROM orchestration_v2_turn_item_positions WHERE turn_item_id IN (
+    SELECT turn_item_id FROM orchestration_v2_projection_turn_items WHERE node_id IN (SELECT node_id FROM retired_dulli_nodes) OR turn_item_id GLOB 'dulli:*'
+  )`;
   yield* sql`DELETE FROM orchestration_v2_projection_turn_items WHERE node_id IN (SELECT node_id FROM retired_dulli_nodes) OR turn_item_id GLOB 'dulli:*'`;
   yield* sql`DELETE FROM orchestration_v2_projection_nodes WHERE node_id IN (SELECT node_id FROM retired_dulli_nodes)`;
   yield* sql`DELETE FROM orchestration_v2_projection_subagents WHERE subagent_id IN (SELECT node_id FROM retired_dulli_nodes)`;

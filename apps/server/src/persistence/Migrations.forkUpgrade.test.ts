@@ -59,6 +59,11 @@ it.effect("retires old fork threads and history without changing native provider
     yield* sql`INSERT INTO orchestration_events
       (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
       VALUES ('retired-child-event', 'thread', 'native-claude', 1, 'subagent.updated', '2026-01-01', 'provider', '{"id":"dulli-child"}', '{"driver":"dulli"}', 2)`;
+    yield* sql`INSERT INTO orchestration_v2_projection_turn_items
+      (turn_item_id, thread_id, node_id, ordinal, type, status, updated_at, payload_json)
+      VALUES ('dulli:child-item', 'native-claude', 'transcript-child', 1, 'message', 'completed', '2026-01-01', '{}')`;
+    yield* sql`INSERT INTO orchestration_v2_turn_item_positions (thread_id, turn_item_id, ordinal)
+      VALUES ('native-claude', 'dulli:child-item', 1)`;
     const before =
       yield* sql`SELECT * FROM orchestration_v2_projection_threads WHERE thread_id != 'retired' ORDER BY thread_id`;
     yield* runMigrations();
@@ -74,6 +79,8 @@ it.effect("retires old fork threads and history without changing native provider
     assert.lengthOf(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, 2);
     assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_projection_subagents`, []);
     assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_projection_nodes`, []);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_projection_turn_items`, []);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_turn_item_positions`, []);
     assert.deepStrictEqual(
       yield* sql`SELECT migration_id FROM dulli_sql_migrations ORDER BY migration_id`,
       [1, 2, 3, 4, 5].map((migration_id) => ({ migration_id })),
