@@ -63,10 +63,14 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3tools.t3code";
+const DULLI_DESKTOP_APP_ID = "com.yjjosh.t3dulli";
+const DULLI_UPDATE_REPOSITORY = "YJJosh/t3code";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
+export const DesktopBuildBrand = Schema.Literals(["t3code", "dulli"]);
+export type DesktopBuildBrand = typeof DesktopBuildBrand.Type;
 
 const WorkspaceConfig = Schema.Struct({
   catalog: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -176,6 +180,7 @@ const PLATFORM_CONFIG: Record<typeof BuildPlatform.Type, PlatformConfig> = {
 };
 
 interface BuildCliInput {
+  readonly brand: Option.Option<DesktopBuildBrand>;
   readonly platform: Option.Option<typeof BuildPlatform.Type>;
   readonly target: Option.Option<string>;
   readonly arch: Option.Option<typeof BuildArch.Type>;
@@ -502,15 +507,18 @@ export class DesktopIconSourceMissingError extends Schema.TaggedError<DesktopIco
   }
 }
 
+const DesktopDmgBackgroundBrand = Schema.Literals(["latest", "nightly", "dulli"]);
+type DesktopDmgBackgroundBrand = typeof DesktopDmgBackgroundBrand.Type;
+
 export class DesktopDmgBackgroundSourceMissingError extends Schema.TaggedError<DesktopDmgBackgroundSourceMissingError>()(
   "DesktopDmgBackgroundSourceMissingError",
   {
-    channel: Schema.Literals(["latest", "nightly"]),
+    brand: DesktopDmgBackgroundBrand,
     sourcePath: Schema.String,
   },
 ) {
   override get message(): string {
-    return `Desktop ${this.channel} DMG background source is missing at ${this.sourcePath}`;
+    return `Desktop ${this.brand} DMG background source is missing at ${this.sourcePath}`;
   }
 }
 
@@ -644,7 +652,7 @@ export class InlinedExternalPackageError extends Schema.TaggedError<InlinedExter
   { packages: Schema.Array(Schema.String) },
 ) {
   override get message(): string {
-    return `The server bundle inlined packages that must stay external: ${this.packages.join(", ")}. These are native addons or their loaders; inlined, they resolve prebuilds relative to the bundle and silently lose native acceleration. Check the deps.neverBundle wiring in apps/server/vite.config.ts.`;
+    return `The server bundle inlined packages that must stay external: ${this.packages.join(", ")}. These packages rely on their on-disk layout for metadata or native binaries, which bundling does not preserve. Check the deps.neverBundle wiring in apps/server/vite.config.ts.`;
   }
 }
 
@@ -947,6 +955,7 @@ const resolvePythonForNodeGyp = Effect.fn("resolvePythonForNodeGyp")(function* (
 });
 
 interface ResolvedBuildOptions {
+  readonly brand: DesktopBuildBrand;
   readonly platform: typeof BuildPlatform.Type;
   readonly target: string;
   readonly arch: typeof BuildArch.Type;
@@ -963,6 +972,7 @@ interface ResolvedBuildOptions {
 
 interface StagePackageJson {
   readonly name: string;
+  readonly productName?: string;
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
@@ -1255,6 +1265,7 @@ function normalizePasskeyRpDomain(value: string): string {
 
 export function resolveMacPasskeySigningConfiguration(
   env: Readonly<Record<string, string | undefined>>,
+  appId: string = DESKTOP_APP_ID,
 ): MacPasskeySigningConfiguration {
   const teamId = env.T3CODE_APPLE_TEAM_ID?.trim().toUpperCase() ?? "";
   if (!APPLE_TEAM_ID_PATTERN.test(teamId)) {
@@ -1290,7 +1301,7 @@ export function resolveMacPasskeySigningConfiguration(
   }
 
   return {
-    appId: DESKTOP_APP_ID,
+    appId,
     teamId,
     rpDomains: uniqueRpDomains,
     provisioningProfilePath,
@@ -1306,6 +1317,32 @@ function escapeXml(value: string): string {
     .replaceAll("'", "&apos;");
 }
 
+export function resolveMacCommunitySigningIdentity(
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const identity = env.T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY?.trim();
+  return identity && identity.length > 0 ? identity : undefined;
+}
+
+export function renderMacCommunityEntitlements(): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+  </dict>
+</plist>
+`;
+}
 /** macOS refuses restricted entitlements absent from the provisioning profile. */
 export interface MacWebAuthnEntitlements {
   readonly touchIdKeychainAccessGroup: string | undefined;
@@ -1641,6 +1678,7 @@ const AzureTrustedSigningOptionsConfig = Config.all({
 });
 
 const BuildEnvConfig = Config.all({
+  brand: Config.schema(DesktopBuildBrand, "T3CODE_DESKTOP_BRAND").pipe(Config.option),
   platform: Config.schema(BuildPlatform, "T3CODE_DESKTOP_PLATFORM").pipe(Config.option),
   target: Config.String("T3CODE_DESKTOP_TARGET").pipe(Config.option),
   arch: Config.schema(BuildArch, "T3CODE_DESKTOP_ARCH").pipe(Config.option),
@@ -1696,6 +1734,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const env = yield* BuildEnvConfig;
   const hostPlatform = yield* HostProcess.Platform;
 
+  const brand = mergeOptions(input.brand, env.brand, "t3code" as const);
   const platform = mergeOptions(
     input.platform,
     env.platform,
@@ -1747,6 +1786,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     Option.getOrUndefined(input.wslRuntime) ?? Option.getOrUndefined(env.wslRuntime);
 
   return {
+    brand,
     platform,
     target,
     arch,
@@ -1835,6 +1875,7 @@ const buildDesktopBundlesUnlocked = Effect.fn("buildDesktopBundlesUnlocked")(fun
   repoRoot: string,
   appVersion: string,
   verbose: boolean,
+  brand?: DesktopBuildBrand,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1860,7 +1901,10 @@ const buildDesktopBundlesUnlocked = Effect.fn("buildDesktopBundlesUnlocked")(fun
           ChildProcess.make(spawnCommand.command, spawnCommand.args, {
             cwd: repoRoot,
             shell: spawnCommand.shell,
-            env: { APP_VERSION: appVersion },
+            env: {
+              APP_VERSION: appVersion,
+              ...(brand === undefined ? {} : { VITE_DESKTOP_BUILD_BRAND: brand }),
+            },
             extendEnv: true,
           }),
           { label: "vp run build:desktop", verbose },
@@ -1893,8 +1937,11 @@ const buildDesktopBundlesUnlocked = Effect.fn("buildDesktopBundlesUnlocked")(fun
 });
 
 export const buildDesktopBundles = Effect.fn("buildDesktopBundles")(
-  (repoRoot: string, appVersion: string, verbose: boolean) =>
-    withDesktopBuildLock(repoRoot, buildDesktopBundlesUnlocked(repoRoot, appVersion, verbose)),
+  (repoRoot: string, appVersion: string, verbose: boolean, brand?: DesktopBuildBrand) =>
+    withDesktopBuildLock(
+      repoRoot,
+      buildDesktopBundlesUnlocked(repoRoot, appVersion, verbose, brand),
+    ),
 );
 
 const desktopBuildProbeSucceeds = Effect.fn("desktopBuildProbeSucceeds")(function* (
@@ -2526,14 +2573,14 @@ const stageMacIcons = Effect.fn("build-desktop-artifact.stageMacIcons")(function
 
 export const stageDesktopDmgBackground = Effect.fn("stageDesktopDmgBackground")(function* (
   stageResourcesDir: string,
-  channel: "latest" | "nightly",
+  brand: DesktopDmgBackgroundBrand,
   verbose: boolean,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const sourcePath = path.join(stageResourcesDir, "dmg", `dmg-background-${channel}.svg`);
+  const sourcePath = path.join(stageResourcesDir, "dmg", `dmg-background-${brand}.svg`);
   if (!(yield* fs.exists(sourcePath))) {
-    return yield* new DesktopDmgBackgroundSourceMissingError({ channel, sourcePath });
+    return yield* new DesktopDmgBackgroundSourceMissingError({ brand, sourcePath });
   }
 
   for (const output of [
@@ -2543,14 +2590,14 @@ export const stageDesktopDmgBackground = Effect.fn("stageDesktopDmgBackground")(
     const targetPath = path.join(
       stageResourcesDir,
       "dmg",
-      `dmg-background-${channel}${output.suffix}.png`,
+      `dmg-background-${brand}${output.suffix}.png`,
     );
     yield* runCommand(
       ChildProcess.make(
         {},
       )`sips -s format png -z ${output.height} ${output.width} ${sourcePath} --out ${targetPath}`,
       {
-        label: `sips ${channel} DMG background${output.suffix || "@1x"}`,
+        label: `sips ${brand} DMG background${output.suffix || "@1x"}`,
         verbose,
       },
     );
@@ -2690,6 +2737,10 @@ export function resolveDesktopRuntimeDependencies(
 
 export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
   updateChannel: "latest" | "nightly",
+  options: {
+    readonly defaultRepository?: string;
+    readonly releaseType?: "release" | "prerelease";
+  } = {},
 ) {
   const env = yield* Config.all({
     updateRepository: Config.String("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
@@ -2697,6 +2748,7 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
   });
   const rawRepo = (
     Option.getOrUndefined(env.updateRepository)?.trim() ||
+    options.defaultRepository?.trim() ||
     Option.getOrUndefined(env.githubRepository)?.trim() ||
     ""
   ).trim();
@@ -2709,7 +2761,7 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
     provider: "github",
     owner,
     repo,
-    releaseType: updateChannel === "nightly" ? "prerelease" : "release",
+    releaseType: options.releaseType ?? (updateChannel === "nightly" ? "prerelease" : "release"),
     ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
   };
 });
@@ -2726,7 +2778,18 @@ export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
   return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
 }
 
-export function resolveDesktopBuildIconAssets(version: string): DesktopBuildIconAssets {
+export function resolveDesktopBuildIconAssets(
+  version: string,
+  brand: DesktopBuildBrand = "t3code",
+): DesktopBuildIconAssets {
+  if (brand === "dulli") {
+    return {
+      macIconPng: BRAND_ASSET_PATHS.dulliMacIconPng,
+      linuxIconPng: BRAND_ASSET_PATHS.dulliLinuxIconPng,
+      windowsIconIco: BRAND_ASSET_PATHS.dulliWindowsIconIco,
+    };
+  }
+
   if (resolveDesktopUpdateChannel(version) === "nightly") {
     return {
       macIconPng: BRAND_ASSET_PATHS.nightlyMacIconPng,
@@ -2757,10 +2820,64 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
-export function resolveDesktopProductName(version: string): string {
+export function resolveDesktopProductName(
+  version: string,
+  brand: DesktopBuildBrand = "t3code",
+): string {
+  if (brand === "dulli") return "T3 Dulli";
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
+}
+
+export interface DesktopBuildBrandMetadata {
+  readonly appId: string;
+  readonly artifactName: string;
+  readonly author: string;
+  readonly description: string;
+  readonly executableName: string;
+  readonly linuxDesktopEntryName: string;
+  readonly linuxWmClass: string;
+  readonly packageName: string;
+  readonly productName: string;
+  readonly updateRepository: string | undefined;
+  readonly usesPrereleaseFeed: boolean;
+}
+
+export function resolveDesktopBuildBrandMetadata(
+  brand: DesktopBuildBrand,
+  version: string,
+): DesktopBuildBrandMetadata {
+  if (brand === "dulli") {
+    return {
+      appId: DULLI_DESKTOP_APP_ID,
+      artifactName: "T3-Dulli-${version}-${arch}.${ext}",
+      author: "YJJosh",
+      description: "T3 Dulli desktop build",
+      executableName: "t3-dulli-clean",
+      linuxDesktopEntryName: "t3-dulli-clean.desktop",
+      linuxWmClass: "t3-dulli",
+      packageName: "t3-dulli",
+      productName: resolveDesktopProductName(version, brand),
+      updateRepository: DULLI_UPDATE_REPOSITORY,
+      usesPrereleaseFeed: true,
+    };
+  }
+
+  return {
+    appId: DESKTOP_APP_ID,
+    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    author: "T3 Tools",
+    description:
+      "T3 Code is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
+    executableName: "t3code",
+    linuxDesktopEntryName: "t3code.desktop",
+    linuxWmClass: "t3code",
+    packageName: "t3code",
+    productName: resolveDesktopProductName(version, brand),
+    updateRepository: undefined,
+    usesPrereleaseFeed: false,
+  };
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2777,13 +2894,18 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       }
     | undefined,
   wslRuntimeBundled = false,
+  brand: DesktopBuildBrand = "t3code",
+  macCommunitySigning:
+    | { readonly identity: string; readonly entitlementsPath: string }
+    | undefined = undefined,
   arch?: typeof BuildArch.Type,
 ) {
+  const brandMetadata = resolveDesktopBuildBrandMetadata(brand, version);
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
-    appId: DESKTOP_APP_ID,
-    productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    appId: brandMetadata.appId,
+    productName: brandMetadata.productName,
+    artifactName: brandMetadata.artifactName,
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
     files: [
       ...DESKTOP_FILE_EXCLUSIONS,
@@ -2807,12 +2929,18 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
       ...(platform === "win" && wslRuntimeBundled ? WSL_RUNTIME_EXTRA_RESOURCES : []),
     ],
+    ...(platform === "mac" && macCommunitySigning ? { forceCodeSigning: true } : {}),
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   // Missing publish config infers a GitHub feed from tokens; staging has no repository, so manifest generation would crash.
   buildConfig.publish = null;
   if (!isDesktopPreviewVersion(version)) {
-    const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
+    const publishConfig = yield* resolveGitHubPublishConfig(updateChannel, {
+      ...(brandMetadata.updateRepository === undefined
+        ? {}
+        : { defaultRepository: brandMetadata.updateRepository }),
+      ...(brandMetadata.usesPrereleaseFeed ? { releaseType: "prerelease" as const } : {}),
+    });
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
     } else if (mockUpdates) {
@@ -2835,20 +2963,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       extendInfo: {
         // macOS 26 offers Messages/Mail codes in every text field unless opted out.
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
-        NSLocalNetworkUsageDescription:
-          "T3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
-        NSCalendarsUsageDescription:
-          "Commands you run in T3 Code may need access to your calendars.",
-        NSCalendarsFullAccessUsageDescription:
-          "Commands you run in T3 Code may need to read and write your calendar events.",
-        NSCalendarsWriteOnlyAccessUsageDescription:
-          "Commands you run in T3 Code may need to add events to your calendars.",
-        NSScreenCaptureUsageDescription:
-          "T3 Code captures the active window when you use the window capture shortcut.",
-        NSCameraUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents use the camera.",
-        NSMicrophoneUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents use the microphone.",
+        NSLocalNetworkUsageDescription: `${brand === "dulli" ? "T3 Dulli" : "T3 Code"} connects to devices on your local network for remote environments and commands run by terminals and coding agents.`,
+        NSCalendarsUsageDescription: `Commands you run in ${brand === "dulli" ? "T3 Dulli" : "T3 Code"} may need access to your calendars.`,
+        NSCalendarsFullAccessUsageDescription: `Commands you run in ${brand === "dulli" ? "T3 Dulli" : "T3 Code"} may need to read and write your calendar events.`,
+        NSCalendarsWriteOnlyAccessUsageDescription: `Commands you run in ${brand === "dulli" ? "T3 Dulli" : "T3 Code"} may need to add events to your calendars.`,
+        NSScreenCaptureUsageDescription: `${brand === "dulli" ? "T3 Dulli" : "T3 Code"} captures the active window when you use the window capture shortcut.`,
+        NSCameraUsageDescription: `${brand === "dulli" ? "T3 Dulli" : "T3 Code"} lets commands run by terminals and coding agents use the camera.`,
+        NSMicrophoneUsageDescription: `${brand === "dulli" ? "T3 Dulli" : "T3 Code"} lets commands run by terminals and coding agents use the microphone.`,
         // macOS lists an app under Default web browser only when it opens web
         // pages as documents as well as http and https links (see protocols).
         CFBundleDocumentTypes: [
@@ -2861,17 +2982,23 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         ],
       },
       protocols: [
-        {
-          name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
-        },
+        ...(brand === "t3code" ? [{ name: "T3 Code", schemes: ["t3code", "t3code-dev"] }] : []),
         {
           name: "Web site URL",
           schemes: ["http", "https"],
           role: "Viewer",
         },
       ],
-      ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      ...(signed
+        ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") }
+        : macCommunitySigning
+          ? {
+              identity: macCommunitySigning.identity,
+              entitlements: macCommunitySigning.entitlementsPath,
+              entitlementsInherit: macCommunitySigning.entitlementsPath,
+              notarize: false,
+            }
+          : {}),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,
@@ -2884,8 +3011,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac" && target === "dmg") {
     buildConfig.dmg = {
       // Finder caches DMG backgrounds by volume name; give each installer its own.
-      title: `${resolveDesktopProductName(version)} ${version} Installer`,
-      background: `dmg/dmg-background-${updateChannel}.png`,
+      title: `${brandMetadata.productName} ${version} Installer`,
+      background: `dmg/dmg-background-${brand === "dulli" ? "dulli" : updateChannel}.png`,
       window: {
         width: 640,
         // DMG bounds include Finder's 32px title bar; keep that artwork strip clear.
@@ -2908,28 +3035,29 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     buildConfig.afterPack = path.join(repoRoot, "scripts/linux-after-pack.ts");
     buildConfig.linux = {
       target: target === "AppImage" ? [target, "deb"] : [target],
-      executableName: "t3code",
+      executableName: brandMetadata.executableName,
       icon: "icons",
       category: "Development",
       synopsis: "Desktop GUI for coding agents",
-      maintainer: "T3 Tools <hello@t3.codes>",
-      protocols: [
-        {
-          name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
-        },
-      ],
+      maintainer: brand === "dulli" ? "YJJosh" : "T3 Tools <hello@t3.codes>",
+      ...(brand === "t3code"
+        ? { protocols: [{ name: "T3 Code", schemes: ["t3code", "t3code-dev"] }] }
+        : {}),
       desktop: {
         entry: {
-          StartupWMClass: "t3code",
+          StartupWMClass: brandMetadata.linuxWmClass,
         },
       },
     };
     buildConfig.deb = {
       // FPM runs outside the staged app directory, so source paths must be absolute.
       fpm: [
-        `${path.join(repoRoot, "apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml")}=/usr/share/metainfo/com.t3tools.t3code.metainfo.xml`,
-        `${path.join(repoRoot, "LICENSE")}=/usr/share/doc/t3code/copyright`,
+        ...(brand === "t3code"
+          ? [
+              `${path.join(repoRoot, "apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml")}=/usr/share/metainfo/com.t3tools.t3code.metainfo.xml`,
+            ]
+          : []),
+        `${path.join(repoRoot, "LICENSE")}=/usr/share/doc/${brandMetadata.packageName}/copyright`,
       ],
       // Debian 13 and Ubuntu 24.04 use 64-bit-time names; retain old-name fallbacks.
       depends: [
@@ -3507,7 +3635,11 @@ export const validateWindowsPackagedPayload = Effect.fn(
         cause: new Error("WSL runtime archive is not a Linux CLI release archive"),
       });
     }
-    const bundleEntry = members.find((member) => member.endsWith("/bin.mjs"));
+    // The CLI archive runs the single-executable, never a loose server bundle.
+    // Dependencies may ship their own bin.mjs (yaml does), so skip node_modules.
+    const bundleEntry = members.find(
+      (member) => member.endsWith("/bin.mjs") && !member.startsWith(`${stem}/node_modules/`),
+    );
     if (bundleEntry !== undefined) {
       return yield* invalidWslRuntime(
         new Error(`WSL runtime archive contains a server bundle entry ${bundleEntry}`),
@@ -3651,11 +3783,12 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   });
 
   const appVersion = options.version ?? serverPackageJson.version;
-  const iconAssets = resolveDesktopBuildIconAssets(appVersion);
+  const brandMetadata = resolveDesktopBuildBrandMetadata(options.brand, appVersion);
+  const iconAssets = resolveDesktopBuildIconAssets(appVersion, options.brand);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
-    prefix: `t3code-desktop-${options.platform}-stage-`,
+    prefix: `${brandMetadata.packageName}-desktop-${options.platform}-stage-`,
   });
 
   const stageAppDir = path.join(stageRoot, "app");
@@ -3669,7 +3802,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
 
   if (!options.skipBuild) {
     yield* Effect.log("[desktop-artifact] Building desktop/server/web artifacts...");
-    yield* buildDesktopBundlesUnlocked(repoRoot, appVersion, options.verbose);
+    yield* buildDesktopBundlesUnlocked(repoRoot, appVersion, options.verbose, options.brand);
   }
 
   const requiredBuildInputs = [
@@ -3738,7 +3871,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     });
   }
 
-  const webAssetBrand = resolveDesktopWebAssetBrand(appVersion);
+  const webAssetBrand =
+    options.brand === "dulli" ? ("dulli" as const) : resolveDesktopWebAssetBrand(appVersion);
   yield* applyWebBrandAssets(webAssetBrand, "apps/server/dist/client");
   yield* Effect.log(`[desktop-artifact] Applied ${webAssetBrand} web client branding.`);
   yield* validateBundledClientAssets(path.dirname(bundledClientEntry));
@@ -3764,7 +3898,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   if (options.platform === "mac" && options.target === "dmg") {
     yield* stageDesktopDmgBackground(
       stageResourcesDir,
-      resolveDesktopUpdateChannel(appVersion),
+      options.brand === "dulli" ? "dulli" : resolveDesktopUpdateChannel(appVersion),
       options.verbose,
     );
   }
@@ -3811,12 +3945,17 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
+  const repoEnv = loadRepoEnv({ repoRoot });
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () => resolveMacPasskeySigningConfiguration(repoEnv, brandMetadata.appId),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
+      : undefined;
+  const macCommunitySigningIdentity =
+    options.platform === "mac" && !options.signed
+      ? resolveMacCommunitySigningIdentity(repoEnv)
       : undefined;
   const macPasskeySigning = configuredMacPasskeySigning
     ? {
@@ -3827,9 +3966,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         ),
       }
     : undefined;
-  const macEntitlementsPath = macPasskeySigning
-    ? path.join(stageAppDir, "entitlements.mac.plist")
-    : undefined;
+  const macEntitlementsPath =
+    macPasskeySigning || macCommunitySigningIdentity
+      ? path.join(stageAppDir, "entitlements.mac.plist")
+      : undefined;
   let macWebAuthn: MacWebAuthnEntitlements | undefined;
   if (macPasskeySigning && macEntitlementsPath) {
     if (!(yield* fs.exists(macPasskeySigning.provisioningProfilePath))) {
@@ -3848,6 +3988,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       macEntitlementsPath,
       renderMacPasskeyEntitlements(macPasskeySigning, macWebAuthn),
     );
+  } else if (macCommunitySigningIdentity && macEntitlementsPath) {
+    yield* fs.writeFileString(macEntitlementsPath, renderMacCommunityEntitlements());
   }
 
   const stageDependencies =
@@ -3869,7 +4011,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
   const stagePackageJson: StagePackageJson = {
-    name: "t3code",
+    name: brandMetadata.packageName,
+    ...(options.brand === "dulli" ? { productName: brandMetadata.productName } : {}),
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
@@ -3877,11 +4020,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
     private: true,
     packageManager: rootPackageJson.packageManager,
-    description:
-      "T3 Code is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
+    description: brandMetadata.description,
     license: "MIT",
-    homepage: "https://t3.codes",
-    author: "T3 Tools",
+    homepage: options.brand === "dulli" ? "https://github.com/YJJosh/t3code" : "https://t3.codes",
+    author: brandMetadata.author,
     main: "apps/desktop/dist-electron/boot.cjs",
     build: yield* createBuildConfig(
       options.platform,
@@ -3897,6 +4039,13 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
           }
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
+      options.brand,
+      macCommunitySigningIdentity && macEntitlementsPath
+        ? {
+            identity: macCommunitySigningIdentity,
+            entitlementsPath: macEntitlementsPath,
+          }
+        : undefined,
       options.arch,
     ),
     dependencies: stageDependencies,
@@ -4059,7 +4208,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   if (options.platform === "win") {
     yield* validateWindowsPackagedPayload({
       stageDistDir,
-      appExecutableName: `${resolveDesktopProductName(appVersion)}.exe`,
+      appExecutableName: `${brandMetadata.productName}.exe`,
       targetArch: options.arch,
       appVersion,
       expectWslRuntime: bundlesWslRuntime({
@@ -4138,6 +4287,10 @@ export const copyDesktopBuildArtifacts = Effect.fn("copyDesktopBuildArtifacts")(
 });
 
 const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
+  brand: Flag.Literals("brand", DesktopBuildBrand.literals).pipe(
+    Flag.withDescription("Desktop product brand (env: T3CODE_DESKTOP_BRAND)."),
+    Flag.optional,
+  ),
   platform: Flag.Literals("platform", BuildPlatform.literals).pipe(
     Flag.withDescription("Build platform (env: T3CODE_DESKTOP_PLATFORM)."),
     Flag.optional,
@@ -4198,7 +4351,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
 }).pipe(
-  Command.withDescription("Build a desktop artifact for T3 Code."),
+  Command.withDescription("Build a branded T3 desktop artifact."),
   Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
 );
 

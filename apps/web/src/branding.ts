@@ -10,17 +10,21 @@ function readInjectedDesktopAppBranding(): DesktopAppBranding | null {
 }
 
 const injectedDesktopAppBranding = readInjectedDesktopAppBranding();
+const desktopBuildBrand = import.meta.env.VITE_DESKTOP_BUILD_BRAND?.trim().toLowerCase();
 const hostedAppChannel = import.meta.env.VITE_HOSTED_APP_CHANNEL?.trim().toLowerCase();
 
 export const HOSTED_APP_CHANNEL =
   hostedAppChannel === "latest" || hostedAppChannel === "nightly" ? hostedAppChannel : null;
 export const HOSTED_APP_CHANNEL_LABEL =
   HOSTED_APP_CHANNEL === "nightly" ? "Nightly" : HOSTED_APP_CHANNEL === "latest" ? "Latest" : null;
-export const APP_BASE_NAME = injectedDesktopAppBranding?.baseName ?? "T3 Code";
+export const APP_BASE_NAME =
+  injectedDesktopAppBranding?.baseName ?? (desktopBuildBrand === "dulli" ? "T3 Dulli" : "T3 Code");
+// Text displayed beside the shared T3 wordmark.
+export const APP_WORDMARK_LABEL = APP_BASE_NAME.replace(/^T3 /, "");
 export const APP_STAGE_LABEL =
   injectedDesktopAppBranding?.stageLabel ??
   HOSTED_APP_CHANNEL_LABEL ??
-  (import.meta.env.DEV ? "Dev" : "Beta");
+  (desktopBuildBrand === "dulli" ? "Latest" : import.meta.env.DEV ? "Dev" : "Beta");
 export const APP_DISPLAY_NAME =
   injectedDesktopAppBranding?.displayName ??
   formatAppDisplayName({ baseName: APP_BASE_NAME, stageLabel: APP_STAGE_LABEL });

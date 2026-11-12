@@ -138,3 +138,25 @@ it.effect("retries on the next launch when a GPU cache cannot be removed", () =>
     assert.deepStrictEqual(writes, []);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it.effect.each(["darwin", "linux", "win32"] as const)(
+  "keeps Dulli's %s profile isolated without inspecting or copying upstream state",
+  (platform) =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      assert.equal(
+        yield* resolveUserDataPath({
+          appDataDirectory: "/profiles",
+          isDevelopment: false,
+          isDulli: true,
+          platform,
+        }),
+        path.join("/profiles", "t3-dulli"),
+      );
+    }).pipe(
+      // All file operations fail in the noop filesystem: selecting a Dulli
+      // profile must not read V1/V2 profiles, including Windows safeStorage keys.
+      Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})),
+      Effect.provide(NodeServices.layer),
+    ),
+);

@@ -16,6 +16,7 @@ import {
 } from "./DesktopStatePaths.ts";
 
 interface EarlyDesktopSettingsInput {
+  readonly appName?: string;
   readonly env: NodeJS.ProcessEnv;
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
@@ -27,11 +28,17 @@ type EarlyLinuxElectronOptionsInput = EarlyDesktopSettingsInput;
 export interface EarlyLinuxElectronOptions {
   readonly isDevelopment: boolean;
   readonly linuxDesktopEntryName: string;
+  readonly isDulli: boolean;
+  readonly linuxWmClass: string;
   readonly passwordStore: LinuxPasswordStoreSwitch | null;
 }
 
-export const resolveLinuxDesktopEntryName = (isDevelopment: boolean): string =>
-  isDevelopment ? "com.t3tools.T3Code.Development.desktop" : "com.t3tools.T3Code.desktop";
+export const resolveLinuxDesktopEntryName = (isDevelopment: boolean, isDulli = false): string =>
+  isDevelopment
+    ? "com.t3tools.T3Code.Development.desktop"
+    : isDulli
+      ? "t3-dulli-clean.desktop"
+      : "com.t3tools.T3Code.desktop";
 
 const trimNonEmpty = (value: string | undefined): string | null => {
   const trimmed = value?.trim();
@@ -48,13 +55,18 @@ const decodeEarlyDesktopSettingsJson = Schema.decodeSync(EarlyDesktopSettingsJso
 const isDevelopmentEnvironment = (env: NodeJS.ProcessEnv): boolean =>
   trimNonEmpty(env.VITE_DEV_SERVER_URL) !== null;
 
+const isDulliApp = (appName: string | undefined, env: NodeJS.ProcessEnv): boolean =>
+  !isDevelopmentEnvironment(env) && appName?.trim() === "T3 Dulli";
+
 function resolveEarlyDesktopSettingsPath(input: {
+  readonly appName?: string;
   readonly env: NodeJS.ProcessEnv;
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
 }): string {
   const t3Home = Option.fromUndefinedOr(input.env.T3CODE_HOME);
   const baseDir = resolveDesktopBaseDir({
+    defaultBaseDirName: isDulliApp(input.appName, input.env) ? ".t3-dulli" : ".t3",
     homeDirectory: input.homeDirectory,
     joinPath: input.joinPath,
     t3Home,
@@ -145,7 +157,16 @@ export function resolveEarlyLinuxElectronOptions(
   const isDevelopment = isDevelopmentEnvironment(input.env);
   return {
     isDevelopment,
-    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
+    linuxDesktopEntryName: resolveLinuxDesktopEntryName(
+      isDevelopment,
+      isDulliApp(input.appName, input.env),
+    ),
+    isDulli: isDulliApp(input.appName, input.env),
+    linuxWmClass: isDevelopment
+      ? "t3code-dev"
+      : isDulliApp(input.appName, input.env)
+        ? "t3-dulli"
+        : "t3code",
     passwordStore: resolveLinuxPasswordStoreSwitch({
       preference,
       env: input.env,

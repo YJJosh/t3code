@@ -339,6 +339,17 @@ describe("DesktopLinuxUrlHandler", () => {
     });
   });
 
+  it.effect("does not claim or write upstream URL handlers for Dulli", () => {
+    const recorded = emptyRecording();
+    return Effect.gen(function* () {
+      yield* runRegister(recorded, { environment: { isDulli: true, displayName: "T3 Dulli" } });
+      assert.deepEqual(recorded.files, []);
+      assert.deepEqual(recorded.directories, []);
+      assert.deepEqual(recorded.commands, []);
+      assert.deepEqual(recorded.copies, []);
+    });
+  });
+
   it.effect("never fails startup when registration cannot complete", () => {
     const desktopDatabaseFailed = emptyRecording();
     const xdgMimeFailed = emptyRecording();

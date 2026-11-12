@@ -3,6 +3,7 @@ import type { DesktopUpdateState } from "@t3tools/contracts";
 
 import {
   canCheckForUpdate,
+  getDesktopUpdateInstallConfirmationMessage,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateReleaseHistoryUrl,
   getDesktopUpdateReleaseUrl,
@@ -89,4 +90,25 @@ describe("canCheckForUpdate", () => {
       }),
     ).toBe(true);
   });
+});
+
+it("opens the fork release history for Dulli builds", () => {
+  expect(getDesktopUpdateReleaseHistoryUrl("T3 Dulli")).toBe(
+    "https://github.com/YJJosh/t3code/releases",
+  );
+  expect(getDesktopUpdateReleaseHistoryUrl("T3 Code")).toBe(
+    "https://github.com/pingdotgg/t3code/releases",
+  );
+});
+
+it("uses Dulli's release repository and product name", () => {
+  expect(getDesktopUpdateReleaseUrl("0.0.36-pi.1", "T3 Dulli")).toBe(
+    "https://github.com/YJJosh/t3code/releases/tag/v0.0.36-pi.1",
+  );
+  expect(
+    getDesktopUpdateInstallConfirmationMessage(
+      { availableVersion: "0.0.36-pi.1", downloadedVersion: null },
+      "T3 Dulli",
+    ),
+  ).toContain("restart T3 Dulli?");
 });

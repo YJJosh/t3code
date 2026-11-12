@@ -64,10 +64,12 @@ const layerDesktopClerk = (
     copyText: () => Effect.void,
   },
   listeners = new Map<string, (...args: unknown[]) => void>(),
+  isDulli = false,
 ) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir: clerkStateDir,
     isDevelopment,
+    isDulli,
     appDataDirectory: "/tmp/app-data",
     platform,
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
@@ -115,6 +117,31 @@ describe("DesktopClerk", () => {
     createClerkBridgeMock.mockReset();
     requestSingleInstanceLockMock.mockReset().mockReturnValue(true);
     storageMock.mockReset();
+  });
+
+  it.effect("uses Dulli's independent profile and renderer scheme", () => {
+    const events: string[] = [];
+    storageMock.mockReturnValue(storageAdapter);
+    createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
+
+    return Effect.gen(function* () {
+      yield* Effect.scoped(
+        Layer.build(
+          layerDesktopClerk(false, events, "win32", undefined, undefined, undefined, true),
+        ),
+      );
+
+      assert.equal(createClerkBridgeMock.mock.calls[0]?.[0]?.renderer.scheme, "t3dulli");
+      assert.notStrictEqual(createClerkBridgeMock.mock.calls[0]?.[0]?.storage, storageAdapter);
+      assert.deepEqual(events, [
+        "setPath:userData:/tmp/app-data/t3-dulli",
+        "requestSingleInstanceLock",
+        "on:second-instance",
+        "on:open-url",
+      ]);
+      storageMock.mockClear();
+      createClerkBridgeMock.mockClear();
+    });
   });
 
   it.each([

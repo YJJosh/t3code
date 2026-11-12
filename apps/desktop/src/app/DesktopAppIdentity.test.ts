@@ -207,4 +207,51 @@ describe("DesktopAppIdentity", () => {
       { calls, environment },
     );
   });
+  it.effect("uses Dulli's isolated user-data path without probing upstream legacy state", () => {
+    const upstreamProbeFailure = PlatformError.systemError({
+      _tag: "PermissionDenied",
+      module: "FileSystem",
+      method: "exists",
+      description: "upstream path must not be inspected",
+      pathOrDescriptor: "/Users/alice/Library/Application Support/T3 Code (Alpha)",
+    });
+
+    return withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        assert.equal(
+          yield* identity.resolveUserDataPath,
+          "/Users/alice/Library/Application Support/t3-dulli",
+        );
+      }),
+      {
+        environment: { appName: "T3 Dulli" },
+        legacyPathProbeError: upstreamProbeFailure,
+      },
+    );
+  });
+
+  it.effect("configures packaged Dulli product text while preserving its bundled icon", () => {
+    const calls: ElectronAppCalls = {
+      setAboutPanelOptions: [],
+      setDockIcon: [],
+      setName: [],
+    };
+
+    return withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        yield* identity.configure;
+
+        assert.deepEqual(calls.setName, ["T3 Dulli"]);
+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Dulli");
+        assert.deepEqual(calls.setDockIcon, []);
+      }),
+      {
+        calls,
+        environment: { appName: "T3 Dulli" },
+        pngIconPath: Option.some("/dulli-icon.png"),
+      },
+    );
+  });
 });

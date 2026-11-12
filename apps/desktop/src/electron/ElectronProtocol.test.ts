@@ -27,6 +27,12 @@ describe("ElectronProtocol", () => {
     unhandleMock.mockReset();
   });
 
+  it("keeps Dulli on an internal scheme distinct from upstream URL callbacks", () => {
+    assert.equal(ElectronProtocol.getDesktopScheme(false), "t3code");
+    assert.equal(ElectronProtocol.getDesktopScheme(false, true), "t3dulli");
+    assert.equal(ElectronProtocol.getDesktopUrl(false, true), "t3dulli://app/");
+  });
+
   it.effect("serves the bundled client from disk without a backend", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

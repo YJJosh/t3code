@@ -77,6 +77,20 @@ const stableUpdateInfo = (
 };
 
 describe("DesktopUpdates", () => {
+  it.effect("checks the Dulli prerelease feed on the normal latest track", () => {
+    const harness = makeHarness({ appName: "T3 Dulli", appVersion: "0.1.9-dulli.1" });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        assert.equal((yield* updates.getState).channel, "latest");
+        assert.equal(harness.updaterChannel(), "dulli");
+        assert.isTrue(harness.allowsPrerelease());
+        assert.isFalse(harness.allowDowngrade());
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
   it.effect("updates Linux .deb installs and leaves other non-AppImage installs off", () =>
     Effect.gen(function* () {
       const linuxState = (packageType: string | undefined) =>
