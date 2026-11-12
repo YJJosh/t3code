@@ -217,7 +217,14 @@ export function decodeScanCache(
       if (
         typeof timestampMs !== "number" ||
         !Number.isFinite(timestampMs) ||
+        typeof sessionIndex !== "number" ||
+        !Number.isSafeInteger(sessionIndex) ||
+        sessionIndex < 0 ||
+        sessionIndex >= sessions.length ||
         model === undefined ||
+        (dedupeKey !== null && typeof dedupeKey !== "string") ||
+        (reportedCostUsd !== null &&
+          (typeof reportedCostUsd !== "number" || !Number.isFinite(reportedCostUsd))) ||
         (unresolvedServiceTierTurnId !== undefined &&
           typeof unresolvedServiceTierTurnId !== "string") ||
         (rateModelIndex != null && rateModel === undefined) ||
@@ -240,7 +247,7 @@ export function decodeScanCache(
         timestampMs,
         model,
         ...(rateModel === undefined ? {} : { rateModel }),
-        sessionId: (typeof sessionIndex === "number" ? sessions[sessionIndex] : undefined) ?? "",
+        sessionId: sessions[sessionIndex]!,
         totals: {
           uncachedInputTokens: uncached,
           cachedInputTokens: cached,
@@ -248,12 +255,12 @@ export function decodeScanCache(
           outputTokens: output,
           reasoningTokens: reasoning,
         },
-        reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
+        reportedCostUsd,
         speed,
         ...(version >= 7 && unresolvedServiceTierTurnId !== undefined
           ? { unresolvedServiceTierTurnId }
           : {}),
-        dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
+        dedupeKey,
       });
     }
     return records;
