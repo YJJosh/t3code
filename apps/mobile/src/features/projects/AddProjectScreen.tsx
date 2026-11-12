@@ -1574,13 +1574,13 @@ export function AddProjectMultiRepoScreen(props: { readonly environmentId?: stri
   const setups = environment
     ? listMultiRepoProjectsToSetUp(projects, environment.environmentId)
     : [];
-  const submit = async () => {
+  const submit = () => {
     if (!environment || !canAddProject || submitting.current || isBrowseNavigating) return;
     submitting.current = true;
     setBusy(true);
     setError(null);
     const originRoute = getActiveRoute(navigation);
-    try {
+    const run = async () => {
       const inspected = await inspect({
         environmentId: environment.environmentId,
         input: { path: pathInput },
@@ -1632,12 +1632,15 @@ export function AddProjectMultiRepoScreen(props: { readonly environmentId?: stri
         );
         if (result && AsyncResult.isFailure(result)) throw Cause.squash(result.cause);
       }
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      submitting.current = false;
-      setBusy(false);
-    }
+    };
+    void run()
+      .catch((cause) => {
+        setError(errorMessage(cause));
+      })
+      .finally(() => {
+        submitting.current = false;
+        setBusy(false);
+      });
   };
   return (
     <AddProjectShell title="Multi-repo project">

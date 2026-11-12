@@ -482,7 +482,7 @@ export const make = Effect.gen(function* () {
       function (input) {
         return unlessMultiRepo(
           input.cwd,
-          (service, members) => service.fetchMembers(input.cwd, members).pipe(Effect.as(null)),
+          () => Effect.succeed(null),
           ensureGitCommand("GitWorkflowService.resolveWorktreeBaseRemote", input.cwd).pipe(
             Effect.andThen(git.resolveWorktreeBaseRemote(input)),
           ),

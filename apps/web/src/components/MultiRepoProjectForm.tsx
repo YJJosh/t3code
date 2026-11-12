@@ -54,12 +54,12 @@ export function MultiRepoProjectForm(props: {
     null,
   );
 
-  const submit = async () => {
+  const submit = () => {
     if (submitting.current || !folder.trim()) return;
     submitting.current = true;
     setBusy(true);
     setError(null);
-    try {
+    const run = async () => {
       const inspected = await inspect({
         environmentId: props.environmentId,
         input: { path: folder },
@@ -116,12 +116,15 @@ export function MultiRepoProjectForm(props: {
         }
       }
       await props.onCreated(scopeProjectRef(props.environmentId, projectId));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not add the multi-repo project.");
-    } finally {
-      submitting.current = false;
-      setBusy(false);
-    }
+    };
+    void run()
+      .catch((cause) => {
+        setError(cause instanceof Error ? cause.message : "Could not add the multi-repo project.");
+      })
+      .finally(() => {
+        submitting.current = false;
+        setBusy(false);
+      });
   };
 
   return (

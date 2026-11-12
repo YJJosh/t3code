@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as PlatformError from "effect/PlatformError";
 
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -73,6 +74,7 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+  const multiRepo = yield* Effect.serviceOption(MultiRepoWorkspaces.MultiRepoWorkspaces);
   const setupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
 
@@ -177,11 +179,12 @@ const make = Effect.gen(function* () {
 
     const project = yield* loadProject(scope, projection.thread.projectId);
     const projectCwd = project.workspaceRoot;
+    const members = Option.isSome(multiRepo) ? yield* multiRepo.value.members(projectCwd) : null;
 
     const localStatus = yield* gitWorkflow
       .localStatus({ cwd: projectCwd })
       .pipe(asOperationFailed("Unable to read git status"));
-    if (!localStatus.isRepo) {
+    if (!localStatus.isRepo && members === null) {
       return yield* failure(
         "invalid_request",
         `Project workspace '${projectCwd}' is not a git repository.`,
@@ -211,7 +214,7 @@ const make = Effect.gen(function* () {
       );
     }
 
-    let baseRef = input.baseRef;
+    let baseRef = input.baseRef ?? (members !== null ? "HEAD" : undefined);
     if (baseRef === undefined) {
       if (localStatus.refName === null) {
         return yield* failure(
@@ -228,7 +231,15 @@ const make = Effect.gen(function* () {
     let worktreeBaseRef = baseRef;
     let baseRefName = baseRef;
     let startedFromOrigin = false;
-    if (startFromOrigin) {
+    if (startFromOrigin && members !== null && Option.isSome(multiRepo)) {
+      const failed = yield* multiRepo.value.fetchMembers(projectCwd, members);
+      if (failed.length > 0)
+        yield* Effect.logWarning("Some multi-repo members could not fetch origin", {
+          members: failed,
+        });
+      startedFromOrigin = true;
+    }
+    if (startFromOrigin && members === null) {
       const resolvedRemoteBase = yield* gitWorkflow
         .fetchWorktreeBaseCommit({ cwd: projectCwd, refName: baseRef })
         .pipe(asOperationFailed(`Unable to fetch the remote base of '${baseRef}'`));

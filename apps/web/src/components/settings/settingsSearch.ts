@@ -778,7 +778,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Create new workspaces with Workler",
     to: "/settings/general",
     scope: "environment-defaults",
-    searchTerms: ["fork features workspace clone copy link rules git worktree"],
+    searchTerms: ["fork features workspace clone rules git worktree"],
   },
   {
     id: "worktree-submodules",

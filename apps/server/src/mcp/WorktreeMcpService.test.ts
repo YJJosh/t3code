@@ -1,3 +1,4 @@
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import { describe, expect, it, vi } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -90,6 +91,7 @@ const project: Project = {
 } as Project;
 
 interface HarnessOptions {
+  readonly multiRepo?: boolean;
   readonly git?: Partial<GitWorkflowService.GitWorkflowService["Service"]>;
   readonly thread?: ThreadFixture | null;
   readonly threadReadError?: "projection" | "dispatch";
@@ -295,6 +297,10 @@ const makeHarness = (options: HarnessOptions = {}) => {
   const layer = WorktreeMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(MultiRepoWorkspaces.MultiRepoWorkspaces)({
+          members: () => Effect.succeed(options.multiRepo ? ["api", "web"] : null),
+          fetchMembers: () => Effect.succeed([]),
+        }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           dispatch,
           getThreadRecords,
@@ -642,18 +648,27 @@ describe("t3_worktree_handoff", () => {
     }),
   );
 
-  it.effect("creates the worktree in the managed directory even when a call names a path", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const input = yield* decodeHandoffInput({
-        branch: "feature/elsewhere",
-        path: "/home/user/.ssh/checkout",
+  it.effect.each([false, true])(
+    "creates a managed worktree even when a call names a path (group: %s)",
+    (multiRepo) => {
+      const harness = makeHarness({
+        multiRepo,
+        notARepo: multiRepo,
+        newWorktreesStartFromOrigin: true,
       });
-      const result = yield* runHandoff(harness, input);
-      expect(harness.createWorktree).toHaveBeenCalledWith(expect.objectContaining({ path: null }));
-      expect(result.worktreePath).toBe("/worktrees/project/feature/elsewhere");
-    });
-  });
+      return Effect.gen(function* () {
+        const input = yield* decodeHandoffInput({
+          branch: "feature/elsewhere",
+          path: "/home/user/.ssh/checkout",
+        });
+        const result = yield* runHandoff(harness, input);
+        expect(harness.createWorktree).toHaveBeenCalledWith(
+          expect.objectContaining({ path: null }),
+        );
+        expect(result.worktreePath).toBe("/worktrees/project/feature/elsewhere");
+      });
+    },
+  );
 
   it.effect("releases the per-thread guard after a failed handoff", () => {
     const harness = makeHarness({
