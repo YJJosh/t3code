@@ -6,6 +6,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -128,7 +129,8 @@ it.effect("preserves other settings and retries file cleanup after interruption"
     );
   }).pipe(
     Effect.scoped,
-    Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(
+      Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" }), NodeServices.layer),
+    ),
   ),
 );
