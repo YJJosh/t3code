@@ -2,7 +2,7 @@
 
 Profiles combine reusable prompt parts and skills with optional provider, model, and effort presets. Keep the folder in a Git repository and sync a checkout onto each environment. T3 reads that environment's checkout; your browser or phone never needs filesystem access to it. T3 does not run Git sync for you.
 
-In **Settings → General → Profiles**, set the environment's profiles folder (blank uses `<T3 home>/profiles`), then **Refresh profiles**. A missing `profiles.json` disables the feature. Invalid files are reported here. You can choose a default for new threads, use the folder's default, or choose **No profile**.
+In **Settings → General → Profiles** on web/desktop, or **Settings → Providers** on mobile, set the environment's profiles folder (blank uses `<T3 home>/profiles`), then **Refresh profiles**. A missing `profiles.json` disables the feature. Invalid files are reported here. You can choose a default for new threads, use the folder's default, or choose **No profile**.
 
 ```text
 profiles/
@@ -45,7 +45,7 @@ description: Review a code change for correctness and regressions.
 Read the diff, check the changed behavior, and report actionable findings.
 ```
 
-Choose a profile beside the composer on web, desktop, or mobile. Its provider/model/effort are starting choices, not locks; you can change them afterwards. **No profile** removes the profile without resetting your model settings. Delegated tasks do not inherit a parent's profile by default.
+Choose a profile beside the composer on web, desktop, or mobile. Its provider/model/effort are starting choices, not locks; you can change them afterwards. Provider switches are saved with the next sent message. **No profile** removes the profile without resetting your model settings. Delegated tasks do not inherit a parent's profile by default.
 
 Prompt parts are appended in the listed order. Selected skills contribute their name, description, and absolute `SKILL.md` path; the agent reads a skill when needed. Only select content you trust. Paths point to the environment running the agent, not your browser's machine.
 

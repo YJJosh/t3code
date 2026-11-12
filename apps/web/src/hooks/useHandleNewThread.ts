@@ -1,4 +1,5 @@
-import { selectProfile } from "@t3tools/shared/profiles";
+import { toastManager } from "../components/ui/toast";
+import { selectProfile, supportsProfiles } from "@t3tools/shared/profiles";
 import {
   scopedProjectKey,
   scopeProjectRef,
@@ -195,12 +196,19 @@ export function createNewThreadHandler(router: AnyRouter) {
       if (!base) return base;
       const config = environmentServerConfigs.get(projectRef.environmentId);
       const id = targetServerSettings.defaultProfile ?? config?.profiles?.default;
-      return selectProfile(
+      const picked = selectProfile(
         base,
         id || null,
         id ? config?.profiles?.profiles[id] : undefined,
         config?.providers ?? [],
-      ).selection;
+      );
+      const driver = config?.providers.find(
+        (provider) => provider.instanceId === picked.selection.instanceId,
+      )?.driver;
+      if (picked.notice) toastManager.add({ type: "warning", title: picked.notice });
+      return picked.selection.profileId && (!driver || !supportsProfiles(driver))
+        ? { ...base, profileId: null }
+        : picked.selection;
     };
     const resolveDefaultEnvMode = async (): Promise<DraftThreadEnvMode> => {
       // Environment queries wait for a connection, so reading the project file on an

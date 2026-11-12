@@ -765,6 +765,7 @@ const make = Effect.gen(function* () {
 
   const dispatch: ThreadManagementServiceShape["dispatch"] = Effect.fn("ThreadManagement.dispatch")(
     function* (input) {
+      yield* ensureCommandTranscripts(input);
       let command = input;
       if (
         command.type === "thread.create" &&
@@ -806,7 +807,6 @@ const make = Effect.gen(function* () {
         if (profileId !== undefined)
           command = { ...command, modelSelection: { ...command.modelSelection, profileId } };
       }
-      yield* ensureCommandTranscripts(command);
       yield* assertDispatchTargetEnabled(command);
       return yield* orchestrator.dispatch(command);
     },

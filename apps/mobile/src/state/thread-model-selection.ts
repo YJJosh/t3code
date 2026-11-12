@@ -12,6 +12,7 @@ import { appAtomRegistry } from "./atom-registry";
 import { readEnvironmentScope } from "./session";
 import { environmentThreadShells, threadEnvironment } from "./threads";
 import {
+  getComposerDraftSnapshot,
   releaseComposerDraftModelSelection,
   updateComposerDraftSettings,
 } from "./use-composer-drafts";
@@ -23,9 +24,12 @@ export function selectThreadModel(
 ): void {
   const threadKey = scopedThreadKey(ref.environmentId, ref.threadId);
   // Its own object, so an older reply for an equal pick cannot release this one.
-  const modelSelection = { ...value };
-  updateComposerDraftSettings(threadKey, { modelSelection });
   const thread = appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
+  const draft = getComposerDraftSnapshot(threadKey);
+  const prior = draft.modelSelection ?? thread?.modelSelection;
+  const profileId = value.profileId !== undefined ? value.profileId : prior?.profileId;
+  const modelSelection = { ...value, ...(profileId === undefined ? {} : { profileId }) };
+  updateComposerDraftSettings(threadKey, { modelSelection });
   // Another instance replaces the live session, which may hold an open question; that pick
   // still waits for a sent message.
   if (

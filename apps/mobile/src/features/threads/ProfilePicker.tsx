@@ -1,3 +1,4 @@
+import { updateComposerDraftSettings } from "../../state/use-composer-drafts";
 import type { EnvironmentId, ModelSelection, ServerConfig, ThreadId } from "@t3tools/contracts";
 import { selectProfile, supportsProfiles } from "@t3tools/shared/profiles";
 import { Menu } from "../../components/ui/Menu";
@@ -11,6 +12,7 @@ export function ProfilePicker(props: {
   selection: ModelSelection;
   config: ServerConfig | null;
   disabled: boolean;
+  draftKey?: string;
 }) {
   const catalog = props.config?.profiles;
   if (!catalog || (Object.keys(catalog.profiles).length === 0 && !props.selection.profileId))
@@ -48,9 +50,11 @@ export function ProfilePicker(props: {
           Dialog.alert("Profiles not supported here");
           return;
         }
-        selectThreadModel(props, picked.selection);
+        if (props.draftKey)
+          updateComposerDraftSettings(props.draftKey, { modelSelection: picked.selection });
+        else selectThreadModel(props, picked.selection);
         Dialog.alert(
-          "Profile saved",
+          "Profile selected",
           `${picked.notice ? `${picked.notice}\n\n` : ""}Applies at the next session start. Stop and restart the thread to apply immediately.`,
         );
       }}

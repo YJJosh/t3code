@@ -1,3 +1,4 @@
+import * as ServerConfig from "../config.ts";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -428,10 +429,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly mcpConfigs?: Ref.Ref<
       ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
     >;
-    readonly beforeOpen?: (input: {
-      readonly providerSessionId: ProviderSessionId;
-      readonly initialProviderItemIdentityVersion?: 2;
-    }) => Effect.Effect<void>;
+    readonly beforeOpen?: (
+      input: ProviderAdapter.ProviderAdapterV2OpenSessionInput,
+    ) => Effect.Effect<void>;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
     readonly backgroundTasksEndWithProcess?: boolean;
@@ -582,10 +582,9 @@ function layerTest(input: {
   readonly mcpConfigs?: Ref.Ref<
     ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
   >;
-  readonly beforeOpen?: (input: {
-    readonly providerSessionId: ProviderSessionId;
-    readonly initialProviderItemIdentityVersion?: 2;
-  }) => Effect.Effect<void>;
+  readonly beforeOpen?: (
+    input: ProviderAdapter.ProviderAdapterV2OpenSessionInput,
+  ) => Effect.Effect<void>;
   readonly failReleaseEventWrites?: boolean;
   readonly flakyReleaseWrites?: FlakyReleaseWrites;
   readonly pauseAttachWrite?: Parameters<typeof layerPausingAttachEventSink>[0];
@@ -4649,4 +4648,71 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
     });
     assert.isTrue(child?.capabilities?.has("device"));
   }),
+);
+
+it.effect("loads profiles only when opening a session and rereads them after close", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped();
+    yield* fs.makeDirectory(`${root}/profiles/prompts`, { recursive: true });
+    yield* fs.writeFileString(
+      `${root}/profiles/profiles.json`,
+      JSON.stringify({ profiles: { coder: { prompts: ["coding"], skills: [] } } }),
+    );
+    yield* fs.writeFileString(`${root}/profiles/prompts/coding.md`, "First profile instruction");
+    const state = yield* Ref.make(emptyState);
+    const opened: Array<string | undefined> = [];
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const threadId = ThreadId.make("thread-profile-refresh");
+      const providerSessionId = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* sink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now }),
+        ],
+      });
+      const input = {
+        threadId,
+        providerSessionId,
+        modelSelection: { ...modelSelection, profileId: "coder" },
+        runtimePolicy,
+      };
+      yield* manager.open(input);
+      assert.deepEqual(opened, ["First profile instruction"]);
+      yield* fs.writeFileString(
+        `${root}/profiles/prompts/coding.md`,
+        "Updated profile instruction",
+      );
+      yield* manager.open(input);
+      assert.equal(opened.length, 1);
+      yield* manager.close(providerSessionId);
+      yield* manager.open(input);
+      assert.deepEqual(opened, ["First profile instruction", "Updated profile instruction"]);
+      yield* manager.close(providerSessionId);
+      yield* manager.open({ ...input, modelSelection: { ...modelSelection, profileId: null } });
+      assert.isUndefined(opened.at(-1));
+      yield* manager.close(providerSessionId);
+      yield* fs.remove(`${root}/profiles/prompts/coding.md`);
+      const result = yield* manager.open(input).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(result));
+      assert.equal(opened.length, 3);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          serverSettingsLayer: ServerSettings.layerTest(),
+          beforeOpen: (input) =>
+            Effect.sync(() => {
+              opened.push(input.profileInstructions);
+            }),
+        }).pipe(Layer.provide(ServerConfig.layerTest(root, root))),
+      ),
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );

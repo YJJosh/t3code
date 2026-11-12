@@ -57,7 +57,7 @@ export function ProfilePicker(props: {
           void apply(props.target);
           toastManager.add({
             type: "info",
-            title: picked.notice ?? "Profile saved for the next session start",
+            title: picked.notice ?? "Profile selected for the next session start",
           });
         }}
       >

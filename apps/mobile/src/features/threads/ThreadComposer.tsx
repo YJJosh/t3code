@@ -885,6 +885,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
           environmentId={props.environmentId}
           threadId={props.selectedThread.id}
           selection={currentModelSelection}
+          {...(props.isDraft ? { draftKey: composerDraftKey } : {})}
           config={props.serverConfig}
           disabled={!props.canOperateThread}
         />
