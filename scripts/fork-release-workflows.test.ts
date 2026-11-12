@@ -11,6 +11,7 @@ import { fromYaml } from "@t3tools/shared/schemaYaml";
 interface WorkflowJob {
   readonly if?: string;
   readonly needs?: string | ReadonlyArray<string>;
+  readonly uses?: string;
   readonly steps?: ReadonlyArray<{ readonly id?: string; readonly run?: string }>;
 }
 
@@ -136,9 +137,14 @@ describe("fork release safety", () => {
   ])("prevents %s from publishing or deploying in the fork", (name) => {
     const workflow = readWorkflow(`${name}.yml`);
     expect(Object.keys(workflow.on)).toEqual([
-      name === "release-desktop" ? "workflow_call" : "workflow_dispatch",
+      ["release-desktop", "publish-aur"].includes(name) ? "workflow_call" : "workflow_dispatch",
     ]);
-    for (const job of Object.values(workflow.jobs))
+    for (const job of Object.values(workflow.jobs)) {
       expect(job.if).toContain("github.repository == 'pingdotgg/t3code'");
+      if (job.uses?.startsWith("./.github/workflows/")) {
+        const called = readWorkflow(NodePath.basename(job.uses));
+        expect(called.on).toHaveProperty("workflow_call");
+      }
+    }
   });
 });
