@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./profiles": {
+      "types": "./src/profiles.ts",
+      "import": "./src/profiles.ts"
+    },
     "./pullRequestAnchor": {
       "types": "./src/pullRequestAnchor.ts",
       "import": "./src/pullRequestAnchor.ts"

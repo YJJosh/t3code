@@ -1,3 +1,8 @@
+import * as Profiles from "../profiles/Profiles.ts";
+import * as ServerConfig from "../config.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as Path from "effect/Path";
+import { selectProfile, supportsProfiles } from "@t3tools/shared/profiles";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -583,6 +588,10 @@ const make = Effect.gen(function* () {
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+  const profiles = yield* Effect.serviceOption(Profiles.Profiles);
+  const config = yield* Effect.serviceOption(ServerConfig.ServerConfig);
+  const path = yield* Effect.serviceOption(Path.Path);
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
 
   const assertProviderInstanceEnabled: ThreadManagementServiceShape["assertProviderInstanceEnabled"] =
     (input) =>
@@ -754,11 +763,54 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
-    ensureCommandTranscripts(command).pipe(
-      Effect.andThen(assertDispatchTargetEnabled(command)),
-      Effect.andThen(orchestrator.dispatch(command)),
-    );
+  const dispatch: ThreadManagementServiceShape["dispatch"] = Effect.fn("ThreadManagement.dispatch")(
+    function* (input) {
+      yield* ensureCommandTranscripts(input);
+      let command = input;
+      if (
+        command.type === "thread.create" &&
+        command.createdBy === "user" &&
+        command.delegatedFrom === undefined &&
+        command.modelSelection.profileId === undefined &&
+        Option.isSome(profiles) &&
+        Option.isSome(config) &&
+        Option.isSome(path) &&
+        Option.isSome(providerRegistry)
+      ) {
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+        const loaded = yield* profiles.value.load(
+          settings.profilesFolder || path.value.join(config.value.baseDir, "profiles"),
+        );
+        const id = settings.defaultProfile ?? loaded.catalog.default;
+        const available = yield* providerRegistry.value.getProviders;
+        const picked = selectProfile(
+          command.modelSelection,
+          id || null,
+          id ? loaded.catalog.profiles[id] : undefined,
+          available,
+        );
+        const driver = available.find(
+          (provider) => provider.instanceId === picked.selection.instanceId,
+        )?.driver;
+        if (!id || (driver && supportsProfiles(driver)))
+          command = { ...command, modelSelection: picked.selection };
+      }
+      if (
+        (command.type === "message.dispatch" ||
+          command.type === "thread.model-selection.set" ||
+          command.type === "provider.switch") &&
+        command.modelSelection &&
+        command.modelSelection.profileId === undefined
+      ) {
+        const current = yield* orchestrator.getThreadRecords(command.threadId, []);
+        const profileId = current.thread.modelSelection.profileId;
+        if (profileId !== undefined)
+          command = { ...command, modelSelection: { ...command.modelSelection, profileId } };
+      }
+      yield* assertDispatchTargetEnabled(command);
+      return yield* orchestrator.dispatch(command);
+    },
+  );
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (
     input,

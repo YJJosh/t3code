@@ -1,3 +1,4 @@
+import { selectProfile, supportsProfiles } from "@t3tools/shared/profiles";
 import { ActiveNewTaskContext } from "../../state/active-new-task";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -445,7 +446,7 @@ export function NewTaskFlowProvider(
     stickySelection: stickyModelSelection,
     modelOptions,
   });
-  const selectedModel = resolveNewThreadModelSelection({
+  const resolvedModel = resolveNewThreadModelSelection({
     defaultSelection: selectedDefaultModel,
     explicitSelection:
       draftModelSelection ?? (projectDefaultModelSelection ? null : stickyModelSelection),
@@ -457,6 +458,27 @@ export function NewTaskFlowProvider(
     projectId: selectedProject?.id ?? null,
     now: modelSelectionNow,
   }).selection;
+  const defaultProfileId =
+    selectedEnvironmentServerConfig?.settings.defaultProfile ??
+    selectedEnvironmentServerConfig?.profiles?.default;
+  const profilePick =
+    resolvedModel && draftModelSelection?.profileId === undefined
+      ? selectProfile(
+          resolvedModel,
+          defaultProfileId || null,
+          defaultProfileId
+            ? selectedEnvironmentServerConfig?.profiles?.profiles[defaultProfileId]
+            : undefined,
+          selectedEnvironmentServerConfig?.providers ?? [],
+        )
+      : null;
+  const profileDriver = selectedEnvironmentServerConfig?.providers.find(
+    (provider) => provider.instanceId === profilePick?.selection.instanceId,
+  )?.driver;
+  const selectedModel =
+    profilePick && profileDriver && supportsProfiles(profileDriver)
+      ? profilePick.selection
+      : resolvedModel;
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`
     : null;
@@ -486,7 +508,12 @@ export function NewTaskFlowProvider(
     const selection = withRememberedModelOptions(
       options ? { ...option.selection, options } : option.selection,
     );
-    updateComposerDraftSettings(selectedProjectDraftKey, { modelSelection: selection });
+    updateComposerDraftSettings(selectedProjectDraftKey, {
+      modelSelection: {
+        ...selection,
+        ...(selectedModel?.profileId === undefined ? {} : { profileId: selectedModel.profileId }),
+      },
+    });
     setStickyComposerModelSelection(selection);
   };
   const setSelectedModelOptions = (options: ReadonlyArray<ProviderOptionSelection> | undefined) => {
@@ -499,6 +526,7 @@ export function NewTaskFlowProvider(
       : {
           instanceId: selectedModel.instanceId,
           model: selectedModel.model,
+          ...(selectedModel.profileId === undefined ? {} : { profileId: selectedModel.profileId }),
         };
     updateComposerDraftSettings(selectedProjectDraftKey, {
       modelSelection: nextSelection,

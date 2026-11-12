@@ -72,13 +72,14 @@ describe("Pi orchestration prompt section", () => {
       ],
     },
   ])("appends guidance $name", async ({ events }) => {
-    const bridge = await loadMcpBridge();
+    const bridge = await loadMcpBridge({ profileInstructions: "Profile instruction" });
     const hook = bridge.handlers.get("before_agent_start")!;
     for (const event of events) {
       const result = await hook(event, { ui: { notify: assert.fail } });
       assert.isDefined(result);
       assert.isTrue(result!.systemPrompt.startsWith(`${event.systemPrompt}\n\n`));
       assert.include(result!.systemPrompt, "orchestrator_capabilities");
+      assert.include(result!.systemPrompt, "Profile instruction");
     }
   });
 });

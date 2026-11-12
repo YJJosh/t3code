@@ -1740,6 +1740,39 @@ describe("composerDraftStore modelSelection", () => {
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
   });
 
+  it("retains a profile across model and effort edits and persists an explicit opt-out", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(
+      threadRef,
+      { ...modelSelection(CODEX_DRIVER, "gpt-5.4"), profileId: "coder" },
+      { explicit: true },
+    );
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "gpt-5.5"), { explicit: true });
+    store.setProviderModelOptions(
+      threadRef,
+      CODEX_DRIVER,
+      toSelections({ reasoningEffort: "high" }),
+    );
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE]?.profileId,
+    ).toBe("coder");
+    const persisted = partializeComposerDraftStoreState(useComposerDraftStore.getState());
+    expect(
+      persisted.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]
+        ?.modelSelectionByProvider?.[CODEX_INSTANCE]?.profileId,
+    ).toBe("coder");
+    store.setModelSelection(
+      threadRef,
+      { ...modelSelection(CODEX_DRIVER, "gpt-5.5"), profileId: null },
+      { explicit: true },
+    );
+    expect(
+      partializeComposerDraftStoreState(useComposerDraftStore.getState()).draftsByThreadKey[
+        threadKeyFor(threadId, TEST_ENVIRONMENT_ID)
+      ]?.modelSelectionByProvider?.[CODEX_INSTANCE]?.profileId,
+    ).toBeNull();
+  });
+
   it("marks picker writes explicit and seeding writes non-explicit", () => {
     const store = useComposerDraftStore.getState();
     store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "gpt-5.4"));

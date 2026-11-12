@@ -42,6 +42,7 @@ type AgentStartHook = (
 export async function loadMcpBridge(
   options: {
     readonly modern?: boolean;
+    readonly profileInstructions?: string;
     readonly result?: unknown;
     readonly toolSearchAvailable?: boolean;
     readonly toolSearchDisabled?: boolean;
@@ -92,6 +93,7 @@ export async function loadMcpBridge(
         T3_MCP_BEARER_TOKEN: "fixture-token",
         T3_PI_MCP_EXTENSION_PATH: "/fixture/pi-t3-extension.ts",
         T3_PI_RUNTIME_MODE: options.runtimeMode,
+        T3_PROFILE_INSTRUCTIONS: options.profileInstructions,
       },
     },
     AbortSignal,

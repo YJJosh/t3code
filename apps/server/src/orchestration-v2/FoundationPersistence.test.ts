@@ -1379,7 +1379,10 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       const subagentId = NodeId.make("subagent:foundation-cross-thread");
       const spawnTransferId = ContextTransferId.make("transfer:foundation-cross-thread:spawn");
       const resultTransferId = ContextTransferId.make("transfer:foundation-cross-thread:result");
-      const parentThread = makeThread(parentThreadId, now);
+      const parentThread = {
+        ...makeThread(parentThreadId, now),
+        modelSelection: { ...modelSelection, profileId: "coder" },
+      };
       const childThread = {
         ...makeThread(childThreadId, now),
         createdBy: "agent" as const,
@@ -1513,6 +1516,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       const assertCrossThreadProjection = Effect.gen(function* () {
         const parent = yield* projectionStore.getThreadProjection(parentThreadId);
         const child = yield* projectionStore.getThreadProjection(childThreadId);
+        assert.equal(parent.thread.modelSelection.profileId, "coder");
+        assert.isUndefined(child.thread.modelSelection.profileId);
         const expectedTransferIds = [spawnTransferId, resultTransferId].toSorted();
         assert.deepEqual(
           parent.contextTransfers.map((transfer) => transfer.id).toSorted(),

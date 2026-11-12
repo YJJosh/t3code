@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentId, ProjectId, RuntimeMode } from "@t3tools/contracts";
 
+vi.mock("../components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
+
 const testState = vi.hoisted(() => {
   let completeProjectFileRead: (value: null) => void = () => undefined;
   let projectFileRead = Promise.resolve<null>(null);

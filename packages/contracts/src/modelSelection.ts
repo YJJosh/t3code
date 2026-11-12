@@ -1,3 +1,4 @@
+import { ProfileId } from "./profiles.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -8,11 +9,13 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 
 const ModelSelectionWire = Schema.Struct({
   instanceId: ProviderInstanceId,
+  profileId: Schema.optionalKey(Schema.NullOr(ProfileId)),
   model: TrimmedNonEmptyString,
   options: Schema.optionalKey(ProviderOptionSelections),
 });
 
 const ModelSelectionSource = Schema.Struct({
+  profileId: Schema.optional(Schema.Unknown),
   provider: Schema.optional(Schema.Unknown),
   instanceId: Schema.optional(Schema.Unknown),
   model: Schema.Unknown,
@@ -34,6 +37,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           instanceId: instanceIdSource,
           model: raw.model,
         };
+        if (raw.profileId !== undefined) base.profileId = raw.profileId;
         if (raw.options !== undefined) base.options = raw.options;
         return Effect.succeed(base as typeof ModelSelectionWire.Encoded);
       },
@@ -42,6 +46,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           instanceId: value.instanceId,
           model: value.model,
         };
+        if (value.profileId !== undefined) base.profileId = value.profileId;
         if (value.options !== undefined) base.options = value.options;
         return Effect.succeed(base as typeof ModelSelectionSource.Encoded);
       },

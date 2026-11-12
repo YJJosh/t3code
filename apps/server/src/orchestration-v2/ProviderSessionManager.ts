@@ -1,3 +1,7 @@
+import { supportsProfiles } from "@t3tools/shared/profiles";
+import * as Profiles from "../profiles/Profiles.ts";
+import * as ServerConfig from "../config.ts";
+import * as Path from "effect/Path";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -340,6 +344,7 @@ export const layerWithOptions = (
   | CommandOutputHub.CommandOutputHub
   | EventSink.EventSinkV2
   | FileSystem.FileSystem
+  | Path.Path
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions
   | McpSessionRegistry.McpSessionRegistry
@@ -352,10 +357,13 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const profiles = yield* Profiles.Profiles.pipe(Effect.provide(Profiles.layer));
       const mcpSessionRegistry = yield* McpSessionRegistry.McpSessionRegistry;
       const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
       /** Unreadable settings must preserve explicit browser-access opt-outs. */
       const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+      const config = yield* Effect.serviceOption(ServerConfig.ServerConfig);
       const projectService = yield* Effect.serviceOption(ProjectService.ProjectService);
       const eventSink = yield* EventSink.EventSinkV2;
       const commandOutput = yield* CommandOutputHub.CommandOutputHub;
@@ -2452,6 +2460,48 @@ export const layerWithOptions = (
                     }),
                 ),
               );
+              let profileInstructions: string | undefined;
+              const profileId = input.modelSelection.profileId;
+              if (profileId && !supportsProfiles(adapter.driver))
+                return yield* new ProviderSessionOpenError({
+                  instanceId: input.modelSelection.instanceId,
+                  providerSessionId: input.providerSessionId,
+                  cause:
+                    "Profiles are not supported by this provider. Choose No profile before starting.",
+                });
+              if (profileId && Option.isSome(config) && Option.isSome(serverSettings)) {
+                const settings = yield* serverSettings.value.getSettings.pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderSessionOpenError({
+                        instanceId: input.modelSelection.instanceId,
+                        providerSessionId: input.providerSessionId,
+                        cause,
+                      }),
+                  ),
+                );
+                const loaded = yield* profiles.load(
+                  settings.profilesFolder || path.join(config.value.baseDir, "profiles"),
+                );
+                profileInstructions = Object.hasOwn(loaded.instructions, profileId)
+                  ? loaded.instructions[profileId]
+                  : undefined;
+                if (loaded.catalog.error || profileInstructions === undefined)
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause:
+                      loaded.catalog.error ??
+                      `Profile ${profileId} no longer exists. Select another profile or No profile.`,
+                  });
+              }
+              if (profileInstructions !== undefined)
+                yield* Effect.logInfo("Profile applied to provider session", {
+                  profileId,
+                  threadId: input.threadId,
+                  providerSessionId: input.providerSessionId,
+                  instructionCharacters: profileInstructions.length,
+                });
               const openedWithLinkedEnvironments = yield* readLinkedEnvironments;
               const prepared = yield* prepareMcpSession(
                 input.threadId,
@@ -2474,6 +2524,7 @@ export const layerWithOptions = (
                   modelSelection: input.modelSelection,
                   runtimePolicy: input.runtimePolicy,
                   promptSuggestions: promptSuggestionsEnabled,
+                  ...(profileInstructions === undefined ? {} : { profileInstructions }),
                   ...(input.resumeFromSession === undefined
                     ? {}
                     : { resumeFromSession: input.resumeFromSession }),

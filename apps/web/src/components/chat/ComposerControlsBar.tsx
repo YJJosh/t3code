@@ -1,3 +1,4 @@
+import { ProfilePicker } from "./ProfilePicker";
 import type { ChatComposerProps } from "./ChatComposer";
 import type { PromptUltrathink } from "./TraitsPicker";
 import type { ProviderInstanceEntry } from "../../providerInstances";
@@ -261,6 +262,12 @@ export function ComposerControlsBar(props: {
   ) : (
     <>
       {composerModelPicker}
+      <ProfilePicker
+        environmentId={environmentId}
+        target={routeKind === "draft" && draftId ? draftId : routeThreadRef}
+        selection={selectedModelSelection}
+        disabled={isSendBusy}
+      />
 
       <>
         {restingBlockDefs.map((def, index) => {
