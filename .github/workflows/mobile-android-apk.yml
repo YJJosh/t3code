@@ -3,11 +3,7 @@ name: Mobile Android APK
 # Checks closed testing hourly. Each new beta gets one versioned prerelease.
 # Unchanged checks publish nothing.
 on:
-  schedule:
-    # Avoid minute zero, when GitHub scheduled jobs are busiest.
-    - cron: "23 * * * *"
-  workflow_dispatch:
-
+  workflow_dispatch: null
 concurrency:
   group: mobile-android-apk
   cancel-in-progress: false
@@ -15,8 +11,8 @@ concurrency:
 jobs:
   mirror:
     name: Mirror beta APK
-    if: github.repository == 'pingdotgg/t3code'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.repository == 'pingdotgg/t3code') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write

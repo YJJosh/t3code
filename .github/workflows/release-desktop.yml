@@ -840,11 +840,12 @@ jobs:
           name: resource-monitor-${{ inputs.resource_key }}
           path: resource-monitor-publish/${{ inputs.resource_key }}/*
           if-no-files-found: error
+    if: ${{ github.repository == 'pingdotgg/t3code' }}
 
   verify:
     name: Verify
     needs: [build]
-    if: inputs.verify_runner != ''
+    if: ${{ github.repository == 'pingdotgg/t3code' && (inputs.verify_runner != '') }}
     runs-on: ${{ inputs.verify_runner }}
     timeout-minutes: 15
     steps:

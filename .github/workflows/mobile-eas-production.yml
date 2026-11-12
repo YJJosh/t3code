@@ -22,60 +22,13 @@ name: Mobile EAS Production
 # workflow_dispatch remains as a manual override for both modes (e.g. to
 # retry an errored build or force an OTA).
 on:
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: "build (+ auto-submit to TestFlight / Google Play) or update (OTA)"
-        required: true
-        type: choice
-        default: build
-        options:
-          - build
-          - update
-      profile:
-        description: "production: store release; testflight: iOS 3.0.0 beta"
-        required: true
-        type: choice
-        default: production
-        options:
-          - production
-          - testflight
-      platform:
-        description: "Target platform"
-        required: true
-        type: choice
-        default: all
-        options:
-          - ios
-          - android
-          - all
-      version:
-        description: "Optional build version override (blank uses profile default; store overrides are committed)"
-        required: false
-        type: string
-      message:
-        description: "OTA update message (mode=update only)"
-        required: false
-        type: string
-  push:
-    branches: [main]
-    paths:
-      - apps/mobile/**
-      - packages/client-runtime/**
-      - packages/contracts/**
-      - packages/shared/**
-      - assets/**
-      - scripts/**
-      - patches/**
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - .github/workflows/mobile-eas-production.yml
+  workflow_dispatch: null
 
 jobs:
   production:
     name: EAS ${{ inputs.profile || 'production' }} ${{ github.event_name == 'push' && 'auto' || inputs.mode }}
-    if: github.repository == 'pingdotgg/t3code'
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.repository == 'pingdotgg/t3code') }}
+    runs-on: ubuntu-24.04
     # Serialize runs so OTAs publish in merge order. GitHub keeps at most one
     # queued job per group, so a burst of merges collapses into one run of the
     # newest commit — intermediate commits don't need their own OTA.
@@ -483,8 +436,8 @@ jobs:
     name: Android store build
     needs: production
     # Skipped when the production job failed: no store build after a failed OTA.
-    if: needs.production.outputs.android_build == 'true'
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    if: ${{ github.repository == 'pingdotgg/t3code' && (needs.production.outputs.android_build == 'true') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     concurrency:
       group: mobile-android-store-build
@@ -687,8 +640,8 @@ jobs:
     name: iOS store build
     needs: production
     # Skipped when the production job failed: no store build after a failed OTA.
-    if: needs.production.outputs.ios_build == 'true'
-    runs-on: blacksmith-12vcpu-macos-27
+    if: ${{ github.repository == 'pingdotgg/t3code' && (needs.production.outputs.ios_build == 'true') }}
+    runs-on: macos-26
     timeout-minutes: 60
     concurrency:
       group: mobile-ios-store-build
