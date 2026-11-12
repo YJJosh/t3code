@@ -2483,7 +2483,9 @@ export const layerWithOptions = (
                 const loaded = yield* profiles.load(
                   settings.profilesFolder || path.join(config.value.baseDir, "profiles"),
                 );
-                profileInstructions = loaded.instructions[profileId];
+                profileInstructions = Object.hasOwn(loaded.instructions, profileId)
+                  ? loaded.instructions[profileId]
+                  : undefined;
                 if (loaded.catalog.error || profileInstructions === undefined)
                   return yield* new ProviderSessionOpenError({
                     instanceId: input.modelSelection.instanceId,
