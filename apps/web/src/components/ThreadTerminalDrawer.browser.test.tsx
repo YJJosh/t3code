@@ -54,6 +54,7 @@ vi.mock("../state/terminalSessions", async () => {
   return {
     attachedTerminalSessionAtom: (environmentId: EnvironmentId, terminal: { threadId: ThreadId }) =>
       sessions(environmentId)(terminal.threadId),
+    useKnownTerminalSessions: () => null,
   };
 });
 vi.mock("../state/session", () => ({
