@@ -41,6 +41,8 @@ it("applies portable provider instances, warns on fallback, and keeps explicit o
   assert.equal(unknown.selection.instanceId, current.instanceId);
   assert.isDefined(unknown.notice);
   assert.isNull(selectProfile(fallback.selection, null, undefined, providers).selection.profileId);
+  // A default naming a profile removed from the folder must not break every new thread.
+  assert.deepEqual(selectProfile(current, "removed", undefined, providers).selection, current);
   assert.isTrue(supportsProfiles("acpRegistry"));
   assert.isFalse(supportsProfiles("cursor"));
 });

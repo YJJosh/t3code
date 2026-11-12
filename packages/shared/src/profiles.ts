@@ -10,7 +10,8 @@ export function selectProfile(
   profile: Profile | undefined,
   providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver" | "models">>,
 ): { selection: ModelSelection; notice?: string } {
-  if (id === null || profile === undefined) return { selection: { ...current, profileId: id } };
+  if (id === null) return { selection: { ...current, profileId: null } };
+  if (profile === undefined) return { selection: current };
   const named = profile.provider;
   const exact = providers.find((provider) => provider.instanceId === named);
   // Portable instance ids use the driver's id as a prefix, e.g. claudeAgent-lean.
