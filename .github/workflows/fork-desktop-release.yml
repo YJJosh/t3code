@@ -601,6 +601,7 @@ jobs:
       NODE_ENV: production
       NODE_OPTIONS: --max-old-space-size=8192
       T3CODE_MOBILE_FORK_BRAND: dulli
+      T3CODE_MOBILE_UPDATES_ENABLED: "0"
       T3CODE_MOBILE_FORK_VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - name: Checkout
@@ -656,7 +657,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Import Android release keystore
         shell: bash
@@ -685,7 +686,7 @@ jobs:
         working-directory: apps/mobile
         env:
           EXPO_NO_GIT_STATUS: "1"
-        run: pnpm exec expo prebuild --platform android --no-install
+        run: ./node_modules/.bin/expo prebuild --clean --platform android --no-install
 
       - name: Build release APK
         working-directory: apps/mobile/android

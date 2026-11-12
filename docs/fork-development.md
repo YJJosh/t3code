@@ -56,6 +56,7 @@ Repository setup required before publication:
 
 - npm trusted publisher for **`t3-dulli`**, repository `YJJosh/t3code`, workflow `fork-desktop-release.yml` (publish the package once if npm requires bootstrapping).
 - Secrets `DULLI_MACOS_CERTIFICATE_P12_BASE64` and `DULLI_MACOS_CERTIFICATE_PASSWORD`, plus variable `DULLI_MACOS_CERTIFICATE_SHA1`, for the persistent macOS community identity. The workflow handles RC2 PKCS#12 files on OpenSSL 3 and imports trust noninteractively on the ephemeral runner.
+- Java 21 and the Android SDK/NDK selected by Expo SDK 58 / React Native 0.88.1 for APK builds. Both clean Expo prebuild and Gradle inherit all four `T3CODE_ANDROID_RELEASE_*` settings through the job environment; for v0.1.9, Android versionCode is `10,090,000 + build`.
 - Secrets `DULLI_ANDROID_KEYSTORE_BASE64`, `DULLI_ANDROID_KEYSTORE_PASSWORD`, `DULLI_ANDROID_KEY_ALIAS`, and `DULLI_ANDROID_KEY_PASSWORD`, plus variable `DULLI_ANDROID_CERT_SHA256`. Keep the same Android key to upgrade existing installs. APK identity and signer fingerprint are verified before publication.
 
 macOS community builds are not notarized: first launch may require **System Settings → Privacy & Security → Open Anyway**. Windows builds are unsigned and can trigger SmartScreen. Android APKs are sideloaded and have no upstream OTA channel; install newer APKs manually. Only approve artifacts you trust.
