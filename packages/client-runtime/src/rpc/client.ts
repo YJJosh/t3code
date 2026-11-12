@@ -251,7 +251,7 @@ export function runStreamGuarded<TTag extends EnvironmentStreamCommandRpcTag>(
 }
 
 interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
-  /** Reports defects; the subscription then waits for the next session or resubscribe. */
+  /** Reports defects before retrying or waiting for the next session or resubscribe. */
   readonly onDefect?: (
     cause: Cause.Cause<EnvironmentRpcStreamFailure<TTag>>,
   ) => Effect.Effect<void, never, never>;
@@ -259,6 +259,8 @@ interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
     cause: Cause.Cause<EnvironmentRpcStreamFailure<TTag>>,
   ) => Effect.Effect<void, never, never>;
   readonly retryExpectedFailureAfter?: Duration.Input;
+  /** Only durable streams that can replay from a cursor may retry defects. */
+  readonly retryDefectAfter?: Duration.Input;
   readonly resubscribe?: Stream.Stream<unknown, never, never>;
 }
 
@@ -304,7 +306,7 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                 EnvironmentRpcStreamValue<TTag>,
                 EnvironmentRpcStreamFailure<TTag>
               >;
-              let expectedFailureRetries = 0;
+              let retryAttempts = 0;
               const subscribeToSession = (): Stream.Stream<A, EnvironmentRpcStreamFailure<TTag>> =>
                 Stream.suspend(() =>
                   Stream.unwrap(
@@ -321,7 +323,7 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                       ).pipe(
                         Stream.onFirst(() =>
                           Effect.sync(() => {
-                            expectedFailureRetries = 0;
+                            retryAttempts = 0;
                           }),
                         ),
                       );
@@ -371,20 +373,25 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                         ) {
                           return handled;
                         }
-                        const retryDelay = Duration.millis(
-                          Math.min(
-                            Duration.toMillis(options.retryExpectedFailureAfter) *
-                              2 ** expectedFailureRetries,
-                            MAX_EXPECTED_FAILURE_RETRY_DELAY_MS,
-                          ),
-                        );
-                        expectedFailureRetries += 1;
                         return handled.pipe(
-                          Stream.concat(
-                            Stream.fromEffect(Effect.sleep(retryDelay)).pipe(Stream.drain),
-                          ),
-                          Stream.concat(subscribeToSession()),
+                          Stream.concat(retryAfter(options.retryExpectedFailureAfter)),
                         );
+                      }
+                      if (
+                        options?.retryDefectAfter !== undefined &&
+                        Cause.hasDies(cause) &&
+                        !Cause.hasInterrupts(cause)
+                      ) {
+                        return Stream.fromEffect(
+                          Effect.logWarning(
+                            "Durable RPC subscription hit a defect; resubscribing.",
+                            {
+                              cause: Cause.pretty(cause),
+                              method: tag,
+                              environmentId: supervisor.target.environmentId,
+                            },
+                          ),
+                        ).pipe(Stream.drain, Stream.concat(retryAfter(options.retryDefectAfter)));
                       }
                       // A reported defect parks until the next session or resubscribe. Failing would
                       // end the whole subscription, so a mounted screen never syncs again.
@@ -395,6 +402,20 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                     }),
                   ),
                 );
+              // Reset on the first value, not resubscription, so repeated defects back off.
+              const retryAfter = (delay: Duration.Input) => {
+                const retryDelay = Duration.millis(
+                  Math.min(
+                    Duration.toMillis(delay) * 2 ** retryAttempts,
+                    MAX_EXPECTED_FAILURE_RETRY_DELAY_MS,
+                  ),
+                );
+                retryAttempts += 1;
+                return Stream.fromEffect(Effect.sleep(retryDelay)).pipe(
+                  Stream.drain,
+                  Stream.concat(subscribeToSession()),
+                );
+              };
               return subscribeToSession();
             },
           }),
