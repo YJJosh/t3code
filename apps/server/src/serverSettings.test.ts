@@ -1633,6 +1633,47 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
   );
 
   it.effect(
+    "stores agent vault tokens privately, replaces them, and deletes removed vault credentials",
+    () =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettingsModule.ServerSettingsService;
+        const secrets = yield* ServerSecretStore.ServerSecretStore;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const saved = yield* settings.updateSettings({
+          agentSecretVaults: {
+            alpha: { token: "ops_dummy_alpha" },
+            beta: { token: "ops_dummy_beta" },
+          },
+        });
+        const raw = yield* fs.readFileString(config.settingsPath);
+        assert.notInclude(raw, "ops_dummy");
+        const client = ServerSettingsModule.redactServerSettingsForClient(saved, {
+          secretReferences: true,
+        });
+        assert.notInclude(JSON.stringify(client), "ops_dummy");
+        assert.equal(saved.agentSecretVaults.alpha?.token, "ops_dummy_alpha");
+        yield* settings.updateSettings({
+          agentSecretVaults: { alpha: client.agentSecretVaults.alpha! },
+        });
+        assert.equal(
+          (yield* settings.getSettings).agentSecretVaults.alpha?.token,
+          "ops_dummy_alpha",
+        );
+        yield* settings.updateSettings({
+          agentSecretVaults: { alpha: { token: "ops_replacement" }, beta: null },
+        });
+        assert.deepEqual((yield* settings.getSettings).agentSecretVaults, {
+          alpha: { token: "ops_replacement" },
+        });
+        const key = (name: string) => `agent-vault-${Buffer.from(name).toString("base64url")}`;
+        assert.isTrue(Option.isNone(yield* secrets.get(key("beta"))));
+        yield* settings.updateSettings({ agentSecretVaults: { alpha: null } });
+        assert.isTrue(Option.isNone(yield* secrets.get(key("alpha"))));
+      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
+  it.effect(
     "keeps source control host secrets in the secret store and tells clients only that one is set",
     () =>
       Effect.gen(function* () {

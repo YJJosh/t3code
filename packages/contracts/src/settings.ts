@@ -991,6 +991,15 @@ export class TextGeneratorError extends Schema.TaggedError<TextGeneratorError>()
   }
 }
 
+export const AgentSecretVault = Schema.Struct({
+  token: Schema.String,
+});
+
+export const AgentSecretVaultName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(128),
+  Schema.isPattern(/^[^/?\x00-\x1f]+$/),
+);
+
 export const SecretProviderKind = SecretProviderSlug.pipe(Schema.brand("SecretProviderKind"));
 export type SecretProviderKind = typeof SecretProviderKind.Type;
 
@@ -1543,6 +1552,9 @@ export const ServerSettings = Schema.Struct({
   textGenerators: Schema.Record(ProviderInstanceId, TextGeneratorConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  agentSecretVaults: Schema.Record(AgentSecretVaultName, AgentSecretVault).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   secretProviders: Schema.Record(SecretProviderId, SecretProviderConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
@@ -1924,6 +1936,9 @@ export const ServerSettingsPatch = Schema.Struct({
   textGenerators: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, Schema.NullOr(TextGeneratorConfig)),
   ),
+  agentSecretVaults: Schema.optionalKey(
+    Schema.Record(AgentSecretVaultName, Schema.NullOr(AgentSecretVault)),
+  ),
   secretProviders: Schema.optionalKey(
     Schema.Record(SecretProviderId, Schema.NullOr(SecretProviderConfigWrite)),
   ),
@@ -1950,7 +1965,8 @@ export function requiredScopesForServerSettingsPatch(
       key === "providerInstances" ||
       key === "usageLimitSources" ||
       key === "textGenerators" ||
-      key === "secretProviders"
+      key === "secretProviders" ||
+      key === "agentSecretVaults"
     ) {
       changesProviders = true;
     } else {

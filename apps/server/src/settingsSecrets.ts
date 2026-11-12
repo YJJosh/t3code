@@ -254,6 +254,12 @@ function mapSecretFieldGroups(
       voiceSecretFields,
       (provider) => `voice-cloud-${provider}`,
     ) as ServerSettings["cloudSpeechCredentials"],
+    agentSecretVaults: Object.fromEntries(
+      Object.entries(settings.agentSecretVaults).map(([name, vault]) => [
+        name,
+        mapFields(vault, ["token"], () => `agent-vault-${encode(name)}`) as typeof vault,
+      ]),
+    ),
     providerInstances,
     sourceControlHosts,
     usageLimitSources,

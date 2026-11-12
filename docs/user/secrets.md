@@ -4,8 +4,8 @@ T3 Code can read credentials from a secret provider, so the credential stays in 
 manager and T3 Code saves only a reference to it. Agents can also ask you for a secret in a
 private card instead of in the chat.
 
-The Secrets settings page is in preview and is not in every build yet. Secret requests from agents
-work everywhere.
+Secret-provider source pickers are in preview and are not in every build yet. Secret requests from
+agents work everywhere.
 
 ## Secret providers
 
@@ -60,3 +60,29 @@ The value never appears in the conversation. Most requests keep it from the agen
 passes it to the tool that needs it. When an agent has to run a command with the value, the card
 says so instead: the value goes into a private file that the agent's commands can read for about 24
 hours.
+
+## Share a vault with agents
+
+In **Settings → Secrets → Agent vaults**, select **Add agent vault**, enter the exact vault name,
+then paste its service-account token into the private token field. Install `op` on that
+**environment's server**. Use a separate read-only service account restricted to each vault; do not
+keep the service-account tokens inside a shared vault. Tokens stay in the server's secret storage,
+not in `settings.json`, synced settings, or chat. **Change token** replaces a credential;
+**Remove vault** stops new access and deletes its stored token. Revoke unused tokens in 1Password
+as well. Commands already running keep the values they were given.
+
+Agent access is either allowed or not—there are no per-use approval prompts. The agent uses
+`secret_list` to find item and field references without values, then `secret_run` to execute a
+command in its thread's working directory with references mapped to environment variables.
+`ssh_keys` can load unencrypted OpenSSH private-key references into a private, temporary SSH agent
+on macOS or Linux for git over SSH. Commands need the thread's full-access mode. They time out
+after 120 seconds by default (up to 30 minutes), and return bounded output with exact values
+masked, including values split across output chunks.
+
+Masking does **not** catch transformed values (for example base64, URL encoding, or separate
+characters). These tools help prevent accidental disclosure, not malicious access by a process
+running as your user. Share only small vaults whose credentials you trust agents to use.
+
+Web and desktop can manage vaults on local or remote environments. Mobile can use threads with
+these tools, but does not yet have a Secrets settings page; manage its server's vaults from web or
+desktop. Agent vaults are separate from the secret providers used by credential fields above.
