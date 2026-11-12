@@ -13,6 +13,7 @@ import {
   type TerminalSessionState,
 } from "@t3tools/client-runtime/state/terminal";
 import {
+  Bot,
   Plus,
   Square,
   SquareSplitHorizontal,
@@ -85,7 +86,7 @@ import { useClientSettings } from "../hooks/useSettings";
 import { getFileMetadataQueryAtom } from "../hooks/useFileMetadata";
 import { FileMetadataThreadContext } from "../hooks/FileMetadataThreadProvider";
 import { useLocalStorage } from "../hooks/useLocalStorage";
-import { attachedTerminalSessionAtom } from "../state/terminalSessions";
+import { attachedTerminalSessionAtom, useKnownTerminalSessions } from "../state/terminalSessions";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { serverEnvironment } from "../state/server";
 import { previewEnvironment } from "../state/preview";
@@ -1387,6 +1388,7 @@ function TerminalSidebarGroup({
   activeTerminalId,
   showHeader,
   terminalLabelById,
+  agentTerminalIds,
   closeShortcutLabel,
   canOperateTerminal,
   onActiveTerminalChange,
@@ -1396,6 +1398,7 @@ function TerminalSidebarGroup({
   activeTerminalId: string;
   showHeader: boolean;
   terminalLabelById: ReadonlyMap<string, string>;
+  agentTerminalIds: ReadonlySet<string>;
   closeShortcutLabel: string | undefined;
   canOperateTerminal: boolean;
   onActiveTerminalChange: (terminalId: string) => void;
@@ -1443,6 +1446,7 @@ function TerminalSidebarGroup({
           const closeTerminalLabel = `Close ${terminalLabel}${
             isActive && closeShortcutLabel ? ` (${closeShortcutLabel})` : ""
           }`;
+          const TabIcon = agentTerminalIds.has(terminalId) ? Bot : TerminalSquare;
           return (
             <div
               key={terminalId}
@@ -1459,10 +1463,10 @@ function TerminalSidebarGroup({
                   onClick={() => onCloseTerminal(terminalId)}
                   tooltip={closeTerminalLabel}
                 >
-                  <TerminalSquare className="size-3 shrink-0" />
+                  <TabIcon className="size-3 shrink-0" />
                 </PanelTabCloseButton>
               ) : (
-                <TerminalSquare className="size-3 shrink-0" />
+                <TabIcon className="size-3 shrink-0" />
               )}
               <button
                 type="button"
@@ -1629,6 +1633,19 @@ export default function ThreadTerminalDrawer({
     return next;
   })();
 
+  const knownTerminalSessions = useKnownTerminalSessions({
+    environmentId: threadRef.environmentId,
+    threadId: threadRef.threadId,
+  });
+  const agentTerminalIds = new Set(
+    knownTerminalSessions
+      ?.filter((session) => session.state.summary?.controller === "agent")
+      .map((session) => session.target.terminalId),
+  );
+  const setTerminalController = useAtomCommand(terminalEnvironment.setController, {
+    reportFailure: false,
+  });
+
   const resolvedActiveTerminalId =
     normalizedTerminalIds.length === 0
       ? ""
@@ -1676,6 +1693,19 @@ export default function ThreadTerminalDrawer({
   const closeTerminalActionLabel = closeShortcutLabel
     ? `Close Terminal (${closeShortcutLabel})`
     : "Close Terminal";
+  const agentHasControl = agentTerminalIds.has(resolvedActiveTerminalId);
+  const controllerActionLabel = agentHasControl ? "Agent has control. Take over" : "Give to agent";
+  const toggleTerminalController = () => {
+    if (!canOperateTerminal || resolvedActiveTerminalId === "") return;
+    void setTerminalController({
+      environmentId: threadRef.environmentId,
+      input: {
+        threadId: threadRef.threadId,
+        terminalId: resolvedActiveTerminalId,
+        controller: agentHasControl ? "user" : "agent",
+      },
+    });
+  };
   const onSplitTerminalAction = () => {
     if (!canOperateTerminal || hasReachedSplitLimit) return;
     onSplitTerminal();
@@ -1849,6 +1879,19 @@ export default function ThreadTerminalDrawer({
           <div className="pointer-events-auto inline-flex items-center overflow-hidden rounded-md border border-border/80 bg-background shadow-xs">
             <TerminalActionButton
               disabled={!canOperateTerminal}
+              className={cn(
+                "inline-flex items-center gap-1 p-1 transition-colors hover:bg-accent",
+                agentHasControl ? "text-info-foreground" : "text-muted-foreground",
+              )}
+              onClick={toggleTerminalController}
+              label={controllerActionLabel}
+            >
+              <Bot className="size-3.25" />
+              {agentHasControl && <span className="pr-0.5 text-2xs">Agent</span>}
+            </TerminalActionButton>
+            <div className="h-4 w-px bg-border/80" />
+            <TerminalActionButton
+              disabled={!canOperateTerminal}
               className={`p-1 text-foreground/90 transition-colors ${
                 hasReachedSplitLimit
                   ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1926,6 +1969,18 @@ export default function ThreadTerminalDrawer({
                 <div className="inline-flex h-full items-stretch any-pointer-coarse:relative any-pointer-coarse:z-30">
                   <TerminalActionButton
                     disabled={!canOperateTerminal}
+                    className={cn(
+                      "inline-flex h-full items-center gap-1 border-r border-border/70 px-1 transition-colors hover:bg-accent/70",
+                      agentHasControl ? "text-info-foreground" : "text-muted-foreground",
+                    )}
+                    onClick={toggleTerminalController}
+                    label={controllerActionLabel}
+                  >
+                    <Bot className="size-3.25" />
+                    {agentHasControl && <span className="text-2xs">Agent</span>}
+                  </TerminalActionButton>
+                  <TerminalActionButton
+                    disabled={!canOperateTerminal}
                     className={`inline-flex h-full items-center px-1 text-foreground/90 transition-colors ${
                       hasReachedSplitLimit
                         ? "cursor-not-allowed opacity-64 hover:bg-transparent"
@@ -1975,6 +2030,7 @@ export default function ThreadTerminalDrawer({
                     activeTerminalId={resolvedActiveTerminalId}
                     showHeader={showGroupHeaders}
                     terminalLabelById={terminalLabelById}
+                    agentTerminalIds={agentTerminalIds}
                     closeShortcutLabel={closeShortcutLabel}
                     canOperateTerminal={canOperateTerminal}
                     onActiveTerminalChange={onActiveTerminalChange}
