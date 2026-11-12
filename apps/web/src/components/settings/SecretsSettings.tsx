@@ -1,3 +1,4 @@
+import { AgentSecretVaults } from "./AgentSecretVaults";
 import type { EnvironmentId, SecretProviderConfig, SecretProviderId } from "@t3tools/contracts";
 import { PlusIcon } from "lucide-react";
 import { useState } from "react";
@@ -178,6 +179,9 @@ function EnvironmentSecretProviders({
           })
         )}
       </SettingsSection>
+      {environment.serverConfig?.agentSecretVaults === true ? (
+        <AgentSecretVaults environmentId={environmentId} readOnly={readOnly} />
+      ) : null}
       {dialog !== null && !readOnly && (dialog.mode === "add" || editing !== undefined) ? (
         <SecretProviderDialog
           onClose={() => setDialog(null)}

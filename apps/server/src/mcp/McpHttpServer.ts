@@ -1,3 +1,6 @@
+import { SecretsToolkit } from "./toolkits/secrets/tools.ts";
+import * as SecretsHandlers from "./toolkits/secrets/handlers.ts";
+import * as AgentSecrets from "../secrets/AgentSecrets.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -1249,6 +1252,9 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
 
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
+  toolkitRegistration(SecretsToolkit, SecretsHandlers.layer).pipe(
+    Layer.provide(AgentSecrets.layer),
+  ),
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,

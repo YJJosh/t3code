@@ -1982,6 +1982,7 @@ export const layerWsRpc = (
           threadFind: true,
           threadFindProgressive: true,
           secretProviderSettings: true,
+          agentSecretVaults: true,
           secretReferences: true,
           secretRequestReferences: true,
           ...Option.match(scratchWorkspaceRoot, {

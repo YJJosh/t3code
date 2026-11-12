@@ -150,11 +150,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   },
   {
     heading: "Connections",
-    paths: [
-      "/settings/connections",
-      "/settings/access",
-      ...(isSecretsFeatureEnabled ? (["/settings/secrets"] as const) : []),
-    ],
+    paths: ["/settings/connections", "/settings/access", "/settings/secrets"],
   },
   {
     heading: null,
@@ -1306,6 +1302,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       `pull request routing trusted environments shared credentials permissions read actions source control ${SOURCE_CONTROL_HOST_LABELS}`,
     ],
+  },
+  {
+    id: "agent-secret-vaults",
+    title: "Agent vaults",
+    to: "/settings/secrets",
+    searchTerms: ["1password", "vault", "token", "secret_run", "secret_list", "credentials"],
   },
   {
     id: "secret-providers",

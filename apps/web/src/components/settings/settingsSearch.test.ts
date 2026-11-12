@@ -73,9 +73,10 @@ describe("searchSettings", () => {
     }
   });
 
-  it("hides the Secrets page from nav and search while the secrets feature is disabled", () => {
-    expect(SETTINGS_NAV_GROUPS.flatMap((group) => group.paths)).not.toContain("/settings/secrets");
-    expect(searchSettings("1password").map((item) => item.to)).not.toContain("/settings/secrets");
+  it("keeps agent vaults reachable while preview secret-provider inputs are disabled", () => {
+    expect(SETTINGS_NAV_GROUPS.flatMap((group) => group.paths)).toContain("/settings/secrets");
+    expect(searchSettings("1password").map((item) => item.id)).toContain("agent-secret-vaults");
+    expect(searchSettings("1password").map((item) => item.id)).not.toContain("secret-providers");
   });
 
   it("matches normalized title substrings", () => {

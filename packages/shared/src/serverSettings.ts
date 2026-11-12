@@ -401,6 +401,7 @@ export function applyServerSettingsPatch(
     usageLimitSources: usageLimitSourcesPatch,
     textGenerators: textGeneratorsPatch,
     secretProviders: secretProvidersPatch,
+    agentSecretVaults: agentSecretVaultsPatch,
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
@@ -619,6 +620,14 @@ export function applyServerSettingsPatch(
       : {}),
     ...(textGeneratorsPatch !== undefined
       ? { textGenerators: mergeSettingsEntries(current.textGenerators, textGeneratorsPatch) }
+      : {}),
+    ...(agentSecretVaultsPatch !== undefined
+      ? {
+          agentSecretVaults: mergeSettingsEntries(
+            current.agentSecretVaults,
+            agentSecretVaultsPatch,
+          ),
+        }
       : {}),
     ...(secretProvidersPatch !== undefined
       ? { secretProviders: mergeSettingsEntries(current.secretProviders, secretProvidersPatch) }
