@@ -8,6 +8,7 @@ import * as Project from "../../../project/ProjectService.ts";
 
 const shared = {
   failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
   dependencies: [
     AgentSecrets.AgentSecrets,
     McpInvocationContext.McpInvocationContext,

@@ -115,7 +115,9 @@ const make = Effect.gen(function* () {
           reason:
             cause instanceof Error && cause.message === "missing_binary"
               ? "missing_binary"
-              : "process_failed",
+              : cause instanceof Error && cause.message === "output_limit"
+                ? "invalid_output"
+                : "process_failed",
         }),
     });
   });
