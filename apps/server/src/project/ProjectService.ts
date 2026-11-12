@@ -356,7 +356,6 @@ export const make = Effect.gen(function* () {
   const workspaceScanDirectory = Effect.fn("ProjectService.workspaceScanDirectory")(
     function* (cwd: string) {
       if (yield* fileSystem.exists(cwd).pipe(Effect.orElseSucceed(() => true))) return cwd;
-      if (!(yield* isManagedWorktreePath(cwd))) return cwd;
       const snapshot = yield* Effect.flatten(
         threadProjections.readShellSnapshot({ worktreePath: cwd }),
       );
@@ -364,7 +363,10 @@ export const make = Effect.gen(function* () {
         (candidate) => candidate.branch !== null,
       );
       if (thread === undefined) return cwd;
-      return Option.getOrUndefined(yield* readRow(thread.projectId))?.workspaceRoot ?? cwd;
+      const projectRoot = Option.getOrUndefined(yield* readRow(thread.projectId))?.workspaceRoot;
+      return projectRoot !== undefined && (yield* isManagedWorktreePath(cwd, projectRoot))
+        ? projectRoot
+        : cwd;
     },
     (effect, cwd) => Effect.orElseSucceed(effect, () => cwd),
   );

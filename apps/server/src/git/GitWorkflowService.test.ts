@@ -31,6 +31,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
       );
       assert.equal(yield* workflow.hasCommit({ cwd: "/group", refName: "refs/heads/t3" }), false);
       yield* workflow.pruneWorktrees({ cwd: "/group" });
+      assert.deepEqual(yield* workflow.listLocalBranchNames("/group"), ["feature/shared"]);
     }).pipe(
       Effect.provide(
         GitWorkflowService.layer.pipe(
@@ -41,6 +42,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
             Layer.mock(MultiRepoWorkspaces.MultiRepoWorkspaces)({
               members: () => Effect.succeed(["api", "web"]),
               fetchMembers: () => Effect.succeed([]),
+              listLocalBranchNames: () => Effect.succeed(["feature/shared"]),
               createWorkspace: () =>
                 Effect.succeed({
                   worktree: { path: "/group/.worktrees/shared", refName: "feature/shared" },

@@ -313,6 +313,12 @@ it.layer(TestLayer)("MultiRepoWorkspaces", (it) => {
 
       yield* workspaces.removeWorkspace({ cwd: group, path: workspace, force: true });
       assert.isFalse(yield* fileSystem.exists(workspace));
+      assert.include(
+        yield* workspaces.listLocalBranchNames(group, ["api", "web"]),
+        "feature/login",
+      );
+      yield* git(path.join(group, "api"), ["branch", "api-only"]);
+      assert.notInclude(yield* workspaces.listLocalBranchNames(group, ["api", "web"]), "api-only");
       for (const member of ["api", "web"]) {
         // Removing keeps the branch in the project, as a linked worktree would.
         yield* git(path.join(group, member), ["rev-parse", "--verify", "refs/heads/feature/login"]);

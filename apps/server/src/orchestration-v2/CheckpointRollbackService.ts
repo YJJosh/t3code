@@ -217,14 +217,12 @@ export const layer: Layer.Layer<
 
       const { worktreePath, branch } = context.thread;
       // Recreated only where the server would have made it, as turn start does.
-      if (
-        worktreePath != null &&
-        branch != null &&
-        !(yield* fileSystem.exists(worktreePath)) &&
-        (yield* isManagedWorktreePath(worktreePath))
-      ) {
+      if (worktreePath != null && branch != null && !(yield* fileSystem.exists(worktreePath))) {
         const project = yield* projects.get(context.thread.projectId);
-        if (Option.isSome(project)) {
+        if (
+          Option.isSome(project) &&
+          (yield* isManagedWorktreePath(worktreePath, project.value.workspaceRoot))
+        ) {
           yield* gitWorkflow.pruneWorktrees({ cwd: project.value.workspaceRoot });
           yield* gitWorkflow.createWorktree({
             cwd: project.value.workspaceRoot,

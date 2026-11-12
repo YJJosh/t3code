@@ -24,6 +24,8 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "./config.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
+import * as MultiRepoWorkspaces from "./vcs/MultiRepoWorkspaces.ts";
+import * as WorklerWorkspaceService from "./vcs/WorklerWorkspaceService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Settings from "./serverSettings.ts";
@@ -318,24 +320,52 @@ const cleanupFixture = (
     worktreeAfterDays: 8,
     worktreeOnDelete: true,
   },
+  kind: "linked" | "clone" | "group" | "recovered" = "linked",
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const config = yield* ServerConfig.ServerConfig;
+    const originalConfig = yield* ServerConfig.ServerConfig;
+    // Reports and measurement probes use physical paths, including macOS /private/var.
+    const config = {
+      ...originalConfig,
+      worktreesDir: yield* fs.realPath(originalConfig.worktreesDir),
+    };
     const git = yield* GitVcsDriver.GitVcsDriver;
     const repo = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-repo-" }));
     const command = (cwd: string, args: string[]) =>
       git.execute({ operation: "cleanup-test", cwd, args });
-    yield* command(repo, ["init", "-b", "main"]);
-    yield* command(repo, ["config", "user.email", "cleanup@example.test"]);
-    yield* command(repo, ["config", "user.name", "Cleanup test"]);
-    yield* fs.writeFileString(`${repo}/tracked.txt`, "original\n");
-    yield* fs.writeFileString(`${repo}/.gitignore`, ".env\ndist/\nnode_modules/\n");
-    yield* command(repo, ["add", "."]);
-    yield* command(repo, ["commit", "-m", "initial"]);
-    yield* fs.makeDirectory(config.worktreesDir, { recursive: true });
-    const worktree = `${config.worktreesDir}/feature`;
-    yield* command(repo, ["worktree", "add", "-b", "feature", worktree]);
+    const members = kind === "group" ? ["api", "web"] : [];
+    for (const source of members.length > 0
+      ? members.map((member) => `${repo}/${member}`)
+      : [repo]) {
+      yield* fs.makeDirectory(source, { recursive: true });
+      yield* command(source, ["init", "-b", "main"]);
+      yield* command(source, ["config", "user.email", "cleanup@example.test"]);
+      yield* command(source, ["config", "user.name", "Cleanup test"]);
+      yield* fs.writeFileString(`${source}/tracked.txt`, "original\n");
+      yield* fs.writeFileString(`${source}/.gitignore`, ".env\ndist/\nnode_modules/\n");
+      yield* command(source, ["add", "."]);
+      yield* command(source, ["commit", "-m", "initial"]);
+    }
+    const workler = yield* WorklerWorkspaceService.make;
+    const multiRepo = yield* MultiRepoWorkspaces.make.pipe(
+      Effect.provideService(WorklerWorkspaceService.WorklerWorkspaceService, workler),
+    );
+    let worktree: string;
+    if (kind === "linked" || kind === "recovered") {
+      yield* fs.makeDirectory(config.worktreesDir, { recursive: true });
+      worktree =
+        kind === "linked" ? `${config.worktreesDir}/feature` : `${repo}/.worktrees/feature`;
+      yield* command(repo, ["worktree", "add", "-b", "feature", worktree]);
+    } else {
+      if (kind === "group")
+        yield* fs.writeFileString(`${repo}/.workler`, "project api\nproject web\n");
+      worktree = (yield* workler.createWorkspace({
+        root: repo,
+        name: "feature",
+        branch: "feature",
+      })).path;
+    }
     let settings: import("@t3tools/contracts").ServerSettings = {
       ...DEFAULT_SERVER_SETTINGS,
       storageCleanup,
@@ -357,6 +387,7 @@ const cleanupFixture = (
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
     const context = yield* Layer.build(StorageCleanup.layer).pipe(
+      Effect.provideService(MultiRepoWorkspaces.MultiRepoWorkspaces, multiRepo),
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,
         execute: (input) =>
@@ -2410,45 +2441,65 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.live("compares the checked-out branch without a full status", () =>
-    runCleanupTest(
-      Effect.gen(function* () {
-        const { service, fs, repo, worktree, command, setThreads, fullStatusCalls } =
-          yield* cleanupFixture();
-        const changed = { outcome: "kept", reason: "Repository or branch changed" };
-        yield* command(worktree, ["checkout", "--detach"]);
-        expect((yield* service.runNow).entries[0]).toMatchObject(changed);
-        yield* command(worktree, ["switch", "--orphan", "other"]);
-        expect((yield* service.runNow).entries[0]).toMatchObject(changed);
-        yield* command(worktree, ["switch", "-c", "(feature)", "feature"]);
-        setThreads([shell({ branch: "(feature)", worktreePath: worktree })]);
-        expect((yield* service.runNow).entries[0]).toMatchObject(changed);
-        setThreads([shell({ branch: "feature", worktreePath: worktree })]);
-        yield* command(worktree, ["tag", "feature", "feature"]);
-        // Newer Git refuses to create a tag named HEAD, but still reads one.
-        yield* command(worktree, ["update-ref", "refs/tags/HEAD", "refs/heads/feature"]);
-        yield* command(worktree, ["switch", "feature"]);
-        const index = (yield* command(worktree, ["rev-parse", "--git-path", "index"])).stdout;
-        yield* fs.writeFileString(`${index.trim()}.lock`, "");
-        const locked = (yield* service.runNow).entries[0];
-        expect(locked).toMatchObject({
-          outcome: "failed",
-          projectPath: repo,
-          path: worktree,
-          threadId: "thread-1",
-          threadTitle: "Thread",
-        });
-        expect(locked?.reason).toContain("Git index is locked");
-        expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("original\n");
-        yield* fs.remove(`${index.trim()}.lock`);
-        const gitFile = yield* fs.readFileString(`${worktree}/.git`);
-        yield* fs.writeFileString(`${worktree}/.git`, "gitdir: /missing-git-directory\n");
-        expect((yield* service.runNow).entries[0]).toMatchObject(changed);
-        yield* fs.writeFileString(`${worktree}/.git`, gitFile);
-        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
-        expect(fullStatusCalls()).toBe(0);
-      }),
-    ),
+  it.live.each(["legacy", "invalid gitfile"] as const)(
+    "compares the checked-out branch without a full status (%s)",
+    (diagnostic) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+          const { service, fs, repo, worktree, command, setThreads, fullStatusCalls } =
+            yield* cleanupFixture().pipe(
+              Effect.provideService(GitVcsDriver.GitVcsDriver, {
+                ...driver,
+                execute: (input) =>
+                  driver.execute(input).pipe(
+                    Effect.map((result) =>
+                      diagnostic === "invalid gitfile" &&
+                      result.exitCode !== 0 &&
+                      result.stderr.includes("not a git repository")
+                        ? {
+                            ...result,
+                            stderr: "fatal: gitfile does not point to a valid repository",
+                          }
+                        : result,
+                    ),
+                  ),
+              }),
+            );
+          const changed = { outcome: "kept", reason: "Repository or branch changed" };
+          yield* command(worktree, ["checkout", "--detach"]);
+          expect((yield* service.runNow).entries[0]).toMatchObject(changed);
+          yield* command(worktree, ["switch", "--orphan", "other"]);
+          expect((yield* service.runNow).entries[0]).toMatchObject(changed);
+          yield* command(worktree, ["switch", "-c", "(feature)", "feature"]);
+          setThreads([shell({ branch: "(feature)", worktreePath: worktree })]);
+          expect((yield* service.runNow).entries[0]).toMatchObject(changed);
+          setThreads([shell({ branch: "feature", worktreePath: worktree })]);
+          yield* command(worktree, ["tag", "feature", "feature"]);
+          // Newer Git refuses to create a tag named HEAD, but still reads one.
+          yield* command(worktree, ["update-ref", "refs/tags/HEAD", "refs/heads/feature"]);
+          yield* command(worktree, ["switch", "feature"]);
+          const index = (yield* command(worktree, ["rev-parse", "--git-path", "index"])).stdout;
+          yield* fs.writeFileString(`${index.trim()}.lock`, "");
+          const locked = (yield* service.runNow).entries[0];
+          expect(locked).toMatchObject({
+            outcome: "failed",
+            projectPath: repo,
+            path: worktree,
+            threadId: "thread-1",
+            threadTitle: "Thread",
+          });
+          expect(locked?.reason).toContain("Git index is locked");
+          expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("original\n");
+          yield* fs.remove(`${index.trim()}.lock`);
+          const gitFile = yield* fs.readFileString(`${worktree}/.git`);
+          yield* fs.writeFileString(`${worktree}/.git`, "gitdir: /missing-git-directory\n");
+          expect((yield* service.runNow).entries[0]).toMatchObject(changed);
+          yield* fs.writeFileString(`${worktree}/.git`, gitFile);
+          expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
+          expect(fullStatusCalls()).toBe(0);
+        }),
+      ),
   );
   it.live.each([
     ["any-local-files", ".env", "kept"],
@@ -2681,7 +2732,19 @@ describe("storage cleanup reports and local file policies", () => {
   it.live("aggregates expired artifacts and rotated logs while retaining current logs", () =>
     runCleanupTest(
       Effect.gen(function* () {
-        const { service, fs, config, enableFiles, disable } = yield* cleanupFixture();
+        const fileSystem = yield* FileSystem.FileSystem;
+        const baseConfig = yield* ServerConfig.ServerConfig;
+        const temp = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cleanup-files-" });
+        // macOS's temporary directory can sit below /var -> /private/var. This
+        // test exercises expiration, not the deliberate symlink-root guard.
+        const canonical = yield* fileSystem.realPath(temp);
+        const { service, fs, config, enableFiles, disable } = yield* cleanupFixture().pipe(
+          Effect.provideService(ServerConfig.ServerConfig, {
+            ...baseConfig,
+            browserArtifactsDir: `${canonical}/browser`,
+            logsDir: `${canonical}/logs`,
+          }),
+        );
         disable();
         enableFiles();
         yield* fs.makeDirectory(config.browserArtifactsDir, { recursive: true });
@@ -2855,3 +2918,64 @@ it.live("keeps saved usage data when removing a settled checkout", () =>
     }),
   ),
 );
+
+describe("Workler cleanup safety on v2 threads", () => {
+  it.live.each(["clone", "group", "recovered"] as const)(
+    "removes an unchanged %s while retaining v2 checkpoint refs",
+    (kind) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const { service, repo, worktree, fs, command } = yield* cleanupFixture(undefined, kind);
+          const member = kind === "group" ? "/api" : "";
+          const ref = "refs/t3/orchestration-v2/checkpoints/scope/1";
+          yield* command(`${worktree}${member}`, ["update-ref", ref, "HEAD"]);
+          const before = (yield* command(`${worktree}${member}`, ["rev-parse", ref])).stdout;
+          yield* service.runNow;
+          expect(yield* fs.exists(worktree)).toBe(false);
+          expect((yield* command(`${repo}${member}`, ["rev-parse", ref])).stdout).toBe(before);
+        }),
+      ),
+  );
+
+  it.live.each(["clone", "group"] as const)(
+    "keeps a %s with ignored files or unique commits",
+    (kind) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const { service, worktree, fs, command } = yield* cleanupFixture(undefined, kind);
+          const cwd = kind === "group" ? `${worktree}/web` : worktree;
+          yield* fs.writeFileString(`${cwd}/.env`, "must survive");
+          yield* service.runNow;
+          expect(yield* fs.exists(worktree)).toBe(true);
+          yield* fs.remove(`${cwd}/.env`);
+          yield* command(cwd, [
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "unique",
+          ]);
+          yield* service.runNow;
+          expect(yield* fs.exists(worktree)).toBe(true);
+        }),
+      ),
+  );
+
+  it.live("keeps a group with extra root files or an edited .workler", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, worktree, fs } = yield* cleanupFixture(undefined, "group");
+        yield* fs.writeFileString(`${worktree}/notes.txt`, "not in a member repository");
+        yield* service.runNow;
+        expect(yield* fs.exists(worktree)).toBe(true);
+        yield* fs.remove(`${worktree}/notes.txt`);
+        yield* fs.writeFileString(`${worktree}/.workler`, "project api\nproject web\n# changed\n");
+        yield* service.runNow;
+        expect(yield* fs.exists(worktree)).toBe(true);
+      }),
+    ),
+  );
+});

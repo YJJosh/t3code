@@ -34,8 +34,8 @@ import {
 } from "./WorklerGitWorkspaceDriver.ts";
 import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
 
-const WORKLER_CONFIG_FILE = ".workler";
-const WORKSPACES_DIR = ".worktrees";
+export const WORKLER_CONFIG_FILE = ".workler";
+export const WORKSPACES_DIR = ".worktrees";
 const MAX_WORKSPACE_NAME_ATTEMPTS = 100;
 
 /**
@@ -53,6 +53,10 @@ export class MultiRepoWorkspaces extends Context.Service<
      * Repositories inside the plain folder `cwd`, as `makeGroup` would list
      * them. Empty when `cwd` is inside a repository or has a `.workler`.
      */
+    readonly listLocalBranchNames: (
+      cwd: string,
+      members: ReadonlyArray<string>,
+    ) => Effect.Effect<string[], GitCommandError>;
     readonly nestedRepositories: (cwd: string) => Effect.Effect<ReadonlyArray<string>>;
     /** Makes the plain folder `cwd` a project group of the repositories inside it; returns its members. */
     readonly makeGroup: (cwd: string) => Effect.Effect<ReadonlyArray<string>, GitCommandError>;
@@ -539,7 +543,20 @@ export const make = Effect.gen(function* () {
     return { branch };
   }, Effect.uninterruptible);
 
+  const listLocalBranchNames = Effect.fn("MultiRepoWorkspaces.listLocalBranchNames")(function* (
+    cwd: string,
+    members: ReadonlyArray<string>,
+  ) {
+    const branches = yield* Effect.forEach(members, (member) =>
+      git.listLocalBranchNames(path.join(cwd, member)),
+    );
+    return (branches[0] ?? []).filter((branch) =>
+      branches.every((names) => names.includes(branch)),
+    );
+  });
+
   return MultiRepoWorkspaces.of({
+    listLocalBranchNames,
     members,
     nestedRepositories,
     makeGroup,

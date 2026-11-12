@@ -448,8 +448,12 @@ export const make = Effect.gen(function* () {
       );
     }),
     listLocalBranchNames: Effect.fn("GitWorkflowService.listLocalBranchNames")(function (cwd) {
-      return ensureGitCommand("GitWorkflowService.listLocalBranchNames", cwd).pipe(
-        Effect.andThen(git.listLocalBranchNames(cwd)),
+      return unlessMultiRepo(
+        cwd,
+        (service, members) => service.listLocalBranchNames(cwd, members),
+        ensureGitCommand("GitWorkflowService.listLocalBranchNames", cwd).pipe(
+          Effect.andThen(git.listLocalBranchNames(cwd)),
+        ),
       );
     }),
     fetchRemote: Effect.fn("GitWorkflowService.fetchRemote")(function (input) {

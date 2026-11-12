@@ -653,7 +653,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
-  StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
+  StorageCleanup.layer.pipe(
+    Layer.provide(ProjectionStoreV2.layer),
+    Layer.provide(layerMultiRepoWorkspaces),
+  ),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
     Layer.provide(layerServerRestart),
