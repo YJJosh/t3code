@@ -84,6 +84,7 @@ import Migration0078 from "./Migrations/078_DropOrchestrationEventCorrelationInd
 import Migration0079 from "./Migrations/079_DelegatedRecoveryIndexes.ts";
 import Migration0080 from "./Migrations/080_ScheduledTaskThreadMode.ts";
 import Migration0081 from "./Migrations/081_ProjectionMessageSearchText.ts";
+import RetireDulli from "./Migrations/dulli/005_RetireDulli.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -181,6 +182,9 @@ const makeMigrationLoader = (throughId?: number) =>
     ),
   );
 
+// IDs 001–004 belong to retired provider migrations and must never be reused.
+const dulliMigrationEntries = [[5, "RetireDulli", RetireDulli]] as const;
+
 const FIRST_V2_MIGRATION_ID = 55;
 
 // Migrators skip ids up to the highest recorded; reject collisions that would skip V2 schema.
@@ -235,7 +239,21 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     ...previewMigrations,
     ...(yield* run({ loader: makeMigrationLoader(toMigrationInclusive) })),
   ];
-  const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
+  const forkMigrations =
+    toMigrationInclusive === undefined
+      ? yield* run({
+          table: "dulli_sql_migrations",
+          loader: Migrator.fromRecord(
+            Object.fromEntries(
+              dulliMigrationEntries.map(([id, name, migration]) => [`${id}_${name}`, migration]),
+            ),
+          ),
+        })
+      : [];
+  const migrations = [
+    ...executedMigrations.map(([id, name]) => `${id}_${name}`),
+    ...forkMigrations.map(([id, name]) => `dulli:${id}_${name}`),
+  ];
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
