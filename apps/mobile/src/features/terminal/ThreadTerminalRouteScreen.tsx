@@ -95,12 +95,14 @@ function TerminalHeader(props: {
   readonly subtitle: string;
   readonly isEnvironmentReady: boolean;
   readonly canOperateTerminal: boolean;
+  readonly agentHasControl: boolean;
   readonly fontSize: number;
   readonly terminalId: string;
   readonly sessions: ReadonlyArray<TerminalMenuSession>;
   readonly status: Parameters<typeof getTerminalStatusLabel>[0];
   readonly workspaceRoot: string;
   readonly onCloseTerminal: () => void;
+  readonly onToggleController: () => void;
   readonly onDecreaseFontSize: () => void;
   readonly onIncreaseFontSize: () => void;
   readonly onOpenNewTerminal: () => void;
@@ -121,8 +123,20 @@ function TerminalHeader(props: {
               {
                 title: "Terminal options",
                 icon: "terminal",
-                status: getTerminalStatusLabel(props.status),
+                status: props.agentHasControl
+                  ? "Agent has control"
+                  : getTerminalStatusLabel(props.status),
                 items: [
+                  {
+                    id: "terminal-controller",
+                    disabled: !props.canOperateTerminal,
+                    title: props.agentHasControl ? "Take over" : "Give to agent",
+                    icon: props.agentHasControl ? "person.crop.circle" : "brain",
+                    subtitle: props.agentHasControl
+                      ? "Typing also takes over"
+                      : "The agent can type here until you take over",
+                    onPress: props.onToggleController,
+                  },
                   {
                     id: "text-size",
                     title: "Text size",
@@ -381,6 +395,10 @@ function ThreadTerminal(props: {
   const navigation = useNavigation();
   const writeTerminal = useAtomCommand(terminalEnvironment.write, "terminal write");
   const clearTerminal = useAtomCommand(terminalEnvironment.clear, "terminal clear");
+  const setTerminalController = useAtomCommand(
+    terminalEnvironment.setController,
+    "terminal control",
+  );
   const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, "environment retry");
   const selectedThreadDetail = useSelectedThreadProjection();
   const selectedThreadDetailWorktreePath =
@@ -599,6 +617,18 @@ function ThreadTerminal(props: {
     },
   });
 
+  const agentHasControl = terminal.summary?.controller === "agent";
+  const handleToggleController = () => {
+    void setTerminalController({
+      environmentId: selectedThread.environmentId,
+      input: {
+        threadId: selectedThread.id,
+        terminalId,
+        controller: agentHasControl ? "user" : "agent",
+      },
+    });
+  };
+
   const writeInput = async (data: string): Promise<boolean> => {
     if (
       !isRunning ||
@@ -813,6 +843,7 @@ function ThreadTerminal(props: {
         />
       ) : null}
       <TerminalHeader
+        agentHasControl={agentHasControl}
         canOperateTerminal={canOperateTerminal}
         subtitle={headerSubtitle}
         isEnvironmentReady={isEnvironmentReady}
@@ -825,6 +856,7 @@ function ThreadTerminal(props: {
         }}
         workspaceRoot={selectedThreadProject.workspaceRoot}
         onCloseTerminal={handleCloseTerminal}
+        onToggleController={handleToggleController}
         onDecreaseFontSize={handleDecreaseFontSize}
         onIncreaseFontSize={handleIncreaseFontSize}
         onOpenNewTerminal={handleOpenNewTerminal}
