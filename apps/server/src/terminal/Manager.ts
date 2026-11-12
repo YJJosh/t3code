@@ -21,6 +21,7 @@ import {
   type TerminalAttachStreamEvent,
   type TerminalClearInput,
   type TerminalCloseInput,
+  type TerminalController,
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
   type TerminalOpenInput,
@@ -29,6 +30,7 @@ import {
   type ResourceMonitorProcessTableEntry,
   type TerminalSessionSnapshot,
   type TerminalSessionStatus,
+  type TerminalSetControllerInput,
   type TerminalSummary,
   type TerminalWriteInput,
   ClaudeSettings,
@@ -74,6 +76,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
 import { terminalOutputStream } from "./OutputProtocol.ts";
+import { isTerminalReplyOnly } from "./terminalInput.ts";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 
 export {
@@ -90,6 +93,24 @@ export {
   TerminalSessionLookupError,
   TerminalWriteError,
 };
+
+export class TerminalControlledByUserError extends Schema.TaggedError<TerminalControlledByUserError>()(
+  "TerminalControlledByUserError",
+  {
+    threadId: Schema.String,
+    terminalId: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `The user controls terminal ${this.terminalId}`;
+  }
+}
+
+/** Server-side launch details a client cannot request through `terminal.open`. */
+export interface TerminalOpenOptions {
+  readonly controller?: TerminalController;
+  readonly title?: string;
+}
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
 const DEFAULT_HISTORY_BYTE_LIMIT = 8 * 1024 * 1024;
@@ -168,8 +189,10 @@ class TerminalProcessSignalError extends Schema.TaggedError<TerminalProcessSigna
 export class TerminalManager extends Context.Service<
   TerminalManager,
   {
+    /** Options apply only when this call creates the session. */
     readonly open: (
       input: TerminalOpenInput,
+      options?: TerminalOpenOptions,
     ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
 
     readonly getShell: (input: TerminalObserveInput) => Effect.Effect<string, TerminalError>;
@@ -207,7 +230,24 @@ export class TerminalManager extends Context.Service<
       registerCleanup?: (stop: () => void) => void,
     ) => Effect.Effect<() => void, TerminalError>;
 
-    readonly write: (input: TerminalWriteInput) => Effect.Effect<void, TerminalError>;
+    /**
+     * `user` input other than terminal replies (cursor reports, focus, mouse) takes control
+     * from the agent. Server-side writes omit `from`.
+     */
+    readonly write: (
+      input: TerminalWriteInput,
+      from?: "user",
+    ) => Effect.Effect<void, TerminalError>;
+
+    readonly writeAsAgent: (
+      input: TerminalWriteInput,
+    ) => Effect.Effect<void, TerminalError | TerminalControlledByUserError>;
+
+    readonly setController: (
+      input: TerminalSetControllerInput,
+    ) => Effect.Effect<void, TerminalError>;
+
+    readonly listThread: (threadId: string) => Effect.Effect<ReadonlyArray<TerminalSummary>>;
 
     readonly resize: (
       input: TerminalResizeInput,
@@ -307,6 +347,8 @@ interface TerminalSessionState {
   childCommandLabel: string | null;
   runtimeEnv: Record<string, string> | null;
   stopOnSettle: boolean;
+  controller: TerminalController;
+  title: string | null;
 }
 
 interface TerminalGrid {
@@ -377,6 +419,7 @@ function normalizeChildCommandName(raw: string, platform: NodeJS.Platform): stri
 }
 
 function terminalWireLabel(session: TerminalSessionState): string {
+  if (session.title !== null) return truncateTerminalWireLabel(session.title);
   if (session.hasRunningSubprocess && session.childCommandLabel) {
     const trimmed = session.childCommandLabel.trim();
     if (trimmed.length > 0) {
@@ -418,6 +461,7 @@ function summary(session: TerminalSessionState): TerminalSummary {
     hasRunningSubprocess: session.hasRunningSubprocess,
     label: terminalWireLabel(session),
     updatedAt: session.updatedAt,
+    controller: session.controller,
   };
 }
 
@@ -2831,6 +2875,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   const openWithWorkspaceLease = Effect.fn("terminal.openLocked")(function* (
     requestedInput: TerminalOpenInput,
+    options?: TerminalOpenOptions,
   ) {
     const terminalId = requestedInput.terminalId;
     yield* assertValidCwd(requestedInput.cwd);
@@ -2879,6 +2924,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         childCommandLabel: null,
         runtimeEnv: normalizedRuntimeEnv(input.env),
         stopOnSettle: input.stopOnSettle ?? false,
+        controller: options?.controller ?? "user",
+        title: options?.title ?? null,
       };
 
       const createdSession = session;
@@ -2960,16 +3007,18 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return snapshot(liveSession);
   });
 
-  const openLocked = (input: TerminalOpenInput) =>
+  const openLocked = (input: TerminalOpenInput, options?: TerminalOpenOptions) =>
     withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
-      openWithWorkspaceLease(input),
+      openWithWorkspaceLease(input, options),
     );
 
-  const open: TerminalManager["Service"]["open"] = (input) =>
+  const open: TerminalManager["Service"]["open"] = (input, options) =>
     withThreadLock(
       input.threadId,
-      resolveLaunchInputEnvironment(input).pipe(Effect.flatMap(openLocked)),
+      resolveLaunchInputEnvironment(input).pipe(
+        Effect.flatMap((resolved) => openLocked(resolved, options)),
+      ),
     );
 
   const getShell = Effect.fn("terminal.getShell")(function* (input: TerminalObserveInput) {
@@ -3321,15 +3370,29 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     );
   };
 
-  const write: TerminalManager["Service"]["write"] = Effect.fn("terminal.write")(function* (input) {
-    const terminalId = input.terminalId;
-    const session = yield* requireSession(input.threadId, terminalId);
+  const publishControllerChange = Effect.fnUntraced(function* (session: TerminalSessionState) {
+    session.updatedAt = yield* nowIso;
+    const eventStamp = advanceEventSequence(session);
+    yield* publishEvent({
+      type: "activity",
+      threadId: session.threadId,
+      terminalId: session.terminalId,
+      sequence: eventStamp.sequence,
+      hasRunningSubprocess: session.hasRunningSubprocess,
+      label: terminalWireLabel(session),
+    });
+  });
+
+  const writeToSession = Effect.fnUntraced(function* (
+    session: TerminalSessionState,
+    input: TerminalWriteInput,
+  ) {
     const process = session.process;
     if (!process || session.status !== "running") {
       if (session.status === "exited") return;
       return yield* new TerminalNotRunningError({
         threadId: input.threadId,
-        terminalId,
+        terminalId: input.terminalId,
       });
     }
     session.inputCount += 1;
@@ -3338,12 +3401,51 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       catch: (cause) =>
         new TerminalWriteError({
           threadId: input.threadId,
-          terminalId,
+          terminalId: input.terminalId,
           terminalPid: process.pid,
           cause,
         }),
     });
   });
+
+  const write: TerminalManager["Service"]["write"] = Effect.fn("terminal.write")(
+    function* (input, from) {
+      const session = yield* requireSession(input.threadId, input.terminalId);
+      // Take control before the input lands so an agent write cannot slip in between.
+      const takesControl =
+        from === "user" && session.controller === "agent" && !isTerminalReplyOnly(input.data);
+      if (takesControl) session.controller = "user";
+      yield* writeToSession(session, input);
+      if (takesControl) yield* publishControllerChange(session);
+    },
+  );
+
+  const writeAsAgent: TerminalManager["Service"]["writeAsAgent"] = Effect.fn(
+    "terminal.writeAsAgent",
+  )(function* (input) {
+    const session = yield* requireSession(input.threadId, input.terminalId);
+    if (session.controller !== "agent") {
+      return yield* new TerminalControlledByUserError({
+        threadId: input.threadId,
+        terminalId: input.terminalId,
+      });
+    }
+    yield* writeToSession(session, input);
+  });
+
+  const setController: TerminalManager["Service"]["setController"] = Effect.fn(
+    "terminal.setController",
+  )(function* (input) {
+    const session = yield* requireSession(input.threadId, input.terminalId);
+    if (session.controller === input.controller) return;
+    session.controller = input.controller;
+    yield* publishControllerChange(session);
+  });
+
+  const listThread: TerminalManager["Service"]["listThread"] = (threadId) =>
+    readAllTerminalMetadata().pipe(
+      Effect.map((terminals) => terminals.filter((terminal) => terminal.threadId === threadId)),
+    );
 
   const resizeLocked = Effect.fn("terminal.resize")(function* (
     input: TerminalResizeInput,
@@ -3487,6 +3589,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     observeStream,
     resyncStream,
     write,
+    writeAsAgent,
+    setController,
+    listThread,
     resize,
     clear,
     close,
