@@ -29,6 +29,17 @@ export const applyWebBrandAssets = Effect.fn("applyWebBrandAssets")(function* (
   const path = yield* Path.Path;
   const repoRoot = yield* path.fromFileUrl(new URL("..", import.meta.url));
 
+  if (brand === "dulli") {
+    const indexPath = path.resolve(repoRoot, targetDirectory, "index.html");
+    if (yield* fs.exists(indexPath)) {
+      const html = yield* fs.readFileString(indexPath);
+      yield* fs.writeFileString(
+        indexPath,
+        html.replaceAll("T3 Code (Beta)", "T3 Dulli").replaceAll("T3 Code", "T3 Dulli"),
+      );
+    }
+  }
+
   yield* Effect.forEach(
     resolveWebIconOverrides(brand, path.resolve(repoRoot, targetDirectory)),
     (override) =>

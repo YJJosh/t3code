@@ -1,3 +1,4 @@
+import { APP_BASE_NAME, APP_WORDMARK_LABEL } from "../../branding";
 import type { ReactNode } from "react";
 
 import { T3Wordmark } from "../T3Wordmark";
@@ -23,9 +24,9 @@ export function StandalonePageHeader({
   return (
     <>
       <div className="flex items-baseline justify-between gap-3 text-muted-foreground">
-        <span className="flex items-baseline gap-1.5" role="img" aria-label="T3 Code">
+        <span className="flex items-baseline gap-1.5" role="img" aria-label={APP_BASE_NAME}>
           <T3Wordmark className="h-3 w-auto shrink-0 text-foreground" aria-hidden />
-          <span className="text-lg font-medium tracking-tight">Code</span>
+          <span className="text-lg font-medium tracking-tight">{APP_WORDMARK_LABEL}</span>
         </span>
         {context ? <span className="text-sm">{context}</span> : null}
       </div>

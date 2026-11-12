@@ -4,6 +4,13 @@ T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provid
 
 You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
 
+## T3 Dulli fork
+
+This fork is based on upstream v0.1.9. Build the fork desktop identity with `--brand dulli`.
+Fork database migrations go in `apps/server/src/persistence/Migrations/dulli/` and its separate
+ledger, never upstream's numbered sequence. See [fork development](docs/fork-development.md)
+for identity, builds, releases, and coexistence. T3 itself is the harness.
+
 ## What makes T3 Code special?
 
 We have over 500,000 users who love T3 Code. It's important we maintain the things they love as we continue to iterate on the product. Here's a brief list of the things we can never compromise on.
