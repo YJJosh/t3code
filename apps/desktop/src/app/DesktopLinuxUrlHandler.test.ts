@@ -578,10 +578,11 @@ it.layer(NodeServices.layer)("DesktopLinuxUrlHandler theme icons", (it) => {
       const run: ThemeIconRun = { root: fixture.root, commands: [] };
 
       yield* registerWithRealFileSystem(run);
-      assert.deepEqual([...(yield* fileSystem.readDirectory(fixture.appsDir))].sort(), [
-        "com.t3tools.T3Code.png",
-        "com.t3tools.t3code.png",
-      ]);
+      const installedNames = yield* fileSystem.readDirectory(fixture.appsDir);
+      assert.deepEqual(
+        [...new Set(installedNames.map((name) => name.toLowerCase()))],
+        ["com.t3tools.t3code.png"],
+      );
       for (const name of ["com.t3tools.t3code", "com.t3tools.T3Code"]) {
         const target = path.join(fixture.appsDir, `${name}.png`);
         assert.deepEqual([...(yield* fileSystem.readFile(target))], [...icon]);
@@ -606,8 +607,9 @@ it.layer(NodeServices.layer)("DesktopLinuxUrlHandler theme icons", (it) => {
       yield* fixture.seedCache;
       const lower = path.join(fixture.appsDir, "com.t3tools.t3code.png");
       const upper = path.join(fixture.appsDir, "com.t3tools.T3Code.png");
-      yield* fileSystem.writeFile(lower, new Uint8Array([3, 2, 1]));
       yield* fileSystem.writeFile(upper, new Uint8Array([1, 2, 3]));
+      yield* fileSystem.writeFile(lower, new Uint8Array([3, 2, 1]));
+      const distinctFiles = (yield* fileSystem.readFile(upper))[0] === 1;
       for (const target of [lower, upper]) {
         yield* fileSystem.utimes(target, fixture.pastSeconds, fixture.pastSeconds);
       }
@@ -621,8 +623,11 @@ it.layer(NodeServices.layer)("DesktopLinuxUrlHandler theme icons", (it) => {
       yield* registerWithRealFileSystem(run);
 
       assert.deepEqual([...(yield* fileSystem.readFile(lower))], [1, 2, 3]);
-      const upperInfo = yield* fileSystem.stat(upper);
-      assert.equal(Option.getOrThrow(upperInfo.mtime).getTime(), fixture.pastSeconds * 1000);
+      // Case-insensitive hosts alias upper to the stale lower file that must be replaced.
+      if (distinctFiles) {
+        const upperInfo = yield* fileSystem.stat(upper);
+        assert.equal(Option.getOrThrow(upperInfo.mtime).getTime(), fixture.pastSeconds * 1000);
+      }
       assert.deepEqual(
         run.commands.filter(({ command }) => command === "gtk-update-icon-cache"),
         [{ command: "gtk-update-icon-cache", args: ["-f", "-t", fixture.hicolorDir] }],

@@ -153,7 +153,7 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
           T3CODE_TEST_CALLS: path.join(root, "calls"),
           T3CODE_RELEASE_BASE_URL: release.baseUrl,
         };
-        const launcher = path.join(packageDir, "bin/t3.mjs");
+        const launcher = yield* fs.realPath(path.join(packageDir, "bin/t3.mjs"));
         const first = yield* run(process.execPath, [launcher, "serve", "a b"], {
           cwd: root,
           env,
