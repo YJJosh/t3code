@@ -16,29 +16,46 @@ it.effect(
       const root = yield* fs.makeTempDirectoryScoped();
       assert.deepEqual((yield* service.load(root)).catalog.profiles, {});
       yield* fs.makeDirectory(`${root}/prompts`, { recursive: true });
-      yield* fs.makeDirectory(`${root}/skills/review`, { recursive: true });
+      yield* fs.makeDirectory(`${root}/.agents/skills/review`, { recursive: true });
       yield* fs.writeFileString(
         `${root}/profiles.json`,
         JSON.stringify({
           default: "coder",
-          profiles: { coder: { prompts: ["first", "second"], skills: ["review"] } },
+          profiles: {
+            coder: {
+              prompts: ["first", "second"],
+              skills: ["review"],
+              providerSettings: { codex: "lean", pi: "lean" },
+            },
+          },
         }),
       );
       yield* fs.writeFileString(`${root}/prompts/first.md`, "First instruction");
       yield* fs.writeFileString(`${root}/prompts/second.md`, "Second instruction");
       yield* fs.writeFileString(
-        `${root}/skills/review/SKILL.md`,
+        `${root}/.agents/skills/review/SKILL.md`,
         "---\nname: review\ndescription: Review <code>\n---\nPrivate skill body",
       );
+      yield* fs.writeFileString(
+        `${root}/provider-settings.json`,
+        JSON.stringify({
+          codex: { lean: { features: { memory_tool: false } } },
+          pi: { lean: { skills: false } },
+        }),
+      );
       const loaded = yield* service.load(root);
+      assert.deepEqual(loaded.providerSettings.coder, [
+        { _tag: "codex", id: "lean", settings: { features: { memory_tool: false } } },
+        { _tag: "pi", id: "lean", settings: { skills: false } },
+      ]);
       assert.equal(loaded.catalog.default, "coder");
       assert.include(loaded.instructions.coder!, "First instruction\n\nSecond instruction");
       assert.include(loaded.instructions.coder!, "Review &lt;code&gt;");
-      assert.include(loaded.instructions.coder!, `${root}/skills/review/SKILL.md`);
+      assert.include(loaded.instructions.coder!, `${root}/.agents/skills/review/SKILL.md`);
       assert.notInclude(loaded.instructions.coder!, "Private skill body");
       yield* fs.writeFileString(`${root}/prompts/first.md`, "Updated instruction");
       assert.include((yield* service.load(root)).instructions.coder!, "Updated instruction");
-      yield* fs.makeDirectory(`${root}/skills/broken`, { recursive: true });
+      yield* fs.makeDirectory(`${root}/.agents/skills/broken`, { recursive: true });
       for (const { broken, warning, skillContent } of [
         { broken: { prompts: ["missing"], skills: [] }, warning: "missing.md" },
         { broken: { prompts: [], skills: ["missing"] }, warning: "missing/SKILL.md" },
@@ -59,9 +76,14 @@ it.effect(
         },
         { broken: { prompts: ["../escape"], skills: [] }, warning: "prompts" },
         { broken: { prompts: [], skills: [], effort: 42 }, warning: "effort" },
+        {
+          broken: { prompts: [], skills: [], providerSettings: { codex: "missing" } },
+          warning: "missing",
+        },
         { broken: null, warning: "profiles.json" },
       ]) {
-        if (skillContent) yield* fs.writeFileString(`${root}/skills/broken/SKILL.md`, skillContent);
+        if (skillContent)
+          yield* fs.writeFileString(`${root}/.agents/skills/broken/SKILL.md`, skillContent);
         yield* fs.writeFileString(
           `${root}/profiles.json`,
           JSON.stringify({

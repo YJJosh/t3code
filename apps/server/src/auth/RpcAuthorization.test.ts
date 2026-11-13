@@ -74,6 +74,19 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("separates profile reads, writes, and commands that start installed providers", () => {
+    for (const method of [WS_METHODS.profilesEditorRead, WS_METHODS.profilesSyncRead])
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    for (const method of [
+      WS_METHODS.profilesEditorWrite,
+      WS_METHODS.profilesSyncWrite,
+      WS_METHODS.profilesSyncMark,
+    ])
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthSettingsWriteScope);
+    for (const method of [WS_METHODS.profilesSkills, WS_METHODS.profilesDetectOptions])
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthProvidersManageScope);
+  });
+
   it("rejects unknown RPC method names", () => {
     for (const method of ["server.notRegistered", "toString", "constructor"]) {
       expect(() => requiredScopeForRpcMethod(method)).toThrow(
@@ -475,5 +488,63 @@ it.effect("denies manual cleanup before the handler without settings permission"
       requiredPermission: AuthSettingsWriteScope,
     });
     expect(handled).toBe(false);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("rejects profile writes and provider commands before handlers without their grants", () =>
+  Effect.gen(function* () {
+    const tested = [
+      WS_METHODS.profilesEditorWrite,
+      WS_METHODS.profilesSyncWrite,
+      WS_METHODS.profilesSyncMark,
+      WS_METHODS.profilesSkills,
+      WS_METHODS.profilesDetectOptions,
+    ] as const;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+          !(tested as readonly string[]).includes(tag),
+      ),
+    );
+    let handled = 0;
+    const handler = () =>
+      Effect.sync(() => {
+        handled++;
+      }).pipe(Effect.andThen(Effect.never));
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          group.toLayer({
+            [WS_METHODS.profilesEditorWrite]: handler,
+            [WS_METHODS.profilesSyncWrite]: handler,
+            [WS_METHODS.profilesSyncMark]: handler,
+            [WS_METHODS.profilesSkills]: handler,
+            [WS_METHODS.profilesDetectOptions]: handler,
+          }),
+          RpcAuthorization.layer([AuthOrchestrationReadScope]),
+        ),
+      ),
+    );
+    expect(
+      (yield* client[WS_METHODS.profilesEditorWrite]({ expectedRevision: 0 }).pipe(Effect.flip))
+        ._tag,
+    ).toBe("EnvironmentAuthorizationError");
+    expect(
+      (yield* client[WS_METHODS.profilesSyncWrite]({
+        expectedRevision: 0,
+        source: { revision: 0, hash: "hash" },
+        files: [],
+      }).pipe(Effect.flip))._tag,
+    ).toBe("EnvironmentAuthorizationError");
+    expect(
+      (yield* client[WS_METHODS.profilesSyncMark]({ hash: "hash" }).pipe(Effect.flip))._tag,
+    ).toBe("EnvironmentAuthorizationError");
+    expect(
+      (yield* client[WS_METHODS.profilesSkills]({ _tag: "update" }).pipe(Effect.flip))._tag,
+    ).toBe("EnvironmentAuthorizationError");
+    expect((yield* client[WS_METHODS.profilesDetectOptions]({}).pipe(Effect.flip))._tag).toBe(
+      "EnvironmentAuthorizationError",
+    );
+    expect(handled).toBe(0);
   }).pipe(Effect.scoped),
 );

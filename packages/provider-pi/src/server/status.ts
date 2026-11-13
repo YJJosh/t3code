@@ -555,3 +555,34 @@ export const enrichPiSnapshot = (input: {
     Effect.asVoid,
   );
 };
+
+export const detectPiProfileOptions = Effect.fn("PiProviderStatus.detectProfileOptions")(
+  function* (settings: PiSettings, environment: NodeJS.ProcessEnv, cwd: string) {
+    const args = resolvePiLaunchArgs(settings.launchArgs);
+    if (!args.ok) return yield* new PiRpcError({ operation: "launch" });
+    const connection = yield* makePiDiscoveryConnection(
+      settings,
+      providerProbeEnvironment(environment),
+      args.args,
+      cwd,
+    );
+    const data = yield* connection.request({ type: "get_commands" });
+    const commands = recordField(data, "commands");
+    const skills: Array<{ name: string; description?: string }> = [];
+    const promptTemplates: Array<{ name: string; description?: string }> = [];
+    if (Array.isArray(commands))
+      for (const command of commands) {
+        const name = recordString(command, "name");
+        const source = recordString(command, "source");
+        if (!name || (source !== "skill" && source !== "prompt")) continue;
+        const description = recordString(command, "description");
+        (source === "skill" ? skills : promptTemplates).push({
+          name: source === "skill" ? name.replace(/^skill:/, "") : name,
+          ...(description === undefined ? {} : { description }),
+        });
+      }
+    return { skills, promptTemplates };
+  },
+  Effect.scoped,
+  Effect.timeout("25 seconds"),
+);

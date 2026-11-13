@@ -4662,9 +4662,25 @@ it.effect("loads profiles only when opening a session and rereads them after clo
     yield* fs.makeDirectory(`${root}/profiles/prompts`, { recursive: true });
     yield* fs.writeFileString(
       `${root}/profiles/profiles.json`,
-      JSON.stringify({ profiles: { coder: { prompts: ["coding"], skills: [] } } }),
+      JSON.stringify({
+        profiles: {
+          coder: {
+            prompts: ["coding"],
+            skills: [],
+            providerSettings: { codex: "lean", pi: "lean" },
+          },
+        },
+      }),
     );
     yield* fs.writeFileString(`${root}/profiles/prompts/coding.md`, "First profile instruction");
+    yield* fs.writeFileString(
+      `${root}/profiles/provider-settings.json`,
+      JSON.stringify({
+        codex: { lean: { features: { memory_tool: false } } },
+        pi: { lean: { skills: false } },
+      }),
+    );
+    const resolved: unknown[] = [];
     const state = yield* Ref.make(emptyState);
     const opened: Array<string | undefined> = [];
     yield* Effect.gen(function* () {
@@ -4689,6 +4705,9 @@ it.effect("loads profiles only when opening a session and rereads them after clo
       };
       yield* manager.open(input);
       assert.deepEqual(opened, ["First profile instruction"]);
+      assert.deepEqual(resolved, [
+        { _tag: "codex", id: "lean", settings: { features: { memory_tool: false } } },
+      ]);
       yield* fs.writeFileString(
         `${root}/profiles/prompts/coding.md`,
         "Updated profile instruction",
@@ -4701,11 +4720,13 @@ it.effect("loads profiles only when opening a session and rereads them after clo
       yield* manager.close(providerSessionId);
       yield* manager.open({ ...input, modelSelection: { ...modelSelection, profileId: null } });
       assert.isUndefined(opened.at(-1));
+      assert.isUndefined(resolved.at(-1));
       yield* manager.close(providerSessionId);
       const missing = yield* manager
         .open({ ...input, modelSelection: { ...modelSelection, profileId: "constructor" } })
-        .pipe(Effect.exit);
-      assert.isTrue(Exit.isFailure(missing));
+        .pipe(Effect.flip);
+      assert.equal(missing._tag, "ProviderSessionOpenError");
+      assert.include(missing.message, "no longer exists");
       yield* fs.remove(`${root}/profiles/prompts/coding.md`);
       const result = yield* manager.open(input).pipe(Effect.flip);
       assert.include(result.message, "coding.md");
@@ -4719,6 +4740,7 @@ it.effect("loads profiles only when opening a session and rereads them after clo
           beforeOpen: (input) =>
             Effect.sync(() => {
               opened.push(input.profileInstructions);
+              resolved.push(input.providerSettings);
             }),
         }).pipe(Layer.provide(ServerConfig.layerTest(root, root))),
       ),

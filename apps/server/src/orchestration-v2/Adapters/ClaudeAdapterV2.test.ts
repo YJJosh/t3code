@@ -595,6 +595,14 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
       }),
     );
     assert.notEqual(rotatedKey, initialKey);
+    assert.notEqual(
+      ClaudeAdapterV2.claudeEffectiveQueryPolicyKey(
+        queryPolicy,
+        ClaudeAdapterV2.claudeMcpQueryOverrides({ mcpSession, readOnlySandbox: false }),
+        { _tag: "claudeAgent", id: "lean", settings: { autoMemory: false } },
+      ),
+      initialKey,
+    );
   });
 
   it("matches the read-only allowlist to the orchestrator toolkit annotations", () => {
@@ -690,12 +698,30 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
       cwd: null,
       profileInstructions: "Profile instruction",
       environment: { CLAUDE_CONFIG_DIR: "/home/user/claude-lean" },
-      sdkSettings: { disableBundledSkills: true },
+      sdkSettings: { disableBundledSkills: true, autoMemoryEnabled: true },
+      providerSettings: {
+        _tag: "claudeAgent",
+        id: "lean",
+        settings: {
+          bundledSkills: false,
+          autoMemory: false,
+          chrome: true,
+          blockedTools: ["Read", "ExitPlanMode"],
+          settings: { showThinkingSummaries: false },
+        },
+      },
+      disallowedTools: ["Write"],
     });
     assert.deepInclude(options.systemPrompt, { type: "preset", preset: "claude_code" });
     assert.include((options.systemPrompt as { append: string }).append, "Profile instruction");
     assert.equal(options.env?.CLAUDE_CONFIG_DIR, "/home/user/claude-lean");
-    assert.deepInclude(options.settings, { disableBundledSkills: true });
+    assert.deepInclude(options.settings, {
+      disableBundledSkills: true,
+      autoMemoryEnabled: false,
+      showThinkingSummaries: true,
+    });
+    assert.deepEqual(options.disallowedTools, ["Write", "Read"]);
+    assert.isNull(options.extraArgs?.chrome);
   });
 
   it("logs --settings key names without their values", () => {

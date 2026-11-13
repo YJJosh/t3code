@@ -1,3 +1,4 @@
+import { codexProfileConfig } from "../../profiles/providerSettings.ts";
 import { pipe } from "effect/Function";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
@@ -1421,6 +1422,7 @@ const CODEX_T3_DIRECT_MCP_SERVER = "t3-code-direct";
 const CODEX_DIRECT_ONLY_T3_TOOL = "t3_thread_wait";
 
 function codexThreadRuntimeParams(input: {
+  readonly profileConfig?: Readonly<Record<string, Schema.Json>>;
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly modelSelection?: { readonly model: string };
@@ -1443,6 +1445,7 @@ function codexThreadRuntimeParams(input: {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
+      ...input.profileConfig,
       ...CODEX_THREAD_CONFIG,
       // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
       ...(input.threadId === null
@@ -1757,6 +1760,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     }),
     openSession: Effect.fn("CodexAdapterV2.openSession")(
       function* (input) {
+        const profile = codexProfileConfig(input.providerSettings);
+        if (profile.refused.length > 0 || profile.unsupported)
+          yield* Effect.logWarning("Profile contains unsupported or protected Codex settings", {
+            refusedKeyCount: profile.refused.length,
+            unsupportedSkillOrPluginOverrides: profile.unsupported,
+          });
+
         const scope = yield* Scope.Scope;
         const resolvedRuntime =
           adapterOptions.resolveRuntime === undefined
@@ -7328,6 +7338,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 client.request(
                   "thread/start",
                   codexThreadRuntimeParams({
+                    profileConfig: profile.config,
                     threadId: threadInput.threadId,
                     mcpSession,
                     modelSelection: threadInput.modelSelection,
@@ -7361,6 +7372,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const resume = resumeNativeThread(nativeThreadId, {
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
+                  profileConfig: profile.config,
                   threadId: appThreadId,
                   mcpSession: yield* readMcpSession(appThreadId),
                   ...(threadInput.modelSelection === undefined
@@ -8135,6 +8147,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* resumeNativeThread(threadId, {
                   excludeTurns: true,
                   ...codexThreadRuntimeParams({
+                    profileConfig: profile.config,
                     threadId: threadInput.providerThread.appThreadId,
                     mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
                     modelSelection: input.modelSelection,
@@ -8184,6 +8197,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 threadId,
                 ...(boundary.lastTurnId === undefined ? {} : { lastTurnId: boundary.lastTurnId }),
                 ...codexThreadRuntimeParams({
+                  profileConfig: profile.config,
                   threadId: threadInput.targetThreadId,
                   mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
                   ...(threadInput.modelSelection === undefined
