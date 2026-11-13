@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   projects: vi.fn(),
   status: vi.fn(),
   refs: vi.fn(),
+  profileConfig: vi.fn(),
   readFile: vi.fn(),
   session: vi.fn(),
   presentation: vi.fn(),
@@ -48,6 +49,10 @@ vi.mock("../../state/entities", () => ({
 }));
 vi.mock("../../state/vcs", () => ({
   vcsEnvironment: { status: mocks.status, listRefs: mocks.refs },
+}));
+// REVIEW: Keep the new profile query inside the test registry, not Expo's native connection runtime.
+vi.mock("../../state/server", () => ({
+  serverEnvironment: { profileConfig: mocks.profileConfig },
 }));
 vi.mock("../../state/projects", () => ({
   projectEnvironment: { readFile: mocks.readFile, openScratch: {} },
@@ -129,6 +134,9 @@ function setup() {
   vi.clearAllMocks();
   const registry = AtomRegistry.make();
   mocks.registry.mockReturnValue(registry);
+  mocks.profileConfig.mockReturnValue(
+    Atom.make(AsyncResult.success({ profiles: { folder: "/profiles", profiles: {} } })),
+  );
   const projects = [project("one", "a"), project("one", "b"), project("two", "b")];
   mocks.projects.mockReturnValue(projects);
   mocks.presentation.mockReturnValue({
