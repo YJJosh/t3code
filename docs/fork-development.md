@@ -39,7 +39,7 @@ vp run dist:dulli:desktop --platform linux --target AppImage --arch x64 --build-
 vp run dist:dulli:desktop --platform win --target nsis --arch x64 --build-version 0.1.9-dulli.1
 ```
 
-Without `--signed`, macOS builds do not need Apple signing secrets. Set `CSC_IDENTITY_AUTO_DISCOVERY=false` for a local unsigned/ad-hoc build. A persistent community certificate can instead be selected with `T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY`; it signs without Apple's restricted passkey entitlements or notarization. Do not change an installed release's signing identity casually: macOS validates the next update against it.
+Without `--signed`, macOS builds do not need Apple signing secrets. For a local ad-hoc build, set `T3CODE_MACOS_COMMUNITY_SIGNING_IDENTITY=-`; `CSC_IDENTITY_AUTO_DISCOVERY=false` leaves only Electron's linker signature, which fails `codesign --verify`. The same variable selects a persistent community certificate; it signs without Apple's restricted passkey entitlements or notarization. Do not change an installed release's signing identity casually: macOS validates the next update against it.
 
 Build the CLI's web client with `VITE_DESKTOP_BUILD_BRAND=dulli`, then run `node apps/server/scripts/cli.ts build --brand dulli`. Build native executables with `node apps/server/scripts/cli.ts build-exe`; assemble their runtime dependencies with `scripts/build-cli-archive.ts`. The upstream archive builder preserves executable permissions and stages only runtime externals. Use `node scripts/build-npm-launcher.ts --version 0.1.9-dulli.1 --output-dir npm-packages` to generate `yjosh-t3.tgz`. This launcher downloads and checksum-verifies the matching GitHub archive; it is not the old JavaScript-only npm bundle.
 
