@@ -75,6 +75,13 @@ export function ProviderSettingsEditor(props: ProviderSettingsEditorProps) {
   const renameError =
     renameTo === "" || renameTo === current ? null : profileNameError(renameTo, names);
 
+  const selectEntry = (name: string | null) => {
+    // REVIEW: Switching entries discards JSON text, so its invalid flag must go with it.
+    if (current !== null) props.onJsonValidity(`${driver}:${current}`, true);
+    setSelected(name);
+    setRenameTo("");
+  };
+
   const setEntries = (next: Readonly<Record<string, Entry>>) =>
     props.onChange(withKey(props.value, driver, Object.keys(next).length === 0 ? undefined : next));
   const setEntry = (name: string, entry: Entry) => setEntries({ ...entries, [name]: entry });
@@ -88,9 +95,8 @@ export function ProviderSettingsEditor(props: ProviderSettingsEditorProps) {
           onValueChange={(next) => {
             const value = next[0];
             if (value === "claudeAgent" || value === "codex" || value === "pi") {
+              selectEntry(null);
               setDriver(value);
-              setSelected(null);
-              setRenameTo("");
             }
           }}
         >
@@ -133,8 +139,7 @@ export function ProviderSettingsEditor(props: ProviderSettingsEditorProps) {
           <Select
             value={current ?? ""}
             onValueChange={(value) => {
-              setSelected(value);
-              setRenameTo("");
+              selectEntry(value);
             }}
           >
             <SelectTrigger size="sm" aria-label={`${PROFILE_DRIVER_LABELS[driver]} settings`}>
@@ -163,7 +168,7 @@ export function ProviderSettingsEditor(props: ProviderSettingsEditorProps) {
           disabled={props.disabled || newName === "" || newNameError !== null}
           onClick={() => {
             setEntry(newName, {});
-            setSelected(newName);
+            selectEntry(newName);
             setNewName("");
           }}
         >
@@ -177,7 +182,7 @@ export function ProviderSettingsEditor(props: ProviderSettingsEditorProps) {
             onClick={() => {
               const copy = uniqueName(`${current}-copy`, names);
               setEntry(copy, entries[current] ?? {});
-              setSelected(copy);
+              selectEntry(copy);
             }}
           >
             Duplicate
@@ -209,8 +214,7 @@ export function ProviderSettingsEditor(props: ProviderSettingsEditorProps) {
               }
               onClick={() => {
                 props.onRename(driver, current, renameTo);
-                setSelected(renameTo);
-                setRenameTo("");
+                selectEntry(renameTo);
               }}
             >
               Rename

@@ -209,6 +209,12 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
     );
     if (saved !== null) {
       profiles.rebase(nextProfiles, (value) => renameProviderSettingsRefs(value, driver, from, to));
+      // REVIEW: A removed entry no longer has a JSON editor to repair its validation error.
+      setInvalidJson((current) => {
+        const next = new Set(current);
+        next.delete(`${driver}:${from}`);
+        return next;
+      });
     }
   };
 
