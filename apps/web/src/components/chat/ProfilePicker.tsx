@@ -39,6 +39,7 @@ export function ProfilePicker(props: {
           disabled={props.disabled || !supported}
           onValueChange={(value) => {
             const id = value || null;
+            if (id && catalog.profiles[id]?.warning) return;
             const picked = selectProfile(
               props.selection,
               id,
@@ -73,9 +74,10 @@ export function ProfilePicker(props: {
             </p>
             <SelectItem value="">No profile</SelectItem>
             {Object.entries(catalog.profiles).map(([id, profile]) => (
-              <SelectItem key={id} value={id}>
+              <SelectItem key={id} value={id} disabled={Boolean(profile.warning)}>
                 {id}
                 {profile.description ? `: ${profile.description}` : ""}
+                {profile.warning ? `: ${profile.warning}` : ""}
               </SelectItem>
             ))}
           </SelectPopup>

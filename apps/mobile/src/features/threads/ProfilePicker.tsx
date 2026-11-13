@@ -46,13 +46,15 @@ export function ProfilePicker(props: {
         ...Object.entries(catalog.profiles).map(([id, profile]) => ({
           id,
           title: id,
-          subtitle: profile.description,
+          subtitle: profile.warning ?? profile.description,
+          attributes: { disabled: Boolean(profile.warning) },
           state: props.selection.profileId === id ? ("on" as const) : ("off" as const),
         })),
       ]}
       onPressAction={({ nativeEvent }) => {
         if (props.disabled) return;
         const id = nativeEvent.event || null;
+        if (id && catalog.profiles[id]?.warning) return;
         const picked = selectProfile(
           props.selection,
           id,

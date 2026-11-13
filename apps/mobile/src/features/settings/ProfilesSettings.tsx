@@ -49,7 +49,12 @@ export function ProfilesSettings({ environment }: { environment: SettingsTarget 
           actions={[
             { id: "__folder__", title: "Folder default" },
             { id: "", title: "No profile" },
-            ...Object.keys(catalog?.profiles ?? {}).map((id) => ({ id, title: id })),
+            ...Object.entries(catalog?.profiles ?? {}).map(([id, profile]) => ({
+              id,
+              title: id,
+              subtitle: profile.warning,
+              attributes: { disabled: Boolean(profile.warning) },
+            })),
           ]}
           onPressAction={({ nativeEvent }) => {
             if (canWrite)
@@ -66,6 +71,13 @@ export function ProfilesSettings({ environment }: { environment: SettingsTarget 
           />
         </Menu>
         <Button tone="text" label="Refresh profiles" onPress={query.refresh} />
+        {Object.entries(catalog?.profiles ?? {}).map(([id, profile]) =>
+          profile.warning ? (
+            <Text key={id} className="text-sm text-foreground-muted">
+              {id}: {profile.warning}
+            </Text>
+          ) : null,
+        )}
         {catalog?.error || query.error ? (
           <Text className="text-sm text-foreground-muted">{catalog?.error ?? query.error}</Text>
         ) : null}

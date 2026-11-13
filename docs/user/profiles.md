@@ -2,7 +2,7 @@
 
 Profiles combine reusable prompt parts and skills with optional provider, model, and effort presets. Keep the folder in a Git repository and sync a checkout onto each environment. T3 reads that environment's checkout; your browser or phone never needs filesystem access to it. T3 does not run Git sync for you.
 
-In **Settings → General → Profiles** on web/desktop, or **Settings → Providers** on mobile, set the environment's profiles folder (blank uses `<T3 home>/profiles`), then **Refresh profiles**. A missing `profiles.json` disables the feature. Invalid files are reported here. You can choose a default for new threads, use the folder's default, or choose **No profile**.
+In **Settings → General → Profiles** on web/desktop, or **Settings → Providers** on mobile, set the environment's profiles folder (blank uses `<T3 home>/profiles`), then **Refresh profiles**. A missing `profiles.json` disables the feature. A broken profile stays listed with a warning and cannot be chosen until repaired; other profiles keep working. Invalid `profiles.json` is reported as a catalog error. You can choose a default for new threads, use the folder's default, or choose **No profile**.
 
 ```text
 profiles/
@@ -49,7 +49,7 @@ Choose a profile beside the composer on web, desktop, or mobile. Its provider/mo
 
 Prompt parts are appended in the listed order. Selected skills contribute their name, description, and absolute `SKILL.md` path; the agent reads a skill when needed. Only select content you trust. Paths point to the environment running the agent, not your browser's machine.
 
-Profiles are read again at each session start. Changing a profile or syncing its files does not rewrite an already-running session: stop and restart the thread to apply it. Claude, Codex, Muse, Pi, and generic ACP providers (including Replay) support profiles. Other providers gray out the profile picker and ignore the profile. Your selection is kept for when you switch back to a supported provider. Claude and Pi use their system-prompt append hooks; Codex uses developer context; Muse and ACP use their runtime-instruction channel.
+Profiles are read again at each session start. If a selected profile has become broken, session start reports its warning rather than omitting its instructions. Changing a profile or syncing its files does not rewrite an already-running session: stop and restart the thread to apply it. Claude, Codex, Muse, Pi, and generic ACP providers (including Replay) support profiles. Other providers gray out the profile picker and ignore the profile. Your selection is kept for when you switch back to a supported provider. Claude and Pi use their system-prompt append hooks; Codex uses developer context; Muse and ACP use their runtime-instruction channel.
 
 ## Lean and full Claude
 

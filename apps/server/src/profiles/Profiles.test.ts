@@ -38,19 +38,53 @@ it.effect(
       assert.notInclude(loaded.instructions.coder!, "Private skill body");
       yield* fs.writeFileString(`${root}/prompts/first.md`, "Updated instruction");
       assert.include((yield* service.load(root)).instructions.coder!, "Updated instruction");
-      yield* fs.writeFileString(`${root}/skills/review/SKILL.md`, "No frontmatter");
-      assert.include((yield* service.load(root)).catalog.error!, "SKILL.md");
+      yield* fs.makeDirectory(`${root}/skills/broken`, { recursive: true });
+      for (const { broken, warning, skillContent } of [
+        { broken: { prompts: ["missing"], skills: [] }, warning: "missing.md" },
+        { broken: { prompts: [], skills: ["missing"] }, warning: "missing/SKILL.md" },
+        {
+          broken: { prompts: [], skills: ["broken"] },
+          warning: "broken/SKILL.md",
+          skillContent: "No frontmatter",
+        },
+        {
+          broken: { prompts: [], skills: ["broken"] },
+          warning: "broken/SKILL.md",
+          skillContent: "---\nname: [\n---",
+        },
+        {
+          broken: { prompts: [], skills: ["broken"] },
+          warning: "description",
+          skillContent: "---\nname: broken\ndescription: 42\n---",
+        },
+        { broken: { prompts: ["../escape"], skills: [] }, warning: "prompts" },
+        { broken: { prompts: [], skills: [], effort: 42 }, warning: "effort" },
+        { broken: null, warning: "profiles.json" },
+      ]) {
+        if (skillContent) yield* fs.writeFileString(`${root}/skills/broken/SKILL.md`, skillContent);
+        yield* fs.writeFileString(
+          `${root}/profiles.json`,
+          JSON.stringify({
+            profiles: { coder: { prompts: ["first"], skills: [] }, broken },
+          }),
+        );
+        const mixed = yield* service.load(root);
+        assert.isUndefined(mixed.catalog.error);
+        assert.deepEqual(Object.keys(mixed.catalog.profiles), ["coder", "broken"]);
+        assert.equal(mixed.instructions.coder, "Updated instruction");
+        assert.isUndefined(mixed.instructions.broken);
+        assert.include(mixed.catalog.profiles.broken!.warning!, warning);
+      }
       yield* fs.writeFileString(
         `${root}/profiles.json`,
-        '{"profiles":{"coder":{"prompts":["../escape"],"skills":[]}}}',
+        '{"profiles":{"broken":{"prompts":["first"],"skills":[]}}}',
       );
-      assert.include((yield* service.load(root)).catalog.error!, "decode");
+      const repaired = yield* service.load(root);
+      assert.isUndefined(repaired.catalog.profiles.broken!.warning);
+      assert.equal(repaired.instructions.broken, "Updated instruction");
+      yield* fs.writeFileString(`${root}/profiles.json`, '{"profiles":');
+      assert.include((yield* service.load(root)).catalog.error!, "profiles.json");
       yield* fs.writeFileString(`${root}/profiles.json`, '{"default":"missing","profiles":{}}');
       assert.include((yield* service.load(root)).catalog.error!, "Default profile");
-      yield* fs.writeFileString(
-        `${root}/profiles.json`,
-        '{"profiles":{"coder":{"prompts":["missing"],"skills":[]}}}',
-      );
-      assert.include((yield* service.load(root)).catalog.error!, "missing.md");
     }).pipe(Effect.provide(layer), Effect.scoped),
 );

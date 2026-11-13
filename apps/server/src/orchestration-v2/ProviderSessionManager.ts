@@ -92,11 +92,15 @@ export class ProviderSessionOpenError extends Schema.TaggedError<ProviderSession
   {
     instanceId: ProviderInstanceId,
     providerSessionId: ProviderSessionId,
+    profileWarning: Schema.optionalKey(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return `Failed to open provider instance ${this.instanceId} session ${this.providerSessionId}.`;
+    return (
+      this.profileWarning ??
+      `Failed to open provider instance ${this.instanceId} session ${this.providerSessionId}.`
+    );
   }
 }
 
@@ -2484,12 +2488,16 @@ export const layerWithOptions = (
                 profileInstructions = Object.hasOwn(loaded.instructions, profileId)
                   ? loaded.instructions[profileId]
                   : undefined;
-                if (loaded.catalog.error || profileInstructions === undefined)
+                const warning = Object.hasOwn(loaded.catalog.profiles, profileId)
+                  ? loaded.catalog.profiles[profileId]?.warning
+                  : undefined;
+                if (loaded.catalog.error || warning || profileInstructions === undefined)
                   return yield* new ProviderSessionOpenError({
                     instanceId: input.modelSelection.instanceId,
                     providerSessionId: input.providerSessionId,
-                    cause:
+                    profileWarning:
                       loaded.catalog.error ??
+                      warning ??
                       `Profile ${profileId} no longer exists. Select another profile or No profile.`,
                   });
               }

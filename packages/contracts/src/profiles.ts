@@ -26,7 +26,13 @@ export type ProfilesFile = typeof ProfilesFile.Type;
 export const ProfileCatalog = Schema.Struct({
   folder: Schema.String,
   default: Schema.optionalKey(ProfileId),
-  profiles: Schema.Record(ProfileId, Profile),
+  profiles: Schema.Record(
+    ProfileId,
+    Schema.Struct({
+      ...Profile.fields,
+      warning: Schema.optionalKey(Schema.String),
+    }),
+  ),
   error: Schema.optionalKey(Schema.String),
 });
 export type ProfileCatalog = typeof ProfileCatalog.Type;

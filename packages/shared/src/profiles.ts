@@ -1,4 +1,4 @@
-import type { ModelSelection, Profile, ServerProvider } from "@t3tools/contracts";
+import type { ModelSelection, ProfileCatalog, ServerProvider } from "@t3tools/contracts";
 
 export function supportsProfiles(driver: string): boolean {
   return ["claudeAgent", "codex", "muse", "pi", "acpRegistry"].includes(driver);
@@ -7,11 +7,11 @@ export function supportsProfiles(driver: string): boolean {
 export function selectProfile(
   current: ModelSelection,
   id: string | null,
-  profile: Profile | undefined,
+  profile: ProfileCatalog["profiles"][string] | undefined,
   providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver" | "models">>,
 ): { selection: ModelSelection; notice?: string } {
   if (id === null) return { selection: { ...current, profileId: null } };
-  if (profile === undefined) return { selection: current };
+  if (profile === undefined || profile.warning) return { selection: current };
   const named = profile.provider;
   const exact = providers.find((provider) => provider.instanceId === named);
   // Portable instance ids use the driver's id as a prefix, e.g. claudeAgent-lean.
