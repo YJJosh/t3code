@@ -48,6 +48,7 @@ Build the CLI's web client with `VITE_DESKTOP_BUILD_BRAND=dulli`, then run `node
 Dispatch **T3 Dulli Release** (`.github/workflows/fork-desktop-release.yml`) with an explicit `0.<minor>.<patch>-dulli.<build>` version. No scheduled or tag-triggered fork publication occurs. The workflow:
 
 - validates the version and Android versionCode bounds, and generates notes since the previous Dulli tag rather than an upstream tag;
+- runs typecheck and release integration tests, including the server GitVcsDriver and packaged Workler suites, before any artifact build or publication;
 - builds desktop installers, a signed Android APK, and native CLI archives on runners of each supported CLI architecture;
 - publishes a GitHub **prerelease** with updater manifests and `SHA256SUMS`, then publishes the `@yjosh/t3` npm launcher with the `latest` npm tag using OIDC provenance.
 

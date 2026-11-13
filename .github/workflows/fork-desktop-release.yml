@@ -95,6 +95,9 @@ jobs:
           )"
           echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
 
+      - name: Typecheck
+        run: vp run typecheck
+
       - name: Test release integrations
         run: |
           vp test run \
@@ -107,9 +110,24 @@ jobs:
             apps/desktop/src/app/DesktopUserData.test.ts \
             apps/desktop/src/electron/ElectronProtocol.test.ts \
             apps/desktop/src/updates/DesktopUpdates.test.ts \
+            packages/contracts/src/settings.test.ts \
+            packages/contracts/src/provider.test.ts \
+            packages/client-runtime/src/state/subagentRuntime.test.ts \
             apps/web/src/branding.test.ts \
+            apps/web/src/components/settings/ProviderSettingsForm.test.ts \
+            apps/mobile/plugins/withAndroidAutolinkingExclude.test.ts \
             apps/mobile/plugins/withAndroidReleaseSigning.test.ts \
-            apps/mobile/scripts/dulli-fork-version.test.ts
+            apps/mobile/scripts/dulli-fork-version.test.ts \
+            apps/mobile/src/lib/modelOptions.test.ts
+
+      - name: Test release server integrations
+        working-directory: apps/server
+        run: |
+          vp test run \
+            src/vcs/GitVcsDriver.test.ts \
+            src/vcs/GitVcsDriverCore.test.ts \
+            src/vcs/WorklerWorkspaceService.test.ts \
+            src/vcs/WorklerWorkspaceService.bundle.test.ts
 
   build_bundle:
     name: Build branded JS bundle
