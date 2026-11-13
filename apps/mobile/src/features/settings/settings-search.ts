@@ -86,6 +86,15 @@ const SETTINGS_SEARCH_TERMS = {
   ],
   SettingsFollowUp: ["follow-ups", "queue", "steer", "while the agent is running"],
   SettingsArchive: ["archive", "archived", "restore", "unarchive"],
+  SettingsProfiles: [
+    "profiles folder",
+    "sync now",
+    "default profile",
+    "provider settings",
+    "prompt text",
+    "skills",
+    "install dependencies",
+  ],
   SettingsProviderAccounts: [
     "provider accounts",
     "codex",

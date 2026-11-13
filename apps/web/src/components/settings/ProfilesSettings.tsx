@@ -60,7 +60,7 @@ import {
   uniqueName,
   viewDraft,
   withKey,
-} from "./ProfilesSettings.logic";
+} from "@t3tools/client-runtime/profiles-editor";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";

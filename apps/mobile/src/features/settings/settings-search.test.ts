@@ -24,6 +24,7 @@ const SECTIONS = [
     rows: [
       { id: "SettingsProviderAccounts", label: "Provider accounts" },
       { id: "SettingsEnvironmentSourceControl", label: "Source control" },
+      { id: "SettingsProfiles", label: "Profiles" },
     ],
   },
 ];
@@ -52,12 +53,15 @@ describe("filterSettingsSections", () => {
     { query: "agent credits", expected: [["Server settings", ["Source control"]]] },
     {
       query: "server settings",
-      expected: [["Server settings", ["Provider accounts", "Source control"]]],
+      expected: [["Server settings", ["Provider accounts", "Source control", "Profiles"]]],
     },
     {
       query: "accounts",
       expected: [["Server settings", ["Provider accounts"]]],
     },
+    { query: "skills", expected: [["Server settings", ["Profiles"]]] },
+    { query: "sync now", expected: [["Server settings", ["Profiles"]]] },
+    { query: "prompt text", expected: [["Server settings", ["Profiles"]]] },
     { query: "usage", expected: [[null, ["Usage"]]] },
     { query: "zzzz", expected: [] },
   ])("$query", ({ query, expected }) => {

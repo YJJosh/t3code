@@ -17,7 +17,7 @@ import {
   viewDraft,
   withFeature,
   withKey,
-} from "./ProfilesSettings.logic";
+} from "./profilesEditor.ts";
 
 const file: ProfilesFile = {
   default: "work",
