@@ -1,3 +1,4 @@
+import { useNavigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { useAtomValue } from "@effect/atom-react";
 import { type EnvironmentId, type ModelSelection } from "@t3tools/contracts";
@@ -9,6 +10,9 @@ import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { useApplyThreadModelPick } from "./useApplyThreadModelPick";
 
+/** A menu entry, not a profile: profile names cannot start with "_". */
+const EDIT_PROFILES = "__edit_profiles__";
+
 export function ProfilePicker(props: {
   environmentId: EnvironmentId;
   target: ComposerThreadTarget;
@@ -17,6 +21,7 @@ export function ProfilePicker(props: {
 }) {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const apply = useApplyThreadModelPick();
+  const navigate = useNavigate();
   const fresh = useAtomValue(
     serverEnvironment.profileConfig({ environmentId: props.environmentId, input: {} }),
   );
@@ -38,6 +43,10 @@ export function ProfilePicker(props: {
           value={props.selection.profileId ?? ""}
           disabled={props.disabled || !supported}
           onValueChange={(value) => {
+            if (value === EDIT_PROFILES) {
+              void navigate({ to: "/settings/profiles", search: { machine: props.environmentId } });
+              return;
+            }
             const id = value || null;
             if (id && catalog.profiles[id]?.warning) return;
             const picked = selectProfile(
@@ -80,6 +89,7 @@ export function ProfilePicker(props: {
                 {profile.warning ? `: ${profile.warning}` : ""}
               </SelectItem>
             ))}
+            <SelectItem value={EDIT_PROFILES}>Edit profiles…</SelectItem>
           </SelectPopup>
         </Select>
       </TooltipTrigger>

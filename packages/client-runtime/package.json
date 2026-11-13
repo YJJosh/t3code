@@ -239,6 +239,14 @@
       "types": "./src/state/peerLinks.ts",
       "default": "./src/state/peerLinks.ts"
     },
+    "./state/profiles": {
+      "types": "./src/state/profiles.ts",
+      "default": "./src/state/profiles.ts"
+    },
+    "./state/profiles-sync": {
+      "types": "./src/state/profilesSync.ts",
+      "default": "./src/state/profilesSync.ts"
+    },
     "./state/environmentHttpAuth": {
       "types": "./src/state/environmentHttpAuth.ts",
       "default": "./src/state/environmentHttpAuth.ts"
