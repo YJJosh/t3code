@@ -10,8 +10,8 @@ provider settings and prompt text on web or desktop.
 ## The profiles folder
 
 Each environment keeps its profiles in a folder, `<T3 home>/profiles` unless you set another path in
-**Settings → Profiles**. **Open in editor** opens it on the machine you are using, so it appears only
-for an environment on that machine.
+**Settings → Profiles**. **Open in editor** opens it on the selected environment's machine when
+that environment has a supported editor.
 
 ```text
 profiles/
@@ -30,7 +30,7 @@ You do not run Git for this. When you save in **Settings → Profiles**, T3 copi
 environment the app is connected to. An environment that was offline gets the newer copy when the app
 connects to it again, and **Sync now** does the same on demand. The newest copy wins. If an
 environment's folder was also changed by hand since its last sync, T3 keeps that version in a backup
-folder next to it and shows a notice.
+folder under `<T3 home>/profiles-backups` and shows a notice.
 
 An environment no app connects to keeps its last copy until the app connects to it. `node_modules` is
 never copied: a skill that needs dependencies shows **Install** on each machine.
@@ -62,8 +62,11 @@ another machine lacks is marked and skipped there.
 
 Login, binary path and home directory stay with the provider in **Settings → Providers**. Settings T3
 itself needs, such as its own tools and MCP servers, cannot be turned off. Provider settings are copied
-to every environment, so they cannot hold secrets.
+to every environment, so do not put secrets in them.
 
-Changes apply when a session starts or resumes, not to a turn that is running. Muse, Cursor, OpenCode
-and other providers do not support profiles; the picker is grayed out there and sessions start
-normally.
+<!-- REVIEW: Profile prompts/skills are supported more widely than named provider settings. -->
+
+Changes apply when a session starts or resumes, not to a turn that is running. Claude, Codex, Pi,
+Muse and ACP providers support profile prompts and skills. Named provider settings apply only to
+Claude, Codex and Pi. Cursor, OpenCode and other unsupported providers gray out the picker and start
+sessions normally.
