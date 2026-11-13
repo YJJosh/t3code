@@ -10,6 +10,7 @@ it.each([
   { platform: "freebsd", hostArch: "x64", arch: 1, reason: "unsupported target freebsd" },
   { platform: "linux", hostArch: "x64", arch: 3, reason: "unexecutable target linux/arm64" },
   { platform: "linux", hostArch: "arm64", arch: 1, reason: "unexecutable target linux/x64" },
+  { platform: "win32", hostArch: "x64", arch: 1, reason: "Windows target win32/x64" },
 ])(
   "skips unsupported $platform/$hostArch cache generation",
   async ({ platform, hostArch, arch, reason }) => {
