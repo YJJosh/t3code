@@ -2486,9 +2486,11 @@ export const layerWithOptions = (
                 const loaded = yield* profiles.load(
                   Profiles.resolveFolder(config.value.baseDir, settings.profilesFolder),
                 );
-                providerSettings = loaded.providerSettings[profileId]?.find(
-                  (entry) => entry._tag === adapter.driver,
-                );
+                providerSettings = Object.hasOwn(loaded.providerSettings, profileId)
+                  ? loaded.providerSettings[profileId]?.find(
+                      (entry) => entry._tag === adapter.driver,
+                    )
+                  : undefined;
                 profileInstructions = Object.hasOwn(loaded.instructions, profileId)
                   ? loaded.instructions[profileId]
                   : undefined;
