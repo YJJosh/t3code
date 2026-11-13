@@ -1,4 +1,4 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   addProfile,
   deleteProfile,
@@ -53,21 +53,24 @@ const isProfilesError = Schema.is(ProfilesError);
 export function ProfilesSettings({ environment }: { environment: SettingsTarget }) {
   const environmentId = environment.environmentId;
   const query = useEnvironmentQuery(profilesEnvironment.editor({ environmentId, input: {} }));
+  const refreshCatalog = useAtomRefresh(
+    serverEnvironment.profileConfig({ environmentId, input: {} }),
+  );
+  function refresh() {
+    query.refresh();
+    refreshCatalog();
+  }
   return (
     <>
-      <ProfilesFolderSettings
-        environment={environment}
-        state={query.data}
-        refresh={query.refresh}
-      />
+      <ProfilesFolderSettings environment={environment} state={query.data} refresh={refresh} />
       {query.error ? <Notice tone="danger" message={query.error} /> : null}
-      <Button label="Refresh profiles" tone="text" onPress={query.refresh} />
+      <Button label="Refresh profiles" tone="text" onPress={refresh} />
       {query.data ? (
         <ProfilesEditor
           key={query.data.folder}
           environmentId={environmentId}
           state={query.data}
-          refresh={query.refresh}
+          refresh={refresh}
         />
       ) : !query.error ? (
         <Text className="text-foreground-muted">Loading profiles…</Text>
@@ -142,13 +145,17 @@ function ProfilesFolderSettings(props: {
         <Menu
           accessibilityLabel="Default profile for new threads"
           actions={[
-            { id: "__folder__", title: "Folder default" },
-            { id: "", title: "No profile" },
+            {
+              id: "__folder__",
+              title: "Folder default",
+              attributes: { disabled: !canWrite || saving },
+            },
+            { id: "", title: "No profile", attributes: { disabled: !canWrite || saving } },
             ...Object.entries(catalog?.profiles ?? {}).map(([id, profile]) => ({
               id,
               title: id,
               subtitle: profile.warning,
-              attributes: { disabled: Boolean(profile.warning) },
+              attributes: { disabled: !canWrite || saving || Boolean(profile.warning) },
             })),
           ]}
           onPressAction={({ nativeEvent }) => {
@@ -168,7 +175,7 @@ function ProfilesFolderSettings(props: {
           label="Sync now"
           disabled={!canSync || sync.running}
           onPress={() => {
-            if (canSync) void syncProfilesNow();
+            if (canSync) void syncProfilesNow().then(props.refresh);
           }}
         />
         {environments.map((entry) => (
@@ -394,11 +401,17 @@ function ProfilesEditor(props: {
                     key={driver}
                     accessibilityLabel={`${id} ${PROFILE_DRIVER_LABELS[driver]} provider settings`}
                     actions={[
-                      { id: "", title: "Provider default", state: current ? "off" : "on" },
+                      {
+                        id: "",
+                        title: "Provider default",
+                        state: current ? "off" : "on",
+                        attributes: { disabled },
+                      },
                       ...[...new Set([...names, ...(current ? [current] : [])])].map((name) => ({
                         id: name,
                         title: name,
                         subtitle: names.includes(name) ? undefined : "Not on this machine",
+                        attributes: { disabled },
                         state: current === name ? ("on" as const) : ("off" as const),
                       })),
                     ]}
