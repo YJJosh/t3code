@@ -100,9 +100,13 @@ export function planProfilesSync(
   const targets =
     winner === undefined
       ? []
-      : participants.filter((participant) => participant.state.hash !== winner.state.hash);
+      : participants.filter(
+          (participant) =>
+            participant.state.hash !== winner.state.hash ||
+            participant.state.revision !== winner.state.revision,
+        );
   if (winner === undefined || targets.length === 0) {
-    // Equal copies are not marked: an unmarked copy is backed up before a later sync replaces it.
+    // REVIEW: Equal content must share a revision or the lower copy's next edit can lose to stale content.
     return { kind: "inSync" };
   }
   return { kind: "copy", winner, targets };
@@ -162,7 +166,8 @@ async function runProfilesSyncOnce(
   for (const participant of participants) {
     if (
       participant.environmentId !== plan.winner.environmentId &&
-      participant.state.hash === winnerState.hash
+      participant.state.hash === winnerState.hash &&
+      participant.state.revision === winnerState.revision
     ) {
       statuses.set(participant.environmentId, {
         kind: "inSync",
@@ -176,7 +181,8 @@ async function runProfilesSyncOnce(
   const targets = participants.filter(
     (participant) =>
       participant.environmentId !== plan.winner.environmentId &&
-      participant.state.hash !== winnerState.hash,
+      (participant.state.hash !== winnerState.hash ||
+        participant.state.revision !== winnerState.revision),
   );
   await Promise.all(
     targets.map(async (target) => {

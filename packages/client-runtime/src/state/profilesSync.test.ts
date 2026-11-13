@@ -66,7 +66,7 @@ function fakeIo(initial: Record<string, ProfilesSyncState | "unsupported">) {
     },
     now: () => "2026-11-13T12:00:00.000Z",
   };
-  return { io, calls, conflictOnce };
+  return { io, calls, conflictOnce, states };
 }
 
 describe("pickProfilesSyncWinner", () => {
@@ -93,12 +93,14 @@ describe("pickProfilesSyncWinner", () => {
 });
 
 describe("planProfilesSync", () => {
-  it("has nothing to copy when every hash matches", () => {
+  it("aligns revisions even when every hash matches", () => {
     const plan = planProfilesSync([
       { environmentId: A, state: state(2, "h") },
       { environmentId: B, state: state(1, "h", { syncedHash: null }) },
     ]);
-    expect(plan).toEqual({ kind: "inSync" });
+    expect(plan.kind === "copy" && plan.targets.map(({ environmentId }) => environmentId)).toEqual([
+      B,
+    ]);
   });
 
   it("copies the winner only to copies whose hash differs", () => {
@@ -120,6 +122,17 @@ describe("runProfilesSync", () => {
     const statuses = await runProfilesSync(io, () => [A, B]);
     expect(calls).toEqual(["read:env-a:false", "read:env-b:false"]);
     expect(statuses.get(B)).toEqual({ kind: "inSync", revision: 2 });
+  });
+
+  it("keeps a later edit on a previously identical lower-revision copy", async () => {
+    const { io, states } = fakeIo({ [A]: state(5, "same"), [B]: state(1, "same") });
+    await runProfilesSync(io, () => [A, B]);
+    const synced = states.get(B) as ProfilesSyncState;
+    expect(synced.revision).toBe(5);
+    states.set(B, { ...synced, revision: synced.revision + 1, hash: "edited" });
+    await runProfilesSync(io, () => [A, B]);
+    expect((states.get(A) as ProfilesSyncState).hash).toBe("edited");
+    expect((states.get(B) as ProfilesSyncState).hash).toBe("edited");
   });
 
   it("copies the winner's files once, reports backups, and marks the winner", async () => {
