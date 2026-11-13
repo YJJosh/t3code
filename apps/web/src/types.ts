@@ -72,7 +72,6 @@ export function isVideoAttachment(attachment: ChatFileAttachment): boolean {
 }
 
 export interface ChatMessage {
-  readonly phase?: import("@t3tools/contracts").OrchestrationV2AssistantMessagePhase;
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
   readonly id: MessageId;
   readonly role: "user" | "assistant" | "system";

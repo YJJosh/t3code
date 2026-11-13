@@ -27,9 +27,9 @@ type EarlyLinuxElectronOptionsInput = EarlyDesktopSettingsInput;
 
 export interface EarlyLinuxElectronOptions {
   readonly isDevelopment: boolean;
+  readonly linuxDesktopEntryName: string;
   readonly isDulli: boolean;
   readonly linuxWmClass: string;
-  readonly linuxDesktopEntryName: string;
   readonly passwordStore: LinuxPasswordStoreSwitch | null;
 }
 
@@ -155,12 +155,18 @@ export function resolveEarlyLinuxElectronOptions(
 ): EarlyLinuxElectronOptions {
   const preference = resolveEarlyLinuxPasswordStorePreference(input);
   const isDevelopment = isDevelopmentEnvironment(input.env);
-  const isDulli = isDulliApp(input.appName, input.env);
   return {
     isDevelopment,
-    isDulli,
-    linuxWmClass: isDevelopment ? "t3code-dev" : isDulli ? "t3-dulli" : "t3code",
-    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, isDulli),
+    linuxDesktopEntryName: resolveLinuxDesktopEntryName(
+      isDevelopment,
+      isDulliApp(input.appName, input.env),
+    ),
+    isDulli: isDulliApp(input.appName, input.env),
+    linuxWmClass: isDevelopment
+      ? "t3code-dev"
+      : isDulliApp(input.appName, input.env)
+        ? "t3-dulli"
+        : "t3code",
     passwordStore: resolveLinuxPasswordStoreSwitch({
       preference,
       env: input.env,

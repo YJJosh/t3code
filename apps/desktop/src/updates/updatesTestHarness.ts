@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -13,13 +14,13 @@ import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
 
 export const flushCallbacks = Effect.yieldNow;
 
 export interface UpdatesHarnessOptions {
   readonly appName?: string;
-  readonly resourcesPath?: string;
   readonly checkForUpdates?: Effect.Effect<
     void,
     ElectronUpdater.ElectronUpdaterCheckForUpdatesError
@@ -37,6 +38,7 @@ export interface UpdatesHarnessOptions {
   readonly platform?: NodeJS.Platform;
   readonly packageType?: string | undefined;
   readonly installRecord?: string | undefined;
+  readonly policy?: DesktopUpdatePolicy.UpdatePolicy;
   readonly appVersion?: string;
   /** Starts from in-memory settings with this track saved, as after a restart. */
   readonly savedChannel?: DesktopAppSettings.DesktopSettings["updateChannel"];
@@ -46,14 +48,13 @@ export interface UpdatesHarnessOptions {
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
   let checkCount = 0;
-  let lastCheckOptions: ElectronUpdater.ElectronUpdaterCheckOptions | undefined;
   let quitAndInstallCount = 0;
   let downloadCount = 0;
   let allowDowngrade = false;
-  let allowPrerelease = false;
+  let updaterChannel = "latest";
+  let allowsPrerelease = false;
   const checkAllowedDowngrade: boolean[] = [];
   let fullChangelog = false;
-  let updaterChannel: string | null = "latest";
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
   const sentStates: DesktopUpdateState[] = [];
@@ -89,7 +90,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       }),
     setAllowPrerelease: (value) =>
       Effect.sync(() => {
-        allowPrerelease = value;
+        allowsPrerelease = value;
       }),
     allowDowngrade: Effect.sync(() => allowDowngrade),
     setAllowDowngrade: (value) =>
@@ -101,12 +102,10 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
         fullChangelog = value;
       }),
     setDisableDifferentialDownload: () => options.setDisableDifferentialDownload ?? Effect.void,
-    checkForUpdates: (checkOptions) =>
-      Effect.sync(() => {
-        checkCount += 1;
-        lastCheckOptions = checkOptions;
-        checkAllowedDowngrade.push(allowDowngrade);
-      }).pipe(Effect.andThen(options.checkForUpdates ?? Effect.void)),
+    checkForUpdates: Effect.sync(() => {
+      checkCount += 1;
+      checkAllowedDowngrade.push(allowDowngrade);
+    }).pipe(Effect.andThen(options.checkForUpdates ?? Effect.void)),
     downloadUpdate: Effect.sync(() => {
       downloadCount += 1;
     }).pipe(Effect.andThen(options.downloadUpdate ?? Effect.void)),
@@ -191,7 +190,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     appVersion: options.appVersion ?? "1.2.3",
     appPath: "/repo",
     isPackaged: true,
-    resourcesPath: options.resourcesPath ?? "/missing/resources",
+    resourcesPath: "/missing/resources",
     runningUnderArm64Translation: false,
   }).pipe(
     Layer.provide(
@@ -258,12 +257,6 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
         ? (installRecords.get(path) ?? previousInstallRecord)
         : undefined;
       if (installRecord !== undefined) return Effect.succeed(installRecord);
-      if (options.resourcesPath !== undefined && path.startsWith(options.resourcesPath)) {
-        return FileSystem.FileSystem.pipe(
-          Effect.flatMap((fileSystem) => fileSystem.readFileString(path)),
-          Effect.provide(NodeServices.layer),
-        );
-      }
       return path === "/missing/resources/package-type" && options.packageType !== undefined
         ? Effect.succeed(options.packageType)
         : Effect.fail(
@@ -291,6 +284,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
 
   const layer = DesktopUpdates.layer.pipe(
     Layer.provide(layerFileSystem),
+    Layer.provide(DesktopUpdatePolicy.layerTest(options.policy)),
     Layer.provideMerge(layerUpdater),
     Layer.provideMerge(layerWindow),
     Layer.provideMerge(layerBackend),
@@ -305,15 +299,14 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       }),
     ),
     Layer.provideMerge(layerEnvironment),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 
   return {
     layer,
-    allowPrerelease: () => allowPrerelease,
-    allowDowngrade: () => allowDowngrade,
+    updaterChannel: () => updaterChannel,
+    allowsPrerelease: () => allowsPrerelease,
     checkCount: () => checkCount,
-    lastCheckOptions: () => lastCheckOptions,
     quitAndInstalls: () => quitAndInstallCount,
     installSteps,
     updateRestartMarkers,
@@ -322,9 +315,9 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     downloadCount: () => downloadCount,
     feedUrls: (): ElectronUpdater.ElectronUpdaterFeedUrl[] => feedUrls,
     fullChangelog: () => fullChangelog,
-    updaterChannel: () => updaterChannel,
-    /** Whether each feed check could offer an older release. */
+    /** Whether each feed check could offer an older release, and the flag now. */
     checkAllowedDowngrade,
+    allowDowngrade: () => allowDowngrade,
     listenerCount: () =>
       Array.from(listeners.values()).reduce(
         (total, eventListeners) => total + eventListeners.size,

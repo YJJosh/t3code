@@ -50,26 +50,18 @@ const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
   return { sequence: result.sequence };
 });
 
-const readQuestion = Effect.fn("mcp.readQuestion")(function* (
-  input: { threadId?: ThreadId | undefined; requestId: RuntimeRequestId },
-  answering = false,
-) {
+const readQuestion = Effect.fn("mcp.readQuestion")(function* (input: {
+  threadId?: ThreadId | undefined;
+  requestId: RuntimeRequestId;
+}) {
   const context = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"]);
   const request = context.projection.runtimeRequests.find(
-    (request) => request.id === input.requestId,
+    (request) => request.id === input.requestId && request.kind === "user_input",
   );
-  // Confirm dialogs use approval items, but the human-only refusal applies to
-  // every Pi dialog, before narrowing this question-only tool's supported kind.
-  if (answering && request?.humanOnly) {
-    return yield* new OrchestratorMcpFailure({
-      code: "invalid_request",
-      message: "This request must be answered by a person in T3 or the Pi terminal.",
-    });
-  }
   const item = context.projection.turnItems.find(
     (item) => item.type === "user_input_request" && item.requestId === input.requestId,
   );
-  if (request?.kind !== "user_input" || item?.type !== "user_input_request")
+  if (request === undefined || item?.type !== "user_input_request")
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",
       message: "The pending user-input request was not found.",
@@ -110,7 +102,12 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         });
       const { task, threadId } = yield* scheduler
         .runNow({ id: input.taskId })
-        .pipe(Effect.mapError(unavailable));
+        .pipe(
+          Effect.mapError(
+            (error) =>
+              new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+          ),
+        );
       const scope = yield* McpInvocationContext.McpInvocationContext;
       return {
         taskId: task.id,
@@ -137,7 +134,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       return {
         matches: matches.map((match) => ({
           ...match,
-          link: McpInvocationContext.threadLinkFor(scope, match.threadId),
+          link: McpInvocationContext.threadLinkFor(scope, match.threadId, match.title),
         })),
       };
     }),
@@ -235,36 +232,28 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       Effect.gen(function* () {
         if (input.action === "list") {
           const { projection } = yield* readThread(input.threadId, ["runtimeRequests"]);
-          const requests = projection.runtimeRequests.filter(
-            (request) => request.kind === "user_input" && request.status === "pending",
-          );
           return {
-            requestIds: requests.map((request) => request.id),
-            humanOnlyRequestIds: requests
-              .filter((request) => request.humanOnly)
+            requestIds: projection.runtimeRequests
+              .filter((request) => request.kind === "user_input" && request.status === "pending")
               .map((request) => request.id),
           };
         }
         const requestId = yield* required(input.requestId, "requestId");
-        const { item, request } = yield* readQuestion({ threadId: input.threadId, requestId });
-        return { requestId, questions: item.questions, humanOnly: request.humanOnly === true };
+        const { item } = yield* readQuestion({ threadId: input.threadId, requestId });
+        return { requestId, questions: item.questions };
       }),
     ),
     writesThread((input) =>
       Effect.gen(function* () {
         const requestId = yield* required(input.requestId, "requestId");
         const answers = yield* required(input.answers, "answers");
-        const { threads, projection } = yield* readQuestion(
-          {
-            threadId: input.threadId,
-            requestId,
-          },
-          true,
-        );
+        const { threads, projection } = yield* readQuestion({
+          threadId: input.threadId,
+          requestId,
+        });
         const result = yield* threads
           .dispatch({
             type: "runtime-request.respond",
-            createdBy: "agent",
             threadId: projection.thread.id,
             commandId: yield* newCommandId(),
             requestId,

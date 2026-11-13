@@ -1,3 +1,4 @@
+import { redactGitRemoteUrl } from "@t3tools/shared/git";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -7,10 +8,10 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
 import {
+  type ProjectCloneMember,
   GitCommandError,
   SourceControlProviderError,
   SourceControlRepositoryError,
-  type ProjectCloneMember,
   type GitCommandFailureReason,
   type SourceControlCloneRepositoryInput,
   type SourceControlCloneRepositoryResult,
@@ -22,7 +23,6 @@ import {
   type SourceControlRepositoryInfo,
   type SourceControlRepositoryLookupInput,
 } from "@t3tools/contracts";
-import { redactGitRemoteUrl } from "@t3tools/shared/git";
 
 import * as ServerConfig from "../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -113,7 +113,8 @@ const CLONE_ENV = {
   // Force piped progress immediately; refuse credential prompts that would hang without a tty.
   GIT_PROGRESS_DELAY: "0",
   GIT_TERMINAL_PROMPT: "0",
-  LC_ALL: "C",
+  // English progress without overriding LC_CTYPE, which a global post-checkout hook inherits.
+  LANGUAGE: "C",
 } satisfies NodeJS.ProcessEnv;
 
 function mapRepositoryError(operation: string, provider: SourceControlProviderKind) {
@@ -144,42 +145,34 @@ function toRepositoryInfo(
   };
 }
 
+// Redact credentials from client clone snapshots; git still receives the credentials.
+function redactRemoteUrl(remoteUrl: string): string {
+  try {
+    const url = new URL(remoteUrl);
+    // Clone URLs have no legitimate query; when one is present it is a token.
+    if (url.username.length === 0 && url.password.length === 0 && url.search.length === 0) {
+      return remoteUrl;
+    }
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    return url.toString();
+  } catch {
+    return remoteUrl;
+  }
+}
+
 // Userinfo can contain @; remove through the last one before the host boundary.
-const URL_WITH_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/]+@/gi;
+const URL_WITH_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#]+@/gi;
+// Git leaves quotes inside query tokens unescaped; consume through the closing quote.
+const QUOTED_URL_QUERY = /(['"])([a-z][a-z0-9+.-]*:\/\/[^\s?]*)\?.*\1(?=[\s:]|$)/gi;
+const URL_QUERY = /\b([a-z][a-z0-9+.-]*:\/\/[^\s?]*)\?[^\s]*/gi;
 
 function redactUrlCredentials(text: string): string {
-  return text.replace(URL_WITH_USERINFO, "$1");
-}
-
-const WORKLER_CONFIG_FILE = ".workler";
-// Folders Workler manages itself, so they can never be a member.
-const RESERVED_MEMBER_FOLDERS = new Set([".git", ".worktrees", WORKLER_CONFIG_FILE]);
-
-/** A member path as Workler accepts it, `/`-separated, or null when it would leave its folder. */
-function normalizeMultiRepoMemberPath(raw: string): string | null {
-  // `.workler` is one `project <path>` per line with no escapes, so control
-  // characters (a newline above all) would leave a broken file behind a finished clone.
-  if (/[\u0000-\u001f\u007f]/.test(raw) || /^(?:[a-zA-Z]:|[\\/])/.test(raw)) return null;
-  // Workler quotes a path with one kind of quote, so it cannot hold both.
-  if (raw.includes('"') && raw.includes("'")) return null;
-  const segments = raw.split(/[\\/]+/).filter((segment) => segment.length > 0 && segment !== ".");
-  if (segments.length === 0 || segments.includes("..")) return null;
-  if (RESERVED_MEMBER_FOLDERS.has(segments[0]!.toLowerCase())) return null;
-  // A repository's own .git folder is never a place for another clone.
-  if (segments.some((segment) => segment.toLowerCase() === ".git")) return null;
-  return segments.join("/");
-}
-
-function memberPathsOverlap(left: string, right: string): boolean {
-  const a = left.toLowerCase();
-  const b = right.toLowerCase();
-  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
-}
-
-/** Quotes a `.workler` path the way Workler writes one. */
-function quoteWorklerPath(value: string): string {
-  if (!/[\s#"']/.test(value)) return value;
-  return value.includes('"') ? `'${value}'` : `"${value}"`;
+  return text
+    .replace(QUOTED_URL_QUERY, "$1$2$1")
+    .replace(URL_QUERY, "$1")
+    .replace(URL_WITH_USERINFO, "$1");
 }
 
 // The remote already exists after push failure; advise fixing access and pushing.
@@ -221,6 +214,37 @@ function httpsFallbackUrl(
 const isSshRejection = (error: SourceControlRepositoryError) =>
   isGitCommandError(error.cause) &&
   (error.cause.reason === "authentication_failed" || error.cause.reason === "host_key_unverified");
+
+const WORKLER_CONFIG_FILE = ".workler";
+// Folders Workler manages itself, so they can never be a member.
+const RESERVED_MEMBER_FOLDERS = new Set([".git", ".worktrees", WORKLER_CONFIG_FILE]);
+
+/** A member path as Workler accepts it, `/`-separated, or null when it would leave its folder. */
+function normalizeMultiRepoMemberPath(raw: string): string | null {
+  // `.workler` is one `project <path>` per line with no escapes, so control
+  // characters (a newline above all) would leave a broken file behind a finished clone.
+  if (/[\u0000-\u001f\u007f]/.test(raw) || /^(?:[a-zA-Z]:|[\\/])/.test(raw)) return null;
+  // Workler quotes a path with one kind of quote, so it cannot hold both.
+  if (raw.includes('"') && raw.includes("'")) return null;
+  const segments = raw.split(/[\\/]+/).filter((segment) => segment.length > 0 && segment !== ".");
+  if (segments.length === 0 || segments.includes("..")) return null;
+  if (RESERVED_MEMBER_FOLDERS.has(segments[0]!.toLowerCase())) return null;
+  // A repository's own .git folder is never a place for another clone.
+  if (segments.some((segment) => segment.toLowerCase() === ".git")) return null;
+  return segments.join("/");
+}
+
+function memberPathsOverlap(left: string, right: string): boolean {
+  const a = left.toLowerCase();
+  const b = right.toLowerCase();
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+/** Quotes a `.workler` path the way Workler writes one. */
+function quoteWorklerPath(value: string): string {
+  if (!/[\s#"']/.test(value)) return value;
+  return value.includes('"') ? `'${value}'` : `"${value}"`;
+}
 
 function selectRemoteUrl(
   urls: SourceControlRepositoryCloneUrls,
@@ -388,11 +412,13 @@ export const make = Effect.gen(function* () {
         if (stderrTail.length > 4) stderrTail.shift();
       });
     };
+    // Git misreads @ in a pathless URL's query as userinfo and echoes its suffix as the host.
+    const normalizedCloneUrl = cloneUrl.replace(/^([a-z][a-z0-9+.-]*:\/\/[^/?#]+)\?/i, "$1/?");
     yield* git
       .execute({
         operation: "SourceControlRepositoryService.cloneRepository",
         cwd: path.dirname(destinationPath),
-        args: ["clone", "--progress", "--", cloneUrl, path.basename(destinationPath)],
+        args: ["clone", "--progress", "--", normalizedCloneUrl, path.basename(destinationPath)],
         timeoutMs: options?.timeoutMs === undefined ? CLONE_TIMEOUT_MS : options.timeoutMs,
         // Buffered output is unused and progress can be huge; cap it while retaining line callbacks.
         maxOutputBytes: 256 * 1024,
@@ -435,7 +461,7 @@ export const make = Effect.gen(function* () {
         httpsUrl === null || !isSshRejection(sshError)
           ? Effect.fail(sshError)
           : runClone(input, prepared.destinationPath, httpsUrl, options).pipe(
-              Effect.as(redactGitRemoteUrl(httpsUrl)),
+              Effect.as(redactRemoteUrl(httpsUrl)),
               Effect.mapError(
                 (httpsError) =>
                   new SourceControlRepositoryError({
@@ -645,7 +671,7 @@ export const make = Effect.gen(function* () {
           args: ["rev-parse", "--verify", "HEAD"],
         })
         .pipe(
-          Effect.map(() => true),
+          Effect.as(true),
           Effect.orElseSucceed(() => false),
         );
       if (!hasCommits) {
@@ -659,28 +685,50 @@ export const make = Effect.gen(function* () {
         };
       }
 
-      const pushResult = yield* git.pushCurrentBranch(input.cwd, null, { remoteName }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new SourceControlRepositoryError({
-              operation: "publishRepository",
-              provider: providerKind,
-              detail: publishPushFailureDetail({
-                urls,
-                remoteName,
-                remoteUrl,
-                reason: cause.reason,
+      const push = (pushUrl: string) =>
+        git.pushCurrentBranch(input.cwd, null, { remoteName }).pipe(
+          Effect.map((result) => ({ branch: result.branch, remoteUrl: pushUrl })),
+          Effect.mapError(
+            (cause) =>
+              new SourceControlRepositoryError({
+                operation: "publishRepository",
+                provider: providerKind,
+                detail: publishPushFailureDetail({
+                  urls,
+                  remoteName,
+                  remoteUrl: pushUrl,
+                  reason: cause.reason,
+                }),
+                cause,
               }),
-              cause,
-            }),
+          ),
+        );
+
+      // Like clone, an auto-selected SSH remote switches to HTTPS when SSH is refused;
+      // otherwise the remote keeps failing every later fetch and push.
+      const canSwitchToHttps = input.protocol !== "ssh" && remoteUrl === urls.sshUrl;
+      const pushed = yield* push(remoteUrl).pipe(
+        Effect.catchIf(
+          (error) => canSwitchToHttps && isSshRejection(error),
+          (sshError) =>
+            git
+              .execute({
+                operation: "SourceControlRepositoryService.publishRepository.switchToHttps",
+                cwd: input.cwd,
+                args: ["remote", "set-url", remoteName, urls.url],
+              })
+              .pipe(
+                Effect.mapError(() => sshError),
+                Effect.andThen(push(urls.url)),
+              ),
         ),
       );
 
       return {
         repository: toRepositoryInfo(providerKind, urls),
         remoteName,
-        remoteUrl,
-        branch: pushResult.branch,
+        remoteUrl: pushed.remoteUrl,
+        branch: pushed.branch,
         status: "pushed" as const,
       };
     },
@@ -714,21 +762,21 @@ export const make = Effect.gen(function* () {
         mapRepositoryError("discardClone", SourceControlProviderKind.make("unknown")),
       );
     }),
-    prepareMultiRepoClone: Effect.fnUntraced(function* (input) {
-      return yield* prepareMultiRepoClone(input).pipe(
+    prepareMultiRepoClone: Effect.fn("SourceControlRepositoryService.prepareMultiRepo")((input) =>
+      prepareMultiRepoClone(input).pipe(
         mapRepositoryError("cloneRepository", SourceControlProviderKind.make("unknown")),
-      );
-    }),
-    cloneMultiRepo: Effect.fnUntraced(function* (prepared, options) {
-      return yield* cloneMultiRepo(prepared, options).pipe(
+      ),
+    ),
+    cloneMultiRepo: Effect.fn("SourceControlRepositoryService.cloneMembers")((input, options) =>
+      cloneMultiRepo(input, options).pipe(
         mapRepositoryError("cloneRepository", SourceControlProviderKind.make("unknown")),
-      );
-    }),
-    discardMultiRepoClone: Effect.fnUntraced(function* (prepared) {
-      return yield* discardMultiRepoClone(prepared).pipe(
+      ),
+    ),
+    discardMultiRepoClone: Effect.fn("SourceControlRepositoryService.discardMembers")((input) =>
+      discardMultiRepoClone(input).pipe(
         mapRepositoryError("discardClone", SourceControlProviderKind.make("unknown")),
-      );
-    }),
+      ),
+    ),
     publishRepository: Effect.fnUntraced(function* (input) {
       return yield* publishRepository(input).pipe(
         mapRepositoryError("publishRepository", input.provider),

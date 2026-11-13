@@ -18,13 +18,14 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import { deriveThreadCheckpointSummaries } from "@t3tools/client-runtime/state/thread-checkpoints";
+import { summarizeToolGroup } from "@t3tools/client-runtime/work-log/presentation";
 import { getReviewSectionIdForCheckpoint } from "../features/review/reviewModel";
 import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  terminalThreadFeedAssistantMessageIds,
   buildThreadFeed,
+  workEntryRowLabel,
   threadFeedCompactionLabels,
   createThreadFeedCache,
   deriveThreadFeedPresentation,
@@ -37,6 +38,24 @@ import {
 const threadId = ThreadId.make("thread-1");
 const sourceThreadId = ThreadId.make("thread-source");
 const runId = RunId.make("run-1");
+
+it("shows a captured MCP app for a failed deferred write", () => {
+  const mcpApp = {
+    attachmentId: "deferred-app-html",
+    server: "github",
+    tool: "create_pull_request",
+    resourceUri: "ui://github-mcp-server/pr-create",
+  };
+  const item: OrchestrationV2TurnItem = {
+    ...base("deferred-app", "2026-08-29T00:00:00.000Z", 1),
+    type: "dynamic_tool",
+    toolName: "github.create_pull_request",
+    status: "failed",
+    input: {},
+    output: { t3McpApp: mcpApp, result: { content: [], isError: true } },
+  };
+  expect(buildThreadFeed([projected(item, 0)])).toMatchObject([{ type: "mcp-app", app: mcpApp }]);
+});
 
 it("keeps historical plan detail accessible from its paged turn item", () => {
   const item = {
@@ -578,6 +597,24 @@ describe("buildThreadFeed", () => {
     expect(items[0]).toMatchObject({ output: rawOutput });
   });
 
+  it("counts every file of a multi-file patch", () => {
+    const item: OrchestrationV2TurnItem = {
+      ...base("multi-file-change", "2026-06-20T00:00:04.000Z", 3),
+      type: "file_change",
+      fileName: "src/a.ts",
+      changes: [
+        { operation: "update", path: "src/a.ts" },
+        { operation: "add", path: "src/b.ts" },
+        { operation: "update", path: "src/renamed.ts", oldPath: "src/original.ts" },
+      ],
+    };
+    const activity = buildThreadFeed([projected(item, 0)]).flatMap((entry) =>
+      entry.type === "activity-group" ? entry.activities : [],
+    )[0]!;
+    expect(workEntryRowLabel(activity.workEntry)).toBe("src/a.ts +2 more");
+    expect(summarizeToolGroup([activity.workEntry]).summary).toBe("Changed 3 files");
+  });
+
   it("anchors feedback before later committed turns", () => {
     const laterUser = {
       ...userMessage("2026-08-29T00:00:05.000Z"),
@@ -732,6 +769,40 @@ describe("buildThreadFeed", () => {
     expect(activities.at(-1)?.prominent).toBe(true);
   });
 
+  it.each([
+    ["local", undefined],
+    ["inherited", undefined],
+    ["synthetic", undefined],
+    ["synthetic", "Forked from conversation"],
+  ] as const)(
+    "labels a %s fork row with title %s without exposing its target ID",
+    (visibility, title) => {
+      const { providerThreadId: _providerThreadId, ...forkBase } = base(
+        "item-fork",
+        "2026-06-20T00:00:03.000Z",
+        2,
+      );
+      const activity = buildThreadFeed([
+        projected(
+          {
+            ...forkBase,
+            type: "fork",
+            title: title ?? null,
+            source: { type: "run", threadId: sourceThreadId, runId },
+            targetThreadId: threadId,
+          },
+          0,
+          visibility,
+        ),
+      ]).flatMap((entry) => (entry.type === "activity-group" ? entry.activities : []))[0]!;
+
+      expect(workEntryRowLabel(activity.workEntry)).toBe(title ?? "Thread forked");
+      expect(workEntryRowLabel(activity.workEntry, true)).toBe(title ?? "Thread forked");
+      expect(activity.canExpand).toBe(true);
+      expect(activity.getFullDetail()).toContain(threadId);
+    },
+  );
+
   it("names the fold that hides a progress message, with or without a run", () => {
     const middle = {
       ...assistantMessage("2026-06-20T00:00:02.500Z"),
@@ -794,7 +865,7 @@ describe("buildThreadFeed", () => {
     expect(collapsed[1]).toMatchObject({
       type: "run-fold",
       createdAt: "2026-06-20T00:00:01.500Z",
-      label: "Worked for 2.0s",
+      label: "Worked for 2s",
     });
 
     const expanded = deriveThreadFeedPresentation(feed, latestRun, new Set([runId]));
@@ -1048,10 +1119,10 @@ describe("buildThreadFeed", () => {
     const settled = deriveThreadFeedPresentation(feed(false), null, new Set());
     expect(shape(settled)).toEqual([
       "user:launch",
-      "fold:Worked for 8.0s",
+      "fold:Worked for 8s",
       "assistant:launch-answer",
       "user:resume",
-      "fold:Worked for 8.0s",
+      "fold:Worked for 8s",
       "assistant:resume-answer",
     ]);
     const launchFold = settled.find((entry) => entry.type === "run-fold");
@@ -1060,11 +1131,11 @@ describe("buildThreadFeed", () => {
       shape(deriveThreadFeedPresentation(feed(false), null, new Set([launchFold.runId]))),
     ).toEqual([
       "user:launch",
-      "fold:Worked for 8.0s",
+      "fold:Worked for 8s",
       "activity-group",
       "assistant:launch-answer",
       "user:resume",
-      "fold:Worked for 8.0s",
+      "fold:Worked for 8s",
       "assistant:resume-answer",
     ]);
 
@@ -1081,7 +1152,7 @@ describe("buildThreadFeed", () => {
       ),
     ).toEqual([
       "user:launch",
-      "fold:Worked for 8.0s",
+      "fold:Worked for 8s",
       "assistant:launch-answer",
       "user:resume",
       "activity-group",
@@ -1185,6 +1256,90 @@ describe("buildThreadFeed", () => {
         startedAt,
       ),
     ).toEqual([]);
+  });
+  it("hides tool calls or everything but the final answer", () => {
+    const at = (second: number) => `2026-06-20T00:00:${String(second).padStart(2, "0")}.000Z`;
+    const say = (name: string, second: number, user = false, steer = false) => ({
+      ...(user ? userMessage(at(second)) : assistantMessage(at(second))),
+      id: TurnItemId.make(name),
+      messageId: MessageId.make(name),
+      text: name,
+      ...(steer ? { inputIntent: "steer" as const } : {}),
+    });
+    const ran = (name: string, second: number, status: "completed" | "failed") => ({
+      ...command(at(second)),
+      id: TurnItemId.make(name),
+      status,
+    });
+    const [user, step, passed, failed, final] = [
+      say("user", 1, true),
+      say("step", 2),
+      ran("passed", 3, "completed"),
+      ran("failed", 4, "failed"),
+      say("final", 5),
+    ];
+    const running = { runId, status: "running" as const, startedAt: at(1), completedAt: null };
+    const rows = (
+      items: ReadonlyArray<OrchestrationV2TurnItem>,
+      toolCallVisibility: "hideSuccessful" | "hideAll" | "zen",
+      latestRun: ThreadFeedLatestRun | null = null,
+    ) =>
+      deriveThreadFeedPresentation(
+        buildThreadFeed(items.map((item, index) => projected(item, index))),
+        latestRun,
+        new Set([runId]),
+        new Set(),
+        latestRun ? at(1) : null,
+        false,
+        undefined,
+        { toolCallVisibility, revealedMessageId: null },
+      ).map((row) =>
+        row.type === "activity-group"
+          ? row.activities.map((activity) => activity.projectedItem.item.id).join("+")
+          : row.type === "thinking"
+            ? `thinking:${row.label ?? ""}`
+            : row.type === "run-fold"
+              ? "fold"
+              : row.id,
+      );
+
+    const turn = [user, step, passed, failed, final];
+    expect(rows(turn, "hideSuccessful")).toEqual(["user", "fold", "step", "failed", "final"]);
+    expect(rows(turn, "hideAll")).toEqual(["user", "fold", "step", "final"]);
+    expect(rows(turn, "zen")).toEqual(["user", "final"]);
+    const [steer, answer] = [say("steer", 2, true, true), say("answer", 3)];
+    expect(rows([user, steer, answer, final], "zen")).toEqual(["user", "steer", "answer", "final"]);
+    expect(rows([user, steer, step, passed, final], "zen")).toEqual(["user", "steer", "final"]);
+    expect(rows([user, steer, answer, step], "zen", running)).toEqual([
+      "user",
+      "steer",
+      "answer",
+      "thinking:step",
+    ]);
+    expect(rows([user, step, passed], "zen", running)).toEqual(["user", "thinking:step"]);
+    expect(rows(turn, "zen", { ...running, turnEnded: true })).toEqual(["user", "final"]);
+    const nextRun = { ...running, runId: RunId.make("run-2") };
+    const followUp = { ...say("follow-up", 6, true), runId: nextRun.runId };
+    expect(rows([...turn, followUp], "zen", nextRun)).toEqual([
+      "user",
+      "final",
+      "follow-up",
+      "thinking:",
+    ]);
+    const wake: OrchestrationV2TurnItem = {
+      ...base("wake", at(6), 5),
+      runId: nextRun.runId,
+      type: "notification",
+      source: { kind: "background_task" },
+      outcome: "completed",
+      summary: "Task finished",
+    };
+    expect(rows([user, final, wake], "zen", nextRun)).toEqual([
+      "user",
+      "final",
+      "wake",
+      "thinking:",
+    ]);
   });
 });
 
@@ -1556,198 +1711,6 @@ it.each(["provider_error", "usage_limit"] as const)(
   },
 );
 
-describe("explicit assistant phases", () => {
-  const message = (
-    id: string,
-    phase: "commentary" | "final_answer" | undefined,
-    second: number,
-    run: RunId | null = runId,
-  ): OrchestrationV2TurnItem => ({
-    ...assistantMessage(`2026-06-20T00:00:0${second}.000Z`),
-    id: TurnItemId.make(id),
-    messageId: MessageId.make(id),
-    ordinal: second,
-    runId: run,
-    ...(phase ? { phase } : {}),
-  });
-  const latestRun = {
-    runId,
-    status: "completed" as const,
-    startedAt: "2026-06-20T00:00:00.000Z",
-    completedAt: "2026-06-20T00:00:05.000Z",
-  };
-  const feedFor = (messages: OrchestrationV2TurnItem[]) =>
-    buildThreadFeed([
-      projected({ ...userMessage(), runId: messages[0]?.runId ?? null }, 0),
-      ...messages.map((item, i) => projected(item, i + 1)),
-    ]);
-  const messageIds = (feed: ReadonlyArray<ThreadFeedEntry>) =>
-    feed.flatMap((entry) =>
-      entry.type === "message" && entry.message.role === "assistant" ? [entry.message.id] : [],
-    );
-
-  it.each([runId, null])(
-    "folds early and late commentary but not the final, including runless imports: %s",
-    (run) => {
-      const feed = feedFor([
-        message("comment", "commentary", 1, run),
-        message("answer", "final_answer", 2, run),
-        message("late", "commentary", 3, run),
-      ]);
-      const collapsed = deriveThreadFeedPresentation(feed, latestRun, new Set());
-      expect(messageIds(collapsed)).toEqual(["answer"]);
-      expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual(["answer"]);
-      const fold = collapsed.find((entry) => entry.type === "run-fold");
-      expect(fold).toBeDefined();
-      if (fold?.type !== "run-fold") throw new Error("Expected fold");
-      expect(
-        messageIds(deriveThreadFeedPresentation(feed, latestRun, new Set([fold.runId]))),
-      ).toEqual(["comment", "answer", "late"]);
-    },
-  );
-
-  it("keeps multiple final answers and unknown replies visible", () => {
-    const feed = feedFor([
-      message("answer", "final_answer", 1),
-      message("late", "commentary", 2),
-      message("terminal-answer", "final_answer", 3),
-      message("partial", undefined, 4),
-    ]);
-    expect(messageIds(deriveThreadFeedPresentation(feed, latestRun, new Set()))).toEqual([
-      "answer",
-      "terminal-answer",
-      "partial",
-    ]);
-    expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual(["terminal-answer"]);
-  });
-
-  it("keeps the footer on an interrupted reply that follows commentary", () => {
-    const feed = feedFor([message("comment", "commentary", 1), message("partial", undefined, 2)]);
-    expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual(["partial"]);
-  });
-
-  it("folds a commentary-only response", () => {
-    const feed = feedFor([message("comment", "commentary", 1), message("late", "commentary", 2)]);
-    expect(messageIds(deriveThreadFeedPresentation(feed, latestRun, new Set()))).toEqual([]);
-    expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual([]);
-  });
-
-  it("preserves upstream final-only behavior without phases", () => {
-    const feed = feedFor([
-      message("first", undefined, 1),
-      message("middle", undefined, 2),
-      message("last", undefined, 3),
-    ]);
-    expect(messageIds(deriveThreadFeedPresentation(feed, latestRun, new Set()))).toEqual(["last"]);
-    expect([...terminalThreadFeedAssistantMessageIds(feed)]).toEqual(["last"]);
-    expect([
-      ...terminalThreadFeedAssistantMessageIds(feedFor([message("runless", undefined, 1, null)])),
-    ]).toEqual([]);
-  });
-
-  it("does not fold active or streaming phase-classified replies", () => {
-    const messages = [
-      message("comment", "commentary", 1),
-      message("answer", "final_answer", 2),
-      message("late", "commentary", 3),
-    ];
-    const feed = feedFor(messages);
-    expect(
-      messageIds(
-        deriveThreadFeedPresentation(
-          feed,
-          { ...latestRun, status: "running", completedAt: null },
-          new Set(),
-        ),
-      ),
-    ).toEqual(["comment", "answer", "late"]);
-    const late = messages[2]!;
-    expect(
-      messageIds(
-        deriveThreadFeedPresentation(
-          feedFor([
-            ...messages.slice(0, 2),
-            { ...late, streaming: true } as OrchestrationV2TurnItem,
-          ]),
-          latestRun,
-          new Set(),
-        ),
-      ),
-    ).toEqual(["comment", "answer", "late"]);
-  });
-});
-
-it("hides bookkeeping wake notifications without hiding real user or assistant content", () => {
-  const hidden = {
-    ...base("hidden-wake", "2026-06-20T00:00:01.000Z", 0),
-    type: "notification" as const,
-    source: { kind: "background_task" as const },
-    outcome: "updated" as const,
-    summary: "Background activity updated",
-    hidden: true as const,
-  };
-  const realContent = [projected(userMessage(), 1), projected(assistantMessage(), 2)];
-  expect(buildThreadFeed([projected(hidden, 0), ...realContent])).toEqual(
-    buildThreadFeed(realContent),
-  );
-  expect(buildThreadFeed(realContent).length).toBeGreaterThan(0);
-});
-
-it("shows the Dulli HTML artifact once and keeps its native tool row title-only", () => {
-  const native: OrchestrationV2TurnItem = {
-    ...base("native-html-show", "2026-06-20T00:00:02.000Z", 1),
-    type: "dynamic_tool",
-    toolName: "html_show",
-    title: "Revenue",
-    input: { title: "Revenue", html: "<h1>Raw HTML</h1>", text: "Terminal-only table" },
-    output: {
-      content: [{ type: "text", text: "Already shown" }],
-      details: { text: "Terminal-only table" },
-    },
-  };
-  const artifact: OrchestrationV2TurnItem = {
-    ...base("html-show-artifact", "2026-06-20T00:00:02.100Z", 2),
-    type: "dynamic_tool",
-    toolName: "html_render",
-    title: "Revenue",
-    input: { title: "Revenue", height: 320 },
-    output: { htmlRender: { attachmentId: "revenue-page", title: "Revenue", height: 320 } },
-  };
-  const feed = buildThreadFeed([projected(native, 0), projected(artifact, 1)]);
-  expect(feed.filter((entry) => entry.type === "html-render")).toHaveLength(1);
-  const activity = feed.flatMap((entry) =>
-    entry.type === "activity-group" ? entry.activities : [],
-  )[0]!;
-  expect(activity.summary).toBe("Revenue");
-  expect(activity.detail).toBeNull();
-  expect(activity.canExpand).toBe(false);
-  expect(activity.fetchesDetail).toBe(false);
-  for (const display of [activity.getCopyText(), activity.getFullDetail()]) {
-    expect(display).not.toContain("Raw HTML");
-    expect(display).not.toContain("Terminal-only table");
-  }
-});
-
-it("keeps failed html_show calls expandable for their error, without copying visual sources", () => {
-  const item: OrchestrationV2TurnItem = {
-    ...base("failed-html-show", "2026-06-20T00:00:02.000Z", 1),
-    type: "dynamic_tool",
-    status: "failed",
-    toolName: "html_show",
-    title: "Revenue",
-    input: { title: "Revenue", html: "<h1>Raw HTML</h1>", text: "Terminal-only table" },
-    outputOmitted: true,
-  };
-  const activity = buildThreadFeed([projected(item, 0)]).flatMap((entry) =>
-    entry.type === "activity-group" ? entry.activities : [],
-  )[0]!;
-  expect(activity.canExpand).toBe(true);
-  expect(activity.fetchesDetail).toBe(true);
-  for (const display of [activity.getCopyText(), activity.getFullDetail()]) {
-    expect(display).not.toContain("Raw HTML");
-    expect(display).not.toContain("Terminal-only table");
-  }
-});
 describe("streamed feed updates", () => {
   const runs = [RunId.make("run-1"), RunId.make("run-2"), RunId.make("run-3")] as const;
   const at = (second: number) => `2026-06-20T00:00:${String(second).padStart(2, "0")}.000Z`;
@@ -1981,4 +1944,82 @@ describe("streamed feed updates", () => {
     expect(showsDelegation(steps[2]!)).toBe(true);
     expect(showsDelegation(steps[3]!)).toBe(false);
   });
+});
+
+it.each([false, true])(
+  "caps live approval headers while preserving the prompt (grouped: %s)",
+  (grouped) => {
+    const at = "2026-06-20T00:00:02.000Z";
+    const prompt = `python3 - <<'PY'\n${"print('approval')\n".repeat(400)}PY`;
+    const approval: OrchestrationV2TurnItem = {
+      ...base("long-approval", at, 2),
+      type: "approval_request",
+      status: "waiting",
+      completedAt: null,
+      requestId: RuntimeRequestId.make("long-approval"),
+      requestKind: "command",
+      prompt,
+    };
+    const presented = deriveThreadFeedPresentation(
+      buildThreadFeed([
+        projected(userMessage(), 0),
+        ...(grouped ? [projected(command(), 1)] : []),
+        projected(approval, 2),
+      ]),
+      { runId, status: "running", startedAt: at, completedAt: null },
+      new Set(),
+      new Set(),
+      at,
+    );
+    const header = presented.find((row) =>
+      grouped ? row.type === "work-toggle" : row.type === "activity-group",
+    );
+    const label =
+      header?.type === "work-toggle"
+        ? header.summary
+        : header?.type === "activity-group"
+          ? header.activities[0]?.groupStandIn?.label
+          : undefined;
+    expect(label).toBeDefined();
+    expect(label!.length).toBeLessThanOrEqual(203);
+    expect(label).toMatch(/^python3 - <<'PY' print/);
+    expect(label).not.toContain("\n");
+    const feed = buildThreadFeed([projected(approval, 0)]);
+    const activity = feed.flatMap((row) =>
+      row.type === "activity-group" ? row.activities : [],
+    )[0]!;
+    expect(activity.detail).toBe(prompt);
+    expect(JSON.parse(activity.getFullDetail()!).item).toMatchObject({ prompt });
+    expect(activity.getCopyText()).toContain(prompt);
+  },
+);
+
+it("caps live thought previews while preserving reasoning detail", () => {
+  const at = "2026-06-20T00:00:02.000Z";
+  const text = "Considering the pending approval\n".repeat(100);
+  const thought: OrchestrationV2TurnItem = {
+    ...base("long-thought", at, 1),
+    type: "reasoning",
+    status: "running",
+    completedAt: null,
+    text,
+    streaming: true,
+  };
+  const feed = buildThreadFeed([projected(userMessage(), 0), projected(thought, 1)]);
+  const rows = deriveThreadFeedPresentation(
+    feed,
+    { runId, status: "running", startedAt: at, completedAt: null },
+    new Set(),
+    new Set(),
+    at,
+  );
+  const header = rows.find((row) => row.type === "work-toggle");
+  expect(header).toMatchObject({ summary: "Thinking", live: true });
+  expect(header?.thought).toMatch(/^Considering the pending approval/);
+  expect(header?.thought).not.toContain("\n");
+  expect(header!.thought!.length).toBeLessThanOrEqual(203);
+  const activity = feed.flatMap((row) => (row.type === "activity-group" ? row.activities : []))[0]!;
+  expect(activity.detail).toBe(text);
+  expect(JSON.parse(activity.getFullDetail()!).item).toMatchObject({ text });
+  expect(activity.getCopyText()).toContain(text);
 });

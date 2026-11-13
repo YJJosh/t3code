@@ -1,4 +1,4 @@
-import type { ProjectMultiRepo, RepositoryIdentity } from "@t3tools/contracts";
+import type { RepositoryIdentity, ProjectMultiRepo } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -12,8 +12,8 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 
-import * as ProjectMultiRepoResolver from "./ProjectMultiRepoResolver.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
+import * as ProjectMultiRepoResolver from "./ProjectMultiRepoResolver.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 
 const DEFAULT_CACHE_CAPACITY = 512;
@@ -24,11 +24,15 @@ const DEFAULT_SUCCESS_TTL = Duration.minutes(1);
 const DEFAULT_FAVICON_TTL = Duration.minutes(15);
 const DEFAULT_FAILURE_TTL = Duration.seconds(5);
 
-export interface ProjectEnrichment {
+interface ProjectSources {
   readonly repositoryIdentity: RepositoryIdentity | null;
-  readonly faviconPath: string | null;
   readonly multiRepo?: ProjectMultiRepo | null;
   readonly nestedRepositories?: ReadonlyArray<string>;
+}
+
+export interface ProjectEnrichment extends ProjectSources {
+  readonly repositoryIdentity: RepositoryIdentity | null;
+  readonly faviconPath: string | null;
   readonly repositoryIdentityResolved: boolean;
 }
 
@@ -97,22 +101,61 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   const maxPending = Math.max(1, options.maxPending ?? DEFAULT_MAX_PENDING);
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
 
+  // Outlives the cache entry so an expired or refreshing identity still reads as its last value.
+  const lastRepositoryIdentities = new Map<string, ProjectSources>();
+  // `invalidate` drops a root's in-flight lookup so its late result cannot overwrite a newer one.
+  const lookupsInFlight = new Map<string, object>();
+  const rememberRepositoryIdentity = (workspaceRoot: string, sources: ProjectSources) => {
+    lastRepositoryIdentities.delete(workspaceRoot);
+    if (
+      sources.repositoryIdentity === null &&
+      sources.multiRepo == null &&
+      !sources.nestedRepositories?.length
+    )
+      return;
+    if (lastRepositoryIdentities.size >= cacheCapacity) {
+      const oldestRoot = lastRepositoryIdentities.keys().next().value;
+      if (oldestRoot !== undefined) lastRepositoryIdentities.delete(oldestRoot);
+    }
+    lastRepositoryIdentities.set(workspaceRoot, sources);
+  };
+
   const repositoryIdentityCache = yield* Cache.makeWith(
     (workspaceRoot: string) =>
-      Effect.exit(
-        Effect.gen(function* () {
-          const folder = Option.isSome(multiRepoResolver)
-            ? yield* multiRepoResolver.value.resolve(workspaceRoot)
-            : { multiRepo: null, nestedRepositories: [] };
-          return {
-            ...folder,
-            repositoryIdentity:
-              folder.multiRepo === null
-                ? yield* repositoryIdentityResolver.resolve(workspaceRoot)
-                : null,
-          };
-        }),
-      ),
+      Effect.suspend(() => {
+        const lookup = {};
+        lookupsInFlight.set(workspaceRoot, lookup);
+        const isCurrent = () => lookupsInFlight.get(workspaceRoot) === lookup;
+        return Effect.exit(
+          Effect.gen(function* (): Effect.fn.Return<ProjectSources> {
+            const folder = Option.isSome(multiRepoResolver)
+              ? yield* multiRepoResolver.value.resolve(workspaceRoot)
+              : null;
+            const repositoryIdentity = folder?.multiRepo
+              ? null
+              : yield* repositoryIdentityResolver.resolve(workspaceRoot);
+            return {
+              repositoryIdentity,
+              ...(folder
+                ? { multiRepo: folder.multiRepo, nestedRepositories: folder.nestedRepositories }
+                : {}),
+            };
+          }),
+        ).pipe(
+          Effect.tap((result) =>
+            Effect.sync(() => {
+              if (Exit.isSuccess(result) && isCurrent()) {
+                rememberRepositoryIdentity(workspaceRoot, result.value);
+              }
+            }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (isCurrent()) lookupsInFlight.delete(workspaceRoot);
+            }),
+          ),
+        );
+      }),
     {
       capacity: cacheCapacity,
       timeToLive: Exit.match({
@@ -180,23 +223,13 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
     function* (workspaceRoot: string) {
       const repositoryIdentity = yield* Cache.get(repositoryIdentityCache, workspaceRoot);
       yield* logFailure(workspaceRoot, "repositoryIdentity", repositoryIdentity);
-    },
-  );
-
-  const publishRepositoryIdentity = Effect.fn("ProjectEnrichmentService.publishRepositoryIdentity")(
-    function* (workspaceRoot: string) {
-      const cached = yield* Cache.getSuccess(repositoryIdentityCache, workspaceRoot);
-      if (Option.isNone(cached)) return;
-      const repositoryIdentity = cached.value;
       const faviconPath = yield* Cache.getSuccess(faviconCache, workspaceRoot);
       const repositoryIdentityResolved = Exit.isSuccess(repositoryIdentity);
       yield* PubSub.publish(changes, {
         workspaceRoot,
         repositoryIdentityResolved,
         enrichment: {
-          ...availableValue(Option.some(repositoryIdentity)),
-          repositoryIdentity:
-            availableValue(Option.some(repositoryIdentity))?.repositoryIdentity ?? null,
+          ...(availableValue(Option.some(repositoryIdentity)) ?? { repositoryIdentity: null }),
           faviconPath: availableValue(faviconPath),
           repositoryIdentityResolved,
         },
@@ -221,16 +254,10 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   const startWorkers = (
     lane: EnrichmentWorkLane,
     resolve: (workspaceRoot: string) => Effect.Effect<void>,
-    publish?: (workspaceRoot: string) => Effect.Effect<void>,
   ) => {
     const worker = Queue.take(lane.queue).pipe(
       Effect.flatMap((workspaceRoot) =>
-        resolve(workspaceRoot).pipe(
-          Effect.ensuring(removePending(lane, workspaceRoot)),
-          // Completion is a receipt: release the pending slot before notifying
-          // clients that may immediately invalidate and re-request this root.
-          Effect.andThen(publish?.(workspaceRoot) ?? Effect.void),
-        ),
+        resolve(workspaceRoot).pipe(Effect.ensuring(removePending(lane, workspaceRoot))),
       ),
       Effect.forever,
     );
@@ -240,70 +267,76 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
   };
   yield* Effect.all(
     [
-      startWorkers(repositoryIdentityLane, resolveRepositoryIdentity, publishRepositoryIdentity),
+      startWorkers(repositoryIdentityLane, resolveRepositoryIdentity),
       startWorkers(faviconLane, resolveFavicon),
     ],
     { concurrency: "unbounded", discard: true },
   );
 
-  const requestLane = Effect.fn("ProjectEnrichmentService.requestLane")(function* (
+  // Every project read lands here; only an actual enqueue gets a span, the resolve workers trace the work.
+  const requestLane = Effect.fnUntraced(function* (
     lane: EnrichmentWorkLane,
     workspaceRoot: string,
     field: "repositoryIdentity" | "faviconPath",
   ) {
     if (!(yield* reservePending(lane, workspaceRoot))) return;
-    if (!(yield* Queue.offer(lane.queue, workspaceRoot))) {
-      yield* removePending(lane, workspaceRoot);
-      yield* Effect.logWarning("Project metadata enrichment queue is full", {
-        workspaceRoot,
-        field,
-      });
-    }
+    yield* Effect.gen(function* () {
+      if (!(yield* Queue.offer(lane.queue, workspaceRoot))) {
+        yield* removePending(lane, workspaceRoot);
+        yield* Effect.logWarning("Project metadata enrichment queue is full", {
+          workspaceRoot,
+          field,
+        });
+      }
+    }).pipe(Effect.withSpan("ProjectEnrichmentService.requestLane"));
   });
 
-  const peek: ProjectEnrichmentService["Service"]["peek"] = Effect.fn(
-    "ProjectEnrichmentService.peek",
-  )(function* (workspaceRoot) {
-    const [repositoryIdentity, faviconPath] = yield* Effect.all(
-      [
-        Cache.getSuccess(repositoryIdentityCache, workspaceRoot),
-        Cache.getSuccess(faviconCache, workspaceRoot),
-      ] as const,
-      { concurrency: "unbounded" },
-    );
-    return {
-      ...availableValue(repositoryIdentity),
-      repositoryIdentity: availableValue(repositoryIdentity)?.repositoryIdentity ?? null,
-      faviconPath: availableValue(faviconPath),
-      repositoryIdentityResolved: isSuccessfullyResolved(repositoryIdentity),
-    };
-  });
+  // peek/request/getAvailable run per project on every shell read, inside the caller's span; own spans were ~0ms noise.
+  const peek: ProjectEnrichmentService["Service"]["peek"] = Effect.fnUntraced(
+    function* (workspaceRoot) {
+      const [repositoryIdentity, faviconPath] = yield* Effect.all(
+        [
+          Cache.getSuccess(repositoryIdentityCache, workspaceRoot),
+          Cache.getSuccess(faviconCache, workspaceRoot),
+        ] as const,
+        { concurrency: "unbounded" },
+      );
+      const repositoryIdentityResolved = isSuccessfullyResolved(repositoryIdentity);
+      return {
+        ...((repositoryIdentityResolved
+          ? availableValue(repositoryIdentity)
+          : lastRepositoryIdentities.get(workspaceRoot)) ?? { repositoryIdentity: null }),
+        faviconPath: availableValue(faviconPath),
+        repositoryIdentityResolved,
+      };
+    },
+  );
 
-  const request: ProjectEnrichmentService["Service"]["request"] = Effect.fn(
-    "ProjectEnrichmentService.request",
-  )(function* (workspaceRoot) {
-    const [hasRepositoryIdentity, hasFaviconPath] = yield* Effect.all(
-      [Cache.has(repositoryIdentityCache, workspaceRoot), Cache.has(faviconCache, workspaceRoot)],
-      { concurrency: "unbounded" },
-    );
-    yield* Effect.all(
-      [
-        hasRepositoryIdentity
-          ? Effect.void
-          : requestLane(repositoryIdentityLane, workspaceRoot, "repositoryIdentity"),
-        hasFaviconPath ? Effect.void : requestLane(faviconLane, workspaceRoot, "faviconPath"),
-      ],
-      { concurrency: "unbounded", discard: true },
-    );
-  });
+  const request: ProjectEnrichmentService["Service"]["request"] = Effect.fnUntraced(
+    function* (workspaceRoot) {
+      const [hasRepositoryIdentity, hasFaviconPath] = yield* Effect.all(
+        [Cache.has(repositoryIdentityCache, workspaceRoot), Cache.has(faviconCache, workspaceRoot)],
+        { concurrency: "unbounded" },
+      );
+      yield* Effect.all(
+        [
+          hasRepositoryIdentity
+            ? Effect.void
+            : requestLane(repositoryIdentityLane, workspaceRoot, "repositoryIdentity"),
+          hasFaviconPath ? Effect.void : requestLane(faviconLane, workspaceRoot, "faviconPath"),
+        ],
+        { concurrency: "unbounded", discard: true },
+      );
+    },
+  );
 
-  const getAvailable: ProjectEnrichmentService["Service"]["getAvailable"] = Effect.fn(
-    "ProjectEnrichmentService.getAvailable",
-  )(function* (workspaceRoot) {
-    const available = yield* peek(workspaceRoot);
-    yield* request(workspaceRoot);
-    return available;
-  });
+  const getAvailable: ProjectEnrichmentService["Service"]["getAvailable"] = Effect.fnUntraced(
+    function* (workspaceRoot) {
+      const available = yield* peek(workspaceRoot);
+      yield* request(workspaceRoot);
+      return available;
+    },
+  );
 
   const readRepositoryIdentity: ProjectEnrichmentService["Service"]["readRepositoryIdentity"] =
     Effect.fn("ProjectEnrichmentService.readRepositoryIdentity")(function* (workspaceRoot) {
@@ -320,9 +353,16 @@ export const make = Effect.fn("ProjectEnrichmentService.make")(function* (
         Effect.all(
           [
             Cache.invalidate(repositoryIdentityCache, workspaceRoot),
+            Effect.sync(() => {
+              lookupsInFlight.delete(workspaceRoot);
+              lastRepositoryIdentities.delete(workspaceRoot);
+            }),
             Cache.invalidate(faviconCache, workspaceRoot),
             // The resolver keeps its own misses, which would outlive a clone filling the folder.
             faviconResolver.invalidate(workspaceRoot),
+            Option.isSome(multiRepoResolver)
+              ? multiRepoResolver.value.invalidate(workspaceRoot)
+              : Effect.void,
           ],
           { concurrency: "unbounded", discard: true },
         ),

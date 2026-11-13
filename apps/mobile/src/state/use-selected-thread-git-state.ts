@@ -29,8 +29,7 @@ export function useSelectedThreadGitState() {
 
   const selectedThreadBranchTarget = {
     environmentId: selectedThread?.environmentId ?? null,
-    // A multi-repo project folder is not a repository, so it has no branches.
-    cwd: selectedThreadProject?.multiRepo ? null : (selectedThreadProject?.workspaceRoot ?? null),
+    cwd: selectedThreadCwd,
     query: null,
   };
   const selectedThreadBranchState = useBranches(selectedThreadBranchTarget);
@@ -43,6 +42,7 @@ export function useSelectedThreadGitState() {
   );
 
   return {
+    isMultiRepoProject: selectedThreadProject?.multiRepo != null,
     gitOperationLabel: gitActionState.currentLabel,
     sourceControlDiscovery,
     selectedThreadBranches,

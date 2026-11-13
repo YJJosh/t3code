@@ -2,19 +2,16 @@ name: Mobile Android APK
 
 # Checks closed testing hourly. Each new beta gets one versioned prerelease.
 # Unchanged checks publish nothing.
-# The fork has no Play listing. Dulli APKs ship from fork-desktop-release.yml;
-# this workflow remains manual-only and hard-disabled.
 on:
-  workflow_dispatch:
-
+  workflow_dispatch: null
 concurrency:
   group: mobile-android-apk
   cancel-in-progress: false
 
 jobs:
   mirror:
-    name: Mirror Play APK (disabled in Dulli fork)
-    if: ${{ false }}
+    name: Mirror beta APK
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.repository == 'pingdotgg/t3code') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

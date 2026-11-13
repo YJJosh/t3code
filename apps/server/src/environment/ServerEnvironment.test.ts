@@ -1,12 +1,14 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
+import { CLI_NPM_PACKAGE_NAME } from "@t3tools/shared/cliRelease";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
@@ -73,19 +75,25 @@ const makeServerConfig = Effect.fn(function* (baseDir: string) {
   } satisfies ServerConfig.ServerConfig["Service"];
 });
 
-it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmentLive", (it) => {
   it.effect("publishes proven install ownership only for manually updated servers", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const baseDir = yield* fs.makeTempDirectoryScoped();
       const prefix = `${baseDir}/node`;
-      const entry = `${prefix}/lib/node_modules/t3/dist/bin.mjs`;
-      yield* fs.makeDirectory(`${prefix}/lib/node_modules/t3/dist`, { recursive: true });
+      const entry = `${prefix}/lib/node_modules/${CLI_NPM_PACKAGE_NAME}/dist/bin.mjs`;
+      yield* fs.makeDirectory(`${prefix}/lib/node_modules/${CLI_NPM_PACKAGE_NAME}/dist`, {
+        recursive: true,
+      });
       yield* fs.makeDirectory(`${prefix}/bin`, { recursive: true });
       yield* fs.writeFileString(entry, "");
       yield* fs.writeFileString(
-        `${prefix}/lib/node_modules/t3/package.json`,
-        '{"name":"t3","version":"0.0.45","bin":{"t3":"./dist/bin.mjs"}}',
+        `${prefix}/lib/node_modules/${CLI_NPM_PACKAGE_NAME}/package.json`,
+        JSON.stringify({
+          name: CLI_NPM_PACKAGE_NAME,
+          version: "0.0.45",
+          bin: { t3: "./dist/bin.mjs" },
+        }),
       );
       yield* fs.symlink(entry, `${prefix}/bin/t3`);
       const config = yield* makeServerConfig(baseDir);
@@ -123,13 +131,37 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
     }),
   );
   it.effect.each([
+    { platform: "darwin", architecture: "arm64", supported: true },
+    { platform: "linux", architecture: "x64", supported: true },
+    { platform: "linux", architecture: "x64", libc: "musl", supported: false },
+    { platform: "win32", architecture: "arm64", supported: false },
+    { platform: "linux", architecture: "arm", supported: false },
+  ] as const)("advertises voice transcription on $platform-$architecture: $supported", (host) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-server-environment-speech-test-",
+      });
+      const descriptor = yield* Effect.gen(function* () {
+        const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+        return yield* serverEnvironment.getDescriptor;
+      }).pipe(
+        Effect.provide(layerServerEnvironment(baseDir)),
+        Effect.provideService(HostProcess.Platform, host.platform),
+        Effect.provideService(HostProcess.Architecture, host.architecture),
+        Effect.provideService(HostProcess.LinuxLibc, "libc" in host ? host.libc : "gnu"),
+      );
+      expect(descriptor.capabilities.voiceTranscription).toBe(host.supported);
+    }),
+  );
+  it.effect.each([
     { name: "missing", content: undefined },
     { name: "empty", content: "" },
     { name: "whitespace-only", content: " \t\n" },
   ])("concurrent initializers recover a $name environment id file", ({ content }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const crypto = yield* Crypto.Crypto;
+      const random = yield* SecureRandom.SecureRandom;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-server-environment-concurrent-test-",
       });
@@ -169,17 +201,17 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
               ),
             ),
         }),
-        Effect.provideService(Crypto.Crypto, {
-          ...crypto,
-          randomUUIDv4: (() =>
+        Effect.provideService(SecureRandom.SecureRandom, {
+          ...random,
+          uuidV4: (() =>
             Effect.gen(function* () {
-              const id = yield* crypto.randomUUIDv4();
+              const id = yield* random.uuidV4();
               if (--remaining === 0) {
                 yield* Deferred.succeed(bothGenerated, undefined);
               }
               yield* Deferred.await(bothGenerated);
               return id;
-            })) as Crypto.Crypto["randomUUIDv4"],
+            })) as SecureRandom.SecureRandom["Service"]["uuidV4"],
         }),
       );
 

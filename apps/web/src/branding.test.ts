@@ -45,6 +45,7 @@ describe("Dulli branding", () => {
 
   it("uses source-level Dulli branding for desktop builds", async () => {
     vi.stubEnv("VITE_DESKTOP_BUILD_BRAND", " DULLI ");
+    vi.stubEnv("DEV", false);
 
     const branding = await import("./branding");
 
@@ -52,5 +53,16 @@ describe("Dulli branding", () => {
     expect(branding.APP_WORDMARK_LABEL).toBe("Dulli");
     expect(branding.APP_STAGE_LABEL).toBe("Latest");
     expect(branding.APP_DISPLAY_NAME).toBe("T3 Dulli");
+  });
+
+  it("keeps the Dev stage on Dulli dev servers", async () => {
+    vi.stubEnv("VITE_DESKTOP_BUILD_BRAND", "dulli");
+    vi.stubEnv("DEV", true);
+
+    const branding = await import("./branding");
+
+    expect(branding.APP_WORDMARK_LABEL).toBe("Dulli");
+    expect(branding.APP_STAGE_LABEL).toBe("Dev");
+    expect(branding.APP_DISPLAY_NAME).toBe("T3 Dulli (Dev)");
   });
 });

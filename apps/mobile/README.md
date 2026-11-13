@@ -1,7 +1,7 @@
 # T3 Code Mobile
 
-> [!WARNING]
-> T3 Code Mobile is currently in development and is not distributed yet. If you want to try it out, you can build it from source.
+> [!NOTE]
+> To install the released app from the App Store or Google Play, see [Mobile app](../../docs/user/install.md#mobile-app). This guide covers building it from source.
 
 ## Quickstart
 
@@ -35,7 +35,11 @@ The device argument can be omitted when exactly one device is booted or connecte
 compares this checkout's Expo fingerprint and the installed binary with its last install record,
 and reuses a matching client. Otherwise it installs the build for that fingerprint from
 `~/.cache/t3code/native-clients/artifacts`, then the shared task cache, and builds only when
-neither has it. One iOS simulator build serves every iPhone and iPad simulator, and one APK per
+neither has it. A build runs in the `Mobile Dev Client` workflow (Blacksmith runners with warm
+Gradle and ccache state, and a macOS runner for iOS) when `gh` may dispatch workflows on
+`pingdotgg/t3code` and HEAD is pushed; the helper waits for the client in the shared cache.
+Otherwise, or when HEAD lacks your native edits or `T3_NATIVE_CLIENT_BUILD=local` is set, it builds
+on this machine. Main's client is built there on every native change, so most checkouts hit. One iOS simulator build serves every iPhone and iPad simulator, and one APK per
 ABI (x86_64 or arm64-v8a) serves every emulator and phone of that ABI. Build output goes to the
 log file it prints (`T3_NATIVE_CLIENT_VERBOSE=1` streams it instead). Builds are shared back when
 your task-cache login (`bash infra/task-cache/install.sh`) can write. `T3_NATIVE_CLIENT_CACHE=read`
@@ -125,11 +129,6 @@ node ../../scripts/mobile-native-static-check.ts
 The native lint task runs SwiftLint for Swift plus ktlint and detekt for Kotlin. Missing native tools are reported as warnings and skipped locally. CI installs the default toolset from `apps/mobile/Brewfile` before running the native checks.
 
 ## EAS Builds
-
-Upstream EAS build and store-submission workflows are disabled in this fork. Dulli Android
-releases are signed, sideloadable APKs built by the fork release workflow; see
-[the fork release guide](../../docs/fork-development.md#android-apk-signing). The commands below
-are upstream reference and require an independently configured Expo project.
 
 Preview and production variants use Expo fingerprinting so OTA updates only reach binaries with matching native dependencies, config plugins, and patches. CI uses the `preview:dev` profile to reuse a compatible native build when possible.
 

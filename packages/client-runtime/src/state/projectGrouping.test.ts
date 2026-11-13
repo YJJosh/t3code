@@ -6,6 +6,7 @@ import { chooseLoadBalancedEnvironment } from "../load-balancing.ts";
 import {
   buildProjectGroups,
   deriveLogicalProjectKeyFromSettings,
+  pickableProjectGroups,
   derivePhysicalProjectKey,
   deriveMultiRepoKey,
   listMultiRepoProjectsToSetUp,
@@ -266,33 +267,6 @@ describe("buildProjectGroups", () => {
     }
   });
 
-  it("groups a multi-repo project across machines by its members' remotes", () => {
-    const multiRepo = (...remotes: Array<string | null>) => ({
-      members: remotes.map((remoteUrl, index) => ({ path: `repo-${index}`, remoteUrl })),
-    });
-    const projects = [
-      makeProject("pc-a", "/work/product", {
-        repositoryIdentity: null,
-        multiRepo: multiRepo("git@github.com:x/api.git", "https://github.com/x/web.git"),
-      }),
-      makeProject("pc-b", "/home/me/product", {
-        environmentId: EnvironmentId.make("other"),
-        repositoryIdentity: null,
-        multiRepo: multiRepo("https://github.com/x/web", "https://github.com/x/api.git"),
-      }),
-      makeProject("no-remote", "/work/scratch", {
-        repositoryIdentity: null,
-        multiRepo: multiRepo("git@github.com:x/api.git", null),
-      }),
-    ];
-
-    const groups = buildProjectGroups({ projects, settings: settings("repository") });
-    expect(groups.map((group) => group.members.map((member) => member.project.id))).toEqual([
-      ["pc-a", "pc-b"],
-      ["no-remote"],
-    ]);
-  });
-
   it("keeps a fork apart from its upstream checkout and labels it by its own remote", () => {
     const fork = makeProject("fork", "/work/t3code-fork", {
       repositoryIdentity: {
@@ -408,6 +382,75 @@ describe("buildProjectGroups", () => {
   });
 });
 
+describe("project pins and archives", () => {
+  const at = "2026-07-02T00:00:00.000Z";
+  const remote = EnvironmentId.make("remote");
+  const group = (...projects: EnvironmentProject[]) =>
+    buildProjectGroups({ projects, settings: settings("repository") })[0]!;
+
+  it("keeps a project visible while its machines disagree", () => {
+    const local = makeProject("local", "/work/t3code");
+    const other = makeProject("remote", "/work/t3code", { environmentId: remote });
+    const partial = group({ ...local, pinnedAt: at, archivedAt: at }, other);
+    expect(partial).toMatchObject({ pinned: true, archived: false });
+    expect(group({ ...local, archivedAt: at }, { ...other, archivedAt: at }).archived).toBe(true);
+  });
+
+  it("offers pinned projects first and leaves archived ones out", () => {
+    const pickable = pickableProjectGroups([
+      { key: "a", pinned: false, archived: false },
+      { key: "b", pinned: true, archived: true },
+      { key: "c", pinned: true, archived: false },
+      { key: "d", pinned: false, archived: true },
+    ]);
+    expect(pickable.map((entry) => entry.key)).toEqual(["c", "a"]);
+  });
+});
+
+describe("sortProjectsByGroupOrder", () => {
+  const remote = EnvironmentId.make("remote");
+  const ref = (projectId: string, env = environmentId) => ({
+    environmentId: env,
+    projectId: ProjectId.make(projectId),
+  });
+  const project = (id: string, env: string = environmentId) => ({ id, environmentId: env });
+
+  it("tells the same project id on two environments apart", () => {
+    const sorted = sortProjectsByGroupOrder(
+      [project("shared"), project("shared", remote)],
+      [{ memberProjectRefs: [ref("shared", remote)] }, { memberProjectRefs: [ref("shared")] }],
+    );
+    expect(sorted.map((entry) => entry.environmentId)).toEqual([remote, environmentId]);
+  });
+});
+
+it("groups a multi-repo project across machines by its members' remotes", () => {
+  const multiRepo = (...remotes: Array<string | null>) => ({
+    members: remotes.map((remoteUrl, index) => ({ path: `repo-${index}`, remoteUrl })),
+  });
+  const projects = [
+    makeProject("pc-a", "/work/product", {
+      repositoryIdentity: null,
+      multiRepo: multiRepo("git@github.com:x/api.git", "https://github.com/x/web.git"),
+    }),
+    makeProject("pc-b", "/home/me/product", {
+      environmentId: EnvironmentId.make("other"),
+      repositoryIdentity: null,
+      multiRepo: multiRepo("https://github.com/x/web", "https://github.com/x/api.git"),
+    }),
+    makeProject("no-remote", "/work/scratch", {
+      repositoryIdentity: null,
+      multiRepo: multiRepo("git@github.com:x/api.git", null),
+    }),
+  ];
+
+  const groups = buildProjectGroups({ projects, settings: settings("repository") });
+  expect(groups.map((group) => group.members.map((member) => member.project.id))).toEqual([
+    ["pc-a", "pc-b"],
+    ["no-remote"],
+  ]);
+});
+
 describe("deriveMultiRepoKey", () => {
   const group = (...remotes: string[]) => ({
     members: remotes.map((remoteUrl, index) => ({ path: `member-${index}`, remoteUrl })),
@@ -465,21 +508,5 @@ describe("listMultiRepoProjectsToSetUp", () => {
       { path: "repo-0", remoteUrl: "git@github.com:x/api.git" },
       { path: "repo-1", remoteUrl: "git@github.com:x/web.git" },
     ]);
-  });
-});
-describe("sortProjectsByGroupOrder", () => {
-  const remote = EnvironmentId.make("remote");
-  const ref = (projectId: string, env = environmentId) => ({
-    environmentId: env,
-    projectId: ProjectId.make(projectId),
-  });
-  const project = (id: string, env: string = environmentId) => ({ id, environmentId: env });
-
-  it("tells the same project id on two environments apart", () => {
-    const sorted = sortProjectsByGroupOrder(
-      [project("shared"), project("shared", remote)],
-      [{ memberProjectRefs: [ref("shared", remote)] }, { memberProjectRefs: [ref("shared")] }],
-    );
-    expect(sorted.map((entry) => entry.environmentId)).toEqual([remote, environmentId]);
   });
 });

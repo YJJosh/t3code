@@ -5,7 +5,7 @@ runs:
   steps:
     - shell: bash
       run: |
-        # Use a dedicated mirror list on GitHub-hosted Ubuntu runners.
+        # Use a separate mirror list so GitHub-hosted runners need no vendor configuration.
         printf '%s\tpriority:%s\n' \
           https://archive.ubuntu.com/ubuntu 1 \
           https://mirrors.edge.kernel.org/ubuntu 2 \

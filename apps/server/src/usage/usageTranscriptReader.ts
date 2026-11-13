@@ -3,8 +3,8 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeStringDecoder from "node:string_decoder";
+import * as NodeZlib from "node:zlib";
 
-import type { UsageSourceScan } from "@t3tools/contracts";
 import type {
   SelectedFields,
   TranscriptUsageFormat,
@@ -19,35 +19,6 @@ export interface TranscriptFile {
   readonly path: string;
   readonly size: number;
   readonly mtimeMs: number;
-}
-
-export interface TranscriptFileOptions {
-  readonly fileName?: string;
-  /** Maximum number of directories below the source root; omitted means recursive. */
-  readonly maxDepth?: number;
-  readonly filePattern?: UsageSourceScan["filePattern"];
-}
-
-/** The same selection applies to live files and retained cache entries. */
-export function transcriptPathIncluded(
-  root: string,
-  file: string,
-  options?: TranscriptFileOptions,
-): boolean {
-  const relative = NodePath.relative(root, file);
-  if (
-    NodePath.isAbsolute(relative) ||
-    relative === ".." ||
-    relative.startsWith(`..${NodePath.sep}`)
-  )
-    return false;
-  const parts = relative.split(NodePath.sep);
-  const depth = parts.length - 1;
-  if (options?.maxDepth !== undefined && depth > options.maxDepth) return false;
-  if (options?.filePattern === "pi-subagent-session" && (depth !== 2 || parts[1] !== "session"))
-    return false;
-  const name = parts.at(-1)!;
-  return options?.fileName === undefined ? name.endsWith(".jsonl") : name === options.fileName;
 }
 
 /** Resume only if bytes before resumeOffset match the guard hash; rewritten files would corrupt totals. */
@@ -79,10 +50,8 @@ function selectUsageFields(fields: SelectedFields) {
     let selected: true | SelectedFields = fields;
     for (const key of path) {
       if (selected === true) return true;
-      // Array indexes select by their string form, like `{ content: { 0: ... } }`.
-      const name = typeof key === "number" ? String(key) : key;
-      if (name === null || !Object.hasOwn(selected, name)) return false;
-      selected = selected[name]!;
+      if (typeof key !== "string" || !Object.hasOwn(selected, key)) return false;
+      selected = selected[key]!;
     }
     return true;
   };
@@ -101,39 +70,32 @@ function fnv1a(buffer: Buffer): number {
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: TranscriptFileOptions,
-): Promise<{
-  readonly files: readonly TranscriptFile[];
-  readonly failedPaths: number;
-  readonly unreadableDirectories: number;
-}> {
+  options?: { readonly fileName?: string },
+): Promise<{ readonly files: readonly TranscriptFile[]; readonly failedPaths: number }> {
+  const fileName = options?.fileName;
   const candidates: string[] = [];
   let failedPaths = 0;
-  let unreadableDirectories = 0;
-  const walk = async (dir: string, depth: number): Promise<void> => {
+  const walk = async (dir: string): Promise<void> => {
     let entries;
     try {
       entries = await NodeFSP.readdir(dir, { withFileTypes: true });
     } catch {
       failedPaths += 1;
-      unreadableDirectories += 1;
       return;
     }
     for (const entry of entries) {
       const child = NodePath.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        const withinDepth = options?.maxDepth === undefined || depth < options.maxDepth;
-        const withinPattern =
-          options?.filePattern !== "pi-subagent-session" ||
-          depth === 0 ||
-          (depth === 1 && entry.name === "session");
-        if (withinDepth && withinPattern) await walk(child, depth + 1);
-      } else if (transcriptPathIncluded(root, child, options)) {
+      if (entry.isDirectory()) await walk(child);
+      else if (
+        fileName !== undefined
+          ? entry.name === fileName
+          : entry.name.endsWith(".jsonl") || entry.name.endsWith(".jsonl.zst")
+      ) {
         candidates.push(child);
       }
     }
   };
-  await walk(root, 0);
+  await walk(root);
 
   const found: Array<TranscriptFile | undefined> = Array.from({ length: candidates.length });
   const queue = candidates.entries();
@@ -154,7 +116,7 @@ export async function listTranscriptFiles(
   await Promise.all(
     Array.from({ length: Math.min(STAT_CONCURRENCY, candidates.length) }, statQueued),
   );
-  return { files: found.filter((file) => file !== undefined), failedPaths, unreadableDirectories };
+  return { files: found.filter((file) => file !== undefined), failedPaths };
 }
 
 export async function readDirectoryVolumeId(path: string): Promise<string> {
@@ -164,19 +126,6 @@ export async function readDirectoryVolumeId(path: string): Promise<string> {
   } catch {
     return "";
   }
-}
-
-/** Parent identities nearest first, matching the portable containment proof on clients. */
-export async function readDirectoryAncestorVolumeIds(path: string): Promise<readonly string[]> {
-  const parents: string[] = [];
-  let current = NodePath.resolve(path);
-  while (true) {
-    const parent = NodePath.dirname(current);
-    if (parent === current) break;
-    parents.push(parent);
-    current = parent;
-  }
-  return Promise.all(parents.map(readDirectoryVolumeId));
 }
 
 async function guardMatches(
@@ -218,6 +167,7 @@ export async function readTranscriptRecords<State>(
   options?: { readonly streamingThresholdBytes?: number },
 ): Promise<TranscriptParseResult | null> {
   const streamingThresholdBytes = options?.streamingThresholdBytes ?? STREAMING_THRESHOLD_BYTES;
+  const compressed = filePath.endsWith(".jsonl.zst");
   let handle: NodeFSP.FileHandle;
   try {
     handle = await NodeFSP.open(filePath, "r");
@@ -237,6 +187,7 @@ export async function readTranscriptRecords<State>(
         ? Option.none()
         : decodeState(resumeFrom.state);
     if (
+      !compressed &&
       resumeFrom !== undefined &&
       resumeFrom.resumeOffset > 0 &&
       (codec === undefined || Option.isSome(savedState)) &&
@@ -303,11 +254,14 @@ export async function readTranscriptRecords<State>(
       streaming = undefined;
       decoder = undefined;
     };
-    const stream = handle.createReadStream({
+    const input = handle.createReadStream({
       start,
-      autoClose: false,
+      autoClose: compressed,
       highWaterMark: 256 * 1024,
-    }) as AsyncIterable<Buffer>;
+    });
+    // Compressed snapshots cache a full parse; decoded byte offsets cannot
+    // resume the compressed input.
+    const stream = compressed ? input.compose(NodeZlib.createZstdDecompress()) : input;
     for await (const chunk of stream) {
       let lineStart = 0;
       while (lineStart < chunk.length) {
@@ -335,7 +289,7 @@ export async function readTranscriptRecords<State>(
       decodeState === undefined ? state : Option.getOrThrow(decodeState(encodedState));
     finish(tailState, tailRecords);
 
-    const guardLength = Math.min(GUARD_LENGTH, resumeOffset);
+    const guardLength = compressed ? 0 : Math.min(GUARD_LENGTH, resumeOffset);
     let guardHash = 0;
     if (guardLength > 0) {
       const window = Buffer.alloc(guardLength);
@@ -348,7 +302,7 @@ export async function readTranscriptRecords<State>(
       tailRecords,
       malformedRecords: format.readMalformedRecords?.(tailState) ?? 0,
       position: {
-        resumeOffset,
+        resumeOffset: compressed ? 0 : resumeOffset,
         guardLength,
         guardHash,
         state: encodedState,

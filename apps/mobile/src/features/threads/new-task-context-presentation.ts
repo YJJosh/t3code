@@ -164,22 +164,16 @@ export function resolveNewTaskDraftWorkspace(input: {
   readonly defaultMode: WorkspaceMode;
   readonly defaultModeSettled: boolean;
   readonly isGitRepo: boolean;
-  readonly multiRepo?: boolean;
   readonly branches: Parameters<typeof fillNewTaskWorkspaceBranch>[0]["branches"];
   readonly projectCwd: string | null;
 }): ComposerDraftWorkspaceSelection {
   const selection = input.canChooseWorkspace ? input.selection : undefined;
-  const workspace = resolveNewTaskWorkspaceSelection({
-    selection,
-    fallback: { mode: input.defaultMode, branch: null, worktreePath: null },
-    isGitRepo: input.multiRepo || input.isGitRepo,
-  });
-  // Multi-repo workspaces choose a base separately for each child repository.
-  if (input.multiRepo && workspace.mode === "worktree" && workspace.branch === null) {
-    return { ...workspace, branch: "HEAD", worktreePath: null };
-  }
   return fillNewTaskWorkspaceBranch({
-    selection: workspace,
+    selection: resolveNewTaskWorkspaceSelection({
+      selection,
+      fallback: { mode: input.defaultMode, branch: null, worktreePath: null },
+      isGitRepo: input.isGitRepo,
+    }),
     branches: input.branches,
     projectCwd: input.projectCwd,
     worktreeDefaultSettled: selection?.mode !== undefined || input.defaultModeSettled,

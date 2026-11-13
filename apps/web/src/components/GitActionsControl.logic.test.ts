@@ -1,11 +1,12 @@
-import { summarizeRepositories } from "./GitActionsControl.logic";
 import { SourceControlProviderKind, type VcsStatusResult } from "@t3tools/contracts";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { resolveAutoFeatureBranchName } from "@t3tools/shared/git";
 import { assert, describe, it } from "vite-plus/test";
 import {
   buildMenuItems,
+  hasUsableGitMenuContent,
   requiresDefaultBranchConfirmation,
+  resolveChangesTotals,
   resolveDefaultBranchActionDialogCopy,
   resolveLiveThreadBranchUpdate,
   resolveQuickAction,
@@ -77,6 +78,29 @@ describe("when: ref is clean, up to date, and has no open PR", () => {
       false,
     );
   });
+
+  it("offers the actions menu only when something in it is usable", () => {
+    const hasContent = (
+      gitStatus: VcsStatusResult,
+      overrides: Partial<Parameters<typeof hasUsableGitMenuContent>[0]> = {},
+    ) =>
+      hasUsableGitMenuContent({
+        menuItems: buildMenuItems(gitStatus, false, gitStatus.hasPrimaryRemote),
+        canWriteSourceControl: true,
+        canPublishRepository: false,
+        hasNotice: false,
+        ...overrides,
+      });
+    const clean = status();
+    const dirty = status({ hasWorkingTreeChanges: true });
+
+    assert.isFalse(hasContent(clean));
+    assert.isTrue(hasContent(dirty));
+    assert.isTrue(hasContent(status({ aheadCount: 1 })));
+    assert.isFalse(hasContent(dirty, { canWriteSourceControl: false }));
+    assert.isTrue(hasContent(status({ hasPrimaryRemote: false }), { canPublishRepository: true }));
+    assert.isTrue(hasContent(clean, { hasNotice: true }));
+  });
 });
 
 describe("when: on default ref without open PR", () => {
@@ -92,6 +116,36 @@ describe("when: on default ref without open PR", () => {
       label: "Commit & push",
       disabled: false,
     });
+  });
+});
+
+describe("when: local changes are behind upstream", () => {
+  it("keeps the commit action available without pushing, with or without an open PR", () => {
+    const behind = status({ hasWorkingTreeChanges: true, behindCount: 2 });
+    const commit = {
+      label: "Commit",
+      disabled: false,
+      kind: "run_action",
+      action: "commit",
+    } as const;
+    assert.deepEqual(resolveQuickAction(behind, false), commit);
+    assert.deepEqual(
+      resolveQuickAction(
+        {
+          ...behind,
+          pr: {
+            number: 13,
+            title: "Open PR",
+            url: "https://example.com/pr/13",
+            baseRef: "main",
+            headRef: "feature/test",
+            state: "open",
+          },
+        },
+        false,
+      ),
+      commit,
+    );
   });
 });
 
@@ -219,11 +273,52 @@ describe("resolveAutoFeatureBranchName", () => {
   });
 });
 
-describe("summarizeRepositories", () => {
-  it("names every repository when there are few, and counts the rest otherwise", () => {
-    assert.equal(summarizeRepositories(["api"]), "api");
-    assert.equal(summarizeRepositories(["api", "web"]), "api and web");
-    assert.equal(summarizeRepositories(["a", "b", "c", "d"]), "a, b, c and d");
-    assert.equal(summarizeRepositories(["a", "b", "c", "d", "e", "f"]), "a, b, c and 3 more");
+describe("resolveChangesTotals", () => {
+  it("does not let an empty branchChanges hide a dirty working tree", () => {
+    assert.deepInclude(
+      resolveChangesTotals(
+        status({
+          hasWorkingTreeChanges: true,
+          branchChanges: { baseRef: "main", insertions: 0, deletions: 0 },
+          workingTree: {
+            files: [{ path: "a.ts", insertions: 5, deletions: 1 }],
+            insertions: 5,
+            deletions: 1,
+          },
+        }),
+      ),
+      { insertions: 5, deletions: 1 },
+    );
+  });
+
+  it("keeps non-zero branchChanges over the working tree", () => {
+    assert.deepEqual(
+      resolveChangesTotals(
+        status({
+          branchChanges: { baseRef: "origin/master", insertions: 20, deletions: 3 },
+          workingTree: {
+            files: [{ path: "a.ts", insertions: 1, deletions: 0 }],
+            insertions: 1,
+            deletions: 0,
+          },
+        }),
+      ),
+      { insertions: 20, deletions: 3, baseRef: "origin/master" },
+    );
+  });
+
+  it("falls back to the working tree when branchChanges is omitted", () => {
+    assert.deepInclude(
+      resolveChangesTotals(
+        status({
+          workingTree: {
+            files: [{ path: "a.ts", insertions: 2, deletions: 0 }],
+            insertions: 2,
+            deletions: 0,
+          },
+        }),
+      ),
+      { insertions: 2, deletions: 0 },
+    );
   });
 });

@@ -39,6 +39,14 @@ function textFromBlocks(
     return textFromBlocks(value.content, depth + 1, imageBlocks);
   if (keys.length === 2 && keys.includes("content") && keys.includes("structuredContent")) {
     const text = textFromBlocks(value.content, depth + 1, imageBlocks);
+    const images = Array.isArray(value.content)
+      ? value.content.filter((block) => isRecord(block) && block.type === "image")
+      : [];
+    const structured = formatJsonValue(value.structuredContent);
+    if (structured !== null && (images.length > 0 || !text?.trim())) {
+      const markers = textFromBlocks(images, depth + 1, imageBlocks);
+      return [structured, markers].filter(Boolean).join("\n");
+    }
     return text?.trim() ? text : null;
   }
   return null;
@@ -52,6 +60,12 @@ function parseJson(text: string): unknown {
   }
 }
 
+export function isJsonToolText(text: string): boolean {
+  if (parseJson(text) !== undefined) return true;
+  const documents = text.trim().split(/\n\s*\n/);
+  return documents.length > 1 && documents.every((document) => parseJson(document) !== undefined);
+}
+
 function prettyJsonText(text: string): string {
   const trimmed = text.trim();
   if (!/^[[{]/.test(trimmed)) return text;
@@ -63,11 +77,9 @@ function prettyJsonText(text: string): string {
   return documents.map((document) => JSON.stringify(document, null, 2)).join("\n\n");
 }
 
-function formatToolValue(value: unknown, hasImagePreview = false): string | null {
+function formatJsonValue(value: unknown): string | null {
   if (value === undefined || value === null) return null;
-  if (hasImagePreview && isRecord(value) && value.type === "image") return null;
-  const text = textFromBlocks(value, 0, toolOutputImageBlocks(value));
-  if (text !== null) return text.trim() ? prettyJsonText(text) : null;
+  if (typeof value === "string" && !value.trim()) return null;
   let json: string | undefined;
   try {
     json = JSON.stringify(value, null, 2);
@@ -78,17 +90,22 @@ function formatToolValue(value: unknown, hasImagePreview = false): string | null
   return json;
 }
 
+function formatToolValue(value: unknown, hasImagePreview = false): string | null {
+  if (value === undefined || value === null) return null;
+  if (hasImagePreview && isRecord(value) && value.type === "image") return null;
+  const text = textFromBlocks(value, 0, toolOutputImageBlocks(value));
+  if (text !== null) return text.trim() ? prettyJsonText(text) : null;
+  return formatJsonValue(value);
+}
+
 export function toolCallLines(input: {
   readonly command?: string | undefined;
   readonly args?: unknown;
-  readonly toolName?: string | null | undefined;
 }): {
   readonly command: string | null;
   readonly args: ReadonlyArray<readonly [string, string]> | null;
   readonly argsText: string | null;
 } {
-  // Failed html_show calls may expand for their error, never their visual sources.
-  if (input.toolName === "html_show") return { command: null, args: null, argsText: null };
   if (input.command !== undefined) {
     const command = input.command.trim();
     return { command: command || null, args: null, argsText: null };
@@ -138,9 +155,7 @@ export function turnItemNeedsDetailFetch(item: OrchestrationV2TurnItem): boolean
     case "command_execution":
       return item.outputOmitted === true;
     case "dynamic_tool":
-      return item.toolName === "html_show"
-        ? item.status === "failed" && item.outputOmitted === true
-        : item.outputOmitted === true || isSummarizedValue(item.input);
+      return item.outputOmitted === true || isSummarizedValue(item.input);
     default:
       return false;
   }
@@ -235,11 +250,7 @@ export function turnItemHasDetail(item: OrchestrationV2TurnItem): boolean {
     case "web_search":
       return (item.results?.length ?? 0) > 0 || (item.patterns?.length ?? 0) > 0;
     case "dynamic_tool":
-      // Successful visuals stay title-only, but failures must retain their cause.
-      return item.toolName === "html_show"
-        ? item.status === "failed" &&
-            (item.outputOmitted === true || turnItemOutputText(item) !== null)
-        : item.outputOmitted === true || toolCallHasLines(toolCallLines({ args: item.input }));
+      return item.outputOmitted === true || toolCallHasLines(toolCallLines({ args: item.input }));
     case "approval_request":
       return Boolean(item.prompt?.trim());
     case "user_input_request":

@@ -1,3 +1,5 @@
+// @effect-diagnostics processEnvInEffect:off -- tests os.homedir behavior against an isolated temporary HOME.
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -15,7 +17,7 @@ const TestLayer = MultiRepoWorkspaces.layer.pipe(
   // Merged so tests can build folders inside T3's home.
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-multi-repo-" })),
   Layer.provideMerge(VcsProcess.layer),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
 const git = (cwd: string, args: ReadonlyArray<string>) =>
@@ -291,6 +293,14 @@ it.layer(TestLayer)("MultiRepoWorkspaces", (it) => {
       assert.deepEqual(yield* currentBranches(workspace), ["t3code/abc12345", "t3code/abc12345"]);
       const members = yield* workspaces.members(workspace);
       assert.deepEqual(members, ["api", "web"]);
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      assert.include(yield* driver.listWorktreePaths(group), workspace);
+      const refs = yield* driver.listRefs({ cwd: workspace });
+      assert.isFalse(refs.isRepo);
+      assert.deepEqual(
+        refs.refs.map((ref) => ({ name: ref.name, worktreePath: ref.worktreePath })),
+        [{ name: "t3code/abc12345", worktreePath: workspace }],
+      );
 
       const renamed = yield* workspaces.renameBranch({
         cwd: workspace,
@@ -303,6 +313,12 @@ it.layer(TestLayer)("MultiRepoWorkspaces", (it) => {
 
       yield* workspaces.removeWorkspace({ cwd: group, path: workspace, force: true });
       assert.isFalse(yield* fileSystem.exists(workspace));
+      assert.include(
+        yield* workspaces.listLocalBranchNames(group, ["api", "web"]),
+        "feature/login",
+      );
+      yield* git(path.join(group, "api"), ["branch", "api-only"]);
+      assert.notInclude(yield* workspaces.listLocalBranchNames(group, ["api", "web"]), "api-only");
       for (const member of ["api", "web"]) {
         // Removing keeps the branch in the project, as a linked worktree would.
         yield* git(path.join(group, member), ["rev-parse", "--verify", "refs/heads/feature/login"]);

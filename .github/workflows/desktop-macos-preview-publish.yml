@@ -14,10 +14,8 @@ name: Desktop macOS Preview Publish
 # one commit a maintainer applied it to. A later push builds nothing until the
 # label is applied again.
 
-# T3 Dulli publishes only through fork-desktop-release.yml. Keep this upstream
-# preview publisher for reference, without automatic triggers or runnable jobs.
 on:
-  workflow_dispatch:
+  workflow_dispatch: null
 
 permissions:
   contents: read
@@ -25,7 +23,8 @@ permissions:
 jobs:
   resolve:
     name: Verify preview eligibility
-    if: ${{ false }}
+    if: >-
+      ${{ github.repository == 'pingdotgg/t3code' && (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success') }}
     # The build workflow completes for every PR push (its label gate is on the
     # job), so this runs often and usually finds nothing. Keep it cheap.
     runs-on: ubuntu-24.04
@@ -275,7 +274,7 @@ jobs:
   build:
     name: Package and sign macOS arm64 preview
     needs: resolve
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (needs.resolve.outputs.eligible == 'true') }}
     concurrency:
       group: desktop-macos-preview-${{ needs.resolve.outputs.pr_number }}-build
       cancel-in-progress: true
@@ -316,7 +315,7 @@ jobs:
   publish:
     name: Publish anonymous download
     needs: [resolve, build]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (needs.resolve.outputs.eligible == 'true' && needs.build.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Its own group, so a publish never cancels a newer commit's signing job
@@ -490,7 +489,8 @@ jobs:
     # that a cheap no-op for PRs that never had one. A manual unlabel before
     # the build consumed it withdraws the request and drops any older
     # download too.
-    if: ${{ false }}
+    if: >-
+      ${{ github.repository == 'pingdotgg/t3code' && (github.event_name == 'pull_request_target' && (github.event.action == 'closed' || (github.event.action == 'unlabeled' && github.event.label.name == 'preview:mac'))) }}
     # Runs on every PR close and usually finds nothing. Keep it cheap.
     runs-on: ubuntu-24.04
     timeout-minutes: 10

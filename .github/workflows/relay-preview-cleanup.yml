@@ -1,10 +1,15 @@
 name: Clean up relay preview
 
-# Dulli does not operate upstream relay infrastructure. Keep this workflow
-# manual-only for reference, with every job hard-disabled.
+# Tears down stage `pr-<n>` when `relay:preview` is removed or the PR closes,
+# and retries teardown for closed labeled PRs on a schedule. A label stays on a
+# PR only while its teardown is outstanding, so the scheduled retry lists
+# exactly the failures.
+#
+# This runs under pull_request_target, so the workflow and the Alchemy program
+# come from the default branch. No PR code runs here, which is why it needs no
+# reviewer approval and why a PR cannot edit its own teardown to reach secrets.
 on:
-  workflow_dispatch:
-
+  workflow_dispatch: null
 permissions:
   contents: read
   issues: read
@@ -13,7 +18,11 @@ permissions:
 jobs:
   cleanup_pr:
     name: Tear down relay preview
-    if: ${{ false }}
+    if: >-
+      ${{ github.repository == 'pingdotgg/t3code' && (github.ref == 'refs/heads/main' && github.event_name == 'pull_request_target' && (
+        (github.event.action == 'unlabeled' && github.event.label.name == 'relay:preview') ||
+        (github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'relay:preview'))
+      )) }}
     # Job-level so that events which skip this job, such as a closed PR without
     # the label, never take the group's pending slot. GitHub replaces a pending
     # run in a group with a newer one, which would drop a queued teardown.
@@ -84,7 +93,7 @@ jobs:
 
   list_closed_previews:
     name: List closed relay previews
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.ref == 'refs/heads/main' && github.event_name != 'pull_request_target') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -108,7 +117,7 @@ jobs:
   sweep_pr:
     name: Retry teardown for PR ${{ matrix.number }}
     needs: list_closed_previews
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.ref == 'refs/heads/main' && needs.list_closed_previews.outputs.numbers != '[]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:

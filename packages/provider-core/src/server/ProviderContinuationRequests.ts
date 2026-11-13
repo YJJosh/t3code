@@ -17,8 +17,7 @@ export interface ProviderContinuationRequest {
   readonly providerThreadId: ProviderThreadId;
   readonly driver: ProviderDriverKind;
   readonly detail: string | null;
-  /** Omitted uses the generic background notification; null hides its timeline row. */
-  readonly notification?: OrchestrationV2Notification | null;
+  readonly notification?: OrchestrationV2Notification;
   readonly delegatedCompletion?: {
     readonly parentRunId: RunId;
     readonly generation: number;

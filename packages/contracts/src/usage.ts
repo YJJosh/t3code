@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /** Bump for incompatible UsageSummary changes; skipped unknown array variants need no bump. */
-export const USAGE_CONTRACT_VERSION = 7 as const;
+export const USAGE_CONTRACT_VERSION = 6 as const;
 
 export const USAGE_MERGE_COMPATIBLE_SINCE = 4 as const;
 
@@ -15,7 +15,6 @@ export const UsageProviderKind = Schema.Literals([
   "opencode",
   "antigravity",
   "pi",
-  "dulli",
   "muse",
 ]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
@@ -55,8 +54,6 @@ export const UsageBucket = Schema.Struct({
   day: UsageDay,
   hourStart: Schema.optional(TrimmedNonEmptyString),
   provider: UsageProviderKind,
-  /** Index into the owning summary's `sources`; absent on v4-v6 summaries. */
-  sourceIndex: Schema.optional(NonNegativeInt),
   model: TrimmedNonEmptyString,
   sourcePath: Schema.optional(TrimmedNonEmptyString),
   totals: UsageTokenTotals,
@@ -79,30 +76,14 @@ export const UsageSourceFingerprint = Schema.Struct({
   resolvedHomePath: TrimmedNonEmptyString,
   /** Transcript directory device:inode distinguishes machines sharing a hostname and home path. */
   volumeId: Schema.String,
-  /**
-   * Filesystem identities of parent directories, nearest first. These let a
-   * client prove that differently rooted scans overlap without trusting path
-   * strings or hostnames alone.
-   */
-  ancestorVolumeIds: Schema.optional(Schema.Array(Schema.String)),
 });
 export type UsageSourceFingerprint = typeof UsageSourceFingerprint.Type;
-
-export const UsageSourceScan = Schema.Struct({
-  /** Maximum directory depth below the source root; MAX_SAFE_INTEGER denotes an unbounded walk. */
-  maxDepth: NonNegativeInt,
-  /** File selection applied within that depth. */
-  filePattern: Schema.Literals(["jsonl", "pi-subagent-session"]),
-});
-export type UsageSourceScan = typeof UsageSourceScan.Type;
 
 export const UsageSourceStatus = Schema.Literals(["ok", "missing", "partial", "failed"]);
 export type UsageSourceStatus = typeof UsageSourceStatus.Type;
 
 export const UsageSource = Schema.Struct({
   fingerprint: UsageSourceFingerprint,
-  /** Present when this source has bounded, comparable scan coverage. */
-  scan: Schema.optional(UsageSourceScan),
   status: UsageSourceStatus,
   scannedFiles: NonNegativeInt,
   skippedFiles: NonNegativeInt,
@@ -110,7 +91,6 @@ export const UsageSource = Schema.Struct({
   /** Total this count; bucket counts double-count sessions spanning days or models. */
   distinctSessions: NonNegativeInt,
   message: Schema.NullOr(TrimmedNonEmptyString),
-  action: Schema.optionalKey(Schema.Literal("enableCursorKeychain")),
   /** Cached response during refresh; repeat with awaitRefresh for fresh data. */
   refreshing: Schema.optionalKey(Schema.Literal(true)),
 });
@@ -127,6 +107,23 @@ export const UsagePricing = Schema.Struct({
 });
 export type UsagePricing = typeof UsagePricing.Type;
 
+/**
+ * Matches a provider's original model ID, before usage model aliases apply. Omit provider to
+ * match any; a string provider lets older clients carry selectors for providers they lack.
+ */
+export const UsageModelSelector = Schema.Struct({
+  provider: Schema.optional(TrimmedNonEmptyString),
+  model: TrimmedNonEmptyString,
+});
+export type UsageModelSelector = typeof UsageModelSelector.Type;
+
+/** Keeps records matching `include` (all when omitted) and not matching `exclude`. */
+export const UsageModelFilter = Schema.Struct({
+  include: Schema.optional(Schema.Array(UsageModelSelector)),
+  exclude: Schema.optional(Schema.Array(UsageModelSelector)),
+});
+export type UsageModelFilter = typeof UsageModelFilter.Type;
+
 export const UsageSummaryInput = Schema.Struct({
   sinceDay: UsageDay,
   untilDay: UsageDay,
@@ -136,6 +133,7 @@ export const UsageSummaryInput = Schema.Struct({
   sinceTime: Schema.optional(TrimmedNonEmptyString),
   untilTime: Schema.optional(TrimmedNonEmptyString),
   awaitRefresh: Schema.optional(Schema.Boolean),
+  modelFilter: Schema.optional(UsageModelFilter),
 });
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
 
@@ -149,6 +147,8 @@ export const UsageSummary = Schema.Struct({
   sources: ForwardCompatibleArray(UsageSource),
   pricing: UsagePricing,
   scanDurationMs: NonNegativeInt,
+  /** The filter the server applied; absent means unfiltered, including servers that predate filters. */
+  modelFilter: Schema.optional(UsageModelFilter),
 });
 export type UsageSummary = typeof UsageSummary.Type;
 

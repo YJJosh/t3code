@@ -20,7 +20,7 @@ import {
   NonNegativeInt,
   ProjectId,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
@@ -57,10 +57,11 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
-    Crypto.Crypto,
+    SecureRandom.SecureRandom,
   ],
 })
   .annotate(Tool.Title, "Organize a thread")
+  .annotate(Tool.Strict, true)
   .annotate(Tool.Destructive, true);
 
 const commandTool = {
@@ -70,7 +71,7 @@ const commandTool = {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
-    Crypto.Crypto,
+    SecureRandom.SecureRandom,
   ],
 };
 const queueEntry = Schema.Struct({
@@ -126,7 +127,7 @@ const question = Schema.Struct({
 const PendingRequestTool = Tool.make("t3_pending_request", {
   ...commandTool,
   description:
-    "Pending user questions in a thread. Omit `threadId` for this thread. list: their ids; approvals are not listed. read: one by `requestId`. respond: answer one with `answers`; this cannot approve a permission request or answer a human-only Pi dialog. humanOnlyRequestIds and requests with humanOnly must be answered by a person in T3 or the Pi terminal.",
+    "Pending user questions in a thread. Omit `threadId` for this thread. list: their ids; approvals are not listed. read: one by `requestId`. respond: answer one with `answers`; this cannot approve a permission request.",
   parameters: Schema.Struct({
     action: Schema.Literals(["list", "read", "respond"]),
     environmentId: OrchestratorMcpEnvironmentTarget,
@@ -135,15 +136,8 @@ const PendingRequestTool = Tool.make("t3_pending_request", {
     answers: Schema.optional(ProviderUserInputAnswers),
   }),
   success: Schema.Union([
-    Schema.Struct({
-      requestIds: Schema.Array(RuntimeRequestId),
-      humanOnlyRequestIds: Schema.Array(RuntimeRequestId),
-    }),
-    Schema.Struct({
-      requestId: RuntimeRequestId,
-      questions: Schema.Array(question),
-      humanOnly: Schema.Boolean,
-    }),
+    Schema.Struct({ requestIds: Schema.Array(RuntimeRequestId) }),
+    Schema.Struct({ requestId: RuntimeRequestId, questions: Schema.Array(question) }),
     OrchestrationV2DispatchCommandResult,
   ]),
 })

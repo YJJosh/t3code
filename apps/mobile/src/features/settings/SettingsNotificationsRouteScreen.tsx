@@ -1,10 +1,16 @@
+import Constants from "expo-constants";
 import { SettingsPhoneNotifications } from "./SettingsPhoneNotifications";
 import * as Dialog from "../../components/ui/Dialog";
-import { AuthRelayWriteScope } from "@t3tools/contracts";
+import {
+  AuthRelayWriteScope,
+  managedCapabilityDenial,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import { readEnvironmentScope } from "../../state/session";
+import { appAtomRegistry } from "../../state/atom-registry";
+import { serverEnvironment } from "../../state/server";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useAuth } from "@clerk/expo";
-import Constants from "expo-constants";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Notifications from "expo-notifications";
 import { useNavigation } from "@react-navigation/native";
@@ -44,10 +50,21 @@ import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SettingsScreen } from "./components/SettingsScreen";
-import { resolveMobileBrandName } from "../../lib/mobileBranding";
 import { resolveAgentAwarenessPlatformPresentation } from "./SettingsRouteScreen.logic";
 
-const brandName = resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand);
+/**
+ * A policy that turns Connect off refuses relay links and preferences, which would fail the
+ * whole batch, so those environments are skipped like ones this session cannot configure.
+ */
+function canLinkEnvironmentToConnect(environmentId: EnvironmentId) {
+  const policy = appAtomRegistry.get(
+    serverEnvironment.configValueAtom(environmentId),
+  )?.managedPolicy;
+  return (
+    readEnvironmentScope(environmentId, AuthRelayWriteScope) &&
+    managedCapabilityDenial(policy, "connect") === undefined
+  );
+}
 
 type NotificationStatus = "checking" | "enabled" | "disabled" | "unsupported";
 type LiveActivityStatus = "checking" | "enabled" | "disabled" | "signed-out" | "linking";
@@ -280,8 +297,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
     const updateResult = await settleAsyncResult(() =>
       runtime.runPromiseExit(
         setLiveActivityUpdatesEnabled({
-          canConfigureEnvironment: (environmentId) =>
-            readEnvironmentScope(environmentId, AuthRelayWriteScope),
+          canConfigureEnvironment: canLinkEnvironmentToConnect,
           enabled: true,
           previousEnabled: liveActivitiesPreferenceEnabled,
           clerkToken: tokenResult.value,
@@ -334,7 +350,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
 
     Dialog.alert(
       "Disable notifications",
-      `Open system Settings to disable notifications for ${brandName}.`,
+      "Open system Settings to disable notifications for T3 Code.",
       [
         { text: "Cancel", style: "cancel" },
         { text: "Open Settings", onPress: () => void Linking.openSettings() },
@@ -359,8 +375,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
     const updateResult = await settleAsyncResult(() =>
       runtime.runPromiseExit(
         setLiveActivityUpdatesEnabled({
-          canConfigureEnvironment: (environmentId) =>
-            readEnvironmentScope(environmentId, AuthRelayWriteScope),
+          canConfigureEnvironment: canLinkEnvironmentToConnect,
           enabled: false,
           previousEnabled: liveActivitiesPreferenceEnabled,
           clerkToken: token,
@@ -467,7 +482,7 @@ function ConfiguredSettingsNotificationsRouteScreen() {
                 void openAndroidLiveUpdateSettings().catch(() => {
                   Dialog.alert(
                     "Couldn't open Settings",
-                    `Open Android Settings, select ${brandName}, then enable Live Updates in Notifications.`,
+                    "Open Android Settings, select T3 Code, then enable Live Updates in Notifications.",
                   );
                 });
               }}

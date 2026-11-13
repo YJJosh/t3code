@@ -1,12 +1,6 @@
 import type { EnvironmentId, PullRequestLinkedThreadsResult } from "@t3tools/contracts";
-import type { MultiRepoProjectSetup } from "@t3tools/client-runtime/state/project-grouping";
 
 import { dispatchCommandPalette, isCommandPaletteMounted } from "./commandPaletteStore";
-
-export interface CommandPaletteMultiRepoSetup {
-  readonly environmentId: EnvironmentId;
-  readonly setup: MultiRepoProjectSetup;
-}
 
 export interface CommandPaletteLinkedThreads {
   readonly environmentId: EnvironmentId;
@@ -17,16 +11,13 @@ export interface CommandPaletteOpenDetail {
   readonly open?: "add-project" | "new-thread-in";
   readonly query?: string;
   readonly linkedThreads?: CommandPaletteLinkedThreads;
-  readonly multiRepoSetup?: CommandPaletteMultiRepoSetup;
 }
 
 export function openCommandPalette(detail: CommandPaletteOpenDetail = {}): void {
   // With no palette on screen (e.g. /pair) the request is dropped; kept in the
   // store, it would pop a stale palette once the app shell mounts.
   if (!isCommandPaletteMounted()) return;
-  if (detail.multiRepoSetup) {
-    dispatchCommandPalette({ _tag: "OpenMultiRepoSetup", ...detail.multiRepoSetup });
-  } else if (detail.open === "new-thread-in") {
+  if (detail.open === "new-thread-in") {
     dispatchCommandPalette({ _tag: "OpenNewThreadIn" });
   } else if (detail.open === "add-project") {
     dispatchCommandPalette({ _tag: "OpenAddProject" });

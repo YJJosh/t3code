@@ -340,33 +340,6 @@
       }
     },
     {
-      "name": "@react-native-async-storage/async-storage",
-      "version": "3.1.1",
-      "sourceUrl": "https://github.com/react-native-async-storage/async-storage",
-      "generatedNotice": {
-        "licenseId": "MIT",
-        "copyrights": ["Copyright (c) 2025 Krzysztof Borowy"]
-      }
-    },
-    {
-      "name": "deprecated-react-native-prop-types",
-      "version": "2.3.0",
-      "sourceUrl": "https://github.com/facebookarchive/react-native-deprecated-modules",
-      "generatedNotice": {
-        "licenseId": "MIT",
-        "copyrights": ["Copyright (c) Meta Platforms, Inc. and affiliates."]
-      }
-    },
-    {
-      "name": "@react-native/normalize-color",
-      "version": "2.1.0",
-      "sourceUrl": "https://github.com/facebook/react-native",
-      "generatedNotice": {
-        "licenseId": "MIT",
-        "copyrights": ["Copyright (c) Meta Platforms, Inc. and affiliates."]
-      }
-    },
-    {
       "name": "@bufbuild/protobuf",
       "version": "1.10.0",
       "generatedNotices": [
@@ -737,48 +710,6 @@
       "generatedNotice": {
         "licenseId": "MIT",
         "copyrights": ["Copyright (c) 2025 opencode"]
-      }
-    },
-    {
-      "repositoryUrl": "https://github.com/earendil-works/pi",
-      "generatedNotice": {
-        "licenseId": "MIT",
-        "copyrights": ["Copyright (c) 2025 Mario Zechner"]
-      }
-    },
-    {
-      "repositoryUrl": "https://github.com/badlogic/clipboard",
-      "generatedNotice": {
-        "licenseId": "MIT"
-      }
-    },
-    {
-      "name": "standardwebhooks",
-      "sourceUrl": "https://github.com/standard-webhooks/standard-webhooks/tree/main/libraries/javascript",
-      "generatedNotice": {
-        "licenseId": "MIT",
-        "copyrights": ["Copyright (c) 2023 Svix (https://www.svix.com)"]
-      }
-    },
-    {
-      "name": "@nodable/entities",
-      "generatedNotice": {
-        "licenseId": "MIT",
-        "copyrights": ["Copyright (c) 2026 Nodable"]
-      }
-    },
-    {
-      "name": "xml-naming",
-      "generatedNotice": {
-        "licenseId": "MIT",
-        "copyrights": ["Copyright (c) 2026 Natural Intelligence"]
-      }
-    },
-    {
-      "name": "data-uri-to-buffer",
-      "generatedNotice": {
-        "licenseId": "MIT",
-        "copyrights": ["Copyright (c) 2014 Nathan Rajlich <nathan@tootallnate.net>"]
       }
     },
     {

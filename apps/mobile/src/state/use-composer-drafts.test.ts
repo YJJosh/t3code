@@ -197,7 +197,6 @@ import {
   getComposerDraftSnapshot,
   mergeComposerDraftContentState,
   migrateLegacyNewTaskDraft,
-  migrateDulliComposerState,
   modelOptionMemoryAtom,
   releaseUnusedComposerAttachmentFiles,
   removeComposerDraftsForEnvironment,
@@ -311,9 +310,11 @@ function modelReconciliationHarness(
       ],
     ]),
   });
+  const noPendingThreadIdsAtom = Atom.make((): ReadonlySet<ThreadId> => new Set());
   const shells = createEnvironmentThreadShellAtoms({
     catalogValueAtom,
     snapshotAtom: () => snapshotAtom,
+    hiddenThreadTagsAtom: () => Atom.make(null),
   });
   const selectedShell = shells.threadShellAtom({ environmentId, threadId: selectedThreadId });
   onTestFinished(registry.mount(selectedShell));
@@ -323,6 +324,7 @@ function modelReconciliationHarness(
       threadShellAtom: shells.threadShellAtom,
       threadRefsAtom: shells.threadRefsAtom,
       shellStateAtom: () => shellResultAtom,
+      pendingThreadIdsAtom: () => noPendingThreadIdsAtom,
     }),
   );
   flush();
@@ -1281,7 +1283,10 @@ describe("mobile composer drafts", () => {
         "pending-task:queued-1": { text: "Edited queued task", attachments: [file] },
       });
       appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, { queued: [queued] });
-      await archiveCloudComposerDrafts("account-a", new Set([environmentId]));
+      await archiveCloudComposerDrafts("account-a", new Set([environmentId]), [
+        environmentId,
+        EnvironmentId.make("direct-environment"),
+      ]);
       expect(appAtomRegistry.get(composerDraftsAtom)).toEqual({
         "direct-environment:thread-1": DRAFT,
       });
@@ -1347,7 +1352,9 @@ describe("mobile composer drafts", () => {
     appAtomRegistry.set(composerDraftsAtom, { "environment-1:thread-1": DRAFT });
     composerDraftFileMocks.setWriteError(new Error("Storage is full"));
     await expect(
-      archiveCloudComposerDrafts("account-a", new Set([EnvironmentId.make("environment-1")])),
+      archiveCloudComposerDrafts("account-a", new Set([EnvironmentId.make("environment-1")]), [
+        EnvironmentId.make("environment-1"),
+      ]),
     ).rejects.toThrow();
     expect(
       appAtomRegistry.get(composerCloudDraftsAtom).signedOut["account-a"]?.drafts[
@@ -1356,7 +1363,9 @@ describe("mobile composer drafts", () => {
     ).toEqual(DRAFT);
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
     composerDraftFileMocks.setWriteError(null);
-    await archiveCloudComposerDrafts(null, new Set([EnvironmentId.make("environment-1")]));
+    await archiveCloudComposerDrafts(null, new Set([EnvironmentId.make("environment-1")]), [
+      EnvironmentId.make("environment-1"),
+    ]);
     expect(
       decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).cloudDrafts
         .signedOut["account-a"]?.drafts["environment-1:thread-1"],
@@ -1922,62 +1931,6 @@ describe("mobile composer drafts", () => {
     expect(moved.project).toEqual({ ...to, createdAt });
     expect(findNewTaskDraftKeys(appAtomRegistry.get(composerDraftsAtom), from)).toEqual([]);
     expect(findNewTaskDraftKeys(appAtomRegistry.get(composerDraftsAtom), to)).toEqual([key]);
-  });
-
-  it("migrates only fork drafts once, preserving new upstream Pi choices after reload", async () => {
-    const env = EnvironmentId.make("fork-env");
-    const selection = {
-      instanceId: ProviderInstanceId.make("pi"),
-      model: "openai/model",
-      options: [{ id: "profile", value: "coder" }],
-    };
-    composerDraftFileMocks.setDocument({
-      schemaVersion: 1,
-      drafts: {
-        "fork-env:thread": { text: "fork", attachments: [], modelSelection: selection },
-        "upstream-env:thread": { text: "upstream", attachments: [], modelSelection: selection },
-      },
-      stickyModelSelection: selection,
-      modelOptionMemory: { pi: { "openai/model": selection.options } },
-    });
-    const config = {
-      legacyPiProviderMigrated: true,
-      providers: [{ instanceId: "dulli", driver: "dulli" }],
-    };
-    await migrateDulliComposerState(env, config);
-    expect(getComposerDraftSnapshot("fork-env:thread").modelSelection).toEqual({
-      ...selection,
-      instanceId: "dulli",
-    });
-    expect(getComposerDraftSnapshot("upstream-env:thread").modelSelection).toEqual(selection);
-    expect(appAtomRegistry.get(stickyComposerModelSelectionAtom)?.instanceId).toBe("dulli");
-    expect(appAtomRegistry.get(modelOptionMemoryAtom)).toEqual({
-      dulli: { "openai/model": selection.options },
-    });
-    const document = JSON.parse(composerDraftFileMocks.getDocument());
-    document.drafts["fork-env:thread"].modelSelection = selection;
-    composerDraftFileMocks.setDocument(document);
-    appAtomRegistry.set(composerDraftsAtom, {});
-    resetComposerDraftsLoadState();
-    await migrateDulliComposerState(env, config);
-    expect(getComposerDraftSnapshot("fork-env:thread").modelSelection).toEqual(selection);
-  });
-
-  it("leaves upstream Pi untouched when server did not migrate", async () => {
-    const selection = { instanceId: ProviderInstanceId.make("pi"), model: "native-pi/model" };
-    composerDraftFileMocks.setDocument({
-      schemaVersion: 1,
-      drafts: {
-        "upstream-env:thread": { text: "upstream", attachments: [], modelSelection: selection },
-      },
-      stickyModelSelection: selection,
-    });
-    await migrateDulliComposerState(EnvironmentId.make("upstream-env"), {
-      legacyPiProviderMigrated: false,
-      providers: [{ instanceId: "dulli", driver: "dulli" }],
-    });
-    expect(getComposerDraftSnapshot("upstream-env:thread").modelSelection).toEqual(selection);
-    expect(appAtomRegistry.get(stickyComposerModelSelectionAtom)).toEqual(selection);
   });
 
   it("merges persisted option memory without replacing newer choices", async () => {

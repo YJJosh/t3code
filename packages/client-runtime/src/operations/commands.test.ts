@@ -11,7 +11,6 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
   RunId,
-  RuntimeRequestId,
   ThreadId,
   TurnItemId,
   WS_METHODS,
@@ -21,7 +20,7 @@ import {
   type ProjectMutation,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -38,20 +37,15 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import { v2Now, v2Projection, v2ThreadId } from "../state/orchestrationV2TestFixtures.ts";
 import {
   archiveThread,
-  respondToThreadApproval,
-  respondToThreadUserInput,
   interruptThreadTurn,
   revertThreadCheckpoint,
   resumeThreadQueue,
   startThreadTurn,
 } from "./commands.ts";
 
-const layerTestCrypto = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => new Uint8Array(size),
-    digest: (_algorithm, data) => Effect.succeed(data),
-  }),
+const layerTestRandom = Layer.succeed(
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => new Uint8Array(size)),
 );
 
 const TARGET = new PrimaryConnectionTarget({
@@ -119,7 +113,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
         },
       },
     } as never),
-    subscribeServerConfig: (input) => client.subscribeServerConfig(input),
+    subscribeServerConfig: (input = {}) => client.subscribeServerConfig(input),
     ready: Effect.void,
     probe: Effect.void,
     inboundFrames: Effect.succeed(0),
@@ -137,29 +131,6 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("V2 environment commands", () => {
-  it.effect("identifies web, desktop and mobile card answers as user actions", () =>
-    Effect.gen(function* () {
-      const commands: OrchestrationV2Command[] = [];
-      const supervisor = yield* makeSupervisor({ commands, projects: [] });
-      const threadId = ThreadId.make("human-question-thread");
-      const requestId = RuntimeRequestId.make("human-question");
-      yield* respondToThreadUserInput({
-        threadId,
-        requestId,
-        answers: { secret: "Allow" },
-      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-      yield* respondToThreadApproval({
-        threadId,
-        requestId,
-        decision: "accept",
-      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
-      expect(commands).toMatchObject([
-        { type: "runtime-request.respond", createdBy: "user", answers: { secret: "Allow" } },
-        { type: "runtime-request.respond", createdBy: "user", decision: "accept" },
-      ]);
-    }).pipe(Effect.provide(layerTestCrypto)),
-  );
-
   it.effect("distinguishes sending a selected queued message from resuming queue order", () =>
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];
@@ -179,7 +150,7 @@ describe("V2 environment commands", () => {
         { type: "queued-run.start", commandId: "send-selected", threadId, runId: "selected" },
         { type: "queue.resume", commandId: "resume-queue", threadId },
       ]);
-    }).pipe(Effect.provide(layerTestCrypto)),
+    }).pipe(Effect.provide(layerTestRandom)),
   );
 
   it.effect("preserves caller command ids for idempotent V2 commands", () =>
@@ -195,7 +166,7 @@ describe("V2 environment commands", () => {
       expect(commands).toEqual([
         { type: "thread.archive", commandId: "queued-command", threadId: "thread-1" },
       ]);
-    }).pipe(Effect.provide(layerTestCrypto)),
+    }).pipe(Effect.provide(layerTestRandom)),
   );
 
   it.effect("resolves run ordinal zero to the persisted thread-start checkpoint", () =>
@@ -239,7 +210,7 @@ describe("V2 environment commands", () => {
           checkpointId,
         },
       ]);
-    }).pipe(Effect.provide(layerTestCrypto)),
+    }).pipe(Effect.provide(layerTestRandom)),
   );
 
   it.effect("preserves an existing worktree and branch during first-message launch", () =>
@@ -283,7 +254,7 @@ describe("V2 environment commands", () => {
           branch: "feature",
         },
       });
-    }).pipe(Effect.provide(layerTestCrypto)),
+    }).pipe(Effect.provide(layerTestRandom)),
   );
 
   it.effect("uses server-resolved delivery intent without fetching the full projection", () =>
@@ -319,7 +290,7 @@ describe("V2 environment commands", () => {
         });
       }
       expect(projectionRequests).toEqual([]);
-    }).pipe(Effect.provide(layerTestCrypto)),
+    }).pipe(Effect.provide(layerTestRandom)),
   );
 
   it.effect("Stop with no run left ends the thread's pull request watches", () =>
@@ -373,7 +344,7 @@ describe("V2 environment commands", () => {
           watching: false,
         },
       ]);
-    }).pipe(Effect.provide(layerTestCrypto)),
+    }).pipe(Effect.provide(layerTestRandom)),
   );
 
   it.effect.each(["waiting", "completed", "rolled_back"] as const)(
@@ -444,7 +415,7 @@ describe("V2 environment commands", () => {
                 },
               ],
         );
-      }).pipe(Effect.provide(layerTestCrypto)),
+      }).pipe(Effect.provide(layerTestRandom)),
   );
 
   it.effect(
@@ -498,7 +469,7 @@ describe("V2 environment commands", () => {
             subagentId,
           },
         ]);
-      }).pipe(Effect.provide(layerTestCrypto)),
+      }).pipe(Effect.provide(layerTestRandom)),
   );
 
   it.effect(
@@ -557,7 +528,7 @@ describe("V2 environment commands", () => {
           },
           { type: "thread.stop", commandId: "lineage-stop", threadId: childThreadId },
         ]);
-      }).pipe(Effect.provide(layerTestCrypto)),
+      }).pipe(Effect.provide(layerTestRandom)),
   );
 
   it.effect("stops a thread without relying on background work in the history window", () =>
@@ -585,6 +556,6 @@ describe("V2 environment commands", () => {
           threadId: v2ThreadId,
         },
       ]);
-    }).pipe(Effect.provide(layerTestCrypto)),
+    }).pipe(Effect.provide(layerTestRandom)),
   );
 });

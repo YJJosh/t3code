@@ -1,3 +1,5 @@
+import { toastManager } from "../components/ui/toast";
+import { selectProfile, supportsProfiles } from "@t3tools/shared/profiles";
 import {
   scopedProjectKey,
   scopeProjectRef,
@@ -42,10 +44,25 @@ import { environmentServerConfigsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { getClientSettings } from "./useSettings";
+import { getLocalStorageItem, useLocalStorage } from "./useLocalStorage";
+import * as Schema from "effect/Schema";
+import { useAtomValue } from "@effect/atom-react";
+import { defaultProjectFallbackReadyAtom } from "../state/projects";
 import { useThreadRouteTarget } from "./useThreadRouteTarget";
 import { readUnloadedThreadCount } from "../state/olderSettledShelf";
 import { resolveProjectDefaultProviderModelSelection } from "../providerInstances";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+
+export const LAST_USED_PROJECT_STORAGE_KEY = "t3code:last-used-project:v1";
+export const lastUsedProjectKeySchema = Schema.NullOr(Schema.String);
+
+export function readLastUsedProjectKey(): string | null {
+  try {
+    return getLocalStorageItem(LAST_USED_PROJECT_STORAGE_KEY, lastUsedProjectKeySchema);
+  } catch {
+    return null;
+  }
+}
 
 interface NewThreadWorkspaceOptions {
   branch?: string | null;
@@ -167,14 +184,32 @@ export function createNewThreadHandler(router: AnyRouter) {
       ? fallbackResolution.selection
       : configuredDefaultModelSelection;
     const defaultRuntimeMode = projectSettings.settings.defaultRuntimeMode;
-    const resolveModelSelectionOverride = (destinationDraftId: DraftId) =>
-      resolveNewThreadModelSelectionOverride({
-        projectDefaultSelection: projectDefaultModelSelection ?? null,
-        carrySelection: carryModelSelection,
-        carrySourceDraftId:
-          currentRouteTarget?.kind === "draft" ? currentRouteTarget.draftId : null,
-        destinationDraftId,
-      });
+    const resolveModelSelectionOverride = (destinationDraftId: DraftId) => {
+      const base =
+        resolveNewThreadModelSelectionOverride({
+          projectDefaultSelection: projectDefaultModelSelection ?? null,
+          carrySelection: carryModelSelection,
+          carrySourceDraftId:
+            currentRouteTarget?.kind === "draft" ? currentRouteTarget.draftId : null,
+          destinationDraftId,
+        }) ?? fallbackResolution.selection;
+      if (!base) return base;
+      const config = environmentServerConfigs.get(projectRef.environmentId);
+      const id = targetServerSettings.defaultProfile ?? config?.profiles?.default;
+      const picked = selectProfile(
+        base,
+        id || null,
+        id ? config?.profiles?.profiles[id] : undefined,
+        config?.providers ?? [],
+      );
+      const driver = config?.providers.find(
+        (provider) => provider.instanceId === picked.selection.instanceId,
+      )?.driver;
+      if (picked.notice) toastManager.add({ type: "warning", title: picked.notice });
+      return picked.selection.profileId && (!driver || !supportsProfiles(driver))
+        ? { ...base, profileId: null }
+        : picked.selection;
+    };
     const resolveDefaultEnvMode = async (): Promise<DraftThreadEnvMode> => {
       // Environment queries wait for a connection, so reading the project file on an
       // offline machine would never settle and the draft would never open.
@@ -426,9 +461,18 @@ export function createNewThreadHandler(router: AnyRouter) {
 export function resolveDefaultProjectRef(
   projects: ReadonlyArray<EnvironmentProject>,
   projectOrder: readonly string[],
+  lastUsedProjectKey: string | null,
+  fallbackReady = true,
 ): ScopedProjectRef | null {
+  const lastUsed = projects.find(
+    (project) =>
+      project.archivedAt == null &&
+      scopedProjectKey(scopeProjectRef(project.environmentId, project.id)) === lastUsedProjectKey,
+  );
+  if (lastUsed) return scopeProjectRef(lastUsed.environmentId, lastUsed.id);
+  if (!fallbackReady) return null;
   const [defaultProject] = orderItemsByPreferredIds({
-    items: projects,
+    items: projects.filter((project) => project.archivedAt == null),
     preferredIds: projectOrder,
     getId: getProjectOrderKey,
     getPreferenceIds: (project) => [
@@ -441,6 +485,14 @@ export function resolveDefaultProjectRef(
 
 export function useHandleNewThread() {
   const projectOrder = useUiStateStore((store) => store.projectOrder);
+  const [lastUsedProjectKey] = useLocalStorage(
+    LAST_USED_PROJECT_STORAGE_KEY,
+    null,
+    lastUsedProjectKeySchema,
+  );
+  const defaultProjectFallbackReady = useAtomValue(
+    defaultProjectFallbackReadyAtom(lastUsedProjectKey),
+  );
   const routeTarget = useThreadRouteTarget();
   const routeThreadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : null;
   const routeDraftId = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
@@ -455,12 +507,18 @@ export function useHandleNewThread() {
   );
   const projects = useProjects();
   const handleNewThread = useNewThreadHandler();
-  const defaultProjectRef = resolveDefaultProjectRef(projects, projectOrder);
+  const defaultProjectRef = resolveDefaultProjectRef(
+    projects,
+    projectOrder,
+    lastUsedProjectKey,
+    defaultProjectFallbackReady,
+  );
 
   return {
     activeDraftThread,
     activeThread,
     defaultProjectRef,
+    defaultProjectFallbackReady,
     handleNewThread,
     routeDraftId,
     routeThreadRef,

@@ -9,7 +9,7 @@ export interface FloatingStatusAction {
 
 export type FloatingWorkingStatus =
   | { readonly kind: "working"; readonly startedAt: string }
-  | { readonly kind: "syncing"; readonly label: string; readonly active?: boolean }
+  | { readonly kind: "syncing"; readonly label: string }
   | { readonly kind: "compacting" }
   | {
       readonly kind: "child-input";
@@ -31,7 +31,14 @@ export type FloatingWorkingStatus =
       readonly label: string;
       readonly action: FloatingStatusAction;
     }
+  | {
+      readonly kind: "stop";
+      readonly label: string;
+      readonly unresponsive: boolean;
+      readonly action: FloatingStatusAction | null;
+    }
   | { readonly kind: "goal"; readonly label: string; readonly accessibilityLabel: string }
+  | { readonly kind: "extension"; readonly label: string; readonly onPress: () => void }
   | { readonly kind: "preparing"; readonly label: string }
   | {
       readonly kind: "connection";

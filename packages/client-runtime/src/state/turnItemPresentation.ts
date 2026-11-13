@@ -8,11 +8,6 @@ import type { ThreadStructureTurnItem } from "./models.ts";
 
 const WORKSPACE_PREPARATION_INPUT = "Preparing workspace";
 
-/** A wake can own a run without adding synthetic content to the conversation. */
-export function turnItemIsHiddenNotification(item: OrchestrationV2TurnItem): boolean {
-  return item.type === "notification" && item.hidden === true;
-}
-
 export function turnItemIsWorkspacePreparation(item: OrchestrationV2TurnItem): boolean {
   return (
     (item.type === "command_execution" && item.input === WORKSPACE_PREPARATION_INPUT) ||

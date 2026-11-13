@@ -43,6 +43,8 @@ render 824 "$macos_tmp/dulli.png"
   -depth 8 \
   "PNG32:$asset_dir/dulli-macos-1024.png"
 
+render 192 "$asset_dir/dulli-web-icon-192x192.png"
+render 512 "$asset_dir/dulli-web-icon-512x512.png"
 render 180 "$asset_dir/dulli-web-apple-touch-180.png"
 render 32 "$asset_dir/dulli-web-favicon-32x32.png"
 render 16 "$asset_dir/dulli-web-favicon-16x16.png"

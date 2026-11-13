@@ -1,3 +1,6 @@
+import * as Path from "effect/Path";
+import { isNetworkGitRemoteUrl } from "@t3tools/shared/git";
+import type { GitCloneProgressLine } from "./gitCloneProgress.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import type {
   ProjectCloneSnapshot,
@@ -5,6 +8,7 @@ import type {
   ProjectCloneStartInput,
   ProjectCloneStartResult,
   ProjectId,
+  SourceControlCloneProtocol,
   SourceControlRepositoryInfo,
 } from "@t3tools/contracts";
 import {
@@ -21,7 +25,6 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -30,10 +33,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
-import { isNetworkGitRemoteUrl } from "@t3tools/shared/git";
-
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
-import type { GitCloneProgressLine } from "./gitCloneProgress.ts";
+import type { ProjectConflictError } from "./ProjectService.ts";
 
 export class ProjectCloneTracker extends Context.Service<
   ProjectCloneTracker,
@@ -56,12 +57,13 @@ export class ProjectCloneTracker extends Context.Service<
 >()("t3/project/ProjectCloneTracker") {}
 
 export interface ProjectCloneHooks {
+  /** Fails with `ProjectConflictError` when another project already owns the destination. */
   readonly createProject: (input: {
     readonly projectId: ProjectId;
     readonly title: string;
     readonly workspaceRoot: string;
     readonly createdAt: string;
-  }) => Effect.Effect<void, OrchestrationDispatchCommandError>;
+  }) => Effect.Effect<void, OrchestrationDispatchCommandError | ProjectConflictError>;
   readonly onCloned: (input: {
     readonly projectId: ProjectId;
     readonly workspaceRoot: string;
@@ -89,7 +91,7 @@ interface TrackedClone {
     readonly cloneUrl: string;
     readonly destinationPath: string;
     readonly repository: SourceControlRepositoryInfo | null;
-    /** Set when the project is a multi-repo project; then it is cloned instead of `cloneUrl`. */
+    readonly protocol: SourceControlCloneProtocol;
     readonly multiRepo: SourceControlRepositoryService.SourceControlPreparedMultiRepoClone | null;
   };
 }
@@ -98,8 +100,6 @@ interface TrackedClone {
 export const make = Effect.gen(function* () {
   const repositories = yield* SourceControlRepositoryService.SourceControlRepositoryService;
   const path = yield* Path.Path;
-  // A clone owns everything below its folder, not only the folder itself. Otherwise another
-  // clone can finish in a member folder and be erased by the group's cleanup.
   const containsDestination = (parent: string, child: string) => {
     const relative = path.relative(parent, child);
     return (
@@ -239,7 +239,11 @@ export const make = Effect.gen(function* () {
     return yield* tracked.input.multiRepo
       ? repositories.cloneMultiRepo(tracked.input.multiRepo, options)
       : repositories.cloneRepository(
-          { remoteUrl: tracked.input.cloneUrl, destinationPath: tracked.input.destinationPath },
+          {
+            remoteUrl: tracked.input.cloneUrl,
+            destinationPath: tracked.input.destinationPath,
+            protocol: tracked.input.protocol,
+          },
           options,
         );
   }, Effect.scoped);
@@ -264,11 +268,13 @@ export const make = Effect.gen(function* () {
       ),
       Effect.ignoreCause(),
     );
-  /** Removes the partial checkout so the destination is empty again. */
-  const discardCheckout = (tracked: TrackedClone) =>
-    tracked.input.multiRepo
-      ? repositories.discardMultiRepoClone(tracked.input.multiRepo)
-      : repositories.discardClone(tracked.input.destinationPath);
+
+  const discardCheckout = Effect.fn("ProjectCloneTracker.discardCheckout")(
+    (tracked: TrackedClone) =>
+      tracked.input.multiRepo
+        ? repositories.discardMultiRepoClone(tracked.input.multiRepo)
+        : repositories.discardClone(tracked.input.destinationPath),
+  );
 
   const launch = Effect.fn("ProjectCloneTracker.launch")(function* (projectId: ProjectId) {
     const current = yield* Ref.get(clones);
@@ -283,6 +289,16 @@ export const make = Effect.gen(function* () {
       return next;
     });
   });
+
+  const moveClaim = (from: ProjectId, to: ProjectId) =>
+    Ref.modify(clones, (current) => {
+      const claim = current.get(from);
+      if (!claim || current.has(to)) return [false, current] as const;
+      const next = new Map(current);
+      next.delete(from);
+      next.set(to, { ...claim, snapshot: { ...claim.snapshot, projectId: to } });
+      return [true, next] as const;
+    });
 
   const start: ProjectCloneTracker["Service"]["start"] = Effect.fn("ProjectCloneTracker.start")(
     function* (input, hooks) {
@@ -345,35 +361,50 @@ export const make = Effect.gen(function* () {
             cloneUrl: prepared.cloneUrl,
             destinationPath: prepared.destinationPath,
             repository: prepared.repository,
+            protocol: input.protocol ?? "auto",
             multiRepo: prepared.multiRepo,
           },
         });
         return [true, next] as const;
       });
-      if (!claimed) {
-        return yield* new SourceControlRepositoryError({
-          operation: "cloneRepository",
-          provider: input.provider ?? SourceControlProviderKind.make("unknown"),
-          detail: "A clone into this destination is already in progress.",
-        });
-      }
+      const alreadyInProgress = new SourceControlRepositoryError({
+        operation: "cloneRepository",
+        provider: input.provider ?? SourceControlProviderKind.make("unknown"),
+        detail: "A clone into this destination is already in progress.",
+      });
+      if (!claimed) return yield* alreadyInProgress;
       // Finish or release the claim despite disconnects; a claim without a fiber cannot be cancelled or retried.
-      yield* Effect.uninterruptible(
+      const projectId = yield* Effect.uninterruptible(
         Effect.gen(function* () {
           yield* clearRetention(input.projectId);
           // Register before creation so racing thread.create and project.delete see the clone.
-          yield* hooks.createProject({
-            projectId: input.projectId,
-            title: input.title,
-            workspaceRoot: prepared.destinationPath,
-            createdAt: input.createdAt,
-          });
+          const projectId = yield* hooks
+            .createProject({
+              projectId: input.projectId,
+              title: input.title,
+              workspaceRoot: prepared.destinationPath,
+              createdAt: input.createdAt,
+            })
+            .pipe(
+              Effect.as(input.projectId),
+              // A failed clone's project still owns its empty folder after a restart
+              // forgets the clone; clone for that project instead.
+              Effect.catchTags({
+                ProjectConflictError: (conflict) =>
+                  moveClaim(input.projectId, conflict.conflictingProjectId).pipe(
+                    Effect.flatMap((moved) =>
+                      moved ? Effect.succeed(conflict.conflictingProjectId) : alreadyInProgress,
+                    ),
+                  ),
+              }),
+            );
           yield* publish;
-          yield* launch(input.projectId);
+          yield* launch(projectId);
+          return projectId;
         }).pipe(Effect.tapError(() => remove(input.projectId))),
       );
       return {
-        projectId: input.projectId,
+        projectId,
         cwd: prepared.destinationPath,
         remoteUrl: prepared.remoteUrl,
         repository: prepared.repository,

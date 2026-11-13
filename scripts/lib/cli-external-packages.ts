@@ -1,7 +1,7 @@
 /** Keep bundler externals and staged runtime dependency roots aligned. */
 // Filesystem-loaded externals need dependencies outside the bundle.
 const CLI_RUNTIME_EXTERNAL_PREFIXES = [
-  // Workler reads ../package.json via __dirname, so its entry and metadata must stay together.
+  // Workler reads its package metadata beside its CommonJS entry.
   "workler",
   // Cursor ships computed Webpack imports and platform helper packages.
   "@cursor/sdk",
@@ -11,6 +11,10 @@ const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "ffi-rs",
   "@yuuang/",
   "@ff-labs/",
+  "transcribe-cpp",
+  "@transcribe-cpp/",
+  "koffi",
+  "@koromix/",
   "@napi-rs/keyring",
   "@clerk/electron-passkeys",
   "node-gyp-build",
@@ -19,8 +23,6 @@ const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "utf-8-validate",
 ] as const;
 
-// Pi discovery resolves this SDK by name from a worker URL, outside the bundle's module graph.
-const CLI_RUNTIME_RESOLVED_PACKAGES = ["@earendil-works/pi-coding-agent"] as const;
 // Match Cursor dependency boundaries so zod does not externalize zod-to-json-schema.
 const CURSOR_RUNTIME_DEPENDENCIES = [
   "@bufbuild/protobuf",
@@ -41,10 +43,6 @@ export function isRuntimeExternalCliDependency(id: string): boolean {
   );
 }
 
-function isRuntimeResolvedCliDependency(name: string): boolean {
-  return CLI_RUNTIME_RESOLVED_PACKAGES.some((resolved) => resolved === name);
-}
-
 /** Use neverBundle: false from alwaysBundle means no opinion and leaves transitive packages bundled. */
 export function isExternalCliDependency(id: string): boolean {
   return isRuntimeExternalCliDependency(id);
@@ -59,9 +57,7 @@ export function selectCliRuntimeExternalDependencies(
   dependencies: Readonly<Record<string, string>>,
 ): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(dependencies).filter(
-      ([name]) => isRuntimeExternalCliDependency(name) || isRuntimeResolvedCliDependency(name),
-    ),
+    Object.entries(dependencies).filter(([name]) => isRuntimeExternalCliDependency(name)),
   );
 }
 

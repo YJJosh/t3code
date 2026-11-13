@@ -117,10 +117,13 @@ one of those outputs changed, and `T3CODE_RELAY_CLIENT_CONFIG_ENV` redirects it 
 
 ### Deployment CI
 
-Relay deployment and preview cleanup workflows are manual-only and hard-disabled in this fork.
-Dulli does not operate T3 Connect infrastructure. The upstream workflows remain as reference
-for independently managed deployments; developers can deploy personal non-production stages
-locally with any stage name other than `prod`.
+The relay is versioned separately from client releases. `.github/workflows/deploy-relay.yml` deploys
+the shared Alchemy `prod` stage on every push to `main`. Stable and nightly release builds both
+resolve their static public config from the same
+`production` GitHub environment. Labeling a same-repository PR `relay:preview` deploys a `pr-<number>`
+stage, and the cleanup workflow tears it down; see
+[`relay-preview.yml`](../../.github/workflows/relay-preview.yml). Developers can
+deploy personal non-production stages locally with any stage name other than `prod`.
 
 The repository must define these Actions variables shared by relay deployments:
 
@@ -163,9 +166,9 @@ The `production` GitHub environment must define these Actions secrets:
 
 The account-scoped repository credentials are consumed by Alchemy while provisioning relay stages; they
 are not bound into the relay Worker. The production deployment uses an Axiom personal access token,
-so `AXIOM_ORG_ID` must accompany `AXIOM_TOKEN`. Upstream release workflows read the production relay's
+so `AXIOM_ORG_ID` must accompany `AXIOM_TOKEN`. The release workflow reads the production relay's
 derived public URL and Clerk publishable key from the same environment for downstream desktop, CLI,
-and hosted web builds. Dulli release builds do not use this relay configuration.
+and hosted web builds.
 
 See:
 

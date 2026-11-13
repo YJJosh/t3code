@@ -1,23 +1,8 @@
 import type { StaticScreenProps } from "@react-navigation/native";
-import { AddProjectMultiRepoCloneScreen, AddProjectMultiRepoScreen } from "./AddProjectScreen";
-
-type AddProjectMultiRepoRouteParams = {
-  readonly environmentId?: string | string[];
-};
+import { AddProjectMultiRepoScreen } from "./AddProjectScreen";
 
 export function AddProjectMultiRepoRoute({
   route,
-}: StaticScreenProps<AddProjectMultiRepoRouteParams | undefined>) {
+}: StaticScreenProps<{ readonly environmentId?: string | string[] } | undefined>) {
   return <AddProjectMultiRepoScreen {...(route.params ?? {})} />;
-}
-
-type AddProjectMultiRepoCloneRouteParams = {
-  readonly environmentId?: string | string[];
-  readonly folder?: string | string[];
-};
-
-export function AddProjectMultiRepoCloneRoute({
-  route,
-}: StaticScreenProps<AddProjectMultiRepoCloneRouteParams | undefined>) {
-  return <AddProjectMultiRepoCloneScreen {...(route.params ?? {})} />;
 }

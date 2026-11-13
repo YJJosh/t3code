@@ -15,7 +15,7 @@ const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 /**
  * An older server sharing that directory cannot read a newer cache and would
  * replace it, dropping saved usage for deleted transcripts. Separate files keep
- * both.
+ * the newer one; older files are removed once it is saved.
  */
 export const SCAN_CACHE_FILE_NAME = "usage-scan-cache-v11.json";
 export const LEGACY_SCAN_CACHE_FILE_NAMES = [
@@ -134,32 +134,28 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
   };
 }
 
-/** Memoizes immutable entries by identity; growing intern tables preserve indexes, retaining unused strings until restart. */
+/** Yields the document in pieces so large caches never become one string; growing intern tables preserve indexes, retaining unused strings until restart. */
 export function makeScanCacheWriter(): (
   cache: ScanCache,
   extra: Readonly<Record<string, unknown>>,
-) => string {
+) => Iterable<string> {
   const tables = makeInternTables();
-  const fragments = new WeakMap<CachedFile, string>();
-  return (cache, extra) => {
-    const files: string[] = [];
-    for (const [path, entry] of cache) {
-      let fragment = fragments.get(entry);
-      if (fragment === undefined) {
-        fragment = JSON.stringify(serializeFile(entry, tables));
-        fragments.set(entry, fragment);
-      }
-      files.push(`${JSON.stringify(path)}:${fragment}`);
+  function* encode(entries: readonly (readonly [string, CachedFile])[], extra: object) {
+    yield '{"files":{';
+    for (const [index, [path, entry]] of entries.entries()) {
+      yield `${index === 0 ? "" : ","}${JSON.stringify(path)}:${JSON.stringify(serializeFile(entry, tables))}`;
     }
     // Encoded after the files, which may have added to the intern tables.
-    const head = JSON.stringify({
+    const tail = JSON.stringify({
       ...extra,
       version: USAGE_SCAN_CACHE_VERSION,
       models: tables.models,
       sessions: tables.sessions,
     });
-    return `${head.slice(0, -1)},"files":{${files.join(",")}}}`;
-  };
+    yield `},${tail.slice(1)}`;
+  }
+  // Snapshot now: the encoding runs later, while the file is written.
+  return (cache, extra) => encode([...cache], extra);
 }
 
 function isRecordArray(value: unknown): value is readonly unknown[] {
@@ -221,7 +217,14 @@ export function decodeScanCache(
       if (
         typeof timestampMs !== "number" ||
         !Number.isFinite(timestampMs) ||
+        typeof sessionIndex !== "number" ||
+        !Number.isSafeInteger(sessionIndex) ||
+        sessionIndex < 0 ||
+        sessionIndex >= sessions.length ||
         model === undefined ||
+        (dedupeKey !== null && typeof dedupeKey !== "string") ||
+        (reportedCostUsd !== null &&
+          (typeof reportedCostUsd !== "number" || !Number.isFinite(reportedCostUsd))) ||
         (unresolvedServiceTierTurnId !== undefined &&
           typeof unresolvedServiceTierTurnId !== "string") ||
         (rateModelIndex != null && rateModel === undefined) ||
@@ -244,7 +247,7 @@ export function decodeScanCache(
         timestampMs,
         model,
         ...(rateModel === undefined ? {} : { rateModel }),
-        sessionId: (typeof sessionIndex === "number" ? sessions[sessionIndex] : undefined) ?? "",
+        sessionId: sessions[sessionIndex]!,
         totals: {
           uncachedInputTokens: uncached,
           cachedInputTokens: cached,
@@ -252,12 +255,12 @@ export function decodeScanCache(
           outputTokens: output,
           reasoningTokens: reasoning,
         },
-        reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
+        reportedCostUsd,
         speed,
         ...(version >= 7 && unresolvedServiceTierTurnId !== undefined
           ? { unresolvedServiceTierTurnId }
           : {}),
-        dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
+        dedupeKey,
       });
     }
     return records;
@@ -268,10 +271,6 @@ export function decodeScanCache(
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
     if (entry.p === undefined) continue;
-    const forkLayout = version === 5 && ("ps" in entry || "d" in entry);
-    // The fork Pi reader is deferred to Dulli; never reuse its records/state
-    // as an unchanged warm hit for upstream's independent Pi reader.
-    if (forkLayout && entry.p === "pi") continue;
     const format = formats.get(entry.p);
     if (format === undefined) continue;
     if (!isRecordArray(entry.r) || !isRecordArray(entry.t)) continue;
@@ -296,19 +295,19 @@ export function decodeScanCache(
       continue;
     }
     // Keep history for deleted rollouts, but re-parse incompatible reducer state.
-    // v9 repairs skipped initial Codex requests; clean v8 entries can still resume.
-    // v10 drops Claude files driven by Pi, which earlier versions counted.
-    // v11 gives Dulli records a rate model so their cost splits by type.
+    // v9 and v11 repair skipped Codex requests; clean v8+ entries stay served while unchanged.
+    // v10 adds Claude advisor calls, which no older Claude entry holds.
     const legacy =
-      format.state !== undefined &&
-      (version < 6 ||
-        forkLayout ||
-        (entry.p === "codex" && (version < 8 || (version < 9 && malformedRecords > 0))) ||
-        (entry.p === "claude" && version < 10) ||
-        (entry.p === "dulli" && version < 11));
+      (entry.p === "claude" && version < 10) ||
+      (format.state !== undefined &&
+        (version < 6 ||
+          (entry.p === "codex" && (version < 8 || (version < 11 && malformedRecords > 0)))));
     // A corrupt state disqualifies the entry: resuming with it would attach
     // appended usage to the wrong model or replay fork-copied history.
     if (!legacy && !isValidState.get(entry.p)?.(entry.cs)) continue;
+    // Before v11 a clean scan could end past an interrupted request whose usage its state dropped,
+    // so a grown file re-parses whole instead of resuming.
+    const resumable = !legacy && !(entry.p === "codex" && version < 11);
 
     const provider = entry.p;
     const records = decodeRecords(entry.r, provider);
@@ -322,20 +321,14 @@ export function decodeScanCache(
       records,
       tailRecords,
       malformedRecords,
-      position: legacy
+      position: resumable
         ? {
-            resumeOffset: 0,
-            guardLength: 0,
-            guardHash: 0,
-            // Dulli headers still find child sessions of deleted transcripts; offset 0 ignores state.
-            state: entry.p === "dulli" && isValidState.get(entry.p)?.(entry.cs) ? entry.cs : null,
-          }
-        : {
             resumeOffset: entry.o,
             guardLength: entry.gl,
             guardHash: entry.gh,
             state: entry.cs,
-          },
+          }
+        : { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
     });
   }
 

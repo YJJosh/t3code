@@ -4,7 +4,6 @@ import type {
   UsageProviderKind,
   UsageReadError,
   UsageSource,
-  UsageSourceScan,
   UsageTokenTotals,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
@@ -55,20 +54,7 @@ export function parseTimestampMs(value: unknown): number | null {
 
 export type SelectedFields = { readonly [key: string]: true | SelectedFields };
 
-/** A bounded JSONL source, including sources discovered from transcript headers. */
-export interface TranscriptUsageDirectory {
-  readonly dir: string;
-  readonly fileName?: string;
-  readonly maxDepth?: number;
-  readonly filePattern?: UsageSourceScan["filePattern"];
-}
-
 export interface TranscriptUsageFormat<State> {
-  /** Readers of the same native format share physical directories; highest priority owns a root. */
-  readonly sourceFamily?: string;
-  readonly sourcePriority?: number;
-  /** Additional bounded roots derived from persisted header state, on cold and warm scans. */
-  directoriesFromState?(state: State): readonly TranscriptUsageDirectory[];
   readonly selectFields: SelectedFields;
   /** ASCII markers must match every relevant line, including state-only updates. */
   readonly usageMarkers: readonly [string, ...string[]];
@@ -103,7 +89,6 @@ export interface ProviderUsageScan {
   readonly hostId?: string;
   readonly status?: UsageSource["status"];
   readonly message?: string;
-  readonly action?: UsageSource["action"];
   readonly files:
     | readonly { readonly path: string; readonly records: readonly UsageRecord[] }[]
     | null;
@@ -128,7 +113,11 @@ export type ProviderUsageReader<Config, R> =
       ) => Effect.Effect<ReadonlyMap<UsageRecord, UsageSpeed>, never, R>;
       readonly directories: (
         instance: ProviderUsageInstance<Config>,
-      ) => Effect.Effect<ReadonlyArray<TranscriptUsageDirectory>, never, R>;
+      ) => Effect.Effect<
+        ReadonlyArray<{ readonly dir: string; readonly fileName?: string }>,
+        never,
+        R
+      >;
     }
   | {
       readonly kind: "scan";

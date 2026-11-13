@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import { buildPeriodColumns } from "./UsageProviderChart";
 
 describe("buildPeriodColumns", () => {
@@ -42,18 +41,7 @@ describe("buildPeriodColumns", () => {
       { provider: "opencode", value: 0 },
       { provider: "antigravity", value: 0 },
       { provider: "pi", value: 5 },
-      { provider: "dulli", value: 0 },
       { provider: "muse", value: 7 },
     ]);
   });
-});
-
-it("orders Dulli after Pi and uses its branded label", () => {
-  expect(
-    providersWithUsage([
-      { provider: "dulli", costUsd: 1, totalTokens: 1 },
-      { provider: "pi", costUsd: 1, totalTokens: 1 },
-    ]),
-  ).toEqual(["pi", "dulli"]);
-  expect(PROVIDER_PRESENTATION.dulli.label).toBe("Dulli");
 });

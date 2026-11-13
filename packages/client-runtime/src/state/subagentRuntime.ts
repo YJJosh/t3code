@@ -1,6 +1,7 @@
 import { groupBy } from "effect/Array";
 import * as DateTime from "effect/DateTime";
 import type {
+  ModelSelection,
   OrchestrationV2AppThread,
   OrchestrationV2Subagent,
   OrchestrationV2SubagentWorkflow,
@@ -20,12 +21,12 @@ export type RuntimeSubagentStatus =
 
 export interface SubagentUsage {
   readonly totalTokens: number;
-  readonly inputTokens?: number | undefined;
-  readonly cachedInputTokens?: number | undefined;
-  readonly outputTokens?: number | undefined;
-  readonly reasoningOutputTokens?: number | undefined;
-  readonly toolUses?: number | undefined;
-  readonly durationMs?: number | undefined;
+  readonly inputTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly outputTokens?: number;
+  readonly reasoningOutputTokens?: number;
+  readonly toolUses?: number;
+  readonly durationMs?: number;
 }
 
 export interface SubagentActivityEntry {
@@ -175,14 +176,38 @@ function workflowMembersToRuntime(
   });
 }
 
+function promptTitle(prompt: string): string {
+  if (prompt.length <= 80) return prompt;
+  let end = 77;
+  const previous = prompt.charCodeAt(end - 1);
+  const next = prompt.charCodeAt(end);
+  if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+    end -= 1;
+  }
+  return `${prompt.slice(0, end)}...`;
+}
+
+export function workflowMemberModelSelection(
+  member: Pick<RuntimeSubagent, "model" | "effort" | "speed">,
+  instanceId: ModelSelection["instanceId"],
+): ModelSelection | undefined {
+  if (!member.model) return undefined;
+  return {
+    instanceId,
+    model: member.model,
+    options: [
+      ...(member.effort ? [{ id: "effort", value: member.effort }] : []),
+      ...(member.speed ? [{ id: "fastMode", value: member.speed === "fast" }] : []),
+    ],
+  };
+}
+
 export function projectedSubagentsToRuntime(
   subagents: ReadonlyArray<{
     readonly id: string;
     readonly title: string | null;
     readonly prompt: string;
     readonly model: string | null;
-    readonly modelSelection?: OrchestrationV2Subagent["modelSelection"];
-    readonly usage?: OrchestrationV2Subagent["usage"];
     readonly status: OrchestrationV2Subagent["status"];
     readonly progress?: string | undefined;
     readonly childThreadId?: string | null | undefined;
@@ -202,20 +227,13 @@ export function projectedSubagentsToRuntime(
     const coordinator = {
       id: subagent.id,
       kind: workflow === undefined ? "subagent" : "workflow",
-      title:
-        subagent.title ??
-        (subagent.prompt.length > 80 ? `${subagent.prompt.slice(0, 77)}...` : subagent.prompt),
+      title: subagent.title ?? promptTitle(subagent.prompt),
       role: null,
       model: subagent.model,
-      effort: (() => {
-        const value = subagent.modelSelection?.options?.find(
-          (option) => option.id === "reasoning",
-        )?.value;
-        return typeof value === "string" ? value : null;
-      })(),
+      effort: null,
       status: subagent.status,
       activationCount: 1,
-      usage: subagent.usage ?? (workflow === undefined ? null : workflowUsage(workflow)),
+      usage: workflow === undefined ? null : workflowUsage(workflow),
       progress: subagent.progress ?? null,
       lastToolName: null,
       result: subagent.result,

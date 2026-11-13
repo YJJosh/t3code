@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -16,7 +17,7 @@ const TestLayer = ProjectMultiRepoResolver.layer.pipe(
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-multi-repo-resolver-" })),
   Layer.provideMerge(VcsProcess.layer),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
 const git = (cwd: string, args: ReadonlyArray<string>) =>

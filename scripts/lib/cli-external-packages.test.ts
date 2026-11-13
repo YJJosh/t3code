@@ -1,5 +1,3 @@
-import serverPackageJson from "../../apps/server/package.json" with { type: "json" };
-
 import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -14,7 +12,6 @@ import { findEsmImportsOfExternalPackages } from "./cli-executable-imports.ts";
 import {
   isRuntimeExternalCliDependency,
   findInlinedExternalPackages,
-  isExternalCliDependency,
   selectCliRuntimeExternalDependencies,
   shouldBundleCliDependency,
 } from "./cli-external-packages.ts";
@@ -40,6 +37,9 @@ describe("shouldBundleCliDependency", () => {
       "@yuuang/ffi-rs-win32-x64-msvc",
       "@ff-labs/fff-node",
       "@napi-rs/keyring",
+      "transcribe-cpp",
+      "@transcribe-cpp/win32-x64-cpu-vulkan",
+      "koffi",
       "@clerk/electron-passkeys",
       "node-addon-api",
     ]) {
@@ -47,21 +47,9 @@ describe("shouldBundleCliDependency", () => {
     }
   });
 
-  it("keeps Workler external so it can resolve its own package metadata", () => {
-    assert.strictEqual(shouldBundleCliDependency("workler"), false);
-    assert.strictEqual(isExternalCliDependency("workler"), true);
-  });
-
   it("treats prefix-matched siblings as external", () => {
     assert.strictEqual(shouldBundleCliDependency("node-gyp-build-optional-packages"), false);
   });
-});
-
-it("ships Pi SDK and Workler as runtime dependencies instead of bundling them", () => {
-  const selected = selectCliRuntimeExternalDependencies(serverPackageJson.dependencies);
-  for (const id of ["@earendil-works/pi-coding-agent", "workler"] as const) {
-    assert.equal(selected[id], serverPackageJson.dependencies[id]);
-  }
 });
 
 it.layer(NodeServices.layer)("external package dependency closure", (it) => {
@@ -198,13 +186,6 @@ var x = 1;
 
     assert.deepStrictEqual(result.inlined, ["node-addon-api", "node-gyp-build-optional-packages"]);
     assert.strictEqual(result.regionCount, 2);
-  });
-
-  it("flags Workler when it is accidentally inlined into an ES module", () => {
-    const result = findInlinedExternalPackages(
-      region("../../node_modules/.pnpm/workler@0.2.1/node_modules/workler/dist/constants.js"),
-    );
-    assert.deepStrictEqual(result.inlined, ["workler"]);
   });
 
   it("reports the packages that were inlined, not just the violations", () => {

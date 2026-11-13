@@ -45,6 +45,7 @@ const NOT_A_MULTI_REPO_FOLDER: ProjectFolderRepositories = {
 export class ProjectMultiRepoResolver extends Context.Service<
   ProjectMultiRepoResolver,
   {
+    readonly invalidate: (workspaceRoot: string) => Effect.Effect<void>;
     readonly resolve: (
       workspaceRoot: string,
       options?: { readonly refresh?: boolean },
@@ -130,7 +131,12 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return ProjectMultiRepoResolver.of({ resolve });
+  return ProjectMultiRepoResolver.of({
+    resolve,
+    invalidate: Effect.fn("ProjectMultiRepoResolver.invalidate")((root) =>
+      Cache.invalidate(cache, root),
+    ),
+  });
 });
 
 export const layer = Layer.effect(ProjectMultiRepoResolver, make);

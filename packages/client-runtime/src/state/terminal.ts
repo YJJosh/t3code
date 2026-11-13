@@ -115,6 +115,10 @@ export function createTerminalEnvironmentAtoms<R, E>(
       scheduler: lifecycleScheduler,
       concurrency: lifecycleConcurrency,
     }),
+    setController: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:terminal:set-controller",
+      tag: WS_METHODS.terminalSetController,
+    }),
   };
   return {
     ...atoms,

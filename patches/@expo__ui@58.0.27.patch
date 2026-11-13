@@ -1,0 +1,14 @@
+diff --git a/android/src/main/java/expo/modules/ui/RNHostView.kt b/android/src/main/java/expo/modules/ui/RNHostView.kt
+--- a/android/src/main/java/expo/modules/ui/RNHostView.kt
++++ b/android/src/main/java/expo/modules/ui/RNHostView.kt
+@@ -847,7 +847,9 @@
+   override fun setNestedScrollingEnabled(enabled: Boolean) {
+     childHelper.isNestedScrollingEnabled = enabled
+   }
+-  override fun isNestedScrollingEnabled(): Boolean = childHelper.isNestedScrollingEnabled
++  // Header hosts must not become a form sheet's scrolling child; Compose still needs active relays.
++  override fun isNestedScrollingEnabled(): Boolean =
++    childHelper.isNestedScrollingEnabled && childHelper.hasNestedScrollingParent()
+   override fun startNestedScroll(axes: Int): Boolean = childHelper.startNestedScroll(axes)
+   override fun startNestedScroll(axes: Int, type: Int): Boolean = childHelper.startNestedScroll(axes, type)
+   override fun stopNestedScroll() = childHelper.stopNestedScroll()

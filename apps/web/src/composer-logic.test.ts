@@ -14,8 +14,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   clampCollapsedComposerCursor,
-  parseDulliTerminalCommand,
-  isDulliAgentsPanelCommand,
   collapseExpandedComposerCursor,
   composerSubmissionIntentForKey,
   composerStateAtPromptEnd,
@@ -26,20 +24,9 @@ import {
   isPathSuggestionCurrent,
   replaceTextRange,
 } from "./composer-logic";
+import { slashCommandItemsForPromptPosition } from "./components/chat/composerSlashCommandSearch";
 import { carryDisplacedCustomAnswerIntoPrompt } from "./pendingUserInput";
 import { formatTerminalContextReference } from "./lib/terminalContext";
-
-it("only intercepts standalone Dulli inspector commands, not prompts or extension arguments", () => {
-  for (const value of ["/subagents", "/workflows", " /WORKFLOWS  "])
-    expect(isDulliAgentsPanelCommand(value)).toBe(true);
-  for (const value of [
-    "/subagents list",
-    "/workflows run review",
-    "Discuss /subagents",
-    "/subagents-rpc",
-  ])
-    expect(isDulliAgentsPanelCommand(value)).toBe(false);
-});
 
 const terminalReference = formatTerminalContextReference({
   id: "ctx-1",
@@ -554,47 +541,26 @@ describe("literal editor answer cursor state", () => {
   });
 });
 
-describe("Dulli terminal slash commands", () => {
-  it("opens terminal picker commands without sending them to the model", () => {
-    for (const command of [" /ps ", "/PS", "/terminal", "/terminal --keep-open"]) {
-      expect(parseDulliTerminalCommand(command)).toEqual({ kind: "terminals" });
-    }
-  });
-  it("preserves commands, flags, and multiline shell input", () => {
-    expect(parseDulliTerminalCommand("/terminal bash --norc -i")).toEqual({
-      kind: "terminal-start",
-      command: "bash --norc -i",
-      keepOpen: false,
-    });
-    for (const flag of ["-k", "--keep-open"]) {
-      expect(parseDulliTerminalCommand(`/terminal ${flag} pnpm dev`)).toEqual({
-        kind: "terminal-start",
-        command: "pnpm dev",
-        keepOpen: true,
-      });
-    }
-    expect(parseDulliTerminalCommand("/terminal -kx")).toEqual({
-      kind: "terminal-start",
-      command: "-kx",
-      keepOpen: false,
-    });
-    expect(parseDulliTerminalCommand("/terminal echo a\necho b")).toEqual({
-      kind: "terminal-start",
-      command: "echo a\necho b",
-      keepOpen: false,
-    });
-  });
-  it("leaves other commands and messages alone", () => {
-    for (const text of ["/ps now", "/terminalx foo", "run /ps", "/pm"])
-      expect(parseDulliTerminalCommand(text)).toBeNull();
-  });
-});
-
 describe("extendReplacementRangeForTrailingSpace", () => {
   it("swallows one existing space after the range when the replacement ends with one", () => {
     expect(extendReplacementRangeForTrailingSpace("@fi rest", 3, "@file ")).toBe(4);
     expect(extendReplacementRangeForTrailingSpace("@firest", 3, "@file ")).toBe(3);
     expect(extendReplacementRangeForTrailingSpace("@fi rest", 3, "@file")).toBe(3);
     expect(extendReplacementRangeForTrailingSpace("@fi", 3, "@file ")).toBe(3);
+  });
+});
+
+describe("side chat slash commands", () => {
+  it("are not offered after the start of a message", () => {
+    const items = (["side", "btw", "clear", "model"] as const).map((command) => ({
+      id: `slash:${command}`,
+      type: "slash-command" as const,
+      command,
+      label: `/${command}`,
+      description: "",
+    }));
+    expect(slashCommandItemsForPromptPosition(items, false).map((item) => item.id)).toEqual([
+      "slash:model",
+    ]);
   });
 });

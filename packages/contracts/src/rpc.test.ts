@@ -2,27 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
-import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
-import { AuthOrchestrationOperateScope, AuthTerminalOperateScope } from "./auth.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { WS_METHODS, WsRpcGroup } from "./rpc.ts";
-
-describe("multi-repo RPC compatibility", () => {
-  it("registers group operations and Dulli bridge RPCs", () => {
-    expect(WsRpcGroup.requests.has(WS_METHODS.projectsMakeMultiRepo)).toBe(true);
-    expect(clientRpcRequiredScopes(WS_METHODS.projectsMakeMultiRepo, {})).toEqual([
-      AuthOrchestrationOperateScope,
-    ]);
-    expect(WsRpcGroup.requests.has(WS_METHODS.projectsInspectMultiRepoFolder)).toBe(true);
-    const methods = [...WsRpcGroup.requests.keys()];
-    expect(methods).toContain("provider.controlTask");
-    expect(methods).toContain("backgroundTerminals.control");
-    expect(methods).toContain("subscribeBackgroundTerminalEvents");
-    expect(clientRpcRequiredScopes(WS_METHODS.backgroundTerminalsControl, {})).toEqual([
-      AuthTerminalOperateScope,
-    ]);
-  });
-});
 
 describe("WebSocket RPC contracts", () => {
   it("rejects server-internal commands sent to dispatchCommand", () => {

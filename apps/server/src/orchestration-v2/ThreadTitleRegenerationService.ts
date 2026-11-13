@@ -1,4 +1,5 @@
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { isAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
   type ChatAttachment,
@@ -12,12 +13,12 @@ import {
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 
 import * as ServerSettings from "../serverSettings.ts";
-import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import type { OrchestratorV2Error } from "./Orchestrator.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -50,9 +51,7 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectStore.ProjectStoreV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const textGeneration = yield* TextGeneration.TextGeneration;
-  // Standalone orchestration runtimes can generate titles without the live
-  // discovery service. The server supplies it; use its health snapshots there.
-  const providers = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+  const fileSystem = yield* FileSystem.FileSystem;
 
   const complete = (input: {
     readonly threadId: ThreadId;
@@ -142,7 +141,10 @@ const make = Effect.gen(function* () {
         context =
           message === undefined
             ? { message: "", attachments: [] }
-            : { message: message.text, attachments: message.attachments };
+            : {
+                message: isAttachmentOnlyBootstrapPrompt(message.text) ? "" : message.text,
+                attachments: message.attachments,
+              };
       } else {
         context = formatThreadTitleContext(
           projection.messages.filter((message) => !message.streaming),
@@ -160,21 +162,20 @@ const make = Effect.gen(function* () {
         yield* serverSettings.getSettings,
         projection.thread.projectId,
       ).settings;
+      // Storage cleanup removes worktrees but keeps the path; CLIs cannot spawn in a missing cwd.
+      const worktreePath = projection.thread.worktreePath;
+      const worktreeExists =
+        worktreePath !== null &&
+        (yield* fileSystem.exists(worktreePath).pipe(Effect.orElseSucceed(() => false)));
       const result = yield* textGeneration.generateThreadTitle({
-        cwd: projection.thread.worktreePath ?? project.value.workspaceRoot,
+        cwd: worktreeExists ? worktreePath : project.value.workspaceRoot,
         message: context.message,
         attachments: context.attachments,
         ...(input.kind.type === "regenerate" ? { previousTitle: projection.thread.title } : {}),
         ...(inherited === undefined ? {} : { forkSource: inherited }),
         instructions: settings.threadTitleInstructions,
-        modelSelection: ServerSettings.resolveTextGenerationModelSelection(
-          settings,
-          yield* Option.match(providers, {
-            onNone: () => Effect.succeed([]),
-            onSome: (registry) => registry.getProviders,
-          }),
-          projection.thread.projectId,
-        ),
+        modelSelection: settings.textGenerationModelSelection,
+        projectId: projection.thread.projectId,
       });
       const generatedTitle = result.title.trim();
       return generatedTitle === "New thread" ||

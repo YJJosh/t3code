@@ -2,15 +2,9 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import { ThreadId } from "./baseSchemas.ts";
-import {
-  ProviderSendTurnInput,
-  ProviderTaskControlError,
-  ProviderTaskControlInput,
-  ProviderUploadFeedbackError,
-} from "./provider.ts";
+import { ProviderSendTurnInput, ProviderUploadFeedbackError } from "./provider.ts";
 
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
-const decodeProviderTaskControlInput = Schema.decodeUnknownSync(ProviderTaskControlInput);
 
 describe("ProviderSendTurnInput", () => {
   it.each(["image", "file"])(
@@ -44,64 +38,6 @@ describe("ProviderSendTurnInput", () => {
       ).toThrow(/80 MiB/);
     },
   );
-});
-
-describe("provider task control", () => {
-  it("requires action-specific task messages", () => {
-    expect(
-      decodeProviderTaskControlInput({
-        threadId: "thread-1",
-        taskId: "task-1",
-        action: "reply",
-        message: "Focus on lifecycle cleanup",
-      }),
-    ).toEqual({
-      threadId: "thread-1",
-      taskId: "task-1",
-      action: "reply",
-      message: "Focus on lifecycle cleanup",
-    });
-    expect(() =>
-      decodeProviderTaskControlInput({
-        threadId: "thread-1",
-        taskId: "task-1",
-        action: "reply",
-      }),
-    ).toThrow();
-  });
-
-  it("rejects steering in the T3 task-control contract", () => {
-    expect(() =>
-      decodeProviderTaskControlInput({
-        threadId: "thread-1",
-        taskId: "task-1",
-        action: "steer",
-        message: "Continue",
-      }),
-    ).toThrow();
-  });
-
-  it("accepts an optional stop reason", () => {
-    expect(
-      decodeProviderTaskControlInput({
-        threadId: "thread-1",
-        taskId: "task-1",
-        action: "stop",
-      }),
-    ).toEqual({ threadId: "thread-1", taskId: "task-1", action: "stop" });
-  });
-
-  it("keeps task identity and the original cause in structured failures", () => {
-    const cause = new Error("private provider detail");
-    const error = new ProviderTaskControlError({
-      threadId: ThreadId.make("thread-1"),
-      taskId: "task-1",
-      cause,
-    });
-
-    expect(error.message).toBe("Failed to control task task-1 for thread thread-1.");
-    expect(error.cause).toBe(cause);
-  });
 });
 
 describe("provider feedback", () => {

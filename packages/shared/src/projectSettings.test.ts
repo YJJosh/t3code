@@ -148,7 +148,6 @@ describe("resolveProjectSettings", () => {
           providerInstances: {
             [codex]: { enabled: false },
             [ProviderInstanceId.make("claudeAgent")]: { enabled: false },
-            [ProviderInstanceId.make("dulli")]: { enabled: false },
           },
         },
       },
@@ -161,30 +160,30 @@ describe("resolveProjectSettings", () => {
 
 describe("resolveProjectSettings with a t3.json", () => {
   it("walks project override, environment value, file, then built-in for file-backed keys", () => {
-    const file = { defaultThreadEnvMode: "local" as const };
+    const file = { defaultThreadEnvMode: "worktree" as const };
     const fromOverride = resolveProjectSettings(
       {
         ...DEFAULT_SERVER_SETTINGS,
-        projectSettingsOverrides: { [projectId]: { defaultThreadEnvMode: "worktree" } },
+        projectSettingsOverrides: { [projectId]: { defaultThreadEnvMode: "local" } },
       },
       projectId,
       null,
       file,
     );
-    expect(fromOverride.settings.defaultThreadEnvMode).toBe("worktree");
+    expect(fromOverride.settings.defaultThreadEnvMode).toBe("local");
     expect(fromOverride.sources.defaultThreadEnvMode).toBe("project");
 
     const fromEnvironment = resolveProjectSettings(
-      { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "worktree" },
+      { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "local" },
       projectId,
       null,
       file,
     );
-    expect(fromEnvironment.settings.defaultThreadEnvMode).toBe("worktree");
+    expect(fromEnvironment.settings.defaultThreadEnvMode).toBe("local");
     expect(fromEnvironment.sources.defaultThreadEnvMode).toBe("environment");
 
     const fromFile = resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId, null, file);
-    expect(fromFile.settings.defaultThreadEnvMode).toBe("local");
+    expect(fromFile.settings.defaultThreadEnvMode).toBe("worktree");
     expect(fromFile.sources.defaultThreadEnvMode).toBe("t3.json");
 
     const builtIn = resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId, null, null);
@@ -199,7 +198,7 @@ describe("resolveProjectSettings with a t3.json", () => {
       null,
       file,
     );
-    expect(nullOverride.settings.defaultThreadEnvMode).toBe("local");
+    expect(nullOverride.settings.defaultThreadEnvMode).toBe("worktree");
     expect(nullOverride.sources.defaultThreadEnvMode).toBe("t3.json");
     expect(
       resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId, null, {}).sources
@@ -412,4 +411,22 @@ describe("resolveWorktreeCleanup", () => {
         .worktreeAfterDays,
     ).toBe(8);
   });
+});
+
+it("keeps project speech vocabulary on its originating project and clears it to inherit", () => {
+  const words = [{ term: "Effect", aliases: ["a fact"] }];
+  const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+    projectSettingsOverrides: { [projectId]: { speechProjectCustomWords: words } },
+  });
+  expect(resolveProjectSettings(settings, projectId).settings.speechProjectCustomWords).toEqual(
+    words,
+  );
+  expect(
+    resolveProjectSettings(settings, otherProjectId).settings.speechProjectCustomWords,
+  ).toEqual([]);
+  const cleared = clearProjectSettingsOverrides(settings, projectId, ["speechProjectCustomWords"]);
+  const restored = applyServerSettingsPatch(settings, {
+    projectSettingsOverrides: { [projectId]: cleared },
+  });
+  expect(resolveProjectSettings(restored, projectId).settings.speechProjectCustomWords).toEqual([]);
 });

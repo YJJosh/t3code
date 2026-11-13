@@ -43,12 +43,6 @@ function summary(
     hostId: string;
     homePath: string;
     volumeId?: string;
-    ancestorVolumeIds?: readonly string[];
-    scan?: {
-      readonly maxDepth: number;
-      readonly filePattern: "jsonl" | "pi-subagent-session";
-    };
-    status?: "ok" | "partial" | "failed";
     distinctSessions?: number;
   }[],
   contractVersion: number = USAGE_CONTRACT_VERSION,
@@ -66,17 +60,13 @@ function summary(
         provider: source.provider,
         resolvedHomePath: source.homePath,
         volumeId: source.volumeId ?? `vol-${source.hostId}`,
-        ...(source.ancestorVolumeIds === undefined
-          ? {}
-          : { ancestorVolumeIds: [...source.ancestorVolumeIds] }),
       },
-      ...(source.scan === undefined ? {} : { scan: source.scan }),
-      status: source.status ?? ("ok" as const),
+      status: "ok" as const,
       scannedFiles: 1,
       skippedFiles: 0,
       malformedRecords: 0,
       distinctSessions: source.distinctSessions ?? 1,
-      message: source.status === "partial" ? "Transcript scan was incomplete." : null,
+      message: null,
     })),
     pricing: { status: "fresh", source: "litellm", fetchedAt: null, knownModels: 10 },
     scanDurationMs: 1,
@@ -88,53 +78,6 @@ function environment(id: string, usageSummary: UsageSummary): EnvironmentUsage {
 }
 
 describe("mergeUsage", () => {
-  it("uses source paths when forward-compatible decoding shifts source indexes", () => {
-    const decoded = decodeSummary({
-      ...summary(
-        [bucket({ sourceIndex: 1, sourcePath: "/claude" })],
-        [
-          { provider: "codex", hostId: "host", homePath: "/unknown" },
-          { provider: "claude", hostId: "host", homePath: "/claude" },
-        ],
-      ),
-      sources: [
-        {
-          ...summary([], [{ provider: "codex", hostId: "host", homePath: "/unknown" }]).sources[0],
-          fingerprint: {
-            provider: "future-provider",
-            hostId: "host",
-            resolvedHomePath: "/unknown",
-            volumeId: "unknown",
-          },
-        },
-        summary([], [{ provider: "claude", hostId: "host", homePath: "/claude" }]).sources[0],
-      ],
-    });
-    expect(decoded.sources).toHaveLength(1);
-    expect(mergeUsage([environment("env", decoded)], USAGE_CONTRACT_VERSION).costUsd).toBe(10);
-  });
-
-  it("keeps differently bounded partial Pi scans of the same directory separate", () => {
-    const source = {
-      provider: "pi" as const,
-      hostId: "host",
-      homePath: "/pi",
-      status: "partial" as const,
-    };
-    const first = summary(
-      [bucket({ provider: "pi", sourceIndex: 0, sourcePath: "/pi" })],
-      [{ ...source, scan: { maxDepth: 0, filePattern: "jsonl" } }],
-    );
-    const second = summary(
-      [bucket({ provider: "pi", sourceIndex: 0, sourcePath: "/pi", costUsd: 20 })],
-      [{ ...source, scan: { maxDepth: 2, filePattern: "pi-subagent-session" } }],
-    );
-    expect(
-      mergeUsage([environment("a", first), environment("b", second)], USAGE_CONTRACT_VERSION)
-        .costUsd,
-    ).toBe(30);
-  });
-
   it("counts a Cursor account once across servers while retaining each server's other providers", () => {
     const account = {
       provider: "cursor" as const,
@@ -185,175 +128,6 @@ describe("mergeUsage", () => {
     expect(merged.sessions).toBe(1);
     expect(merged.duplicateSources).toHaveLength(1);
     expect(merged.contributingEnvironments).toEqual(["env-a"]);
-  });
-
-  it("prefers a complete source over an earlier partial copy of the same root", () => {
-    const shared = {
-      provider: "pi" as const,
-      hostId: "mac",
-      homePath: "/home/theo/.pi/agent/sessions",
-    };
-    const merged = mergeUsage(
-      [
-        environment(
-          "env-a",
-          summary(
-            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
-            [{ ...shared, status: "partial" }],
-          ),
-        ),
-        environment(
-          "env-b",
-          summary(
-            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
-            [shared],
-          ),
-        ),
-      ],
-      USAGE_CONTRACT_VERSION,
-    );
-
-    expect(merged.costUsd).toBe(10);
-    expect(merged.records).toBe(5);
-    expect(merged.sessions).toBe(1);
-    expect(merged.duplicateSources).toEqual(["env-a: /home/theo/.pi/agent/sessions"]);
-    expect(merged.contributingEnvironments).toEqual(["env-b"]);
-  });
-
-  it("drops only the shared root when one environment has another root for the same provider", () => {
-    const shared = {
-      provider: "pi" as const,
-      hostId: "mac",
-      homePath: "/home/theo/.pi/agent/sessions",
-    };
-    const unique = {
-      provider: "pi" as const,
-      hostId: "mac",
-      homePath: "/home/theo/.pi/work/sessions",
-    };
-    const merged = mergeUsage(
-      [
-        environment(
-          "env-a",
-          summary(
-            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
-            [shared],
-          ),
-        ),
-        environment(
-          "env-b",
-          summary(
-            [
-              bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 }),
-              bucket({
-                provider: "pi",
-                model: "anthropic/claude-sonnet-5",
-                sourceIndex: 1,
-                costUsd: 4,
-              }),
-            ],
-            [shared, unique],
-          ),
-        ),
-      ],
-      USAGE_CONTRACT_VERSION,
-    );
-
-    expect(merged.costUsd).toBe(14);
-    expect(merged.records).toBe(10);
-    expect(merged.sessions).toBe(2);
-    expect(merged.duplicateSources).toHaveLength(1);
-    expect(merged.contributingEnvironments).toEqual(["env-a", "env-b"]);
-  });
-
-  it("lets a proven parent scan own a contained Pi root across environments", () => {
-    const merged = mergeUsage(
-      [
-        environment(
-          "env-a",
-          summary(
-            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
-            [
-              {
-                provider: "pi",
-                hostId: "mac",
-                homePath: "/home/theo/.pi/agent/sessions/project",
-                volumeId: "device:project",
-                ancestorVolumeIds: ["device:sessions"],
-                scan: { maxDepth: 0, filePattern: "jsonl" },
-              },
-            ],
-          ),
-        ),
-        environment(
-          "env-b",
-          summary(
-            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
-            [
-              {
-                provider: "pi",
-                hostId: "mac",
-                homePath: "/home/theo/.pi/agent/sessions",
-                volumeId: "device:sessions",
-                scan: { maxDepth: 1, filePattern: "jsonl" },
-              },
-            ],
-          ),
-        ),
-      ],
-      USAGE_CONTRACT_VERSION,
-    );
-
-    expect(merged.costUsd).toBe(10);
-    expect(merged.records).toBe(5);
-    expect(merged.sessions).toBe(1);
-    expect(merged.duplicateSources).toEqual(["env-a: /home/theo/.pi/agent/sessions/project"]);
-    expect(merged.contributingEnvironments).toEqual(["env-b"]);
-  });
-
-  it("keeps a contained root when the parent scan depth cannot cover it", () => {
-    const merged = mergeUsage(
-      [
-        environment(
-          "env-a",
-          summary(
-            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
-            [
-              {
-                provider: "pi",
-                hostId: "mac",
-                homePath: "/home/theo/.pi/agent",
-                volumeId: "device:agent",
-                scan: { maxDepth: 0, filePattern: "jsonl" },
-              },
-            ],
-          ),
-        ),
-        environment(
-          "env-b",
-          summary(
-            [bucket({ provider: "pi", model: "openai/gpt-5.6-sol", sourceIndex: 0 })],
-            [
-              {
-                provider: "pi",
-                hostId: "mac",
-                homePath: "/home/theo/.pi/agent/sessions",
-                volumeId: "device:sessions",
-                ancestorVolumeIds: ["device:agent"],
-                scan: { maxDepth: 1, filePattern: "jsonl" },
-              },
-            ],
-          ),
-        ),
-      ],
-      USAGE_CONTRACT_VERSION,
-    );
-
-    expect(merged.costUsd).toBe(20);
-    expect(merged.records).toBe(10);
-    expect(merged.sessions).toBe(2);
-    expect(merged.duplicateSources).toEqual([]);
-    expect(merged.contributingEnvironments).toEqual(["env-a", "env-b"]);
   });
 
   it("drops only the duplicated provider, keeping the environment's other one", () => {
@@ -497,6 +271,14 @@ describe("mergeUsage", () => {
       );
       expect(merged.duplicateSources).toEqual(["new: /home/theo/.claude"]);
     }
+
+    const filtered = environment("new", {
+      ...partial.summary,
+      modelFilter: { exclude: [{ model: "claude-fable-5" }] },
+    });
+    const merged = mergeUsage([complete, filtered], USAGE_CONTRACT_VERSION);
+    expect(merged.costUsd).toBe(10);
+    expect(merged.sessions).toBe(1);
   });
 
   it("retains a complete cell when a larger partial cell may have skipped old records", () => {
@@ -762,24 +544,6 @@ describe("mergeUsage", () => {
     expect(merged.duplicateSources).toHaveLength(0);
   });
 
-  it("does not infer shared storage from paths when filesystem identity is unavailable", () => {
-    const source = {
-      provider: "claude" as const,
-      hostId: "mac",
-      homePath: "/claude",
-      volumeId: "",
-    };
-    const merged = mergeUsage(
-      [
-        environment("a", summary([bucket()], [source])),
-        environment("b", summary([bucket()], [source])),
-      ],
-      USAGE_CONTRACT_VERSION,
-    );
-    expect(merged.costUsd).toBe(20);
-    expect(merged.duplicateSources).toHaveLength(0);
-  });
-
   it("totals sessions from per-directory distinct counts, not per-bucket sums", () => {
     const merged = mergeUsage(
       [
@@ -804,79 +568,4 @@ describe("mergeUsage", () => {
     expect(merged.sessions).toBe(1);
     expect(merged.providers[0]?.sessions).toBe(1);
   });
-});
-
-describe("physical scan containment", () => {
-  it.each([
-    {
-      name: "unbounded recursive readers",
-      parentStatus: "ok",
-      parentPattern: "jsonl",
-      parentDepth: Number.MAX_SAFE_INTEGER,
-      childDepth: Number.MAX_SAFE_INTEGER,
-      ancestorId: "root-inode",
-      expected: 10,
-    },
-    {
-      name: "matching paths but unrelated physical roots",
-      parentStatus: "ok",
-      parentPattern: "jsonl",
-      parentDepth: 3,
-      childDepth: 1,
-      ancestorId: "other-inode",
-      expected: 20,
-    },
-    {
-      name: "partial parents cannot hide complete descendants",
-      parentStatus: "partial",
-      parentPattern: "jsonl",
-      parentDepth: 3,
-      childDepth: 1,
-      ancestorId: "root-inode",
-      expected: 20,
-    },
-    {
-      name: "run-session filters cannot cover arbitrary descendants",
-      parentStatus: "ok",
-      parentPattern: "pi-subagent-session",
-      parentDepth: 3,
-      childDepth: 1,
-      ancestorId: "root-inode",
-      expected: 20,
-    },
-  ] as const)(
-    "$name",
-    ({ parentStatus, parentPattern, parentDepth, childDepth, ancestorId, expected }) => {
-      const parent = summary(
-        [bucket({ sourceIndex: 0, sourcePath: "/sessions" })],
-        [
-          {
-            provider: "claude",
-            hostId: "host",
-            homePath: "/sessions",
-            volumeId: "root-inode",
-            status: parentStatus,
-            scan: { maxDepth: parentDepth, filePattern: parentPattern },
-          },
-        ],
-      );
-      const child = summary(
-        [bucket({ sourceIndex: 0, sourcePath: "/sessions/project" })],
-        [
-          {
-            provider: "claude",
-            hostId: "host",
-            homePath: "/sessions/project",
-            volumeId: "child-inode",
-            ancestorVolumeIds: [ancestorId],
-            scan: { maxDepth: childDepth, filePattern: "jsonl" },
-          },
-        ],
-      );
-      expect(
-        mergeUsage([environment("a", parent), environment("b", child)], USAGE_CONTRACT_VERSION)
-          .costUsd,
-      ).toBe(expected);
-    },
-  );
 });

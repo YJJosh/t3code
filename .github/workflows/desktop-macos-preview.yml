@@ -1,7 +1,5 @@
 name: Desktop macOS Preview
 
-# Dulli previews remain manual-only and disabled; fork-desktop-release.yml owns publishing.
-
 # Untrusted half of the macOS preview. This runs PR code (including fork PRs)
 # with a read-only token and no secrets, and only produces the JS bundle. The
 # trusted half, desktop-macos-preview-publish.yml, runs on workflow_run from
@@ -17,7 +15,7 @@ name: Desktop macOS Preview
 # download needs a write token.
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: null
 
 permissions:
   contents: read
@@ -30,7 +28,7 @@ concurrency:
 jobs:
   build:
     name: Build preview JS bundle
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.event.label.name == 'preview:mac') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -74,16 +72,27 @@ jobs:
           # Public T3 Connect identifiers (Clerk publishable key, relay URL).
           cp .env.example .env
 
-      - uses: ./.github/actions/setup-apt-mirrors
+      # PR heads from before build:desktop:bundle use the full build, which
+      # compiles the Linux browser secret helper and needs libsecret.
+      - name: Check bundle-only build support
+        id: bundle_build
+        run: |
+          script="$(node -p "require('./package.json').scripts['build:desktop:bundle'] ? 'build:desktop:bundle' : 'build:desktop'")"
+          echo "script=$script" >> "$GITHUB_OUTPUT"
+
+      - if: steps.bundle_build.outputs.script == 'build:desktop'
+        uses: ./.github/actions/setup-apt-mirrors
 
       - name: Install browser secret helper build libraries
+        if: steps.bundle_build.outputs.script == 'build:desktop'
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
-      # desktop-macos-preview-publish.yml packages this bundle as the preview channel.
+      # desktop-macos-preview-publish.yml packages this bundle as the preview
+      # channel. The Linux browser secret helper is not part of a macOS app.
       - name: Build JS bundle
         env:
           T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && 'preview' || 'dev' }}
-        run: vp run build:desktop
+        run: vp run ${{ steps.bundle_build.outputs.script }}
 
       # Same layout as release.yml's js-bundle so release-desktop.yml can
       # package it unchanged.

@@ -18,7 +18,7 @@ import {
   setComposerDraftText,
   waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 
 const CLI_COMMAND = "npx t3 triage";
 
@@ -79,7 +79,12 @@ export function useStartTriage() {
     }
     const prepared = await prepare({
       environmentId,
-      input: { client: authClientMetadata(Constants.expoConfig?.version) },
+      input: {
+        client: authClientMetadata(
+          Constants.expoConfig?.version,
+          Constants.expoConfig?.extra?.appBrand,
+        ),
+      },
     });
     if (prepared._tag === "Failure") {
       if (!isAtomCommandInterrupted(prepared)) {

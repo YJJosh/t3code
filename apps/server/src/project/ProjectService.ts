@@ -1,10 +1,11 @@
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import {
   CommandId,
   type OrchestrationProjectShell,
   ProjectId,
   type Project,
-  type ProjectMakeMultiRepoResult,
   type ProjectCreatePayload,
+  type ProjectInspectMultiRepoFolderResult,
   type ProjectUpdatePayload,
   type ProjectSnapshot,
   type ThreadId,
@@ -13,6 +14,7 @@ import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
@@ -33,9 +35,8 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
-import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
-import * as ProjectMultiRepoResolver from "./ProjectMultiRepoResolver.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export interface ProjectCreateInput extends ProjectCreatePayload {
@@ -87,6 +88,16 @@ export class ProjectNotEmptyError extends Schema.TaggedError<ProjectNotEmptyErro
   }
 }
 
+/** A change the project's rules refuse, such as an invalid script ID: the caller's input is wrong, nothing failed. */
+export class ProjectInvalidError extends Schema.TaggedError<ProjectInvalidError>()(
+  "ProjectInvalidError",
+  { projectId: ProjectId, detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export class ProjectOperationError extends Schema.TaggedError<ProjectOperationError>()(
   "ProjectOperationError",
   {
@@ -112,6 +123,7 @@ export type ProjectServiceError =
   | ProjectNotFoundError
   | ProjectConflictError
   | ProjectNotEmptyError
+  | ProjectInvalidError
   | ProjectOperationError;
 
 export class ProjectService extends Context.Service<
@@ -119,7 +131,10 @@ export class ProjectService extends Context.Service<
   {
     readonly makeMultiRepo: (
       projectId: ProjectId,
-    ) => Effect.Effect<ProjectMakeMultiRepoResult, ProjectServiceError>;
+    ) => Effect.Effect<{ readonly members: ReadonlyArray<string> }, ProjectServiceError>;
+    readonly inspectMultiRepoFolder: (
+      path: string,
+    ) => Effect.Effect<ProjectInspectMultiRepoFolderResult, ProjectServiceError>;
     readonly create: (input: ProjectCreateInput) => Effect.Effect<Project, ProjectServiceError>;
     readonly bootstrap: (
       input: ProjectBootstrapInput,
@@ -137,6 +152,11 @@ export class ProjectService extends Context.Service<
       workspaceRoot: string,
       options?: { readonly includeDeleted?: boolean },
     ) => Effect.Effect<Option.Option<Project>, ProjectOperationError>;
+    /**
+     * Where to scan `cwd`'s workspace inventory. A thread's removed managed worktree scans its
+     * project, which turn start recreates the worktree from; anything else, or a failure, is `cwd`.
+     */
+    readonly workspaceScanDirectory: (cwd: string) => Effect.Effect<string>;
     readonly snapshot: Effect.Effect<ProjectSnapshot, ProjectOperationError>;
     /**
      * A page of active projects in creation order, each with its repository
@@ -161,9 +181,6 @@ export class ProjectService extends Context.Service<
 export const make = Effect.gen(function* () {
   const projects = yield* ProjectStore.ProjectStoreV2;
   const multiRepo = yield* Effect.serviceOption(MultiRepoWorkspaces.MultiRepoWorkspaces);
-  const multiRepoResolver = yield* Effect.serviceOption(
-    ProjectMultiRepoResolver.ProjectMultiRepoResolver,
-  );
   const projectEnrichment = yield* ProjectEnrichmentService.ProjectEnrichmentService;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const threadProjections = yield* ProjectionStore.ProjectionStoreV2;
@@ -172,6 +189,8 @@ export const make = Effect.gen(function* () {
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
   const projectLocks = yield* KeyedLock.make<ProjectId>();
   const workspaceLocks = yield* KeyedLock.make<string>();
 
@@ -183,14 +202,18 @@ export const make = Effect.gen(function* () {
     title: row.title,
     workspaceRoot: row.workspaceRoot,
     repositoryIdentity: enrichment?.repositoryIdentity ?? null,
-    multiRepo: enrichment?.multiRepo ?? null,
-    nestedRepositories: enrichment?.nestedRepositories ?? [],
+    ...(enrichment?.multiRepo !== undefined ? { multiRepo: enrichment.multiRepo } : {}),
+    ...(enrichment?.nestedRepositories !== undefined
+      ? { nestedRepositories: enrichment.nestedRepositories }
+      : {}),
     faviconPath: row.faviconPath ?? enrichment?.faviconPath ?? null,
     defaultModelSelection: row.defaultModelSelection,
     defaultThreadEnvMode: row.defaultThreadEnvMode,
     autoPull: row.autoPull,
     projectIcon: row.projectIcon,
     scripts: row.scripts,
+    pinnedAt: row.pinnedAt,
+    archivedAt: row.archivedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
@@ -302,6 +325,8 @@ export const make = Effect.gen(function* () {
         });
       case "ProjectCommandMissingProjectError":
         return yield* new ProjectNotFoundError({ projectId });
+      case "ProjectCommandInvariantError":
+        return yield* new ProjectInvalidError({ projectId, detail: rejection.detail });
       default:
         return yield* dispatchError(
           rejection ?? receipt.error ?? "The command was previously rejected.",
@@ -326,6 +351,24 @@ export const make = Effect.gen(function* () {
       const row = yield* readRow(projectId, options);
       return Option.isNone(row) ? Option.none() : Option.some(yield* hydrate(row.value));
     },
+  );
+
+  const workspaceScanDirectory = Effect.fn("ProjectService.workspaceScanDirectory")(
+    function* (cwd: string) {
+      if (yield* fileSystem.exists(cwd).pipe(Effect.orElseSucceed(() => true))) return cwd;
+      const snapshot = yield* Effect.flatten(
+        threadProjections.readShellSnapshot({ worktreePath: cwd }),
+      );
+      const thread = [...snapshot.threads, ...snapshot.archivedThreads].find(
+        (candidate) => candidate.branch !== null,
+      );
+      if (thread === undefined) return cwd;
+      const projectRoot = Option.getOrUndefined(yield* readRow(thread.projectId))?.workspaceRoot;
+      return projectRoot !== undefined && (yield* isManagedWorktreePath(cwd, projectRoot))
+        ? projectRoot
+        : cwd;
+    },
+    (effect, cwd) => Effect.orElseSucceed(effect, () => cwd),
   );
 
   const getByWorkspaceRoot: ProjectService["Service"]["getByWorkspaceRoot"] = Effect.fn(
@@ -398,6 +441,8 @@ export const make = Effect.gen(function* () {
           ? {}
           : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
+        ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
+        ...(input.archived === undefined ? {} : { archived: input.archived }),
       });
       if (workspaceRoot !== previousRoot) {
         yield* projectEnrichment.invalidate([previousRoot, workspaceRoot]);
@@ -469,15 +514,13 @@ export const make = Effect.gen(function* () {
   ) {
     const { projectId } = input;
     const snapshot = yield* threadProjections
-      .getShellSnapshot()
+      .getShellSnapshot({ projectId })
       .pipe(
         Effect.mapError(
           (cause) => new ProjectOperationError({ operation: "list-threads", projectId, cause }),
         ),
       );
-    const projectThreads = [...snapshot.threads, ...snapshot.archivedThreads].filter(
-      (thread) => thread.projectId === projectId,
-    );
+    const projectThreads = [...snapshot.threads, ...snapshot.archivedThreads];
     if (projectThreads.length > 0 && input.force !== true) {
       return yield* new ProjectNotEmptyError({ projectId });
     }
@@ -536,8 +579,10 @@ export const make = Effect.gen(function* () {
       Effect.map((enrichment) => ({
         ...shell,
         repositoryIdentity: enrichment.repositoryIdentity,
-        multiRepo: enrichment.multiRepo ?? null,
-        nestedRepositories: enrichment.nestedRepositories ?? [],
+        ...(enrichment.multiRepo !== undefined ? { multiRepo: enrichment.multiRepo } : {}),
+        ...(enrichment.nestedRepositories !== undefined
+          ? { nestedRepositories: enrichment.nestedRepositories }
+          : {}),
       })),
     );
 
@@ -567,14 +612,14 @@ export const make = Effect.gen(function* () {
     return yield* Effect.forEach(shells, enrichShell, { concurrency: 16 });
   });
 
+  const listRows = projects
+    .list()
+    .pipe(
+      Effect.mapError((cause) => new ProjectOperationError({ operation: "list-projects", cause })),
+    );
+
   const snapshot = Effect.gen(function* () {
-    const rows = yield* projects
-      .list()
-      .pipe(
-        Effect.mapError(
-          (cause) => new ProjectOperationError({ operation: "list-projects", cause }),
-        ),
-      );
+    const rows = yield* listRows;
     const hydrated = yield* Effect.forEach(rows, hydrate, { concurrency: 8 });
     return {
       projects: hydrated,
@@ -582,63 +627,64 @@ export const make = Effect.gen(function* () {
     } satisfies ProjectSnapshot;
   });
 
-  const makeMultiRepo: ProjectService["Service"]["makeMultiRepo"] = Effect.fn(
-    "ProjectService.makeMultiRepo",
-  )(function* (projectId) {
-    const project = yield* readRow(projectId);
-    if (Option.isNone(project)) return yield* new ProjectNotFoundError({ projectId });
-    if (Option.isNone(multiRepo))
-      return yield* new ProjectOperationError({
-        operation: "normalize-workspace",
-        projectId,
-        cause: "Multi-repo workspaces unavailable",
-      });
-    const { workspaceRoot } = project.value;
-    const members = yield* multiRepo.value
-      .makeGroup(workspaceRoot)
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProjectOperationError({ operation: "normalize-workspace", projectId, cause }),
-        ),
-      );
-    if (Option.isSome(multiRepoResolver))
-      yield* multiRepoResolver.value.resolve(workspaceRoot, { refresh: true });
-    yield* projectEnrichment.invalidate([workspaceRoot]);
-    yield* update({
-      projectId,
-      commandId: CommandId.make(
-        `project-make-multi-repo:${projectId}:${DateTime.toEpochMillis(yield* DateTime.now)}`,
-      ),
-    });
-    return { members };
-  });
-
   const listPage: ProjectService["Service"]["listPage"] = Effect.fn("ProjectService.listPage")(
     function* ({ cursor, limit }) {
-      const rows = (yield* snapshot).projects.filter((project) => project.deletedAt === null);
+      const rows = (yield* listRows).filter((project) => project.deletedAt === null);
       const projects = yield* Effect.forEach(
         rows.slice(cursor, cursor + limit),
-        (project) =>
-          project.repositoryIdentity !== null
-            ? Effect.succeed(project)
-            : projectEnrichment
-                .readRepositoryIdentity(project.workspaceRoot)
-                .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
+        (row) =>
+          hydrate(row).pipe(
+            Effect.filterOrElse(
+              (project) => project.repositoryIdentity !== null,
+              (project) =>
+                projectEnrichment
+                  .readRepositoryIdentity(project.workspaceRoot)
+                  .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
+            ),
+          ),
         { concurrency: 8 },
       );
       return { projects, nextCursor: cursor + limit < rows.length ? cursor + limit : null };
     },
   );
 
+  const requireMultiRepo = Effect.fromOption(multiRepo).pipe(
+    Effect.mapError(
+      () =>
+        new ProjectOperationError({
+          operation: "read-project",
+          cause: "Multi-repo workspaces are unavailable.",
+        }),
+    ),
+  );
+  const makeMultiRepo = Effect.fn("ProjectService.makeMultiRepo")(function* (projectId: ProjectId) {
+    const project = yield* getById(projectId);
+    if (Option.isNone(project)) return yield* new ProjectNotFoundError({ projectId });
+    const service = yield* requireMultiRepo;
+    const members = yield* service
+      .makeGroup(project.value.workspaceRoot)
+      .pipe(
+        Effect.mapError((cause) => new ProjectInvalidError({ projectId, detail: cause.detail })),
+      );
+    yield* projectEnrichment.invalidate([project.value.workspaceRoot]);
+    yield* projectEnrichment.request(project.value.workspaceRoot);
+    return { members };
+  });
+  const inspectMultiRepoFolder = Effect.fn("ProjectService.inspectMultiRepoFolder")(function* (
+    folder: string,
+  ) {
+    return yield* (yield* requireMultiRepo).inspectFolder(folder);
+  });
   return ProjectService.of({
     makeMultiRepo,
+    inspectMultiRepoFolder,
     create,
     bootstrap,
     update,
     delete: deleteProject,
     getById,
     getByWorkspaceRoot,
+    workspaceScanDirectory,
     snapshot,
     listPage,
     getShell,

@@ -103,7 +103,11 @@ function canonicalModelSelectionOptions(
 }
 
 export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection): boolean {
-  if (left.instanceId !== right.instanceId || left.model !== right.model) {
+  if (
+    left.instanceId !== right.instanceId ||
+    left.model !== right.model ||
+    left.profileId !== right.profileId
+  ) {
     return false;
   }
   const leftOptions = canonicalModelSelectionOptions(left);
@@ -121,12 +125,12 @@ export function modelSelectionsEqual(left: ModelSelection, right: ModelSelection
  * `fastMode: false` for models with a fast toggle while mobile omits it, so off counts as unset.
  */
 export function draftModelPickMatchesThread(pick: ModelSelection, thread: ModelSelection): boolean {
-  const withoutFastModeOff = (selection: ModelSelection) =>
-    createModelSelection(
-      selection.instanceId,
-      selection.model,
-      selection.options?.filter((option) => option.id !== "fastMode" || option.value !== false),
-    );
+  const withoutFastModeOff = (selection: ModelSelection) => ({
+    ...selection,
+    options:
+      selection.options?.filter((option) => option.id !== "fastMode" || option.value !== false) ??
+      [],
+  });
   return modelSelectionsEqual(withoutFastModeOff(pick), withoutFastModeOff(thread));
 }
 
@@ -196,12 +200,40 @@ function withDescriptorCurrentValue(
   };
 }
 
+// Ultracode was a Claude effort level before it became its own toggle; that level ran at xhigh.
+export function withLegacyUltracodeEffort<
+  Selections extends ReadonlyArray<ProviderOptionSelection> | null | undefined,
+>(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor> | null | undefined,
+  selections: Selections,
+): Selections | Array<ProviderOptionSelection> {
+  if (
+    getRawSelectionValueById(selections, "effort") !== "ultracode" ||
+    !descriptors?.some(
+      (descriptor) => descriptor.id === "ultracode" && descriptor.type === "boolean",
+    )
+  ) {
+    return selections;
+  }
+  return [
+    ...(selections ?? []).map((selection) =>
+      selection.id === "effort" && selection.value === "ultracode"
+        ? { id: "effort", value: "xhigh" }
+        : selection,
+    ),
+    ...(getRawSelectionValueById(selections, "ultracode") === undefined
+      ? [{ id: "ultracode", value: true }]
+      : []),
+  ];
+}
+
 export function getProviderOptionDescriptors(input: {
   caps: ModelCapabilities;
   selections?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
 }): ReadonlyArray<ProviderOptionDescriptor> {
-  const { caps, selections } = input;
+  const { caps } = input;
   const baseDescriptors = (caps.optionDescriptors ?? []).map(cloneDescriptor);
+  const selections = withLegacyUltracodeEffort(baseDescriptors, input.selections);
 
   return baseDescriptors.map((descriptor) =>
     withDescriptorCurrentValue(
@@ -312,7 +344,9 @@ export function buildExplicitProviderOptionSelectionsFromDescriptors(
   if (!selections || selections.length === 0) {
     return undefined;
   }
-  const explicitIds = new Set(selections.map((selection) => selection.id));
+  const explicitIds = new Set(
+    withLegacyUltracodeEffort(descriptors, selections).map(({ id }) => id),
+  );
   const normalized = buildProviderOptionSelectionsFromDescriptors(descriptors)?.filter(
     (selection) => explicitIds.has(selection.id),
   );

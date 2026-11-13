@@ -1,7 +1,7 @@
 # Source control
 
-T3 Code integrates with GitHub, GitLab, Forgejo, Gitea, Bitbucket, Azure DevOps, and GitCafe to clone
-and publish repositories, create pull requests, and review changes.
+T3 Code integrates with GitHub, GitLab, Forgejo, Gitea, Bitbucket, Azure DevOps, GitCafe, and Cursor
+Origin to clone and publish repositories, create pull requests, and review changes.
 
 ## Review turn changes
 
@@ -9,6 +9,16 @@ A turn's changed files and diff show only the turn's own work. When a turn pulls
 rebases, the files Git brought in are left out. A file stays in the list when the turn edited it,
 committed it, or fixed a conflict in it. Use the branch comparison to review everything that changed
 against your base branch. Restore still returns the complete saved workspace.
+
+On web and desktop, open the Diff pane source picker and choose **Commits** to review one local
+commit at a time. The list shows the newest 100 commits in the branch comparison. A merge commit
+shows its changes against its first parent.
+
+A commit link from a supported code host opens in the Diff pane when the thread's repository has
+that commit locally, on any branch. Otherwise a pull request commit link opens the pull request. Other
+commit links follow your **Open links in** setting; on web, when that opens a new tab, T3 Code first
+shows an **Open link** button. Command/Ctrl+Click always opens the link in your browser. Commit links follow the **Open pull requests in T3 Code**
+setting in **Settings → Diffs**.
 
 ## Connect an account
 
@@ -119,6 +129,20 @@ sent to `git.cafe`; `CAFE_TOKEN` follows `CAFE_HOST` if you set it. Repositories
 Line comments are not available for GitCafe pull requests yet.
 Merging a stack lands it through GitCafe, and updating a branch restacks the layers above it.
 
+### Cursor Origin
+
+Install the [Origin CLI](https://cursor.com/docs/origin/cli) and sign in. Signing in also sets up Git
+credentials for `origin.cursor.com`:
+
+```bash
+curl -fsSL https://downloads.cursor.com/origin/install.sh | sh
+origin auth login
+```
+
+If cloning or pushing asks for a username, run `origin auth setup-git` to point Git at the CLI's
+credentials again. Origin repositories use HTTPS and are published privately. Repositories mirrored
+from GitHub keep their pull requests on GitHub; open those from the GitHub remote.
+
 ## Start, clone, or publish a project
 
 To start from nothing, choose **New project** in the command palette (`Cmd/Ctrl+K`), or
@@ -131,48 +155,23 @@ publish it. If Git has no name or email on that machine, the project is created 
 first commit.
 
 Use **Add Project** in the command palette (`Cmd/Ctrl+K`) to clone a repository. Choose a hosting
-provider or paste a Git URL, then choose where to save it. The project opens right away while the
+provider or paste a Git URL, then choose where to save it. A branch or file page copied from GitHub,
+GitLab, GitCafe, Codeberg or Bitbucket also works: T3 Code clones that repository's default branch.
+On other hosts, paste the repository's clone URL. The project opens right away while the
 clone runs in the background: you can write your first prompt, and sending waits until the files
 are in place. A toast tracks progress and lets you cancel; if the clone fails, retry it from the
 toast or from the banner above the composer. When the host refuses the machine's SSH key, T3 Code
 clones over HTTPS with Git's credentials for that host instead, and the project's remote uses the
 HTTPS URL.
 
+To lay clones out like [ghq](https://github.com/x-motemen/ghq), turn on **Clone into host folders**
+under **Settings → Threads** (or **Source control** on mobile). Clones then default to
+`<host>/<owner>/<repo>` under **Add project starts in**, so set that to `~/ghq` to share ghq's
+folders. You can still change the destination before cloning.
+
 For a local Git repository without a remote, **Publish Repository** creates a hosted repository,
 adds it as `origin`, and pushes your commits. If there are no commits yet, it creates the remote;
 make your first commit before pushing.
-
-## Multi-repo projects
-
-A multi-repo project is one folder that holds several Git repositories you work on together. To
-start one, open **Add Project → Multi-repo project** and pick a folder:
-
-- A folder that already holds your repositories becomes the project.
-- A new or empty folder asks which repositories to clone into it: paste Git URLs or GitHub
-  `owner/repo`, separated by spaces.
-
-A plain folder you added with **Add Project → Local folder** works too: if it has repositories
-inside it, the thread header shows **Make multi-repo project**, with **Initialize Git** in its menu.
-Either way the folder becomes a [Workler](https://github.com/yjjosh/Workler) project group: a
-`.workler` file that lists each repository, like `project api` and `project web`, plus a
-`.worktrees/` folder for its workspaces and a `.gitignore` entry for it. Edit `.workler` to change
-the list, then reload the app to see the change. To make the folder a plain folder again, delete its
-worktree threads first, then delete `.workler`: T3 Code can only remove their workspaces while the
-folder is still a group.
-
-**New worktree** in a multi-repo project makes one workspace with every repository on the same new
-branch, so the agent can work across all of them. These threads have no branch picker, so
-**Settings → Projects & threads → Start from origin** decides whether each repository is fetched
-first. Each starts from its remote's default branch, or from the branch it has checked out
-if any repository has no remote default branch. Diffs, checkpoints, and Git actions are not
-available in these threads yet.
-
-To use the project on another machine, open **Add Project** for that machine and pick the project
-under **Set up from another machine**, or right-click one of its threads and choose **Set up on**
-that machine. T3 Code clones each repository into the folder you choose and writes a `.workler` file
-that lists them. The machine that has the project must be connected, and every repository needs an
-`origin` remote that the other machine can reach, not a local path. Only the repository list is
-copied, not other `.workler` rules. Both copies then show as one project in the sidebar.
 
 ## Create a pull request
 
@@ -184,14 +183,22 @@ An existing fork PR can appear beside the branch even if you pushed without sett
 If its badge is missing because several remotes hold that branch, set the branch's upstream to
 the intended remote with `git branch --set-upstream-to=<remote>/<branch>`.
 
-Choose the writing style and model in **Settings → Source control**. **Repository conventions**
-uses the project's instructions and recent commit subjects.
+Choose how commit messages and pull request titles and descriptions are written in
+**Settings → Source control → Commits & pull requests**. **Repository conventions** uses the
+project's instructions and recent commit subjects. **Custom instructions** applies your own
+instructions to commits and pull requests.
 
 ## Review and merge
 
 Open **Pull requests** to review changes and comments, request reviewers, check out a branch,
 or merge. You can edit review titles and descriptions and your own comments where the host allows it.
+Where you can edit a description, you can also tick its checkboxes from the Summary tab
+(the Overview tab on mobile).
 GitLab calls these merge requests.
+
+A link to part of a pull request opens that part: a comment or review is marked in the activity, a
+changed-line link opens the file at those lines, a checks link opens the checks, and a commit link
+opens that commit's changes. On web and desktop, hovering a comment or commit link previews it.
 
 On mobile, **Pull requests** lists reviews across your connected environments. Open a review
 to read its description, activity, commits, and changed files. Line comments stay as drafts
@@ -276,9 +283,9 @@ running count. A tick belongs to the pull request rather than to a commit, so sc
 single commit keeps them. A file pushed to after you cleared it comes back marked **Changed**.
 
 On GitHub these are GitHub's own viewed marks, so a review carries between T3 Code and github.com
-in either direction. Forgejo, GitLab, Bitbucket, and Azure DevOps expose no record T3 Code can read, so the
-server you are connected to keeps them instead: they follow you across the apps connected to that
-server, but the host's own site will not show them, and the count reads **viewed in T3 Code**.
+in either direction. Forgejo, GitLab, Bitbucket, Azure DevOps, and Cursor Origin expose no record
+T3 Code can read, so the server you are connected to keeps them instead: they follow you across the
+apps connected to that server, but the host's own site will not show them, and the count reads **viewed in T3 Code**.
 
 On mobile, open a changed file and mark it viewed from its header. Viewed files collapse,
 and their marks follow the same rules as on web and desktop.
@@ -318,7 +325,7 @@ review is terminal. An open or unsynced link keeps it active.
 
 Ask the agent to watch, monitor, or babysit a pull request and it calls `watch_pull_request`. While
 the thread is active, the server checks the pull request every two minutes and wakes the agent when a
-check fails, the required checks pass, someone else comments or reviews, or the branch starts to
+check fails or waits for a maintainer's approval, the required checks pass, someone else comments or reviews, or the branch starts to
 conflict. Threads in a project that watch the same pull request share one check. On GitHub, a check
 first asks whether anything changed and reads the pull request only when it did, which keeps
 watching inside GitHub's rate limit. Comments from your own account do not wake it. Watching ends
@@ -348,3 +355,34 @@ the scope and merge strategy. GitHub rebases the remaining stack after merging.
 It can rewrite history and restart checks. If a layer fails, earlier updates remain; resolve that
 layer before retrying. GitHub may require manual conflict resolution after a lower layer is amended,
 even when its changes look independent. Stack actions require an environment that supports them.
+
+## Workler workspaces
+
+New threads default to an isolated Workler workspace. Workler creates an independent
+clone under the project's `.worktrees` directory and applies `.workler` copy/link rules.
+The normal project setup script still runs; Workler setup commands do not run twice.
+New branches start from the fetched remote by default. Choose the base branch in the
+composer, or change **Settings → Worktrees → Start from remote** to use local commits.
+
+To use regular Git worktrees instead, turn off **Settings → General → Fork features →
+Create new workspaces with Workler**. Explicit worktree paths always use Git. Existing
+Workler workspaces remain accessible after disabling the setting. Removal preserves
+branches, tags and checkpoints in the source repository, and refuses to delete a
+workspace when that would lose work.
+
+Generated branch names use semantic prefixes by default. Adjust branch naming under
+Settings to use a fixed prefix instead.
+
+## Multi-repository projects
+
+Choose **Add project → Multi-repo project** to use several Git repositories as one
+project. Select a folder containing repositories to group them, or an empty folder
+and supply Git URLs or `owner/repo` names to clone its members. Existing projects
+on another connected environment can supply the same member list; choose the
+folder on the destination machine rather than reusing a path from another machine.
+
+A new workspace clones every member onto the same branch, starting from each
+repository's own remote default branch. If any member has no usable remote default,
+the group falls back to its members' current local branches. Git actions at the group
+root are hidden: run repository-specific Git operations in a member folder. Group membership lives in the folder's `.workler`
+file, so it travels with the project rather than being tied to one machine's database.

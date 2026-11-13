@@ -11,7 +11,7 @@ import type { UsageRecord } from "@t3tools/provider-core/server/usage";
 import { TEST_FORMAT_MAP } from "./usageTestFormats.ts";
 import { initialCodexScanState, parseCodexLine } from "../provider/Drivers/codexUsage.ts";
 
-const encodeScanCache = (cache: ScanCache) => JSON.parse(makeScanCacheWriter()(cache, {}));
+const parse = (parts: Iterable<string>) => JSON.parse([...parts].join(""));
 
 function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
   return {
@@ -154,16 +154,13 @@ describe("scan cache round trip", () => {
         record({ model: "<synthetic>", dedupeKey: "msg_tail:" }),
       ],
     });
-    const restored = decodeScanCache(
-      JSON.parse(makeScanCacheWriter()(cached, {})),
-      TEST_FORMAT_MAP,
-    );
+    const restored = decodeScanCache(parse(makeScanCacheWriter()(cached, {})), TEST_FORMAT_MAP);
 
     expect(restored.size).toBe(4);
     expect(restored).toEqual(original);
   });
 
-  it.each([5, 6, 7, 8, 9, 10])(
+  it.each([5, 6, 7, 8, 10])(
     "retains v%s history and compatible positions but invalidates obsolete state",
     (version) => {
       const original = cacheWith([["/gone.jsonl", 100, [record({ speed: "fast" })]]]);
@@ -193,22 +190,12 @@ describe("scan cache round trip", () => {
         malformedRecords: 3,
         position: position({ state: { sessionId: "session-a" } }),
       });
-      original.set("/dulli.jsonl", {
-        ...original.get("/gone.jsonl")!,
-        provider: "dulli",
-        records: [record({ provider: "dulli", model: "claude-agent-sdk/claude-opus-5-5" })],
-        position: position({ state: TEST_FORMAT_MAP.get("dulli")!.state!.initial() }),
-      });
-      original.set("/invalid-dulli.jsonl", {
-        ...original.get("/dulli.jsonl")!,
-        position: position({ state: { projectPath: 42 } }),
-      });
       const cleanCodex = {
         ...original.get("/gone-codex.jsonl")!,
         malformedRecords: 0,
       };
       original.set("/clean-codex.jsonl", cleanCodex);
-      const encoded = JSON.parse(makeScanCacheWriter()(original, {}));
+      const encoded = parse(makeScanCacheWriter()(original, {}));
       const entry = encoded.files["/gone.jsonl"]!;
       const legacy = {
         ...encoded,
@@ -230,7 +217,6 @@ describe("scan cache round trip", () => {
       };
 
       const restored = decodeScanCache(JSON.parse(JSON.stringify(legacy)), TEST_FORMAT_MAP);
-      // Pre-v10 Claude entries may hold Pi-driven usage, so live files re-parse.
       expect(restored.get("/gone.jsonl")).toEqual(
         version >= 10
           ? original.get("/gone.jsonl")
@@ -240,38 +226,14 @@ describe("scan cache round trip", () => {
               position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
             },
       );
-      expect(restored.get("/gone-codex.jsonl")).toEqual(
-        version >= 9
-          ? original.get("/gone-codex.jsonl")
-          : {
-              ...original.get("/gone-codex.jsonl"),
-              size: -1,
-              position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
-            },
-      );
-      expect(restored.get("/clean-codex.jsonl")).toEqual(
-        version >= 8
-          ? cleanCodex
-          : {
-              ...cleanCodex,
-              size: -1,
-              position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
-            },
-      );
-      // Pre-v11 Dulli files re-parse but keep valid headers for child-session discovery.
-      expect(restored.get("/dulli.jsonl")).toEqual({
-        ...original.get("/dulli.jsonl"),
+      expect(restored.get("/gone-codex.jsonl")).toEqual({
+        ...original.get("/gone-codex.jsonl"),
         size: -1,
-        position: {
-          resumeOffset: 0,
-          guardLength: 0,
-          guardHash: 0,
-          state: original.get("/dulli.jsonl")!.position.state,
-        },
+        position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
       });
-      expect(restored.get("/invalid-dulli.jsonl")).toEqual({
-        ...original.get("/invalid-dulli.jsonl"),
-        size: -1,
+      expect(restored.get("/clean-codex.jsonl")).toEqual({
+        ...cleanCodex,
+        size: version >= 8 ? cleanCodex.size : -1,
         position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
       });
       expect(restored.get("/gone-pi.jsonl")).toEqual(
@@ -286,6 +248,18 @@ describe("scan cache round trip", () => {
     },
   );
 
+  it("re-parses a Claude transcript cached before advisor usage was counted", () => {
+    const original = cacheWith([["/claude.jsonl", 100, [record()]]]);
+    const v9 = { ...parse(makeScanCacheWriter()(original, {})), version: 9 };
+
+    const restored = decodeScanCache(JSON.parse(JSON.stringify(v9)), TEST_FORMAT_MAP);
+    expect(restored.get("/claude.jsonl")).toEqual({
+      ...original.get("/claude.jsonl"),
+      size: -1,
+      position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
+    });
+  });
+
   it("rewrites only changed entries and still restores the whole cache", () => {
     const write = makeScanCacheWriter();
     const cache = cacheWith([
@@ -294,7 +268,7 @@ describe("scan cache round trip", () => {
     ]);
     cache.set("/b.jsonl", { ...cache.get("/b.jsonl")!, malformedRecords: 2 });
     const sources = { "claude\u0000/projects": { dir: "/projects", volumeId: "1:2" } };
-    expect(decodeScanCache(JSON.parse(write(cache, { sources })), TEST_FORMAT_MAP)).toEqual(cache);
+    expect(decodeScanCache(parse(write(cache, { sources })), TEST_FORMAT_MAP)).toEqual(cache);
 
     cache.set("/b.jsonl", {
       ...cache.get("/b.jsonl")!,
@@ -302,7 +276,7 @@ describe("scan cache round trip", () => {
       malformedRecords: 4,
       records: [record({ sessionId: "session-c", model: "claude-opus-5-5", dedupeKey: "msg_3:" })],
     });
-    const document = JSON.parse(write(cache, { sources }));
+    const document = parse(write(cache, { sources }));
     expect(decodeScanCache(document, TEST_FORMAT_MAP)).toEqual(cache);
     expect(document.sources).toEqual(sources);
   });
@@ -316,9 +290,7 @@ describe("scan cache round trip", () => {
   });
 
   it("skips malformed file entries but keeps good ones", () => {
-    const encoded = JSON.parse(
-      makeScanCacheWriter()(cacheWith([["/good.jsonl", 100, [record()]]]), {}),
-    );
+    const encoded = parse(makeScanCacheWriter()(cacheWith([["/good.jsonl", 100, [record()]]]), {}));
     const withJunk = {
       ...encoded,
       files: { ...encoded.files, "/bad.jsonl": { s: "nope", m: 1, p: "claude", r: [] } },
@@ -329,67 +301,33 @@ describe("scan cache round trip", () => {
   });
 
   it("drops the whole entry when any row is corrupt, forcing a cold re-parse", () => {
-    const encoded = JSON.parse(
+    const encoded = parse(
       makeScanCacheWriter()(
         cacheWith([["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:" })]]]),
         {},
       ),
     );
     const rows = encoded.files["/a.jsonl"]!.r;
-    const poisoned = {
-      ...encoded,
-      files: {
-        "/a.jsonl": {
-          ...encoded.files["/a.jsonl"]!,
-          r: [rows[0]!, [...rows[1]!.slice(0, 3), "not-a-number", ...rows[1]!.slice(4)]],
+    for (const [index, value] of [
+      [3, "not-a-number"],
+      [2, -1],
+      [2, 0.5],
+      [2, encoded.sessions.length],
+      [2, "0"],
+      [8, 123],
+      [9, "0.25"],
+      [9, Infinity],
+    ] as const) {
+      const corruptRow = [...rows[1]!];
+      corruptRow[index] = value;
+      const poisoned = {
+        ...encoded,
+        files: {
+          "/a.jsonl": { ...encoded.files["/a.jsonl"]!, r: [rows[0]!, corruptRow] },
         },
-      },
-    };
-
-    const restored = decodeScanCache(JSON.parse(JSON.stringify(poisoned)), TEST_FORMAT_MAP);
-    expect(restored.has("/a.jsonl")).toBe(false);
-  });
-});
-
-describe("colliding legacy cache layouts", () => {
-  it("imports upstream v5, keeping history but cold-parsing live Claude and Codex files", () => {
-    const cache = cacheWith([["/claude.jsonl", 100, [record({ speed: "fast" })]]]);
-    cache.set("/codex.jsonl", {
-      ...cache.get("/claude.jsonl")!,
-      provider: "codex",
-      records: [record({ provider: "codex", speed: "ultrafast" })],
-      position: position({ state: TEST_FORMAT_MAP.get("codex")!.state!.initial() }),
-    });
-    const restored = decodeScanCache({ ...encodeScanCache(cache), version: 5 }, TEST_FORMAT_MAP);
-    expect(restored.get("/claude.jsonl")?.records).toEqual(cache.get("/claude.jsonl")?.records);
-    expect(restored.get("/claude.jsonl")?.size).toBe(-1);
-    expect(restored.get("/codex.jsonl")?.records).toEqual(cache.get("/codex.jsonl")?.records);
-    expect(restored.get("/codex.jsonl")?.size).toBe(-1);
-    expect(restored.get("/codex.jsonl")?.position.resumeOffset).toBe(0);
-  });
-
-  it("retains generic fork v5 history but cold-parses stateful live files and drops fork Pi", () => {
-    const encoded = encodeScanCache(
-      cacheWith([["/claude.jsonl", 100, [record({ speed: "fast" })]]]),
-    );
-    const entry = encoded.files["/claude.jsonl"]!;
-    const fork = {
-      version: 5,
-      models: encoded.models,
-      sessions: encoded.sessions,
-      files: {
-        "/claude.jsonl": { ...entry, d: [], ps: null },
-        "/codex.jsonl": { ...entry, p: "codex", d: [], ps: null, cs: { model: "old-model" } },
-        "/pi.jsonl": { ...entry, p: "pi", d: ["/project"], ps: { sessionId: "old" } },
-      },
-    };
-    const restored = decodeScanCache(fork, TEST_FORMAT_MAP);
-    expect(restored.get("/claude.jsonl")?.records[0]?.speed).toBe("fast");
-    expect(restored.get("/claude.jsonl")?.size).toBe(-1);
-    expect(restored.get("/codex.jsonl")?.records).toHaveLength(1);
-    expect(restored.get("/codex.jsonl")?.size).toBe(-1);
-    expect(restored.get("/codex.jsonl")?.position.resumeOffset).toBe(0);
-    expect(restored.has("/pi.jsonl")).toBe(false);
-    expect(encodeScanCache(restored).version).toBe(11);
+      };
+      const restored = decodeScanCache(poisoned, TEST_FORMAT_MAP);
+      expect(restored.has("/a.jsonl"), `column ${index}: ${value}`).toBe(false);
+    }
   });
 });

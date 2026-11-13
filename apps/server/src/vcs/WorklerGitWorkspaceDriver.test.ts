@@ -575,3 +575,51 @@ it.effect("claims a Workler clone before delivering a pending cancellation", () 
     assert.equal(claimed, "/repo/.worktrees/feature-work");
   }),
 );
+
+describe("Workler workspace authorization paths", () => {
+  it.effect(
+    "lists managed clones alongside Git worktrees, excluding broken and escaped entries",
+    () => {
+      const driver = makeDriver({
+        calls: [],
+        git: { listWorktreePaths: () => Effect.succeed(["/repo", "/native/worktree"]) },
+        workler: {
+          listWorkspaces: () =>
+            Effect.succeed([
+              {
+                name: "good",
+                path: "/repo/.worktrees/good",
+                branch: "feature",
+                isMain: false,
+                isClone: true,
+                broken: null,
+              },
+              {
+                name: "broken",
+                path: "/repo/.worktrees/broken",
+                branch: "broken",
+                isMain: false,
+                isClone: true,
+                broken: "missing repository",
+              },
+              {
+                name: "escaped",
+                path: "/other",
+                branch: "escaped",
+                isMain: false,
+                isClone: true,
+                broken: null,
+              },
+            ]),
+        },
+      });
+      return driver
+        .listWorktreePaths("/repo")
+        .pipe(
+          Effect.map((paths) =>
+            assert.deepEqual(paths, ["/repo", "/native/worktree", "/repo/.worktrees/good"]),
+          ),
+        );
+    },
+  );
+});

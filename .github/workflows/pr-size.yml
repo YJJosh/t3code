@@ -221,8 +221,6 @@ jobs:
               stdio: "inherit",
             });
 
-            // Upstream syncs touch tens of thousands of files; the 1 MB default
-            // buffer overflows (ENOBUFS) on their numstat output.
             const numstatMaxBuffer = 64 * 1024 * 1024;
             const diffArgs = [
               "diff",

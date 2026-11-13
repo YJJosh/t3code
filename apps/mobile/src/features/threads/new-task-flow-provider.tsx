@@ -1,3 +1,4 @@
+import { selectProfile, supportsProfiles } from "@t3tools/shared/profiles";
 import { ActiveNewTaskContext } from "../../state/active-new-task";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { useNowMinuteMs } from "../../lib/clock";
@@ -7,7 +8,6 @@ import React, { useEffect, useRef, useState } from "react";
 import type {
   EnvironmentId,
   ModelSelection,
-  ProviderInteractionMode,
   ProviderOptionSelection,
   RuntimeMode,
   ServerProvider,
@@ -40,6 +40,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { projectEnvironment } from "../../state/projects";
 import { useLinkedEnvironments } from "../../state/peerLinks";
 import { useEnvironmentQuery } from "../../state/query";
+import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   appendComposerDraftAttachments,
@@ -84,17 +85,13 @@ import {
 } from "../home/homeThreadList";
 import { useMobileProjectGroupingSettings } from "../../state/project-grouping";
 import {
-  resolvePendingTaskInteractionMode,
-  resolveProviderInteractionMode,
-} from "../../state/legacy-plan-mode";
-import { useLegacyPlanModeState } from "./use-legacy-plan-mode-enabled";
-import {
   resolveNewTaskDraftWorkspace,
   resolveNewTaskBranchWorktreePath,
   resolveNewTaskLocalWorkspaceSelection,
 } from "./new-task-context-presentation";
 import { resolveEnvironmentProjectMatch } from "./new-task-project-selection";
 import { useNewTaskProjectDefaults } from "./use-new-task-project-defaults";
+import { resolveNewThreadRuntimeMode } from "./thread-settings-options";
 import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValidation";
 import {
   INACTIVE_FLOW_KEY,
@@ -138,6 +135,7 @@ type NewTaskFlowContextValue = {
   readonly selectedModelKey: string | null;
   readonly workspaceMode: WorkspaceMode;
   readonly isGitRepo: boolean;
+  readonly isMultiRepoProject: boolean;
   readonly isGitRepoKnown: boolean;
   readonly canChooseWorkspace: boolean;
   readonly selectedBranchName: string | null;
@@ -155,8 +153,6 @@ type NewTaskFlowContextValue = {
   readonly availableBranches: ReadonlyArray<VcsRef>;
   readonly currentCheckoutBranchName: string | null;
   readonly runtimeMode: RuntimeMode;
-  readonly interactionMode: ProviderInteractionMode;
-  readonly planModeEnabled: boolean;
   readonly expandedProvider: string | null;
   readonly environments: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -208,7 +204,6 @@ type NewTaskFlowContextValue = {
   readonly setSubmitting: (value: boolean) => void;
   readonly loadBranches: () => void;
   readonly setRuntimeMode: (value: RuntimeMode) => void;
-  readonly setInteractionMode: (value: ProviderInteractionMode) => void;
   readonly setSelectedModelOptions: (
     value: ReadonlyArray<ProviderOptionSelection> | undefined,
   ) => void;
@@ -229,7 +224,6 @@ export function NewTaskFlowProvider(
   const threads = useThreadShells();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const groupingSettings = useMobileProjectGroupingSettings();
-  const { enabled: legacyPlanModeEnabled } = useLegacyPlanModeState();
 
   const projectScopes = sortHomeProjectScopes({
     scopes: buildHomeProjectScopes({
@@ -327,72 +321,18 @@ export function NewTaskFlowProvider(
         null);
 
   const linkedEnvironments = useLinkedEnvironments(selectedProject?.environmentId ?? null);
+  const storedStickyModelSelection = useStickyComposerModelSelection();
+  const modelSelectionNow = useNowMinuteMs();
   const projectDefaults = useNewTaskProjectDefaults(selectedProject);
   const selectedEnvironmentServerConfig = projectDefaults.serverConfig;
+  const freshProfiles = useEnvironmentQuery(
+    props.active !== false && selectedEnvironmentId !== null
+      ? serverEnvironment.profileConfig({ environmentId: selectedEnvironmentId, input: {} })
+      : null,
+  );
   const isScratchDraft = projectDefaults.isScratch;
   const serverConfigs = useServerConfigs();
   const { connectedEnvironments } = useRemoteConnectionStatus();
-  const scratchEnvironments = connectedEnvironments.filter(
-    (environment) =>
-      availableScratchWorkspaceRoot(
-        environment.connectionState,
-        serverConfigs.get(environment.environmentId),
-      ) !== null,
-  );
-
-  const selectedRepositoryKey = selectedProject?.repositoryIdentity
-    ? repositoryGroupingKeyOf(selectedProject.repositoryIdentity)
-    : null;
-  // Use || null: placeholder workspaceRoot can be empty, and an empty basename rejects real hosts.
-  const selectedWorkspaceBasename = selectedProject?.workspaceRoot.split("/").at(-1) || null;
-  const selectedProjectTitle = selectedProject?.title ?? null;
-  const environments = (() => {
-    if (isScratchDraft) {
-      return scratchEnvironments.map((environment) => ({
-        environmentId: environment.environmentId,
-        environmentLabel: environment.environmentLabel,
-      }));
-    }
-    const seen = new Set<EnvironmentId>();
-    const result: Array<{
-      readonly environmentId: EnvironmentId;
-      readonly environmentLabel: string;
-    }> = [];
-    const hostsSelectedRepository = (project: EnvironmentProject) => {
-      if (selectedRepositoryKey === null && selectedWorkspaceBasename === null) {
-        return true;
-      }
-      const projectKey = project.repositoryIdentity
-        ? repositoryGroupingKeyOf(project.repositoryIdentity)
-        : null;
-      if (selectedRepositoryKey !== null && projectKey !== null) {
-        return projectKey === selectedRepositoryKey;
-      }
-      return (
-        project.workspaceRoot.split("/").at(-1) === selectedWorkspaceBasename ||
-        (selectedProjectTitle !== null && project.title === selectedProjectTitle)
-      );
-    };
-    for (const project of projects) {
-      if (!hostsSelectedRepository(project)) {
-        continue;
-      }
-      if (seen.has(project.environmentId)) {
-        continue;
-      }
-      const environment = savedConnectionsById[project.environmentId];
-      if (!environment) {
-        continue;
-      }
-      seen.add(project.environmentId);
-      result.push({
-        environmentId: project.environmentId,
-        environmentLabel: environment.environmentLabel,
-      });
-    }
-    return result;
-  })();
-
   const selectedProjectDraftKey = selectedProject ? activeDraftKey : null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- creates the persistent draft in the new-task flow store once a project is selected, before the composer mounts
   useEffect(() => {
@@ -426,7 +366,7 @@ export function NewTaskFlowProvider(
   const prompt = selectedProjectDraft.text;
   const attachments = selectedProjectDraft.attachments;
   const projectGitStatus = useEnvironmentQuery(
-    selectedProject !== null && selectedProject.workspaceRoot !== ""
+    props.active !== false && selectedProject !== null && selectedProject.workspaceRoot !== ""
       ? vcsEnvironment.status({
           environmentId: selectedProject.environmentId,
           input: { cwd: selectedProject.workspaceRoot },
@@ -437,19 +377,17 @@ export function NewTaskFlowProvider(
   // The unfiltered ref list also provides repository capability while offline.
   const projectBranches = useBranches({
     environmentId: selectedProject?.environmentId ?? null,
-    cwd: selectedProject?.multiRepo ? null : selectedProject?.workspaceRoot || null,
+    cwd: selectedProject?.workspaceRoot || null,
   });
-  // A multi-repo root is a plain folder; its worktrees come from the child repositories.
-  const knownIsGitRepo = selectedProject?.multiRepo
-    ? true
-    : (projectGitStatus.data?.isRepo ?? projectBranches.data?.isRepo ?? null);
-  const isGitRepo = knownIsGitRepo ?? true;
+  const knownIsGitRepo = projectGitStatus.data?.isRepo ?? projectBranches.data?.isRepo ?? null;
+  const isMultiRepoProject = selectedProject?.multiRepo != null;
+  const isGitRepo = !isMultiRepoProject && (knownIsGitRepo ?? true);
   const projectSettings = projectDefaults.projectSettings;
   const canChooseWorkspace = !isScratchDraft;
   const defaultWorkspaceMode: WorkspaceMode = projectDefaults.defaultWorkspaceMode;
   const branchState = usePaginatedBranches({
     environmentId: selectedProject?.environmentId ?? null,
-    cwd: selectedProject?.multiRepo ? null : selectedProject?.workspaceRoot || null,
+    cwd: selectedProject?.workspaceRoot || null,
   });
   const branchesLoading = branchState.isPending && branchState.data === null;
   const allBranchRefs = branchState.refs;
@@ -458,17 +396,20 @@ export function NewTaskFlowProvider(
     Arr.filter((branch) => !branch.isRemote),
   );
 
-  const resolveWorkspaceSelection = (selection: ComposerDraftWorkspaceSelection | undefined) =>
-    resolveNewTaskDraftWorkspace({
+  const resolveWorkspaceSelection = (selection: ComposerDraftWorkspaceSelection | undefined) => {
+    const workspace = resolveNewTaskDraftWorkspace({
       selection,
       canChooseWorkspace,
       defaultMode: defaultWorkspaceMode,
       defaultModeSettled: projectDefaults.defaultWorkspaceModeSettled,
-      isGitRepo,
-      multiRepo: Boolean(selectedProject?.multiRepo),
+      isGitRepo: isGitRepo || isMultiRepoProject,
       branches: allBranchRefs,
       projectCwd: selectedProject?.workspaceRoot ?? null,
     });
+    return isMultiRepoProject
+      ? { ...workspace, branch: workspace.mode === "worktree" ? "HEAD" : null }
+      : workspace;
+  };
   const workspaceSelection = resolveWorkspaceSelection(selectedProjectDraft.workspaceSelection);
   const workspaceMode = workspaceSelection.mode;
   const selectedBranchName = workspaceSelection.branch;
@@ -478,9 +419,15 @@ export function NewTaskFlowProvider(
   // value keeps tracking the server setting when the config loads late.
   const draftStartFromOrigin = selectedProjectDraft.workspaceSelection?.startFromOrigin;
   const startFromOrigin =
-    isGitRepo && (draftStartFromOrigin ?? projectSettings.settings.newWorktreesStartFromOrigin);
+    (isGitRepo || isMultiRepoProject) &&
+    (draftStartFromOrigin ?? projectSettings.settings.newWorktreesStartFromOrigin);
   const defaultRuntimeMode = projectSettings.settings.defaultRuntimeMode;
-  const runtimeMode = selectedProjectDraft.runtimeMode ?? defaultRuntimeMode;
+  const managedPolicy = selectedEnvironmentServerConfig?.managedPolicy;
+  const runtimeMode = resolveNewThreadRuntimeMode(
+    selectedProjectDraft.runtimeMode,
+    defaultRuntimeMode,
+    managedPolicy,
+  );
 
   // Antigravity keeps unavailable selections so sign-out or a catalog change
   // cannot switch the user's model.
@@ -489,13 +436,11 @@ export function NewTaskFlowProvider(
     selectedProjectDraft.modelSelection ?? null,
     selectedProject?.id ?? null,
   );
-  const modelSelectionNow = useNowMinuteMs();
   const projectDefaultModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
     projectSettings.settings.defaultModelSelection,
     selectedProject?.id ?? null,
   );
-  const storedStickyModelSelection = useStickyComposerModelSelection();
   const stickyModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
     storedStickyModelSelection,
@@ -514,7 +459,7 @@ export function NewTaskFlowProvider(
     stickySelection: stickyModelSelection,
     modelOptions,
   });
-  const selectedModel = resolveNewThreadModelSelection({
+  const resolvedModel = resolveNewThreadModelSelection({
     defaultSelection: selectedDefaultModel,
     explicitSelection:
       draftModelSelection ?? (projectDefaultModelSelection ? null : stickyModelSelection),
@@ -526,6 +471,25 @@ export function NewTaskFlowProvider(
     projectId: selectedProject?.id ?? null,
     now: modelSelectionNow,
   }).selection;
+  const profileCatalog = freshProfiles.data?.profiles ?? selectedEnvironmentServerConfig?.profiles;
+  const defaultProfileId =
+    selectedEnvironmentServerConfig?.settings.defaultProfile ?? profileCatalog?.default;
+  const profilePick =
+    resolvedModel && draftModelSelection?.profileId === undefined
+      ? selectProfile(
+          resolvedModel,
+          defaultProfileId || null,
+          defaultProfileId ? profileCatalog?.profiles[defaultProfileId] : undefined,
+          selectedEnvironmentServerConfig?.providers ?? [],
+        )
+      : null;
+  const profileDriver = selectedEnvironmentServerConfig?.providers.find(
+    (provider) => provider.instanceId === profilePick?.selection.instanceId,
+  )?.driver;
+  const selectedModel =
+    profilePick && profileDriver && supportsProfiles(profileDriver)
+      ? profilePick.selection
+      : resolvedModel;
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`
     : null;
@@ -541,11 +505,6 @@ export function NewTaskFlowProvider(
     selectedEnvironmentServerConfig?.providers.find(
       (provider) => provider.instanceId === selectedModel?.instanceId,
     ) ?? null;
-  const planModeEnabled =
-    legacyPlanModeEnabled && selectedProviderStatus?.showInteractionModeToggle !== false;
-  const interactionMode = planModeEnabled
-    ? (selectedProjectDraft.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE)
-    : DEFAULT_PROVIDER_INTERACTION_MODE;
   const setSelectedModelKey = (
     key: string | null,
     options?: ReadonlyArray<ProviderOptionSelection>,
@@ -560,14 +519,11 @@ export function NewTaskFlowProvider(
     const selection = withRememberedModelOptions(
       options ? { ...option.selection, options } : option.selection,
     );
-    const provider = selectedEnvironmentServerConfig?.providers.find(
-      (candidate) => candidate.instanceId === selection.instanceId,
-    );
     updateComposerDraftSettings(selectedProjectDraftKey, {
-      modelSelection: selection,
-      ...(provider?.showInteractionModeToggle === false
-        ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
-        : {}),
+      modelSelection: {
+        ...selection,
+        ...(selectedModel?.profileId === undefined ? {} : { profileId: selectedModel.profileId }),
+      },
     });
     setStickyComposerModelSelection(selection);
   };
@@ -581,6 +537,7 @@ export function NewTaskFlowProvider(
       : {
           instanceId: selectedModel.instanceId,
           model: selectedModel.model,
+          ...(selectedModel.profileId === undefined ? {} : { profileId: selectedModel.profileId }),
         };
     updateComposerDraftSettings(selectedProjectDraftKey, {
       modelSelection: nextSelection,
@@ -768,13 +725,6 @@ export function NewTaskFlowProvider(
       updateComposerDraftSettings(selectedProjectDraftKey, { runtimeMode: value });
     }
   };
-  const setInteractionMode = (value: ProviderInteractionMode) => {
-    if (selectedProjectDraftKey) {
-      updateComposerDraftSettings(selectedProjectDraftKey, {
-        interactionMode: resolveProviderInteractionMode(selectedProviderStatus, value),
-      });
-    }
-  };
 
   const buildPendingTaskMessage = (
     metadata: TurnCommandMetadata,
@@ -815,14 +765,12 @@ export function NewTaskFlowProvider(
       attachments: draft.attachments,
       context: draft.context,
       modelSelection: draftModelSelection,
-      runtimeMode: draft.runtimeMode ?? defaultRuntimeMode,
-      interactionMode: resolvePendingTaskInteractionMode({
-        planModeEnabled: legacyPlanModeEnabled,
-        draftInteractionMode: draft.interactionMode,
-        provider: selectedEnvironmentServerConfig?.providers.find(
-          (candidate) => candidate.instanceId === draftModelSelection.instanceId,
-        ),
-      }),
+      runtimeMode: resolveNewThreadRuntimeMode(
+        draft.runtimeMode,
+        defaultRuntimeMode,
+        managedPolicy,
+      ),
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       creation: {
         projectId: selectedProject.id,
         projectTitle: selectedProject.title,
@@ -846,6 +794,67 @@ export function NewTaskFlowProvider(
     };
   };
 
+  const scratchEnvironments = connectedEnvironments.filter(
+    (environment) =>
+      availableScratchWorkspaceRoot(
+        environment.connectionState,
+        serverConfigs.get(environment.environmentId),
+      ) !== null,
+  );
+
+  const selectedRepositoryKey = selectedProject?.repositoryIdentity
+    ? repositoryGroupingKeyOf(selectedProject.repositoryIdentity)
+    : null;
+  // Use || null: placeholder workspaceRoot can be empty, and an empty basename rejects real hosts.
+  const selectedWorkspaceBasename = selectedProject?.workspaceRoot.split("/").at(-1) || null;
+  const selectedProjectTitle = selectedProject?.title ?? null;
+  const environments = (() => {
+    if (isScratchDraft) {
+      return scratchEnvironments.map((environment) => ({
+        environmentId: environment.environmentId,
+        environmentLabel: environment.environmentLabel,
+      }));
+    }
+    const seen = new Set<EnvironmentId>();
+    const result: Array<{
+      readonly environmentId: EnvironmentId;
+      readonly environmentLabel: string;
+    }> = [];
+    const hostsSelectedRepository = (project: EnvironmentProject) => {
+      if (selectedRepositoryKey === null && selectedWorkspaceBasename === null) {
+        return true;
+      }
+      const projectKey = project.repositoryIdentity
+        ? repositoryGroupingKeyOf(project.repositoryIdentity)
+        : null;
+      if (selectedRepositoryKey !== null && projectKey !== null) {
+        return projectKey === selectedRepositoryKey;
+      }
+      return (
+        project.workspaceRoot.split("/").at(-1) === selectedWorkspaceBasename ||
+        (selectedProjectTitle !== null && project.title === selectedProjectTitle)
+      );
+    };
+    for (const project of projects) {
+      if (!hostsSelectedRepository(project)) {
+        continue;
+      }
+      if (seen.has(project.environmentId)) {
+        continue;
+      }
+      const environment = savedConnectionsById[project.environmentId];
+      if (!environment) {
+        continue;
+      }
+      seen.add(project.environmentId);
+      result.push({
+        environmentId: project.environmentId,
+        environmentLabel: environment.environmentLabel,
+      });
+    }
+    return result;
+  })();
+
   const value = {
     activeNewTask,
     projectScopes,
@@ -854,7 +863,8 @@ export function NewTaskFlowProvider(
     selectedModelKey,
     workspaceMode,
     isGitRepo,
-    isGitRepoKnown: knownIsGitRepo !== null,
+    isMultiRepoProject,
+    isGitRepoKnown: isMultiRepoProject || knownIsGitRepo !== null,
     canChooseWorkspace,
     selectedBranchName,
     selectedWorktreePath,
@@ -869,8 +879,6 @@ export function NewTaskFlowProvider(
     availableBranches,
     currentCheckoutBranchName,
     runtimeMode,
-    interactionMode,
-    planModeEnabled,
     expandedProvider,
     environments,
     selectedProject,
@@ -901,7 +909,6 @@ export function NewTaskFlowProvider(
     setSubmitting: (value: boolean) => updateFlow({ submitting: value }),
     loadBranches,
     setRuntimeMode,
-    setInteractionMode,
     setSelectedModelOptions,
     setExpandedProvider: (value: string | null) => updateFlow({ expandedProvider: value }),
   } satisfies NewTaskFlowContextValue;

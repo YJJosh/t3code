@@ -5,7 +5,9 @@ import {
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
   ProviderInstanceId,
+  SecretProviderId,
   ThreadId,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -50,11 +52,7 @@ describe("RPC authorization scopes", () => {
   });
 
   it("separates passive terminal observation from operations that can change a shell", () => {
-    for (const method of [
-      WS_METHODS.terminalObserve,
-      WS_METHODS.subscribeTerminalMetadata,
-      WS_METHODS.subscribeBackgroundTerminalEvents,
-    ]) {
+    for (const method of [WS_METHODS.terminalObserve, WS_METHODS.subscribeTerminalMetadata]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalReadScope);
     }
     for (const method of [
@@ -64,11 +62,33 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.terminalResize,
       WS_METHODS.terminalClear,
       WS_METHODS.terminalClose,
-      WS_METHODS.backgroundTerminalsControl,
       WS_METHODS.previewStopLocalServer,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalOperateScope);
     }
+  });
+
+  it("lets thread readers observe and refresh checkout branches", () => {
+    for (const method of [WS_METHODS.subscribeVcsBranch, WS_METHODS.vcsRefreshBranch]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+  });
+
+  it("separates profile reads, writes, and commands that start installed providers", () => {
+    for (const method of [WS_METHODS.profilesEditorRead, WS_METHODS.profilesSyncRead])
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    for (const method of [
+      WS_METHODS.profilesEditorWrite,
+      WS_METHODS.profilesSyncWrite,
+      WS_METHODS.profilesSyncMark,
+    ])
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthSettingsWriteScope);
+    for (const method of [
+      WS_METHODS.profilesSkills,
+      WS_METHODS.profilesDetectOptions,
+      WS_METHODS.profilesClearClaudeList,
+    ])
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthProvidersManageScope);
   });
 
   it("rejects unknown RPC method names", () => {
@@ -136,6 +156,61 @@ describe("RPC scope middleware", () => {
   );
 });
 
+it.effect.each([WS_METHODS.subscribeVcsBranch, WS_METHODS.subscribeVcsStatus] as const)(
+  "enforces read permission on stream %s",
+  (method) =>
+    Effect.gen(function* () {
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<
+            keyof typeof RPC_REQUIRED_SCOPES,
+            typeof WS_METHODS.subscribeVcsBranch | typeof WS_METHODS.subscribeVcsStatus
+          > => tag !== WS_METHODS.subscribeVcsBranch && tag !== WS_METHODS.subscribeVcsStatus,
+        ),
+      );
+      let handled = 0;
+      const handlers = Layer.mergeAll(
+        group.toLayerHandler(WS_METHODS.subscribeVcsBranch, () =>
+          Stream.fromEffect(
+            Effect.sync(() => {
+              handled++;
+              return { refName: "main" };
+            }),
+          ),
+        ),
+        group.toLayerHandler(WS_METHODS.subscribeVcsStatus, () =>
+          Stream.fromEffect(
+            Effect.sync(() => {
+              handled++;
+            }),
+          ).pipe(Stream.drain),
+        ),
+      );
+      const denied = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([]))),
+      );
+      expect(
+        yield* Stream.runDrain(
+          method === WS_METHODS.subscribeVcsBranch
+            ? denied[method]({ cwd: "/repo" }).pipe(Stream.drain)
+            : denied[method]({ cwd: "/repo" }).pipe(Stream.drain),
+        ).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthOrchestrationReadScope });
+      expect(handled).toBe(0);
+      const granted = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthOrchestrationReadScope]))),
+      );
+      yield* Stream.runDrain(
+        method === WS_METHODS.subscribeVcsBranch
+          ? granted[method]({ cwd: "/repo" }).pipe(Stream.drain)
+          : granted[method]({ cwd: "/repo" }).pipe(Stream.drain),
+      );
+      expect(handled).toBe(1);
+    }).pipe(Effect.scoped),
+);
+
 describe("settings mutation authorization", () => {
   const group = WsRpcGroup.omit(
     ...[...WsRpcGroup.requests.keys()].filter(
@@ -168,17 +243,44 @@ describe("settings mutation authorization", () => {
       );
       yield* client[WS_METHODS.serverUpdateSettings]({ patch: {}, providerInstanceMutation });
       expect(handled).toBe(1);
+      yield* client[WS_METHODS.serverUpdateSettings]({
+        patch: {},
+        providerInstanceMutation: {
+          operation: "upsert",
+          instanceId: ProviderInstanceId.make("codex_work"),
+          instance: {
+            driver: ProviderDriverKind.make("codex"),
+            environment: [
+              {
+                name: "OPENAI_API_KEY",
+                sensitive: true,
+                value: {
+                  provider: SecretProviderId.make("personal"),
+                  reference: "op://Private/OpenAI/credential",
+                },
+              },
+            ],
+          },
+        },
+      });
+      expect(handled).toBe(2);
       expect(
         yield* client[WS_METHODS.serverUpdateSettings]({
           patch: { defaultRuntimeMode: "full-access" },
           providerInstanceMutation,
         }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
-      expect(handled).toBe(1);
+      // Removing a secret provider clears settings fields that read from it.
+      expect(
+        yield* client[WS_METHODS.serverUpdateSettings]({
+          patch: { secretProviders: { [SecretProviderId.make("personal")]: null } },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      expect(handled).toBe(2);
     }).pipe(Effect.scoped),
   );
 
-  it.effect("does not let a settings grant create or remove providers", () =>
+  it.effect("does not let a settings grant create or remove providers or secret providers", () =>
     Effect.gen(function* () {
       let handled = false;
       const client = yield* RpcTest.makeClient(group).pipe(
@@ -198,6 +300,16 @@ describe("settings mutation authorization", () => {
         yield* client[WS_METHODS.serverUpdateSettings]({
           patch: {},
           providerInstanceMutation,
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+      expect(
+        yield* client[WS_METHODS.serverUpdateSettings]({
+          patch: { secretProviders: { [SecretProviderId.make("personal")]: null } },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+      expect(
+        yield* client[WS_METHODS.serverUpdateSettings]({
+          patch: { agentSecretVaults: { alpha: { token: "ops_dummy" } } },
         }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
       expect(handled).toBe(false);
@@ -322,10 +434,14 @@ it.effect("separates host file URLs from readable attachment URLs", () =>
     yield* client[WS_METHODS.assetsCreateUrl]({
       resource: { _tag: "attachment", attachmentId: "image" },
     });
+    yield* client[WS_METHODS.assetsCreateUrl]({
+      resource: { _tag: "native-app-icon", app: { _tag: "app-id", appId: "com.apple.calculator" } },
+    });
     for (const resource of [
       { _tag: "workspace-file", threadId: ThreadId.make("thread"), path: "file.txt" },
       { _tag: "media-file", threadId: ThreadId.make("thread"), path: "/repo/image.png" },
       { _tag: "draft-workspace-file", cwd: "/repo", path: "file.txt" },
+      { _tag: "native-app-icon", app: { _tag: "app-path", path: "/private/Secret.app" } },
     ] as const) {
       expect(
         yield* client[WS_METHODS.assetsCreateUrl]({ resource }).pipe(Effect.flip),
@@ -334,7 +450,7 @@ it.effect("separates host file URLs from readable attachment URLs", () =>
         requiredPermission: AuthFilesystemReadScope,
       });
     }
-    expect(handled).toBe(1);
+    expect(handled).toBe(2);
   }).pipe(Effect.scoped),
 );
 
@@ -376,5 +492,63 @@ it.effect("denies manual cleanup before the handler without settings permission"
       requiredPermission: AuthSettingsWriteScope,
     });
     expect(handled).toBe(false);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("rejects profile writes and provider commands before handlers without their grants", () =>
+  Effect.gen(function* () {
+    const tested = [
+      WS_METHODS.profilesEditorWrite,
+      WS_METHODS.profilesSyncWrite,
+      WS_METHODS.profilesSyncMark,
+      WS_METHODS.profilesSkills,
+      WS_METHODS.profilesDetectOptions,
+    ] as const;
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+          !(tested as readonly string[]).includes(tag),
+      ),
+    );
+    let handled = 0;
+    const handler = () =>
+      Effect.sync(() => {
+        handled++;
+      }).pipe(Effect.andThen(Effect.never));
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          group.toLayer({
+            [WS_METHODS.profilesEditorWrite]: handler,
+            [WS_METHODS.profilesSyncWrite]: handler,
+            [WS_METHODS.profilesSyncMark]: handler,
+            [WS_METHODS.profilesSkills]: handler,
+            [WS_METHODS.profilesDetectOptions]: handler,
+          }),
+          RpcAuthorization.layer([AuthOrchestrationReadScope]),
+        ),
+      ),
+    );
+    expect(
+      (yield* client[WS_METHODS.profilesEditorWrite]({ expectedRevision: 0 }).pipe(Effect.flip))
+        ._tag,
+    ).toBe("EnvironmentAuthorizationError");
+    expect(
+      (yield* client[WS_METHODS.profilesSyncWrite]({
+        expectedRevision: 0,
+        source: { hash: "hash", updatedAt: null },
+        files: [],
+      }).pipe(Effect.flip))._tag,
+    ).toBe("EnvironmentAuthorizationError");
+    expect(
+      (yield* client[WS_METHODS.profilesSyncMark]({ hash: "hash" }).pipe(Effect.flip))._tag,
+    ).toBe("EnvironmentAuthorizationError");
+    expect(
+      (yield* client[WS_METHODS.profilesSkills]({ _tag: "update" }).pipe(Effect.flip))._tag,
+    ).toBe("EnvironmentAuthorizationError");
+    expect((yield* client[WS_METHODS.profilesDetectOptions]({}).pipe(Effect.flip))._tag).toBe(
+      "EnvironmentAuthorizationError",
+    );
+    expect(handled).toBe(0);
   }).pipe(Effect.scoped),
 );

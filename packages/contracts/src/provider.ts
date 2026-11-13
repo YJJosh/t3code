@@ -26,40 +26,6 @@ export const ProviderSendTurnInput = Schema.Struct({
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 
-const ProviderTaskControlBase = {
-  threadId: ThreadId,
-  taskId: TrimmedNonEmptyString,
-} as const;
-
-/** Provider-neutral control for a task surfaced in the Agents panel. */
-export const ProviderTaskControlInput = Schema.Union([
-  Schema.Struct({
-    ...ProviderTaskControlBase,
-    action: Schema.Literal("reply"),
-    message: TrimmedNonEmptyString,
-  }),
-  Schema.Struct({
-    ...ProviderTaskControlBase,
-    action: Schema.Literal("stop"),
-    reason: Schema.optional(TrimmedNonEmptyString),
-  }),
-]);
-export type ProviderTaskControlInput = typeof ProviderTaskControlInput.Type;
-
-export class ProviderTaskControlError extends Schema.TaggedError<ProviderTaskControlError>()(
-  "ProviderTaskControlError",
-  {
-    threadId: ThreadId,
-    taskId: TrimmedNonEmptyString,
-    detail: Schema.optional(Schema.String),
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return this.detail ?? `Failed to control task ${this.taskId} for thread ${this.threadId}.`;
-  }
-}
-
 export const ProviderUploadFeedbackInput = Schema.Struct({
   threadId: ThreadId,
   reason: Schema.optional(TrimmedNonEmptyString),

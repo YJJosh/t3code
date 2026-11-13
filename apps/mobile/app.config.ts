@@ -2,12 +2,15 @@ import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+
 import { resolveDulliForkVersion } from "./scripts/dulli-fork-version.ts";
 
 type AppVariant = "development" | "preview" | "production";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
+// Expo's TypeScript setup otherwise installs `typescript` on every start; we typecheck with tsrs.
+process.env.EXPO_NO_TYPESCRIPT_SETUP = "1";
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
@@ -109,19 +112,17 @@ function resolveAppVariant(value: string | undefined): AppVariant {
     case "preview":
     case "production":
       return value;
-    default:
+    case undefined:
       return "production";
+    default:
+      throw new Error("APP_VARIANT must be development, preview, or production.");
   }
 }
 
-// The T3 Dulli fork release builds a sideloadable APK with its own identity so
-// it can coexist with the official Play Store app. Enabled by the fork release
-// workflow via T3CODE_MOBILE_FORK_BRAND=dulli plus the release version.
 const forkBrand = repoEnv.T3CODE_MOBILE_FORK_BRAND?.trim();
-if (forkBrand !== undefined && forkBrand !== "" && forkBrand !== "dulli") {
+if (forkBrand && forkBrand !== "dulli") {
   throw new Error(`Unknown T3CODE_MOBILE_FORK_BRAND '${forkBrand}'; only 'dulli' is supported.`);
 }
-
 const dulliFork =
   forkBrand === "dulli"
     ? {
@@ -131,31 +132,23 @@ const dulliFork =
         ...resolveDulliForkVersion(repoEnv.T3CODE_MOBILE_FORK_VERSION),
       }
     : undefined;
-
 const DULLI_ASSETS = {
-  androidSplashIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
-  appIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
-  iosIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
-  splashIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliLinuxIconPng),
-  // Adaptive and themed icons need the glyph-only mark inside the safe zone;
-  // the full square logo gets cropped and upstream's mark shows "T3".
-  androidAdaptiveForeground: fromRepoRoot(BRAND_ASSET_PATHS.dulliAndroidMarkPng),
+  appIcon: "./assets/dulli/dulli-universal-1024.png",
+  iosIcon: "./assets/dulli/dulli-universal-1024.png",
+  splashIcon: "./assets/dulli/dulli-universal-1024.png",
+  androidSplashIcon: "./assets/dulli/dulli-universal-1024.png",
+  androidAdaptiveForeground: "./assets/dulli/dulli-android-mark-432.png",
   androidAdaptiveBackgroundColor: "#000000",
   androidAdaptiveBackgroundImage: undefined,
-  androidMonochromeIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliAndroidMarkPng),
-  androidNotificationIcon: fromRepoRoot(BRAND_ASSET_PATHS.dulliAndroidNotificationPng),
+  androidMonochromeIcon: "./assets/dulli/dulli-android-mark-432.png",
+  androidNotificationIcon: "./assets/dulli/dulli-android-notification-96.png",
   androidNotificationColor: "#FFFFFF",
 } as const;
 
 const variant = VARIANT_CONFIG[APP_VARIANT];
 const assets = dulliFork === undefined ? variant.assets : DULLI_ASSETS;
-
-// Observe's native module throws on first lookup without an EAS project ID, which the fork omits,
-// and expo-image looks it up on import, so a linked copy stops the fork app before it renders.
-const withoutObservePlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
-  "./plugins/withAndroidAutolinkingExclude.cjs",
-  ["expo-observe", "expo-app-metrics"],
-];
+// Copied thread links open the app. app.t3.codes/.well-known lists every variant's identifiers.
+const HOSTED_APP_HOST = "app.t3.codes";
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
   : variant.iosBundleIdentifier;
@@ -231,7 +224,12 @@ const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
         displayName: "Agent Activity",
         description: "Shows the current state of active T3 Code agents.",
         android: null,
-        ios: { supportedFamilies: ["systemSmall", "systemMedium", "accessoryRectangular"] },
+        ios: {
+          supportedFamilies: ["systemSmall", "systemMedium", "accessoryRectangular"],
+          // Embeds the layout so the gallery preview and a new widget render
+          // before the app has run once; the app replaces it on publish.
+          initialLayout: "./src/widgets/AgentActivityWidget.tsx",
+        },
       },
     ],
   },
@@ -268,7 +266,7 @@ const config: ExpoConfig = {
   slug: "t3-code",
   platforms: ["ios", "android"],
   scheme: dulliFork?.scheme ?? variant.scheme,
-  version: dulliFork?.versionName ?? repoEnv.T3CODE_MOBILE_VERSION ?? "2.2.0",
+  version: dulliFork?.versionName ?? repoEnv.T3CODE_MOBILE_VERSION ?? "2.3.0",
   runtimeVersion: {
     // Skip costly fingerprinting on dev launches; preview and production OTAs require matching native projects.
     policy: runtimeVersionPolicy,
@@ -277,7 +275,6 @@ const config: ExpoConfig = {
   icon: assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    // Fork builds must not pull OTA updates from upstream's EAS project.
     enabled: dulliFork === undefined && repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
     url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
     checkAutomatically: "ON_LOAD",
@@ -293,6 +290,7 @@ const config: ExpoConfig = {
     associatedDomains: [
       `applinks:${variant.relyingParty}`,
       `webcredentials:${variant.relyingParty}`,
+      `applinks:${HOSTED_APP_HOST}`,
     ],
     entitlements: {
       "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
@@ -328,7 +326,7 @@ const config: ExpoConfig = {
   android: {
     icon: assets.appIcon,
     package: dulliFork?.androidPackage ?? variant.androidPackage,
-    ...(dulliFork === undefined ? {} : { versionCode: dulliFork.versionCode }),
+    ...(dulliFork ? { versionCode: dulliFork.versionCode } : {}),
     ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
       ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
       : {}),
@@ -344,6 +342,16 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: true,
     // expo-sensors declares this for its pedometer, which the app does not use.
     blockedPermissions: ["android.permission.ACTIVITY_RECOGNITION"],
+    intentFilters: dulliFork
+      ? []
+      : [
+          {
+            action: "VIEW",
+            autoVerify: true,
+            data: [{ scheme: "https", host: HOSTED_APP_HOST, pathPrefix: "/threads/" }],
+            category: ["BROWSABLE", "DEFAULT"],
+          },
+        ],
   },
   web: {
     favicon: assets.appIcon,
@@ -351,7 +359,6 @@ const config: ExpoConfig = {
   plugins: [
     "expo-asset",
     "./plugins/withDulliPhoneNotifications.cjs",
-    "react-native-pdf-jsi",
     [
       "expo-font",
       {
@@ -410,7 +417,7 @@ const config: ExpoConfig = {
       "expo-audio",
       {
         microphonePermission: "Allow T3 Code to use your microphone for voice input.",
-        recordAudioAndroid: false,
+        recordAudioAndroid: true,
         enableBackgroundPlayback: false,
         enableBackgroundRecording: false,
       },
@@ -424,7 +431,14 @@ const config: ExpoConfig = {
         recordAudioAndroid: false,
       },
     ],
-    ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
+    [
+      "expo-image-picker",
+      {
+        photosPermission: false,
+        // `false` makes this plugin add RECORD_AUDIO to blockedPermissions, breaking Android dictation.
+        microphonePermission: "Allow T3 Code to use your microphone for voice input.",
+      },
+    ],
     [
       "expo-splash-screen",
       {
@@ -472,18 +486,30 @@ const config: ExpoConfig = {
     ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
     "./plugins/withAndroidNetworkSecurityConfig.cjs",
     "./plugins/withAndroidReleaseSigning.cjs",
+    ...(dulliFork
+      ? [
+          [
+            "./plugins/withAndroidAutolinkingExclude.cjs",
+            ["expo-observe", "expo-app-metrics"],
+          ] as NonNullable<ExpoConfig["plugins"]>[number],
+        ]
+      : []),
     "./plugins/withAndroidGradleHeap.cjs",
     "./plugins/withAndroidInputBackground.cjs",
     "./plugins/withAndroidModernPopupMenu.cjs",
     "./plugins/withAndroidModernAlertDialog.cjs",
     "./plugins/withAndroidPredictiveBackCompat.cjs",
+    // MainActivity mods run in reverse order; extend the tablet-orientation override.
+    "./plugins/withAndroidWindowDisplayMetrics.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
     ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
-    ...(dulliFork === undefined ? [] : [withoutObservePlugin]),
   ],
   extra: {
     appVariant: APP_VARIANT,
-    appBrand: dulliFork === undefined ? "t3code" : "dulli",
+    appBrand: dulliFork ? "dulli" : "t3code",
+    secretsFeatureEnabled: ["1", "true"].includes(
+      process.env.T3CODE_FEATURE_SECRETS?.trim().toLowerCase() ?? "",
+    ),
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
@@ -502,19 +528,16 @@ const config: ExpoConfig = {
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
-    ...(dulliFork === undefined
-      ? {
+    ...(dulliFork
+      ? {}
+      : {
           eas: {
             projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
             observe: { endpointUrl: observeEndpointUrl },
           },
-        }
-      : {}),
+        }),
   },
-  // Fork artifacts are built directly by the Dulli workflow. Omitting the
-  // upstream EAS owner/project prevents an accidental fork build or submit
-  // from targeting T3 Code's Expo project.
-  ...(dulliFork === undefined ? { owner: "pingdotgg" } : {}),
+  ...(dulliFork ? {} : { owner: "pingdotgg" }),
   experiments: {
     // Metro only runs babel-plugin-react-compiler when this is set; see src/reactCompilerCoverage.test.ts.
     reactCompiler: true,

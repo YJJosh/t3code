@@ -442,13 +442,10 @@ it.layer(NodeServices.layer)("Discord release CLI and workflow", (it) => {
           "--release-notes-file",
         ),
       );
-      // The fork never announces on upstream's Discord (see fork-release-workflows.test.ts).
       assert.ok(
         workflow
           .slice(workflow.indexOf("  announce_discord:"))
-          .startsWith(
-            "  announce_discord:\n    name: Announce release on Discord\n    if: ${{ false }}\n",
-          ),
+          .includes("needs.preflight.outputs.release_channel != 'preview'"),
       );
     }),
   );

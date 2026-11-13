@@ -8,10 +8,7 @@ export interface AgentScopeShape {
     readonly name: string;
     readonly threadId?: string | undefined;
     readonly env?: NodeJS.ProcessEnv | undefined;
-    /**
-     * Terminals and processes another owner keeps, such as Pis the pi-sessions daemon
-     * hosts, may survive restarts. Agents T3 owns must remain eligible for orphan cleanup.
-     */
+    /** Terminals may survive restarts; agents must remain eligible for orphan cleanup. */
     readonly survivesRestart?: boolean | undefined;
     /**
      * Keep a shared process running after a tool OOM when supported.
@@ -25,6 +22,12 @@ export interface AgentScopeShape {
    * descendants outside its process group. Preserves systemd OOM diagnosis.
    */
   readonly stop: (unit: string) => Effect.Effect<void>;
+  /**
+   * SIGKILLs every process in the thread's own scope, which works even while
+   * the kernel throttles them. Shared scopes serve other threads and are never
+   * killed here. Succeeds with whether a scope was killed.
+   */
+  readonly kill: (threadId: string) => Effect.Effect<boolean>;
   /**
    * Forgets the thread's scope. The session manager calls it before it opens
    * a provider session, so a scope only answers for the session that launched
@@ -45,6 +48,7 @@ export const AgentScope = Context.Reference<AgentScopeShape>("@t3tools/shared/Ag
     wrap: ({ command, args }) => Effect.succeed({ command, args }),
     oomKilled: () => Effect.succeed(false),
     stop: () => Effect.void,
+    kill: () => Effect.succeed(false),
     clear: () => Effect.void,
   }),
 });
@@ -75,6 +79,14 @@ export interface AgentSystemdScope {
   readonly unit: string;
   readonly runtimeDir: string;
   readonly options: ReadonlyArray<string>;
+}
+
+const quoteShell = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+
+/** An executable file for launchers that take a path, not a command line, such as Playwright. */
+export function agentScopeLauncherScript(launch: AgentScopeCommand): string {
+  const command = [launch.command, ...launch.args].map(quoteShell).join(" ");
+  return `#!/bin/sh\nexec ${command} "$@"\n`;
 }
 
 /** Exec at every step preserves the agent PID, stdio, and signals; systemd-run places it and descendants in the scope. */

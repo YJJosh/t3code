@@ -4,14 +4,13 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   applyGitStatusStreamEvent,
-  buildTemporaryWorktreeBranchName,
-  isNetworkGitRemoteUrl,
   formatGeneratedBranchName,
+  buildTemporaryWorktreeBranchName,
   flattenTemporaryWorktreeBranchName,
+  isBareGitConfig,
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
   parseOriginUrlFromGitConfig,
-  redactGitRemoteUrl,
   resolveAutoFeatureBranchName,
   sanitizeFeatureBranchName,
   WORKTREE_BRANCH_PREFIX,
@@ -66,83 +65,55 @@ describe("normalizeGitRemoteUrl", () => {
   });
 });
 
-describe("isNetworkGitRemoteUrl", () => {
-  it("accepts remotes another machine can clone", () => {
-    for (const url of [
-      "https://github.com/acme/api.git",
-      "ssh://git@gitlab.example.com:2222/acme/api.git",
-      "git@github.com:acme/api.git",
-      "github.com:acme/api.git",
-      "git://example.com/api.git",
+describe("isBareGitConfig", () => {
+  it("reads Git's numeric booleans without accepting invalid or overflowing values", () => {
+    for (const value of [
+      "true",
+      "yes",
+      "on",
+      "1",
+      "2",
+      "-1",
+      "+1",
+      "01",
+      "0x10",
+      "1k",
+      "1m",
+      "1g",
+      "2147483647",
+      "-2147483648",
     ]) {
-      expect(isNetworkGitRemoteUrl(url)).toBe(true);
+      expect(isBareGitConfig(`[core]\nbare = ${value}\n`), value).toBe(true);
     }
-  });
-
-  it("rejects local paths and file URLs", () => {
-    for (const url of [
-      "/srv/git/api.git",
-      "../api",
-      "./api",
-      "file:///srv/git/api.git",
-      "C:/repos/api",
-      "C:\\repos\\api",
-      "\\\\server\\share\\api",
-      "ext::ssh example.com",
+    for (const value of [
+      "false",
+      "no",
+      "off",
+      "0",
+      "-0",
+      "00",
+      "0x0",
+      "0k",
+      "08",
+      "1.5",
+      "2no",
+      "2g",
+      "2147483648",
+      "-2147483649",
     ]) {
-      expect(isNetworkGitRemoteUrl(url)).toBe(false);
+      expect(isBareGitConfig(`[core]\nbare = ${value}\n`), value).toBe(false);
     }
-  });
-});
-
-describe("redactGitRemoteUrl", () => {
-  it("drops credentials and tokens from HTTP remotes", () => {
-    expect(redactGitRemoteUrl("https://user:secret@github.com/acme/api.git")).toBe(
-      "https://github.com/acme/api.git",
-    );
-    expect(redactGitRemoteUrl("https://ghp_token@github.com/acme/api.git")).toBe(
-      "https://github.com/acme/api.git",
-    );
-    expect(redactGitRemoteUrl("https://github.com/acme/api.git?token=x")).toBe(
-      "https://github.com/acme/api.git",
-    );
-    expect(redactGitRemoteUrl("https://github.com/acme/api.git#token=x")).toBe(
-      "https://github.com/acme/api.git",
-    );
+    expect(isBareGitConfig("[core]\nbare = 2\nbare = 0\n")).toBe(false);
+    expect(isBareGitConfig("[core]\nbare = false\nbare = -2\n")).toBe(true);
   });
 
-  it("drops token-like usernames from non-SSH protocols", () => {
-    expect(redactGitRemoteUrl("ftp://access_token@example.com/acme/api.git")).toBe(
-      "ftp://example.com/acme/api.git",
-    );
-    expect(redactGitRemoteUrl("ftps://access_token@example.com/acme/api.git")).toBe(
-      "ftps://example.com/acme/api.git",
-    );
-  });
+  it("reads continued bare values after comments and at end of input", () => {
+    const config = ["[core] bare = false # ignored backslash \\", 'bare = "tr\\', 'ue"'].join("\n");
 
-  it("redacts credentials even when URL parsing fails", () => {
-    expect(redactGitRemoteUrl("https://user:secret@github.com:bad/acme/api.git?token=x")).toBe(
-      "https://github.com:bad/acme/api.git",
-    );
-    expect(redactGitRemoteUrl("https://user:sec@ret@github.com:bad/acme/api.git?token=x")).toBe(
-      "https://github.com:bad/acme/api.git",
-    );
-  });
-
-  it("keeps remotes that still need to clone as they are", () => {
-    expect(redactGitRemoteUrl("ssh://git@gitlab.example.com:2222/acme/api.git")).toBe(
-      "ssh://git@gitlab.example.com:2222/acme/api.git",
-    );
-    expect(redactGitRemoteUrl("git+ssh://git@gitlab.example.com/acme/api.git")).toBe(
-      "git+ssh://git@gitlab.example.com/acme/api.git",
-    );
-    expect(redactGitRemoteUrl("ssh+git://git@gitlab.example.com/acme/api.git")).toBe(
-      "ssh+git://git@gitlab.example.com/acme/api.git",
-    );
-    expect(redactGitRemoteUrl("git@github.com:acme/api.git")).toBe("git@github.com:acme/api.git");
-    expect(redactGitRemoteUrl("https://github.com/acme/api.git")).toBe(
-      "https://github.com/acme/api.git",
-    );
+    expect(isBareGitConfig(config)).toBe(true);
+    expect(isBareGitConfig("[core]\nbare = tr\\\nue\\")).toBe(true);
+    expect(isBareGitConfig('[core]\nbare = "true\\')).toBe(false);
+    expect(isBareGitConfig('[core]\nbare = "true\\\n')).toBe(false);
   });
 });
 
@@ -193,6 +164,21 @@ describe("parseOriginUrlFromGitConfig", () => {
         '[remote "origin"]\n\turl = https://github.com/acme/\\\n\t\trepo.git\n',
       ),
     ).toBe("https://github.com/acme/repo.git");
+  });
+
+  it("reads settings on the remote header line", () => {
+    const upstream = '\n[remote "upstream"]\n\turl = https://github.com/other/source.git\n';
+    expect(
+      parseOriginUrlFromGitConfig(`[remote "origin"] url = git@github.com:a/b.git${upstream}`),
+    ).toBe("git@github.com:a/b.git");
+    expect(parseOriginUrlFromGitConfig("[remote.Origin]url=git@github.com:a/b.git\n")).toBe(
+      "git@github.com:a/b.git",
+    );
+    expect(
+      parseOriginUrlFromGitConfig(
+        `[remote "origin"] fetch = +refs/heads/*:refs/remotes/origin/*\n\turl = git@github.com:a/b.git${upstream}`,
+      ),
+    ).toBe("git@github.com:a/b.git");
   });
 
   it("falls back to the first remote when there is no origin", () => {
@@ -334,6 +320,12 @@ describe("sanitizeFeatureBranchName", () => {
     ["fix///", "feature/fix"],
   ])("keeps the fallback for unprefixed input %s", (input, expected) => {
     expect(sanitizeFeatureBranchName(input)).toBe(expected);
+  });
+
+  it("keeps accented letters as their plain letters", () => {
+    expect(sanitizeFeatureBranchName("fix/Añadir validación del café")).toBe(
+      "fix/anadir-validacion-del-cafe",
+    );
   });
 });
 

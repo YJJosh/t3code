@@ -10,11 +10,13 @@ import {
   isUnconfiguredDefaultInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
+  resolveTextGenerationSelectionEnabled,
+  textGeneratorForSelection,
   isProviderTextGenerationCapable,
   type ModelSelection,
   type ProjectId,
   type ProjectScopedServerSettingKey,
-  type ProjectSettingsOverrides,
+  ProjectSettingsOverrides,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -23,6 +25,7 @@ import {
   withIdleCompaction,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
@@ -34,13 +37,20 @@ import {
   resolveBackgroundActivitySettings,
 } from "./backgroundActivitySettings.ts";
 
-const ServerSettingsJson = fromLenientJson(ServerSettings);
-const decodeServerSettingsJson = Schema.decodeUnknownOption(ServerSettingsJson);
+// Only observability: a value the server migrates on load elsewhere in the file must not drop it.
+const ServerObservabilitySettingsJson = fromLenientJson(
+  Schema.Struct({ observability: ServerSettings.fields.observability }),
+);
+const decodeServerObservabilitySettingsJson = Schema.decodeUnknownOption(
+  ServerObservabilitySettingsJson,
+);
 
 export function isModelSelectionProviderEnabled(
   settings: ServerSettings,
   selection: ModelSelection,
 ): boolean {
+  const generator = textGeneratorForSelection(settings, selection.instanceId);
+  if (generator !== undefined) return generator.enabled;
   const instanceConfig = settings.providerInstances[selection.instanceId];
   if (instanceConfig !== undefined) {
     return resolveProviderInstanceEnabled(instanceConfig);
@@ -49,75 +59,9 @@ export function isModelSelectionProviderEnabled(
   return isUnconfiguredDefaultInstanceEnabled(selection.instanceId);
 }
 
-/** Whether an instance can generate unattended titles and source-control text now. */
-export function canProviderGenerateText(provider: ServerProvider): boolean {
-  return (
-    provider.enabled &&
-    provider.installed &&
-    isProviderAvailable(provider) &&
-    provider.auth.status !== "unauthenticated" &&
-    isProviderTextGenerationCapable(provider)
-  );
-}
-
-export function defaultTextGenerationModelForProvider(
-  provider: Pick<ServerProvider, "driver" | "models">,
-): string | undefined {
-  const preferred = DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[provider.driver];
-  if (preferred && provider.models.length === 0) return preferred;
-  return (
-    provider.models.find(
-      (model) =>
-        model.slug === preferred || (preferred !== undefined && model.aliases?.includes(preferred)),
-    ) ??
-    provider.models.find((model) => model.isDefault) ??
-    provider.models[0]
-  )?.slug;
-}
-
-/**
- * Keep a usable configured selection, otherwise use the first healthy snapshot.
- * Project enablement and custom-model defaults still apply. With no usable
- * candidate retain the original selection so the eventual error names it.
- */
-export function resolveTextGenerationModelSelection(
-  settings: ServerSettings,
-  providers: ReadonlyArray<ServerProvider>,
-  projectId: ProjectId | null = null,
-): ModelSelection {
-  const selection = settings.textGenerationModelSelection;
-  const usable = (provider: ServerProvider) =>
-    canProviderGenerateText(provider) &&
-    resolveProjectProviderInstanceEnabled(settings, projectId, provider.instanceId);
-  if (
-    providers.some((provider) => provider.instanceId === selection.instanceId && usable(provider))
-  ) {
-    return selection;
-  }
-  for (const provider of providers) {
-    if (!usable(provider)) continue;
-    const threadDefault = settings.defaultModelSelection;
-    const config = settings.providerInstances[provider.instanceId]?.config as
-      | { customModels?: unknown }
-      | undefined;
-    if (
-      threadDefault?.instanceId === provider.instanceId &&
-      readCustomModelEntries(config?.customModels).some(
-        (entry) => entry.slug === threadDefault.model,
-      )
-    ) {
-      return threadDefault;
-    }
-    const model = defaultTextGenerationModelForProvider(provider);
-    if (model) return createModelSelection(provider.instanceId, model);
-  }
-  return selection;
-}
-
 const TEXT_GENERATION_FALLBACK_DRIVERS = [
   "codex",
   "claudeAgent",
-  "dulli",
   "cursor",
   "grok",
   "muse",
@@ -169,28 +113,34 @@ export function defaultTextGenerationModel(driver: ProviderDriverKind): string {
   );
 }
 
+/** A text generator, or a provider whose snapshot can generate text; no snapshots trusts settings. */
+function isTextGenerationTargetUsable(
+  settings: ServerSettings,
+  providers: ReadonlyArray<ServerProvider> | undefined,
+  instanceId: ProviderInstanceId,
+): boolean {
+  if (providers === undefined || textGeneratorForSelection(settings, instanceId) !== undefined) {
+    return true;
+  }
+  const provider = providers.find((candidate) => candidate.instanceId === instanceId);
+  return (
+    provider?.enabled === true &&
+    isProviderAvailable(provider) &&
+    isProviderTextGenerationCapable(provider)
+  );
+}
+
 export function resolveSourceControlWriterModelSelection(
   settings: ServerSettings,
   providers: ReadonlyArray<ServerProvider> | undefined,
   projectId: ProjectId | null,
 ): ModelSelection {
-  const fallback =
-    providers === undefined
-      ? settings.textGenerationModelSelection
-      : resolveTextGenerationModelSelection(settings, providers, projectId);
   const selection = settings.sourceControlWriterModelSelection;
-  if (
-    !selection ||
-    !resolveProjectProviderInstanceEnabled(settings, projectId, selection.instanceId)
-  ) {
-    return fallback;
-  }
-  if (providers === undefined) {
-    return selection;
-  }
-
-  const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
-  return provider !== undefined && canProviderGenerateText(provider) ? selection : fallback;
+  return selection &&
+    resolveTextGenerationSelectionEnabled(settings, projectId, selection.instanceId) &&
+    isTextGenerationTargetUsable(settings, providers, selection.instanceId)
+    ? selection
+    : settings.textGenerationModelSelection;
 }
 
 export function resolveReviewGuideModelSelection(
@@ -199,16 +149,26 @@ export function resolveReviewGuideModelSelection(
   projectId: ProjectId | null,
 ): ModelSelection {
   const selection = settings.reviewGuideModelSelection;
-  if (
-    selection &&
-    resolveProjectProviderInstanceEnabled(settings, projectId, selection.instanceId)
-  ) {
-    const provider = providers?.find((candidate) => candidate.instanceId === selection.instanceId);
-    if (providers === undefined || (provider !== undefined && canProviderGenerateText(provider))) {
-      return selection;
-    }
-  }
-  return resolveSourceControlWriterModelSelection(settings, providers, projectId);
+  // Text generators cannot investigate a checkout, so they never write review guides.
+  return selection &&
+    textGeneratorForSelection(settings, selection.instanceId) === undefined &&
+    resolveProjectProviderInstanceEnabled(settings, projectId, selection.instanceId) &&
+    isTextGenerationTargetUsable(settings, providers, selection.instanceId)
+    ? selection
+    : resolveSourceControlWriterModelSelection(settings, providers, projectId);
+}
+
+/** Transcript cleanup follows the text generation model unless its own usable model is set. */
+export function resolveSpeechPostProcessingModelSelection(
+  settings: ServerSettings,
+  providers?: ReadonlyArray<ServerProvider>,
+): ModelSelection {
+  const selection = settings.speechPostProcessingModelSelection;
+  return selection &&
+    isModelSelectionProviderEnabled(settings, selection) &&
+    isTextGenerationTargetUsable(settings, providers, selection.instanceId)
+    ? selection
+    : settings.textGenerationModelSelection;
 }
 
 export interface PersistedServerObservabilitySettings {
@@ -241,7 +201,7 @@ function extractPersistedServerObservabilitySettings(input: {
 export function parsePersistedServerObservabilitySettings(
   raw: string,
 ): PersistedServerObservabilitySettings {
-  const decoded = decodeServerSettingsJson(raw);
+  const decoded = decodeServerObservabilitySettingsJson(raw);
   if (Option.isSome(decoded)) {
     return extractPersistedServerObservabilitySettings(decoded.value);
   }
@@ -287,6 +247,25 @@ function mergeSettingsEntries<Value>(
   return Object.fromEntries(next);
 }
 
+// Secret persistence keys tokens by trimmed, lowercased host, so merge on the same key.
+const byHost = (tokens: unknown) =>
+  Object.fromEntries(
+    Object.entries(Predicate.isObject(tokens) ? tokens : {}).map(([host, token]) => [
+      host.trim().toLowerCase(),
+      token,
+    ]),
+  );
+
+const knownProjectOverrideKeys = new Set(Object.keys(ProjectSettingsOverrides.fields));
+
+function pickOverrideKeys(entry: ProjectSettingsOverrides | undefined, known: boolean) {
+  return Object.fromEntries(
+    Object.entries<unknown>(entry ?? {}).filter(
+      ([key]) => knownProjectOverrideKeys.has(key) === known,
+    ),
+  );
+}
+
 // Older clients omit providerInstances during whole-entry replacement; preserve it to avoid wiping overrides.
 function mergeProjectSettingsOverridesPatch(
   current: Readonly<Record<string, ProjectSettingsOverrides>>,
@@ -300,7 +279,9 @@ function mergeProjectSettingsOverridesPatch(
     }
     const storedProviderInstances = current[projectId]?.providerInstances;
     next.set(projectId, {
-      ...entry,
+      // Preserve downgraded storage, but reject new unknown writes so clients can detect unsupported settings.
+      ...pickOverrideKeys(current[projectId], false),
+      ...pickOverrideKeys(entry, true),
       ...(Object.hasOwn(entry, "providerInstances") || storedProviderInstances === undefined
         ? {}
         : { providerInstances: storedProviderInstances }),
@@ -418,6 +399,9 @@ export function applyServerSettingsPatch(
     worktreeCleanup: worktreeCleanupPatch,
     // Merged per entry below; its `null` removals must not reach deepMerge.
     usageLimitSources: usageLimitSourcesPatch,
+    textGenerators: textGeneratorsPatch,
+    secretProviders: secretProvidersPatch,
+    agentSecretVaults: agentSecretVaultsPatch,
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
@@ -578,10 +562,26 @@ export function applyServerSettingsPatch(
           sourceControlHosts: {
             ...current.sourceControlHosts,
             ...Object.fromEntries(
-              Object.entries(sourceControlHostsPatch).map(([kind, fields]) => [
-                kind,
-                { ...current.sourceControlHosts[kind], ...fields },
-              ]),
+              Object.entries(sourceControlHostsPatch).map(([kind, fields]) => {
+                const saved = current.sourceControlHosts[kind];
+                return [
+                  kind,
+                  {
+                    ...saved,
+                    ...fields,
+                    // Older clients send the whole token map; a host missing from it keeps its saved
+                    // token. An empty map still clears them all.
+                    ...(Predicate.isObject(fields.tokens) && Object.keys(fields.tokens).length > 0
+                      ? {
+                          tokens: {
+                            ...byHost(saved?.tokens),
+                            ...byHost(fields.tokens),
+                          },
+                        }
+                      : {}),
+                  },
+                ];
+              }),
             ),
           },
         }
@@ -604,6 +604,9 @@ export function applyServerSettingsPatch(
     ...(patch.fallbackModelSelection !== undefined
       ? { fallbackModelSelection: patch.fallbackModelSelection }
       : {}),
+    ...(patch.speechPostProcessingModelSelection !== undefined
+      ? { speechPostProcessingModelSelection: patch.speechPostProcessingModelSelection }
+      : {}),
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
       : {}),
@@ -614,6 +617,20 @@ export function applyServerSettingsPatch(
             usageLimitSourcesPatch,
           ),
         }
+      : {}),
+    ...(textGeneratorsPatch !== undefined
+      ? { textGenerators: mergeSettingsEntries(current.textGenerators, textGeneratorsPatch) }
+      : {}),
+    ...(agentSecretVaultsPatch !== undefined
+      ? {
+          agentSecretVaults: mergeSettingsEntries(
+            current.agentSecretVaults,
+            agentSecretVaultsPatch,
+          ),
+        }
+      : {}),
+    ...(secretProvidersPatch !== undefined
+      ? { secretProviders: mergeSettingsEntries(current.secretProviders, secretProvidersPatch) }
       : {}),
     ...(usagePriceOverridesPatch !== undefined
       ? {

@@ -106,45 +106,6 @@ const emptyProjection = {
 } as OrchestrationV2ThreadProjection;
 
 describe("applyOrchestrationV2ProjectionEvent", () => {
-  it("retains live Dulli child transcript records without inserting them into parent chat", () => {
-    const item = commandItem("dulli:subagent:thread:child:transcript:0");
-    const next = applyOrchestrationV2ProjectionEvent(emptyProjection, {
-      id: "child-tool" as OrchestrationV2DomainEvent["id"],
-      type: "turn-item.updated",
-      threadId,
-      occurredAt: now,
-      payload: item,
-    })!;
-    expect(next.turnItems).toEqual([item]);
-    expect(next.visibleTurnItems).toEqual([]);
-    const settled = applyOrchestrationV2ProjectionEvent(next, {
-      id: "settled" as OrchestrationV2DomainEvent["id"],
-      type: "run.updated",
-      threadId,
-      occurredAt: now,
-      payload: run,
-    })!;
-    expect(settled.turnItems).toEqual([item]);
-    expect(settled.visibleTurnItems).toEqual([]);
-  });
-
-  it("tracks Dulli transcript changes per run, so one run's update leaves others' revision alone", () => {
-    const changed = (id: string, nodeId: string): OrchestrationV2DomainEvent =>
-      ({
-        id,
-        type: "dulli-transcript.changed",
-        threadId,
-        occurredAt: now,
-        payload: { nodeId },
-      }) as OrchestrationV2DomainEvent;
-    const first = applyOrchestrationV2ProjectionEvent(emptyProjection, changed("e1", "run-a"))!;
-    const second = applyOrchestrationV2ProjectionEvent(first, changed("e2", "run-b"))!;
-    expect(second.dulliTranscriptRevisions).toEqual({ "run-a": "e1", "run-b": "e2" });
-    const third = applyOrchestrationV2ProjectionEvent(second, changed("e3", "run-b"))!;
-    expect(third.dulliTranscriptRevisions?.["run-a"]).toBe("e1");
-    expect(third.dulliTranscriptRevisions?.["run-b"]).toBe("e3");
-  });
-
   it("applies a compact PR sync without replacing other links or thread metadata", () => {
     const link = (number: number): ThreadPullRequestLink => ({
       host: "github.com",

@@ -59,9 +59,11 @@ internal class PhoneNotificationState(private val prefs: SharedPreferences) {
           }.parse(thread.optString("latestRunCompletedAt"))?.time
         }.getOrNull()
       }
-    // Subagent runs finish inside their parent's turn; the parent's completion is the one to report.
-    val subagent = thread.optJSONObject("lineage")?.optString("relationshipToParent") == "subagent"
-    if (!hidden && !subagent && run != null && completed != null && completed >= since &&
+    // Agent-driven work reports completion to its parent, but requests still need the user.
+    val agentDriven =
+      thread.optJSONObject("lineage")?.optString("relationshipToParent") == "subagent" ||
+        !thread.isNull("delegatedFrom")
+    if (!hidden && !agentDriven && run != null && completed != null && completed >= since &&
       thread.optString("status") in
       setOf("completed", "failed", "interrupted", "cancelled", "rolled_back") &&
       prefs.getString("seen-run:$key", null) != run

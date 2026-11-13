@@ -1,6 +1,6 @@
 import * as Haptics from "expo-haptics";
 import { cloneElement, isValidElement, type ReactElement } from "react";
-import { AndroidAnchoredMenu } from "./AndroidAnchoredMenu";
+import { AndroidAnchoredMenu } from "./AndroidAnchoredMenu.android";
 import type { MenuProps } from "./Menu.types";
 
 export function Menu(props: MenuProps) {
@@ -13,6 +13,7 @@ export function Menu(props: MenuProps) {
         title={props.title}
         style={props.style}
         onPressAction={props.onPressAction}
+        onOpenMenu={props.onOpenMenu}
       >
         {(open) =>
           cloneElement(child, {
@@ -32,6 +33,7 @@ export function Menu(props: MenuProps) {
       title={props.title}
       style={props.style}
       onPressAction={props.onPressAction}
+      onOpenMenu={props.onOpenMenu}
     >
       {props.children}
     </AndroidAnchoredMenu>

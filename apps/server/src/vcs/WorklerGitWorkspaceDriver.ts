@@ -447,6 +447,35 @@ export const withWorklerWorkspaceSupport = (input: {
   const listRefs = Effect.fn("WorklerGitWorkspaceDriver.listRefs")(function* (
     listInput: VcsListRefsInput,
   ): Effect.fn.Return<VcsListRefsResult, GitCommandError> {
+    const group = yield* input.workler
+      .inspectGroup(listInput.cwd)
+      .pipe(Effect.orElseSucceed(() => null));
+    if (group !== null) {
+      const root =
+        input.path.basename(input.path.dirname(listInput.cwd)) === ".worktrees"
+          ? input.path.dirname(input.path.dirname(listInput.cwd))
+          : listInput.cwd;
+      const workspaces = yield* input.workler
+        .listWorkspaces(root)
+        .pipe(Effect.mapError((error) => mapWorklerError("GitVcsDriver.listRefs", root, error)));
+      const refs: VcsRef[] = workspaces.flatMap((workspace) => {
+        const managed = normalizeManagedWorkspace(input.path, root, workspace);
+        return managed?.branch &&
+          listInput.refKind !== "remote" &&
+          (!listInput.query || managed.branch.toLowerCase().includes(listInput.query.toLowerCase()))
+          ? [
+              {
+                name: managed.branch,
+                current: managed.path === listInput.cwd,
+                isRemote: false,
+                isDefault: false,
+                worktreePath: managed.path,
+              },
+            ]
+          : [];
+      });
+      return { isRepo: false, hasPrimaryRemote: false, ...paginateRefs(refs, listInput) };
+    }
     const nativeRefs = yield* input.git.listRefs(listInput);
     if (!nativeRefs.isRepo || listInput.refKind === "remote") return nativeRefs;
 
@@ -556,8 +585,27 @@ export const withWorklerWorkspaceSupport = (input: {
       );
   });
 
+  const listWorktreePaths = Effect.fn("WorklerGitWorkspaceDriver.listWorktreePaths")(function* (
+    cwd: string,
+  ) {
+    const native = yield* input.git.listWorktreePaths(cwd).pipe(Effect.result);
+    const group = yield* input.workler.inspectGroup(cwd).pipe(Effect.orElseSucceed(() => null));
+    const root =
+      group !== null ? cwd : yield* resolveRoot(cwd).pipe(Effect.orElseSucceed(() => cwd));
+    const workspaces = yield* input.workler
+      .listWorkspaces(root)
+      .pipe(Effect.orElseSucceed(() => []));
+    const managed = workspaces.flatMap((workspace) => {
+      const normalized = normalizeManagedWorkspace(input.path, root, workspace);
+      return normalized === null ? [] : [normalized.path];
+    });
+    if (native._tag === "Failure" && managed.length === 0) return yield* native.failure;
+    return [...new Set([...(native._tag === "Success" ? native.success : []), ...managed])];
+  });
+
   return {
     ...input.git,
+    listWorktreePaths,
     createWorktree,
     listRefs,
     removeWorktree,

@@ -9,17 +9,7 @@ type TimelineRun = Pick<OrchestrationV2Run, "id" | "status">;
 type TimelineRunAttempt = Pick<OrchestrationV2RunAttempt, "runId" | "rootNodeId" | "status">;
 type TimelineTurnItem = Pick<OrchestrationV2TurnItem, "type" | "runId" | "nodeId"> & {
   readonly inputIntent?: OrchestrationV2UserMessageInputIntent;
-  readonly id?: OrchestrationV2TurnItem["id"];
 };
-
-// Dulli persists child transcripts as turn items for on-demand inspectors,
-// not parent conversation rows. Use their stable slot namespace so snapshots and
-// live client reductions agree without changing any upstream provider's timeline.
-export function isDulliSubagentTranscriptItem(item: {
-  readonly id?: OrchestrationV2TurnItem["id"];
-}): boolean {
-  return item.id?.startsWith("dulli:subagent:") === true && item.id.includes(":transcript:");
-}
 
 export function isOrchestrationV2SupersededInterrupt(input: {
   readonly item: TimelineTurnItem;
@@ -55,7 +45,6 @@ export function isOrchestrationV2TurnItemVisible(input: {
   readonly items: ReadonlyArray<TimelineTurnItem>;
 }): boolean {
   const { item } = input;
-  if (isDulliSubagentTranscriptItem(item)) return false;
   if (
     item.runId !== null &&
     input.runs.some((run) => run.id === item.runId && run.status === "rolled_back")
@@ -85,7 +74,12 @@ export function createOrchestrationV2TurnItemVisibility(input: {
   readonly attempts: ReadonlyArray<TimelineRunAttempt>;
   readonly items: ReadonlyArray<TimelineTurnItem>;
 }): (item: TimelineTurnItem) => boolean {
-  const statuses = new Map(input.runs.map((run) => [run.id, run.status]));
+  const statuses = new Map<TimelineRun["id"], TimelineRun["status"]>();
+  for (const run of input.runs) {
+    if (run.status === "rolled_back" || run.status === "cancelled")
+      statuses.set(run.id, run.status);
+    else statuses.delete(run.id);
+  }
   const supersededRoots = new Map<
     TimelineRunAttempt["runId"],
     Set<TimelineRunAttempt["rootNodeId"]>
@@ -96,11 +90,14 @@ export function createOrchestrationV2TurnItemVisibility(input: {
     if (roots === undefined) supersededRoots.set(attempt.runId, (roots = new Set()));
     roots.add(attempt.rootNodeId);
   }
-  const interruptRuns = new Set(
-    input.items.filter((item) => item.type === "run_interrupt_request").map((item) => item.runId),
-  );
+  if (statuses.size === 0 && supersededRoots.size === 0) return () => true;
+  const interruptRuns = new Set<TimelineTurnItem["runId"]>();
+  if (supersededRoots.size > 0) {
+    for (const item of input.items) {
+      if (item.type === "run_interrupt_request") interruptRuns.add(item.runId);
+    }
+  }
   return (item) => {
-    if (isDulliSubagentTranscriptItem(item)) return false;
     const status = item.runId === null ? undefined : statuses.get(item.runId);
     if (status === "rolled_back") return false;
     if (

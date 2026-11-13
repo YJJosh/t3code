@@ -4,7 +4,6 @@ import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
   SourceControlProviderKind,
-  type ProjectId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import {
@@ -31,7 +30,6 @@ import {
   ChevronDownIcon,
   CloudDownloadIcon,
   CloudUploadIcon,
-  FoldersIcon,
   FileDiffIcon,
   GitBranchPlusIcon,
   GitCommitIcon,
@@ -48,12 +46,14 @@ import {
   buildMenuItems,
   formatGitActionElapsed,
   GIT_ACTION_SUCCESS_VISIBLE_MS,
+  hasUsableGitMenuContent,
   type GitActionProgressPresentation,
   type GitActionIconName,
   type GitActionMenuItem,
   type GitQuickAction,
   type DefaultBranchConfirmableAction,
   requiresDefaultBranchConfirmation,
+  resolveChangesTotals,
   resolveDefaultBranchActionDialogCopy,
   resolveFeatureBranchUnavailableReason,
   resolveGitActionProgressPresentation,
@@ -62,7 +62,6 @@ import {
   resolveThreadBranchMetadataPatch,
   resolveQuickAction,
   resolveThreadBranchUpdate,
-  summarizeRepositories,
 } from "./GitActionsControl.logic";
 import { WizardPopup, WizardHeader, WizardSteps, WizardPanel, WizardFooter } from "./ui/wizard";
 import { StartTruncatedPath } from "./StartTruncatedPath";
@@ -92,8 +91,7 @@ import {
   useVcsInitAction,
   useVcsPullAction,
 } from "../state/sourceControlActions";
-import { useThreadProjection, useQuietThreadShell } from "~/state/entities";
-import { projectEnvironment } from "~/state/projects";
+import { useQuietThreadProjection, useQuietThreadShell } from "~/state/entities";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
@@ -120,9 +118,6 @@ interface GitActionsControlProps {
   gitCwd: string | null;
   activeThreadRef: ScopedThreadRef | null;
   draftId?: DraftId;
-  multiRepoCandidate?:
-    | { readonly projectId: ProjectId; readonly repositories: ReadonlyArray<string> }
-    | undefined;
   compact?: boolean;
   showActions?: boolean;
   showChanges?: boolean;
@@ -934,23 +929,17 @@ export default function GitActionsControl({
   gitCwd,
   activeThreadRef,
   draftId,
-  multiRepoCandidate,
   compact = false,
   showActions = true,
   showChanges = true,
   onOpenChanges,
 }: GitActionsControlProps) {
-  const makeMultiRepo = useAtomCommand(projectEnvironment.makeMultiRepo, { reportFailure: false });
-  const [isMakingMultiRepo, setIsMakingMultiRepo] = useState(false);
   const panelAnchorRef = useRef<HTMLDivElement | null>(null);
   const updateThreadMetadata = useAtomCommand(
     threadEnvironment.updateMetadata,
     "thread branch metadata update",
   );
   const activeEnvironmentId = activeThreadRef?.environmentId ?? null;
-  const canMakeMultiRepo = useAtomValue(
-    projectEnvironment.makeMultiRepo.permissionAtom(activeEnvironmentId),
-  );
   const successScopeKey = `${activeEnvironmentId ?? ""}\u0000${gitCwd ?? ""}`;
   const canWriteSourceControl = useEnvironmentScope(
     activeEnvironmentId,
@@ -971,7 +960,7 @@ export default function GitActionsControl({
         ? store.getDraftThreadByRef(activeThreadRef)
         : null,
   );
-  const activeServerThreadProjection = useThreadProjection(
+  const activeServerThreadProjection = useQuietThreadProjection(
     activeDraftThread !== null && activeServerThreadShell === null ? null : activeThreadRef,
   );
   const activeServerThread =
@@ -1061,7 +1050,13 @@ export default function GitActionsControl({
   const isRepo = gitStatus?.isRepo ?? true;
   const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
   const gitStatusForActions = gitStatus;
-  const changesTotals = gitStatusForActions?.branchChanges ?? gitStatusForActions?.workingTree;
+  const resolvedChangesTotals = resolveChangesTotals(gitStatusForActions);
+  const changesTotals = resolvedChangesTotals ?? { insertions: 0, deletions: 0 };
+  const changesBaseLabel = resolvedChangesTotals
+    ? resolvedChangesTotals.baseRef === null
+      ? "Uncommitted"
+      : `vs ${resolvedChangesTotals.baseRef}`
+    : null;
 
   const allFiles = gitStatusForActions?.workingTree.files ?? [];
   // Changed-file paths are repository-relative, so they must resolve against
@@ -1131,8 +1126,8 @@ export default function GitActionsControl({
     gitActionProgress === null &&
     !gitStatusError &&
     quickAction.disabled &&
-    !changesTotals?.insertions &&
-    !changesTotals?.deletions;
+    !changesTotals.insertions &&
+    !changesTotals.deletions;
   const pendingDefaultBranchActionCopy = pendingDefaultBranchAction
     ? resolveDefaultBranchActionDialogCopy({
         action: pendingDefaultBranchAction.action,
@@ -1401,6 +1396,23 @@ export default function GitActionsControl({
 
   const canPublishRepository =
     canWriteSourceControl && isRepo && gitStatusForActions !== null && !hasPrimaryRemote;
+  const isDetachedHead = gitStatusForActions?.refName === null;
+  const isCleanAndBehind =
+    gitStatusForActions !== null &&
+    gitStatusForActions.refName !== null &&
+    !gitStatusForActions.hasWorkingTreeChanges &&
+    gitStatusForActions.behindCount > 0 &&
+    gitStatusForActions.aheadCount === 0;
+  const hasGitMenuContent = hasUsableGitMenuContent({
+    menuItems: gitActionMenuItems,
+    canWriteSourceControl,
+    canPublishRepository,
+    hasNotice: isDetachedHead || isCleanAndBehind || Boolean(gitStatusError),
+  });
+
+  // A disabled menu cannot refresh on open, and terminal edits or commits publish no status.
+  const refreshStatusForEmptyMenu = () =>
+    requestVcsStatusRefresh(refreshVcsStatus, activeEnvironmentId, gitCwd);
 
   const initializeGit = () => {
     void (async () => {
@@ -1419,47 +1431,6 @@ export default function GitActionsControl({
       );
     })();
   };
-  // The server re-sends the project once it groups the repositories, which
-  // replaces this control with the multi-repo composer.
-  const makeMultiRepoProject = () => {
-    if (!multiRepoCandidate || activeEnvironmentId === null || !canMakeMultiRepo) return;
-    setIsMakingMultiRepo(true);
-    void (async () => {
-      const result = await makeMultiRepo({
-        environmentId: activeEnvironmentId,
-        input: { projectId: multiRepoCandidate.projectId },
-      });
-      setIsMakingMultiRepo(false);
-      if (result._tag === "Success") {
-        toastManager.add(
-          stackedThreadToast({
-            type: "success",
-            title: "Made a multi-repo project",
-            description: `New worktrees now branch ${summarizeRepositories(result.value.members)} together. Edit .workler in the project folder to change the list.`,
-            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-          }),
-        );
-        return;
-      }
-      if (isAtomCommandInterrupted(result)) return;
-      const error = squashAtomCommandFailure(result);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not make a multi-repo project",
-          description: error instanceof Error ? error.message : "An error occurred.",
-          ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-        }),
-      );
-    })();
-  };
-  const multiRepoLabel = isMakingMultiRepo
-    ? "Making multi-repo project..."
-    : "Make multi-repo project";
-  const multiRepoHint = multiRepoCandidate
-    ? `Groups ${summarizeRepositories(multiRepoCandidate.repositories)}, so a new worktree branches them all together.`
-    : "";
-
   const gitItems = (
     <>
       {gitActionMenuItems.map((item) => {
@@ -1513,19 +1484,15 @@ export default function GitActionsControl({
           <MenuItemLabel>Publish repository...</MenuItemLabel>
         </MenuItem>
       ) : null}
-      {gitStatusForActions?.refName === null && (
+      {isDetachedHead && (
         <p className="px-2 py-1.5 text-xs text-warning">
           Detached HEAD: create and check out a branch to enable push and{" "}
           {changeRequestTerminology.singular} actions.
         </p>
       )}
-      {gitStatusForActions &&
-        gitStatusForActions.refName !== null &&
-        !gitStatusForActions.hasWorkingTreeChanges &&
-        gitStatusForActions.behindCount > 0 &&
-        gitStatusForActions.aheadCount === 0 && (
-          <p className="px-2 py-1.5 text-xs text-warning">Behind upstream. Pull/rebase first.</p>
-        )}
+      {isCleanAndBehind && (
+        <p className="px-2 py-1.5 text-xs text-warning">Behind upstream. Pull/rebase first.</p>
+      )}
       {gitStatusError && <p className="px-2 py-1.5 text-xs text-destructive">{gitStatusError}</p>}
     </>
   );
@@ -1534,61 +1501,7 @@ export default function GitActionsControl({
 
   return (
     <>
-      {!showActions ? null : !isRepo && multiRepoCandidate ? (
-        <div
-          role="group"
-          aria-label="Project setup"
-          className={cn("shrink-0", THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS)}
-        >
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <ThreadDetailsControl
-                  part="primary"
-                  panel
-                  size="xs"
-                  variant="ghost"
-                  disabled={isMakingMultiRepo || !canMakeMultiRepo}
-                  onClick={makeMultiRepoProject}
-                />
-              }
-            >
-              <FoldersIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} aria-hidden />
-              <span className={THREAD_DETAILS_PANEL_LABEL_CLASS}>{multiRepoLabel}</span>
-            </TooltipTrigger>
-            <TooltipPopup side="bottom" align="end">
-              {multiRepoHint}
-            </TooltipPopup>
-          </Tooltip>
-          <span aria-hidden className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
-          <Menu>
-            <MenuTrigger
-              render={
-                <ThreadDetailsControl
-                  aria-label="More project setup options"
-                  part="secondary"
-                  panel
-                  size="xs"
-                  variant="ghost"
-                />
-              }
-            >
-              <ChevronDownIcon aria-hidden className={THREAD_DETAILS_PANEL_CHEVRON_CLASS} />
-            </MenuTrigger>
-            <MenuPopup align="end">
-              <MenuItem
-                disabled={!canWriteSourceControl || initAction.isPending}
-                onClick={initializeGit}
-              >
-                <GitBranchPlusIcon className="size-4" />
-                <MenuItemLabel>
-                  {initAction.isPending ? "Initializing..." : "Initialize Git"}
-                </MenuItemLabel>
-              </MenuItem>
-            </MenuPopup>
-          </Menu>
-        </div>
-      ) : !isRepo ? (
+      {!showActions ? null : !isRepo ? (
         <ThreadDetailsControl
           size="xs"
           variant="ghost"
@@ -1607,6 +1520,8 @@ export default function GitActionsControl({
           role="group"
           aria-label="Git actions"
           ref={panelAnchorRef}
+          onPointerEnter={hasGitMenuContent ? undefined : refreshStatusForEmptyMenu}
+          onFocus={hasGitMenuContent ? undefined : refreshStatusForEmptyMenu}
           className={cn(
             "shrink-0",
             THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS,
@@ -1714,7 +1629,7 @@ export default function GitActionsControl({
                       panel
                     />
                   }
-                  disabled={isGitActionRunning}
+                  disabled={isGitActionRunning || !hasGitMenuContent}
                 >
                   <ChevronDownIcon
                     aria-hidden="true"
@@ -1740,23 +1655,41 @@ export default function GitActionsControl({
           onClick={onOpenChanges}
         >
           <FileDiffIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} aria-hidden />
-          <span className={cn("flex-1 text-left", THREAD_DETAILS_PANEL_LABEL_CLASS)}>Changes</span>
-          <span className="flex items-center gap-1.5 font-mono text-xs tabular-nums">
-            <span
-              className={
-                changesTotals?.insertions
-                  ? "text-diff-addition-foreground"
-                  : "text-muted-foreground"
-              }
-            >
-              +{formatDiffCount(changesTotals?.insertions ?? 0)}
-            </span>
-            <span
-              className={
-                changesTotals?.deletions ? "text-diff-deletion-foreground" : "text-muted-foreground"
-              }
-            >
-              -{formatDiffCount(changesTotals?.deletions ?? 0)}
+          <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+            <span className="shrink-0">Changes</span>
+            {changesBaseLabel ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="pointer-events-auto min-w-0 truncate font-normal text-muted-foreground" />
+                  }
+                >
+                  {changesBaseLabel}
+                </TooltipTrigger>
+                <TooltipPopup side="top" className="max-w-96 break-words">
+                  {changesBaseLabel}
+                </TooltipPopup>
+              </Tooltip>
+            ) : null}
+            <span className="ml-auto flex shrink-0 items-baseline gap-2 ps-2 font-mono tabular-nums">
+              <span
+                className={
+                  changesTotals.insertions
+                    ? "text-diff-addition-foreground"
+                    : "text-muted-foreground"
+                }
+              >
+                +{formatDiffCount(changesTotals.insertions)}
+              </span>
+              <span
+                className={
+                  changesTotals.deletions
+                    ? "text-diff-deletion-foreground"
+                    : "text-muted-foreground"
+                }
+              >
+                -{formatDiffCount(changesTotals.deletions)}
+              </span>
             </span>
           </span>
         </ThreadDetailsControl>

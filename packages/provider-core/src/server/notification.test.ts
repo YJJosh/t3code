@@ -42,6 +42,12 @@ describe("backgroundWorkNotification", () => {
         .summary,
       'Monitor "Three ticks" reported new output',
     );
+    assert.equal(
+      backgroundWorkNotification([
+        { kind: "command", label: `${"a".repeat(78)}😀 and more`, outcome: "completed" },
+      ]).summary,
+      `Command "${"a".repeat(78)}…" finished`,
+    );
   });
 
   it("names every piece of work that ended together, without opening one of them", () => {
@@ -119,24 +125,6 @@ describe("notificationTurnItem", () => {
     task("b", "Write tests", "completed"),
     task("c", "Update docs", "running"),
   ];
-
-  it("preserves a hidden wake without projecting its synthetic user message", () => {
-    const item = notificationTurnItem(
-      userMessage,
-      {
-        notification: {
-          source: { kind: "background_task" },
-          outcome: "updated",
-          summary: "Background activity updated",
-          hidden: true,
-        },
-      },
-      [],
-    );
-    assert.deepInclude(item, { type: "notification", hidden: true });
-    assert.notProperty(item, "messageId");
-    assert.notProperty(item, "text");
-  });
 
   it("opens the child thread of a single delegated task", () => {
     const item = notificationTurnItem(userMessage, delivery(["a"]), tasks);

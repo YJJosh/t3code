@@ -118,252 +118,142 @@ function fingerprintKey(fingerprint: UsageSourceFingerprint): string {
   ].join(" ");
 }
 
-function normalizePortablePath(value: string): string {
-  let normalized = value.replaceAll("\\", "/").replace(/\/{2,}/g, "/");
-  if (/^[a-z]:\//i.test(normalized)) normalized = normalized.toLowerCase();
-  while (normalized.length > 1 && normalized.endsWith("/")) normalized = normalized.slice(0, -1);
-  return normalized;
-}
-
-/** Returns how many directories `descendant` is below `ancestor`. */
-function descendantDepth(ancestor: string, descendant: string): number | undefined {
-  const normalizedAncestor = normalizePortablePath(ancestor);
-  const normalizedDescendant = normalizePortablePath(descendant);
-  if (normalizedAncestor === normalizedDescendant) return 0;
-  const prefix = normalizedAncestor === "/" ? "/" : `${normalizedAncestor}/`;
-  if (!normalizedDescendant.startsWith(prefix)) return undefined;
-  return normalizedDescendant.slice(prefix.length).split("/").filter(Boolean).length;
-}
-
-/** True when the first source's bounded scan includes every file in the second. */
-function sourceCovers(covering: UsageSource, covered: UsageSource): boolean {
-  if (covering.status !== "ok") return false;
-  const coveringFingerprint = covering.fingerprint;
-  const coveredFingerprint = covered.fingerprint;
-  if (
-    coveringFingerprint.hostId !== coveredFingerprint.hostId ||
-    coveringFingerprint.provider !== coveredFingerprint.provider
-  ) {
-    return false;
-  }
-
-  const depth = descendantDepth(
-    coveringFingerprint.resolvedHomePath,
-    coveredFingerprint.resolvedHomePath,
-  );
-  if (depth === undefined) return false;
-
-  const samePhysicalDirectory =
-    depth === 0 &&
-    coveringFingerprint.volumeId.length > 0 &&
-    coveringFingerprint.volumeId === coveredFingerprint.volumeId;
-  const provenPhysicalAncestor =
-    depth > 0 &&
-    coveringFingerprint.volumeId.length > 0 &&
-    coveredFingerprint.ancestorVolumeIds?.[depth - 1] === coveringFingerprint.volumeId;
-  if (!samePhysicalDirectory && !provenPhysicalAncestor) return false;
-
-  if (covering.scan === undefined || covered.scan === undefined) {
-    return (
-      depth === 0 && fingerprintKey(coveringFingerprint) === fingerprintKey(coveredFingerprint)
-    );
-  }
-  if (covering.scan.filePattern === "pi-subagent-session") {
-    return (
-      depth === 0 &&
-      covered.scan.filePattern === "pi-subagent-session" &&
-      covering.scan.maxDepth >= covered.scan.maxDepth
-    );
-  }
-  // MAX_SAFE_INTEGER represents an unbounded recursive walk. Subtraction
-  // avoids overflowing when the covered reader is also unbounded.
-  return (
-    covering.scan.maxDepth === Number.MAX_SAFE_INTEGER ||
-    covering.scan.maxDepth - depth >= covered.scan.maxDepth
-  );
-}
-
-interface SourceClaim {
-  readonly environment: EnvironmentUsage;
-  readonly source: UsageSource;
-  readonly sourceIndex: number;
-}
-
-function sourceClaimKey(environmentId: EnvironmentId, sourceIndex: number): string {
-  return `${environmentId}\0${String(sourceIndex)}`;
-}
-
-/** Forward-compatible decoding can remove unknown providers and shift source indexes. */
-function bucketSourceIndex(summary: UsageSummary, bucket: UsageBucket): number | undefined {
-  if (bucket.sourceIndex !== undefined) {
-    const fingerprint = summary.sources[bucket.sourceIndex]?.fingerprint;
-    if (
-      fingerprint?.provider === bucket.provider &&
-      (bucket.sourcePath === undefined || fingerprint.resolvedHomePath === bucket.sourcePath)
-    )
-      return bucket.sourceIndex;
-  }
-  if (bucket.sourcePath !== undefined)
-    return summary.sources.findIndex(
-      (source) =>
-        source.fingerprint.provider === bucket.provider &&
-        source.fingerprint.resolvedHomePath === bucket.sourcePath,
-    );
-  return bucket.sourceIndex;
-}
-
 function bucketsForSource(summary: UsageSummary, source: UsageSource): readonly UsageBucket[] {
-  const sourceIndex = summary.sources.indexOf(source);
   const providerSources = summary.sources.filter(
     (entry) => entry.fingerprint.provider === source.fingerprint.provider,
   );
   return summary.buckets.filter(
     (bucket) =>
       bucket.provider === source.fingerprint.provider &&
-      (bucketSourceIndex(summary, bucket) ?? (providerSources.length === 1 ? sourceIndex : -1)) ===
-        sourceIndex,
+      (bucket.sourcePath === source.fingerprint.resolvedHomePath ||
+        (bucket.sourcePath === undefined && providerSources.length === 1)),
   );
-}
-
-function sameScan(a: UsageSource, b: UsageSource): boolean {
-  return a.scan?.maxDepth === b.scan?.maxDepth && a.scan?.filePattern === b.scan?.filePattern;
 }
 
 function bucketKey(bucket: UsageBucket): string {
   return JSON.stringify([bucket.day, bucket.hourStart ?? null, bucket.provider, bucket.model]);
 }
 
-function claimSources(environments: readonly EnvironmentUsage[]) {
-  const candidates: SourceClaim[] = environments.flatMap((environment) =>
-    environment.summary.sources.flatMap((source, sourceIndex) =>
-      source.status === "missing" ? [] : [{ environment, source, sourceIndex }],
-    ),
-  );
-  const statusRank = { ok: 0, partial: 1, failed: 2, missing: 3 };
-  candidates.sort((a, b) => {
-    const statusOrder = statusRank[a.source.status] - statusRank[b.source.status];
-    if (statusOrder) return statusOrder;
-    // A total ordering puts broader roots first. Physical containment is still
-    // checked before dropping anything; equally bounded roots use freshness.
-    const pathOrder =
-      normalizePortablePath(a.source.fingerprint.resolvedHomePath).split("/").filter(Boolean)
-        .length -
-      normalizePortablePath(b.source.fingerprint.resolvedHomePath).split("/").filter(Boolean)
-        .length;
-    if (pathOrder) return pathOrder;
-    const patternOrder =
-      Number(a.source.scan?.filePattern === "pi-subagent-session") -
-      Number(b.source.scan?.filePattern === "pi-subagent-session");
-    if (patternOrder) return patternOrder;
-    const depthOrder = (b.source.scan?.maxDepth ?? -1) - (a.source.scan?.maxDepth ?? -1);
-    if (depthOrder) return depthOrder;
-    return (
-      (Date.parse(b.environment.summary.readAt) || 0) -
-        (Date.parse(a.environment.summary.readAt) || 0) ||
-      a.environment.environmentId.localeCompare(b.environment.environmentId) ||
-      a.sourceIndex - b.sourceIndex
-    );
-  });
-  const claimed: SourceClaim[] = [];
-  const ownedSourceKeys = new Set<string>();
+function claimSources(environments: readonly EnvironmentUsage[]): {
+  readonly ownerByFingerprint: ReadonlyMap<string, EnvironmentId>;
+  readonly supplementalBucketsByEnvironment: ReadonlyMap<EnvironmentId, ReadonlySet<UsageBucket>>;
+  readonly sessionsByFingerprint: ReadonlyMap<string, number>;
+  readonly duplicates: readonly string[];
+} {
+  const ownerByFingerprint = new Map<string, EnvironmentId>();
+  const ownerScanByFingerprint = new Map<
+    string,
+    { environment: EnvironmentUsage; source: UsageSource }
+  >();
+  const seenBucketKeysByFingerprint = new Map<string, Set<string>>();
   const supplementalBucketsByEnvironment = new Map<EnvironmentId, Set<UsageBucket>>();
-  const sessionsBySource = new Map<string, number>();
-  const seenByOwner = new Map<string, Set<string>>();
+  const sessionsByFingerprint = new Map<string, number>();
   const duplicates: string[] = [];
-  for (const candidate of candidates) {
-    const owner = claimed.find(
-      (existing) =>
-        existing.environment.environmentId !== candidate.environment.environmentId &&
-        (sourceCovers(existing.source, candidate.source) ||
-          (existing.source.fingerprint.volumeId.length > 0 &&
-            sameScan(existing.source, candidate.source) &&
-            fingerprintKey(existing.source.fingerprint) ===
-              fingerprintKey(candidate.source.fingerprint))),
-    );
-    const key = sourceClaimKey(candidate.environment.environmentId, candidate.sourceIndex);
-    if (!owner) {
-      claimed.push(candidate);
-      ownedSourceKeys.add(key);
-      sessionsBySource.set(key, candidate.source.distinctSessions);
-      continue;
+
+  const ordered = [...environments].sort(
+    (a, b) =>
+      (Date.parse(b.summary.readAt) || 0) - (Date.parse(a.summary.readAt) || 0) ||
+      a.environmentId.localeCompare(b.environmentId),
+  );
+
+  for (const status of ["ok", "partial", "failed"] as const) {
+    for (const environment of ordered) {
+      for (const source of environment.summary.sources) {
+        if (source.status !== status) continue;
+        const key = fingerprintKey(source.fingerprint);
+        if (ownerByFingerprint.has(key)) {
+          duplicates.push(`${environment.label}: ${source.fingerprint.resolvedHomePath}`);
+          continue;
+        }
+        ownerByFingerprint.set(key, environment.environmentId);
+        ownerScanByFingerprint.set(key, { environment, source });
+        sessionsByFingerprint.set(key, source.distinctSessions);
+      }
     }
-    duplicates.push(
-      `${candidate.environment.label}: ${candidate.source.fingerprint.resolvedHomePath}`,
-    );
-    // Only identical scan coverage can supplement cells. A contained root may
-    // have records assigned to other roots by its server's cross-file dedupe.
-    if (
-      candidate.source.status !== "partial" ||
-      owner.source.status !== "ok" ||
-      fingerprintKey(owner.source.fingerprint) !== fingerprintKey(candidate.source.fingerprint) ||
-      !sameScan(owner.source, candidate.source) ||
-      Date.parse(candidate.environment.summary.readAt) <=
-        Date.parse(owner.environment.summary.readAt)
-    )
-      continue;
-    const ownerKey = sourceClaimKey(owner.environment.environmentId, owner.sourceIndex);
-    const seen =
-      seenByOwner.get(ownerKey) ??
-      new Set(bucketsForSource(owner.environment.summary, owner.source).map(bucketKey));
-    seenByOwner.set(ownerKey, seen);
-    const supplemental =
-      supplementalBucketsByEnvironment.get(candidate.environment.environmentId) ??
-      new Set<UsageBucket>();
-    let added = false;
-    for (const bucket of bucketsForSource(candidate.environment.summary, candidate.source)) {
-      const cell = bucketKey(bucket);
-      if (seen.has(cell)) continue;
-      seen.add(cell);
-      supplemental.add(bucket);
-      added = true;
-    }
-    if (added) {
-      supplementalBucketsByEnvironment.set(candidate.environment.environmentId, supplemental);
-      sessionsBySource.set(
-        ownerKey,
-        Math.max(sessionsBySource.get(ownerKey) ?? 0, candidate.source.distinctSessions),
+  }
+
+  // Keep cells unique to newer partial scans; aggregates cannot reconcile overlapping records without double-counting.
+  for (const environment of ordered) {
+    for (const source of environment.summary.sources) {
+      if (source.status !== "partial") continue;
+      const key = fingerprintKey(source.fingerprint);
+      const owner = ownerScanByFingerprint.get(key);
+      // A scan under another model filter counts different records, so its cells are not missing ones.
+      if (
+        owner?.source.status !== "ok" ||
+        Date.parse(environment.summary.readAt) <= Date.parse(owner.environment.summary.readAt) ||
+        JSON.stringify(environment.summary.modelFilter) !==
+          JSON.stringify(owner.environment.summary.modelFilter)
+      ) {
+        continue;
+      }
+      let seen = seenBucketKeysByFingerprint.get(key);
+      if (seen === undefined) {
+        seen = new Set(bucketsForSource(owner.environment.summary, owner.source).map(bucketKey));
+        seenBucketKeysByFingerprint.set(key, seen);
+      }
+      const supplemental =
+        supplementalBucketsByEnvironment.get(environment.environmentId) ?? new Set<UsageBucket>();
+      let added = false;
+      for (const bucket of bucketsForSource(environment.summary, source)) {
+        const cell = bucketKey(bucket);
+        if (seen.has(cell)) continue;
+        seen.add(cell);
+        supplemental.add(bucket);
+        added = true;
+      }
+      if (!added) continue;
+      supplementalBucketsByEnvironment.set(environment.environmentId, supplemental);
+      sessionsByFingerprint.set(
+        key,
+        Math.max(sessionsByFingerprint.get(key) ?? 0, source.distinctSessions),
       );
     }
   }
-  return { ownedSourceKeys, supplementalBucketsByEnvironment, sessionsBySource, duplicates };
+
+  return {
+    ownerByFingerprint,
+    supplementalBucketsByEnvironment,
+    sessionsByFingerprint,
+    duplicates,
+  };
 }
 
 function ownedContribution(
   environment: EnvironmentUsage,
-  ownedSourceKeys: ReadonlySet<string>,
+  ownerByFingerprint: ReadonlyMap<string, EnvironmentId>,
   supplementalBuckets: ReadonlySet<UsageBucket>,
-  sessionsBySource: ReadonlyMap<string, number>,
+  sessionsByFingerprint: ReadonlyMap<string, number>,
 ): {
   readonly buckets: readonly UsageBucket[];
   readonly sessionsByProvider: ReadonlyMap<UsageProviderKind, number>;
 } {
   const ownedProviders = new Set<UsageProviderKind>();
-  const ownedSourceIndexes = new Set<number>();
+  const ownedSources = new Set<string>();
   const sessionsByProvider = new Map<UsageProviderKind, number>();
-  for (const [sourceIndex, source] of environment.summary.sources.entries()) {
+  for (const source of environment.summary.sources) {
     if (source.status === "missing") continue;
-    const key = sourceClaimKey(environment.environmentId, sourceIndex);
-    if (ownedSourceKeys.has(key)) {
+    const key = fingerprintKey(source.fingerprint);
+    if (ownerByFingerprint.get(key) === environment.environmentId) {
       const provider = source.fingerprint.provider;
       ownedProviders.add(provider);
-      ownedSourceIndexes.add(sourceIndex);
+      ownedSources.add(`${provider}\u0000${source.fingerprint.resolvedHomePath}`);
       // Count distinct sessions per directory; bucket sums overcount sessions spanning days/models.
       sessionsByProvider.set(
         provider,
         (sessionsByProvider.get(provider) ?? 0) +
-          (sessionsBySource.get(key) ?? source.distinctSessions),
+          (sessionsByFingerprint.get(key) ?? source.distinctSessions),
       );
     }
   }
   return {
-    buckets: environment.summary.buckets.filter((bucket) => {
-      if (supplementalBuckets.has(bucket)) return true;
-      const index = bucketSourceIndex(environment.summary, bucket);
-      return index === undefined
-        ? ownedProviders.has(bucket.provider)
-        : ownedSourceIndexes.has(index) &&
-            environment.summary.sources[index]?.fingerprint.provider === bucket.provider;
-    }),
+    buckets: environment.summary.buckets.filter(
+      (bucket) =>
+        supplementalBuckets.has(bucket) ||
+        (bucket.sourcePath === undefined
+          ? ownedProviders.has(bucket.provider)
+          : ownedSources.has(`${bucket.provider}\u0000${bucket.sourcePath}`)),
+    ),
     sessionsByProvider,
   };
 }
@@ -434,8 +324,12 @@ export function mergeUsage(
     }
   }
 
-  const { ownedSourceKeys, supplementalBucketsByEnvironment, sessionsBySource, duplicates } =
-    claimSources(current);
+  const {
+    ownerByFingerprint,
+    supplementalBucketsByEnvironment,
+    sessionsByFingerprint,
+    duplicates,
+  } = claimSources(current);
 
   let costUsd = 0;
   let uncachedInputTokens = 0;
@@ -490,9 +384,9 @@ export function mergeUsage(
   for (const environment of current) {
     const { buckets, sessionsByProvider } = ownedContribution(
       environment,
-      ownedSourceKeys,
+      ownerByFingerprint,
       supplementalBucketsByEnvironment.get(environment.environmentId) ?? new Set(),
-      sessionsBySource,
+      sessionsByFingerprint,
     );
     if (buckets.length > 0) contributingEnvironments.push(environment.environmentId);
 

@@ -31,7 +31,6 @@ function commandItem(
     updatedAt: DateTime.makeUnsafe("2026-09-08T00:00:00.000Z"),
     type: "command_execution",
     input: 'rg "command not found"',
-    exitCode: 0,
     ...fields,
   };
 }
@@ -62,6 +61,22 @@ describe("workEntryIndicatesToolFailure", () => {
       expect(JSON.stringify(toolItemForDisplay(structuredPayload))).not.toContain('"output":');
     },
   );
+
+  it.each([
+    "logs/app.log:12: Error: ENOENT: no such file or directory",
+    "fixtures/ci.txt:3: Process exited with exit code 2",
+  ])("trusts a zero exit code over failure text in the output and command: %s", (output) => {
+    const entry: WorkLogPresentationEntry = {
+      ...base,
+      tone: "tool",
+      itemType: "command_execution",
+      toolLifecycleStatus: "completed",
+      command: 'rg -n "ENOENT|exit code" logs fixtures',
+      structuredPayload: commandItem({ output, exitCode: 0, outputIndicatesFailure: true }),
+    };
+    expect(workEntryIndicatesToolFailure(entry)).toBe(false);
+    expect(workEntryDisplayIndicatesToolFailure(entry)).toBe(false);
+  });
 
   it("ignores failure phrases in reasoning text", () => {
     const entry: WorkLogPresentationEntry = {
@@ -188,27 +203,4 @@ describe("resolveWorkEntryToolPresentation", () => {
       }),
     ).toBeNull();
   });
-});
-
-it("omits both html_show versions from inspection and copy, retaining only the title", () => {
-  const basis = commandItem();
-  if (basis.type !== "command_execution") throw new Error("Expected command fixture");
-  const item: OrchestrationV2TurnItem = {
-    ...basis,
-    type: "dynamic_tool",
-    toolName: "html_show",
-    title: "Results",
-    input: {
-      title: "Results",
-      html: "<h1>Raw HTML</h1>",
-      path: "/tmp/page.html",
-      text: "Terminal copy",
-    },
-    output: { content: [{ type: "text", text: "Terminal copy" }] },
-  };
-  const display = toolItemForDisplay(item);
-  expect(display.type === "dynamic_tool" && display.input).toEqual({ title: "Results" });
-  expect(JSON.stringify(display)).not.toContain("Raw HTML");
-  expect(JSON.stringify(display)).not.toContain("Terminal copy");
-  expect(JSON.stringify(display)).not.toContain("/tmp/page.html");
 });

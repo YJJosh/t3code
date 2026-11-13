@@ -293,8 +293,9 @@ export function applyOrchestrationV2ProjectionEvent(
     case "thread.provider-switched":
     case "thread.guest-share-updated":
       return { ...base, thread: event.payload };
-    // Visited tracking is read state, not activity: skip the updatedAt bump.
+    // Visited tracking and tags are not activity: skip the updatedAt bump.
     case "thread.visited":
+    case "thread.tags-updated":
     case "thread.marked-unread":
       return { ...projection, thread: event.payload };
     case "run.created":
@@ -321,17 +322,6 @@ export function applyOrchestrationV2ProjectionEvent(
     }
     case "node.updated":
       return { ...base, nodes: upsertEntity(base.nodes, event.payload) };
-    case "dulli-run.updated":
-      return { ...base, dulliRuns: upsertEntity(base.dulliRuns ?? [], event.payload) };
-    case "dulli-transcript.updated":
-    case "dulli-transcript.changed": {
-      const nodeId = event.payload.nodeId;
-      if (!nodeId) return base;
-      return {
-        ...base,
-        dulliTranscriptRevisions: { ...base.dulliTranscriptRevisions, [nodeId]: event.id },
-      };
-    }
     case "subagent.updated":
       return {
         ...base,

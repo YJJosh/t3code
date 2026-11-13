@@ -53,6 +53,10 @@ export class MultiRepoWorkspaces extends Context.Service<
      * Repositories inside the plain folder `cwd`, as `makeGroup` would list
      * them. Empty when `cwd` is inside a repository or has a `.workler`.
      */
+    readonly listLocalBranchNames: (
+      cwd: string,
+      members: ReadonlyArray<string>,
+    ) => Effect.Effect<string[], GitCommandError>;
     readonly nestedRepositories: (cwd: string) => Effect.Effect<ReadonlyArray<string>>;
     /** Makes the plain folder `cwd` a project group of the repositories inside it; returns its members. */
     readonly makeGroup: (cwd: string) => Effect.Effect<ReadonlyArray<string>, GitCommandError>;
@@ -138,7 +142,17 @@ export const make = Effect.gen(function* () {
   });
 
   const listFolders = (dir: string) =>
-    Effect.tryPromise(() => NodeFSP.readdir(dir, { withFileTypes: true })).pipe(
+    Effect.tryPromise({
+      try: () => NodeFSP.readdir(dir, { withFileTypes: true }),
+      catch: (cause) =>
+        new GitCommandError({
+          operation: "MultiRepoWorkspaces.listFolders",
+          command: "readdir",
+          cwd: dir,
+          detail: "Cannot read member folders.",
+          cause,
+        }),
+    }).pipe(
       Effect.map((entries) =>
         entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
       ),
@@ -147,7 +161,17 @@ export const make = Effect.gen(function* () {
 
   // `lstat`, like Workler: a linked `.git` doesn't make a repository.
   const hasGitFolder = (repository: string) =>
-    Effect.tryPromise(() => NodeFSP.lstat(path.join(repository, ".git"))).pipe(
+    Effect.tryPromise({
+      try: () => NodeFSP.lstat(path.join(repository, ".git")),
+      catch: (cause) =>
+        new GitCommandError({
+          operation: "MultiRepoWorkspaces.hasGitFolder",
+          command: "lstat",
+          cwd: repository,
+          detail: "Cannot read Git metadata.",
+          cause,
+        }),
+    }).pipe(
       Effect.map((info) => info.isDirectory()),
       Effect.orElseSucceed(() => false),
     );
@@ -519,7 +543,20 @@ export const make = Effect.gen(function* () {
     return { branch };
   }, Effect.uninterruptible);
 
+  const listLocalBranchNames = Effect.fn("MultiRepoWorkspaces.listLocalBranchNames")(function* (
+    cwd: string,
+    members: ReadonlyArray<string>,
+  ) {
+    const branches = yield* Effect.forEach(members, (member) =>
+      git.listLocalBranchNames(path.join(cwd, member)),
+    );
+    return (branches[0] ?? []).filter((branch) =>
+      branches.every((names) => names.includes(branch)),
+    );
+  });
+
   return MultiRepoWorkspaces.of({
+    listLocalBranchNames,
     members,
     nestedRepositories,
     makeGroup,

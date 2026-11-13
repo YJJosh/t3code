@@ -1,6 +1,7 @@
-import { useAtomValue } from "@effect/atom-react";
+import { parseMultiRepoCloneInput } from "@t3tools/client-runtime/operations/projects";
+import { listMultiRepoProjectsToSetUp } from "@t3tools/client-runtime/state/project-grouping";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import * as Dialog from "../../components/ui/Dialog";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { NavigationRow } from "../../components/ui/NavigationRow";
@@ -18,15 +19,16 @@ import {
   getAddProjectInitialQuery,
   getCloneDestinationBrowsePath,
   getCloneDestinationPath,
+  getCloneDirectoryPath,
   getCloneDirectoryName,
   getDefaultCloneUrl,
   getNewProjectPathPreview,
   getNewProjectPublishTarget,
   getNewProjectPublishTargets,
   getNewProjectRepository,
+  githubIncompleteOwnerRepositoryMessage,
   defaultHostCloneUrl,
   normalizePastedCloneUrl,
-  parseMultiRepoCloneInput,
   parseAddProjectRemoteSource,
   resolveAddProjectPath,
   sortAddProjectProviderSources,
@@ -48,6 +50,7 @@ import {
   inferProjectTitleFromPath,
   isWindowsPlatform,
 } from "@t3tools/client-runtime/state/projects";
+import { resolvePastedPath } from "@t3tools/shared/path";
 import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
@@ -96,8 +99,10 @@ import {
   useRemoteEnvironmentRuntime,
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
-import { resolveAddProjectEnvironment } from "./AddProjectScreen.logic";
-import { listMultiRepoProjectsToSetUp } from "@t3tools/client-runtime/state/project-grouping";
+import {
+  isMissingCloneParentBrowseFailure,
+  resolveAddProjectEnvironment,
+} from "./AddProjectScreen.logic";
 import {
   createNewTaskDraft,
   setComposerDraftText,
@@ -114,8 +119,8 @@ interface EnvironmentOption {
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
-  /** Server can set up multi-repo projects. */
-  readonly supportsMultiRepoSetup: boolean;
+  readonly ghqCloneLayout: boolean;
+  readonly multiRepoProjects: boolean;
 }
 
 const environmentOptionOrder = Order.mapInput(
@@ -283,7 +288,7 @@ function ProjectPathInput(props: {
     <TextInput
       className="h-12 min-h-12 rounded-[24px] px-4 py-0 text-base leading-snug"
       value={props.value}
-      onChangeText={props.onChangeText}
+      onChangeText={(text) => props.onChangeText(resolvePastedPath(props.value, text))}
       autoCapitalize="none"
       autoCorrect={false}
       placeholder="~/projects/my-app"
@@ -293,13 +298,17 @@ function ProjectPathInput(props: {
   );
 }
 
-function useBrowsePathInput(environment: EnvironmentOption | null, pinnedDirectoryName = "") {
+function useBrowsePathInput(
+  environment: EnvironmentOption | null,
+  pinnedDirectoryName = "",
+  cloneDirectoryPath = pinnedDirectoryName,
+) {
   const environmentId = environment?.environmentId ?? null;
   const environmentBaseDirectory = environment?.baseDirectory ?? null;
   const clonePathCaseSensitive = !isWindowsPlatform(environment?.platform ?? "");
   const seedPath = getCloneDestinationPath(
     getAddProjectInitialQuery(environmentBaseDirectory),
-    pinnedDirectoryName,
+    cloneDirectoryPath,
   );
   // Each host keeps the path last typed or browsed for it, and shows its own default until then,
   // so switching hosts and back loses nothing. With no host selected (one dropping out briefly),
@@ -406,9 +415,8 @@ function useEnvironmentOptions(
         connectionState: runtime?.connectionState ?? "available",
         connectionError: runtime?.connectionError ?? null,
         connectionErrorTraceId: runtime?.connectionErrorTraceId ?? null,
-        supportsMultiRepoSetup:
-          config?.environment.capabilities.multiRepoProjects === true &&
-          config.environment.capabilities.projectCloneTracking === true,
+        ghqCloneLayout: config?.settings.ghqCloneLayout === true,
+        multiRepoProjects: config?.environment.capabilities.multiRepoProjects === true,
       };
     });
     return Arr.sort(
@@ -545,10 +553,6 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
         }),
   );
   const readiness = buildAddProjectRemoteSourceReadiness(discoveryState.data);
-  const projects = useProjects();
-  const multiRepoSetups = selectedEnvironment?.supportsMultiRepoSetup
-    ? listMultiRepoProjectsToSetUp(projects, selectedEnvironment.environmentId)
-    : [];
 
   return (
     <AddProjectShell title="Add project">
@@ -601,6 +605,21 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
       {selectedEnvironment ? (
         <>
           <ListSection>
+            {selectedEnvironment.multiRepoProjects ? (
+              <ListRow
+                icon={<SymbolView name="folder" size={20} tintColorClassName="accent-icon-muted" />}
+                title="Multi-repo project"
+                subtitle="One workspace across several repositories"
+                disabled={!canCloneProject}
+                onPress={() =>
+                  navigation.dispatch(
+                    StackActions.push("AddProjectMultiRepo", {
+                      environmentId: selectedEnvironment.environmentId,
+                    }),
+                  )
+                }
+              />
+            ) : null}
             {selectedEnvironment.newProjectsRoot !== null ? (
               <ListRow
                 title="New project"
@@ -649,28 +668,6 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
                 )
               }
             />
-            {selectedEnvironment.supportsMultiRepoSetup ? (
-              <ListRow
-                title="Multi-repo project"
-                subtitle="Group several repositories in one folder"
-                disabled={!canCloneProject}
-                icon={
-                  <SymbolView
-                    name="folder"
-                    size={Platform.OS === "android" ? 24 : 17}
-                    tintColorClassName="accent-icon"
-                    type="monochrome"
-                  />
-                }
-                onPress={() =>
-                  navigation.dispatch(
-                    StackActions.push("AddProjectMultiRepo", {
-                      environmentId: selectedEnvironment.environmentId,
-                    }),
-                  )
-                }
-              />
-            ) : null}
             {(["url", ...sortAddProjectProviderSources(readiness)] as AddProjectRemoteSource[]).map(
               (candidate) => (
                 <SourceControlRow
@@ -690,45 +687,6 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
               ),
             )}
           </ListSection>
-          {multiRepoSetups.length > 0 ? (
-            <>
-              <SectionTitle>Set up from another machine</SectionTitle>
-              <ListSection>
-                {multiRepoSetups.map((setup, index) => (
-                  <ListRow
-                    key={setup.key}
-                    title={setup.source.title}
-                    disabled={!canCloneProject}
-                    subtitle={`${setup.members.length} repositories, from ${
-                      environmentOptions.find(
-                        (environment) => environment.environmentId === setup.source.environmentId,
-                      )?.label ?? "another machine"
-                    }`}
-                    icon={
-                      <SymbolView
-                        name="folder"
-                        size={Platform.OS === "android" ? 24 : 17}
-                        tintColorClassName="accent-icon"
-                        type="monochrome"
-                      />
-                    }
-                    isFirst={index === 0}
-                    onPress={() =>
-                      navigation.dispatch(
-                        StackActions.push("AddProjectDestination", {
-                          environmentId: selectedEnvironment.environmentId,
-                          sourceEnvironmentId: setup.source.environmentId,
-                          sourceProjectId: setup.source.id,
-                          repositoryTitle: setup.source.title,
-                          repositoryName: inferProjectTitleFromPath(setup.source.workspaceRoot),
-                        }),
-                      )
-                    }
-                  />
-                ))}
-              </ListSection>
-            </>
-          ) : null}
           {discoveryState.isPending ? (
             <AppActivityIndicator colorClassName="accent-icon-muted" />
           ) : null}
@@ -786,12 +744,15 @@ function useCreateProject(environment: EnvironmentOption | null) {
   const openNewTaskDraft = useOpenNewTaskDraft();
   const navigation = useNavigation();
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
+  const updateProject = useAtomCommand(projectEnvironment.update, {
+    label: "project unarchive",
+  });
   const projects = useProjects();
 
   return async (
     workspaceRoot: string,
-    prepare?: (projectId: ProjectId) => Promise<void>,
     originRoute = getActiveRoute(navigation),
+    beforeOpen?: (projectId: ProjectId) => Promise<void>,
   ) => {
     if (
       !environment ||
@@ -811,8 +772,20 @@ function useCreateProject(environment: EnvironmentOption | null) {
       path: workspaceRoot,
     });
     if (existing) {
-      await prepare?.(existing.id);
-      Dialog.alert("Project already exists", existing.title);
+      // Adding an archived project's folder again brings the project back.
+      const unarchived =
+        existing.archivedAt == null ||
+        (
+          await updateProject({
+            environmentId: existing.environmentId,
+            input: { projectId: existing.id, archived: false },
+          })
+        )._tag === "Success";
+      Dialog.alert(
+        "Project already exists",
+        unarchived ? existing.title : `${existing.title} is still archived. Try again later.`,
+      );
+      await beforeOpen?.(existing.id);
       openNewTaskDraft(
         {
           environmentId: existing.environmentId,
@@ -837,7 +810,7 @@ function useCreateProject(environment: EnvironmentOption | null) {
     if (AsyncResult.isFailure(result)) {
       return result;
     }
-    await prepare?.(projectId);
+    await beforeOpen?.(projectId);
     // A successful command can precede its project in the client store. The
     // draft treats a missing project as a reason to return to the chooser.
     const project = await waitForProject(
@@ -887,6 +860,11 @@ export function AddProjectRepositoryScreen(props: {
 
   const lookupRepository = async () => {
     if (!environment || repositoryInput.trim().length === 0 || isSubmitting) return;
+    const incompleteOwnerMessage = githubIncompleteOwnerRepositoryMessage(source, repositoryInput);
+    if (incompleteOwnerMessage) {
+      setError(incompleteOwnerMessage);
+      return;
+    }
     setError(null);
     setIsSubmitting(true);
     const provider = addProjectRemoteSourceProvider(source);
@@ -971,6 +949,7 @@ function FolderBrowser(props: {
     readonly selectedDirectoryName?: string;
   }) => Promise<boolean>;
   readonly pinnedDirectoryName?: string;
+  readonly cloning?: boolean;
 }) {
   const browsePath = getFilesystemBrowsePath(props.pathInput, props.environment.platform);
   const browseInput =
@@ -1010,7 +989,16 @@ function FolderBrowser(props: {
       {!canReadFiles && !fileAccess.isPending ? (
         <ErrorBanner message={fileAccess.error ?? "This connection cannot browse host folders."} />
       ) : null}
-      {browseState.error ? <ErrorBanner message={browseState.error} /> : null}
+      {browseState.error === null ? null : isMissingCloneParentBrowseFailure({
+          cloning: props.cloning === true,
+          failure: browseState.failure,
+        }) ? (
+        <Text className="text-sm text-foreground-muted">
+          This folder does not exist yet. Cloning creates it.
+        </Text>
+      ) : (
+        <ErrorBanner message={browseState.error} />
+      )}
       <ListSection>
         {fileAccess.isPending || (browseState.isPending && browseState.data === null) ? (
           <View className="items-center py-5">
@@ -1394,288 +1382,11 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
   );
 }
 
-// Multi-repo project, folder step: a folder of repositories becomes the group,
-// a group is just added, and a new or empty folder moves on to naming the
-// repositories to clone into it.
-export function AddProjectMultiRepoScreen(props: { readonly environmentId?: string | string[] }) {
-  const navigation = useNavigation();
-  const environment = useEnvironmentFromParam(props.environmentId);
-  const createProject = useCreateProject(environment);
-  const inspectFolder = useAtomCommand(projectEnvironment.inspectMultiRepoFolder, {
-    reportFailure: false,
-  });
-  const makeMultiRepo = useAtomCommand(projectEnvironment.makeMultiRepo, { reportFailure: false });
-  const canInspectFolder = useAtomValue(
-    projectEnvironment.inspectMultiRepoFolder.permissionAtom(environment?.environmentId ?? null),
-  );
-  const canMakeMultiRepo = useAtomValue(
-    projectEnvironment.makeMultiRepo.permissionAtom(environment?.environmentId ?? null),
-  );
-  const canCreateProject = useEnvironmentScope(
-    environment?.environmentId ?? null,
-    AuthOrchestrationOperateScope,
-  );
-  const canSetUpMultiRepo =
-    environment?.supportsMultiRepoSetup === true &&
-    canInspectFolder &&
-    canMakeMultiRepo &&
-    canCreateProject;
-  const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } =
-    useBrowsePathInput(environment);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submitPath = async () => {
-    if (!environment || !canSetUpMultiRepo || isBrowseNavigating || isSubmitting) return;
-    setError(null);
-    const resolved = resolveAddProjectPath({
-      rawPath: pathInput,
-      currentProjectCwd: null,
-      platform: environment.platform,
-    });
-    if (!resolved.ok) {
-      setError(resolved.error);
-      return;
-    }
-
-    setIsSubmitting(true);
-    const inspected = await inspectFolder({
-      environmentId: environment.environmentId,
-      input: { path: resolved.path },
-    });
-    if (AsyncResult.isFailure(inspected)) {
-      setError(errorMessage(Cause.squash(inspected.cause)));
-      setIsSubmitting(false);
-      return;
-    }
-    const folder = inspected.value;
-    if (folder.kind === "missing" || folder.kind === "empty") {
-      setIsSubmitting(false);
-      navigation.dispatch(
-        StackActions.push("AddProjectMultiRepoClone", {
-          environmentId: environment.environmentId,
-          folder: folder.path,
-        }),
-      );
-      return;
-    }
-    if (folder.kind === "unavailable") {
-      setError(folder.reason ?? `${folder.path} can't hold a multi-repo project.`);
-      setIsSubmitting(false);
-      return;
-    }
-    const result = await createProject(
-      folder.path,
-      folder.kind === "repositories"
-        ? async (projectId) => {
-            const made = await makeMultiRepo({
-              environmentId: environment.environmentId,
-              input: { projectId },
-            });
-            // The project stays a plain folder then; the desktop header offers this again.
-            if (AsyncResult.isFailure(made)) {
-              Dialog.alert(
-                "Couldn't make a multi-repo project",
-                errorMessage(Cause.squash(made.cause)),
-              );
-            }
-          }
-        : undefined,
-    );
-    if (result && AsyncResult.isFailure(result)) {
-      setError(errorMessage(Cause.squash(result.cause)));
-    }
-    setIsSubmitting(false);
-  };
-
-  return (
-    <AddProjectShell title="Multi-repo project">
-      {error ? <ErrorBanner message={error} /> : null}
-      {environment ? (
-        <>
-          <Text className="px-1 text-sm leading-snug text-foreground-muted">
-            Pick a folder that holds your repositories, or a new or empty folder to clone them into.
-          </Text>
-          <ProjectPathInput
-            value={pathInput}
-            onChangeText={setPathInput}
-            onSubmit={() => void submitPath()}
-          />
-          <PrimaryActionButton
-            label="Continue"
-            disabled={!canSetUpMultiRepo || isBrowseNavigating || isSubmitting}
-            onPress={() => void submitPath()}
-            loading={isSubmitting}
-          />
-          <FolderBrowser
-            environment={environment}
-            navigateToBrowsePath={navigateToBrowsePath}
-            pathInput={pathInput}
-            setPathInput={setPathInput}
-          />
-        </>
-      ) : (
-        <EmptyEnvironmentState />
-      )}
-    </AddProjectShell>
-  );
-}
-
-// Multi-repo project, repositories step: clones every typed repository into
-// the folder picked before, through the same tracked clone as setting one up
-// from another machine.
-export function AddProjectMultiRepoCloneScreen(props: {
-  readonly environmentId?: string | string[];
-  readonly folder?: string | string[];
-}) {
-  const openNewTaskDraft = useOpenNewTaskDraft();
-  const navigation = useNavigation();
-  const environment = useEnvironmentFromParam(props.environmentId);
-  const folder = stringParam(props.folder);
-  const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
-    reportFailure: false,
-  });
-  const canCloneProject = useAtomValue(
-    sourceControlEnvironment.startProjectClone.permissionAtom(environment?.environmentId ?? null),
-  );
-  const [repositoriesInput, setRepositoriesInput] = useState("");
-  const plan = parseMultiRepoCloneInput(repositoriesInput);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const canSubmit =
-    environment !== null &&
-    environment.supportsMultiRepoSetup &&
-    canCloneProject &&
-    folder !== null &&
-    plan.members.length > 0 &&
-    plan.invalid.length === 0;
-
-  const submit = async () => {
-    if (!environment || folder === null || !canSubmit || isSubmitting) return;
-    const originRoute = getActiveRoute(navigation);
-    setError(null);
-    setIsSubmitting(true);
-    const projectId = ProjectId.make(uuidv4());
-    const title = inferProjectTitleFromPath(folder);
-    const startResult = await startProjectClone({
-      environmentId: environment.environmentId,
-      input: {
-        projectId,
-        title,
-        createdAt: new Date().toISOString(),
-        destinationPath: folder,
-        members: plan.members,
-      },
-    });
-    if (AsyncResult.isFailure(startResult)) {
-      setError(errorMessage(Cause.squash(startResult.cause)));
-      setIsSubmitting(false);
-      return;
-    }
-    // Like the clone destination: open the draft only once the project is here.
-    const project = await waitForProject(
-      { environmentId: environment.environmentId, projectId },
-      15_000,
-    );
-    if (project === null) {
-      setError(
-        "The project was created but has not reached this device yet. It will appear in the project list once the connection catches up.",
-      );
-    } else {
-      openNewTaskDraft(
-        {
-          environmentId: environment.environmentId,
-          projectId,
-          title,
-          cloning: "1",
-        },
-        originRoute,
-      );
-    }
-    setIsSubmitting(false);
-  };
-
-  return (
-    <AddProjectShell title="Repositories">
-      {error ? <ErrorBanner message={error} /> : null}
-      {environment && folder !== null ? (
-        <>
-          <View className="rounded-[24px] bg-grouped-card px-4 py-3">
-            <Text className="text-base font-t3-bold">Clone into</Text>
-            <Text className="mt-0.5 text-xs text-foreground-muted" numberOfLines={2}>
-              {folder}
-            </Text>
-          </View>
-          <TextInput
-            className="min-h-24 rounded-[24px] px-4 py-3 text-base leading-snug"
-            value={repositoriesInput}
-            onChangeText={setRepositoriesInput}
-            autoCapitalize="none"
-            autoCorrect={false}
-            multiline
-            textAlignVertical="top"
-            placeholder="Git URLs or GitHub owner/repo, one per line"
-          />
-          <PrimaryActionButton
-            label="Clone repositories"
-            disabled={!canSubmit || isSubmitting}
-            onPress={() => void submit()}
-            loading={isSubmitting}
-          />
-          {plan.members.length > 0 || plan.invalid.length > 0 ? (
-            <ListSection>
-              {plan.members.map((member, index) => (
-                <ListRow
-                  key={member.path}
-                  title={member.path}
-                  subtitle={member.remoteUrl}
-                  icon={
-                    <SymbolView
-                      name="folder"
-                      size={Platform.OS === "android" ? 24 : 17}
-                      tintColorClassName="accent-icon"
-                      type="monochrome"
-                    />
-                  }
-                  isFirst={index === 0}
-                  right={null}
-                />
-              ))}
-              {plan.invalid.map((token, index) => (
-                <ListRow
-                  key={`invalid:${token}`}
-                  title={token}
-                  subtitle="Not a Git URL or GitHub owner/repo"
-                  icon={
-                    <SymbolView
-                      name="exclamationmark.circle"
-                      size={Platform.OS === "android" ? 24 : 17}
-                      tintColorClassName="accent-icon"
-                      type="monochrome"
-                    />
-                  }
-                  isFirst={plan.members.length === 0 && index === 0}
-                  right={null}
-                />
-              ))}
-            </ListSection>
-          ) : null}
-        </>
-      ) : (
-        <EmptyEnvironmentState />
-      )}
-    </AddProjectShell>
-  );
-}
-
 export function AddProjectDestinationScreen(props: {
   readonly environmentId?: string | string[];
   readonly remoteUrl?: string | string[];
   readonly repositoryTitle?: string | string[];
   readonly repositoryName?: string | string[];
-  /** A multi-repo project on another machine to set up here instead of one repository. */
-  readonly sourceEnvironmentId?: string | string[];
-  readonly sourceProjectId?: string | string[];
   readonly prompt?: string | string[];
 }) {
   const openNewTaskDraft = useOpenNewTaskDraft();
@@ -1699,24 +1410,17 @@ export function AddProjectDestinationScreen(props: {
   const canCloneProject = canWriteSourceControl && canCreateProject;
   const remoteUrl = stringParam(props.remoteUrl);
   const repositoryTitle = stringParam(props.repositoryTitle);
-  const sourceEnvironmentId = stringParam(props.sourceEnvironmentId);
-  const sourceProjectId = stringParam(props.sourceProjectId);
-  const projects = useProjects();
-  // Re-checked here so a project set up meanwhile isn't cloned twice.
-  const multiRepoSetup =
-    environment === null || sourceProjectId === null || !environment.supportsMultiRepoSetup
-      ? null
-      : (listMultiRepoProjectsToSetUp(projects, environment.environmentId).find(
-          (setup) =>
-            setup.source.environmentId === sourceEnvironmentId &&
-            setup.source.id === sourceProjectId,
-        ) ?? null);
-  const canSubmit = multiRepoSetup !== null || (sourceProjectId === null && remoteUrl !== null);
   const prompt = stringParam(props.prompt);
   const repositoryName = stringParam(props.repositoryName)?.trim() ?? "";
+  const ghqDirectoryPath =
+    remoteUrl && environment?.ghqCloneLayout
+      ? getCloneDirectoryPath(remoteUrl, true, repositoryName)
+      : null;
+  const cloneDirectoryName = ghqDirectoryPath?.split("/").at(-1) ?? repositoryName;
   const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } = useBrowsePathInput(
     environment,
-    repositoryName,
+    cloneDirectoryName,
+    ghqDirectoryPath ?? repositoryName,
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1726,7 +1430,7 @@ export function AddProjectDestinationScreen(props: {
       !environment ||
       !readEnvironmentScope(environment.environmentId, AuthSourceControlWriteScope) ||
       !readEnvironmentScope(environment.environmentId, AuthOrchestrationOperateScope) ||
-      !canSubmit ||
+      !remoteUrl ||
       isBrowseNavigating ||
       isSubmitting
     ) {
@@ -1745,27 +1449,22 @@ export function AddProjectDestinationScreen(props: {
 
     const originRoute = getActiveRoute(navigation);
     setIsSubmitting(true);
-    const projectId = ProjectId.make(uuidv4());
     const title = inferProjectTitleFromPath(resolved.path);
     const startResult = await startProjectClone({
       environmentId: environment.environmentId,
       input: {
-        projectId,
+        projectId: ProjectId.make(uuidv4()),
         title,
-        // oxlint-disable-next-line react/purity -- This timestamp is created by the submit handler, not during render.
         createdAt: new Date().toISOString(),
-        ...(multiRepoSetup !== null
-          ? { members: multiRepoSetup.members }
-          : { remoteUrl: remoteUrl ?? undefined }),
+        remoteUrl,
         destinationPath: resolved.path,
       },
     });
     if (AsyncResult.isFailure(startResult)) {
       setError(errorMessage(Cause.squash(startResult.cause)));
     } else {
-      if (remoteUrl !== null) {
-        void suggestAppAccessForRemote(checkAppAccess, environment.environmentId, remoteUrl);
-      }
+      void suggestAppAccessForRemote(checkAppAccess, environment.environmentId, remoteUrl);
+      const { projectId } = startResult.value;
       // Wait for the create event; the client store otherwise falls back to the project picker and loses clone controls.
       const project = await waitForProject(
         { environmentId: environment.environmentId, projectId },
@@ -1799,16 +1498,11 @@ export function AddProjectDestinationScreen(props: {
   return (
     <AddProjectShell title="Clone destination">
       {error ? <ErrorBanner message={error} /> : null}
-      {sourceProjectId !== null && multiRepoSetup === null ? (
-        <ErrorBanner message="This project is already on this machine, or the machine it comes from is no longer connected." />
-      ) : null}
       {repositoryTitle ? (
         <View className="rounded-[24px] bg-grouped-card px-4 py-3">
           <Text className="text-base font-t3-bold">{repositoryTitle}</Text>
           <Text className="mt-0.5 text-xs text-foreground-muted" numberOfLines={2}>
-            {multiRepoSetup !== null
-              ? multiRepoSetup.members.map((member) => member.path).join(", ")
-              : remoteUrl}
+            {remoteUrl}
           </Text>
         </View>
       ) : null}
@@ -1817,7 +1511,7 @@ export function AddProjectDestinationScreen(props: {
           <ProjectPathInput value={pathInput} onChangeText={setPathInput} onSubmit={submitPath} />
           <PrimaryActionButton
             label="Clone project"
-            disabled={!canCloneProject || isBrowseNavigating || isSubmitting || !canSubmit}
+            disabled={!canCloneProject || isBrowseNavigating || isSubmitting || !remoteUrl}
             onPress={submitPath}
             loading={isSubmitting}
           />
@@ -1831,7 +1525,167 @@ export function AddProjectDestinationScreen(props: {
             navigateToBrowsePath={navigateToBrowsePath}
             pathInput={pathInput}
             setPathInput={setPathInput}
-            pinnedDirectoryName={repositoryName}
+            pinnedDirectoryName={cloneDirectoryName}
+            cloning={Boolean(remoteUrl)}
+          />
+        </>
+      ) : (
+        <EmptyEnvironmentState />
+      )}
+    </AddProjectShell>
+  );
+}
+
+export function AddProjectMultiRepoScreen(props: { readonly environmentId?: string | string[] }) {
+  const environment = useEnvironmentFromParam(props.environmentId);
+  const canWriteSourceControl = useEnvironmentScope(
+    environment?.environmentId ?? null,
+    AuthSourceControlWriteScope,
+  );
+  const canCreateProject = useEnvironmentScope(
+    environment?.environmentId ?? null,
+    AuthOrchestrationOperateScope,
+  );
+  const canReadFiles = useEnvironmentScope(
+    environment?.environmentId ?? null,
+    AuthFilesystemReadScope,
+  );
+  const canAddProject = canWriteSourceControl && canCreateProject && canReadFiles;
+  const navigation = useNavigation();
+  const createProject = useCreateProject(environment);
+  const openDraft = useOpenNewTaskDraft();
+  const projects = useProjects();
+  const inspect = useAtomCommand(projectEnvironment.inspectMultiRepoFolder, {
+    reportFailure: false,
+  });
+  const makeGroup = useAtomCommand(projectEnvironment.makeMultiRepo, { reportFailure: false });
+  const clone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
+    reportFailure: false,
+  });
+  const { pathInput, setPathInput, navigateToBrowsePath, isBrowseNavigating } =
+    useBrowsePathInput(environment);
+  const [repositories, setRepositories] = useState("");
+  const [members, setMembers] = useState<ReadonlyArray<{ path: string; remoteUrl: string }> | null>(
+    null,
+  );
+  const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const setups = environment
+    ? listMultiRepoProjectsToSetUp(projects, environment.environmentId)
+    : [];
+  const submit = () => {
+    if (!environment || !canAddProject || submitting.current || isBrowseNavigating) return;
+    submitting.current = true;
+    setBusy(true);
+    setError(null);
+    const originRoute = getActiveRoute(navigation);
+    const run = async () => {
+      const inspected = await inspect({
+        environmentId: environment.environmentId,
+        input: { path: pathInput },
+      });
+      if (AsyncResult.isFailure(inspected)) throw Cause.squash(inspected.cause);
+      const folder = inspected.value;
+      if (folder.kind === "unavailable") throw new Error(folder.reason ?? "Choose another folder.");
+      if (folder.kind === "empty" || folder.kind === "missing") {
+        const parsed = parseMultiRepoCloneInput(repositories);
+        const selected = members ?? parsed.members;
+        if (selected.length === 0 || (members === null && parsed.invalid.length > 0))
+          throw new Error("Enter Git URLs or owner/repo names to clone.");
+        const title = inferProjectTitleFromPath(folder.path);
+        const result = await clone({
+          environmentId: environment.environmentId,
+          input: {
+            projectId: ProjectId.make(uuidv4()),
+            title,
+            createdAt: new Date().toISOString(),
+            destinationPath: folder.path,
+            members: selected,
+          },
+        });
+        if (AsyncResult.isFailure(result)) throw Cause.squash(result.cause);
+        const { projectId } = result.value;
+        if (
+          !(await waitForProject({ environmentId: environment.environmentId, projectId }, 15_000))
+        )
+          throw new Error(
+            "Project creation started, but this client has not received it yet. Check the project list before trying again.",
+          );
+        openDraft(
+          { environmentId: environment.environmentId, projectId, title, cloning: "1" },
+          originRoute,
+        );
+      } else {
+        const result = await createProject(
+          folder.path,
+          originRoute,
+          folder.kind === "repositories"
+            ? async (projectId) => {
+                const made = await makeGroup({
+                  environmentId: environment.environmentId,
+                  input: { projectId },
+                });
+                if (AsyncResult.isFailure(made)) throw Cause.squash(made.cause);
+              }
+            : undefined,
+        );
+        if (result && AsyncResult.isFailure(result)) throw Cause.squash(result.cause);
+      }
+    };
+    void run()
+      .catch((cause) => {
+        setError(errorMessage(cause));
+      })
+      .finally(() => {
+        submitting.current = false;
+        setBusy(false);
+      });
+  };
+  return (
+    <AddProjectShell title="Multi-repo project">
+      {error ? <ErrorBanner message={error} /> : null}
+      {environment ? (
+        <>
+          <Text>Pick a folder with repositories, or an empty folder to clone into.</Text>
+          <ProjectPathInput
+            value={pathInput}
+            onChangeText={setPathInput}
+            onSubmit={() => void submit()}
+          />
+          <TextInput
+            accessibilityLabel="Repositories to clone"
+            placeholder="Git URLs or owner/repo names"
+            value={repositories}
+            onChangeText={(value) => {
+              setRepositories(value);
+              setMembers(null);
+            }}
+            multiline
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {setups.map((setup) => (
+            <NavigationRow
+              key={setup.key}
+              title={`Use ${setup.source.title}`}
+              onPress={() => {
+                setMembers(setup.members);
+                setRepositories(setup.members.map((member) => member.remoteUrl).join("\n"));
+              }}
+            />
+          ))}
+          <PrimaryActionButton
+            label="Add project"
+            disabled={!canAddProject || busy || isBrowseNavigating || !pathInput.trim()}
+            loading={busy}
+            onPress={() => void submit()}
+          />
+          <FolderBrowser
+            environment={environment}
+            navigateToBrowsePath={navigateToBrowsePath}
+            pathInput={pathInput}
+            setPathInput={setPathInput}
           />
         </>
       ) : (

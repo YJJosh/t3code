@@ -18,15 +18,12 @@ import {
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsScreen } from "./components/SettingsScreen";
-import { resolveMobileBrandName } from "../../lib/mobileBranding";
-
-const brandName = resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand);
 
 export function SettingsAboutRouteScreen() {
   const insets = useSafeAreaInsets();
 
   return (
-    <SettingsScreen title={`About ${brandName}`}>
+    <SettingsScreen title="About">
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}

@@ -33,8 +33,6 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as EventSink from "../EventSink.ts";
-import { restoreDulliNativeContinuity } from "./DulliNativeContinuity.ts";
-import { importDulliLegacySubagentHistory } from "./DulliLegacySubagentHistory.ts";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 
 const IMPORT_EVENT_PREFIX = "migration:v1";
@@ -75,7 +73,6 @@ interface LegacyMessageRow {
   readonly message_id: string;
   readonly thread_id: string;
   readonly role: "user" | "assistant";
-  readonly phase: "commentary" | "final_answer" | null;
   readonly text: string;
   readonly attachments_json: string | null;
   readonly context_json?: string | null;
@@ -268,7 +265,6 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
     runId: null,
     nodeId: null,
     role: row.role,
-    ...(row.role === "assistant" && row.phase ? { phase: row.phase } : {}),
     text: row.text,
     ...(context !== undefined ? { context } : {}),
     attachments,
@@ -308,7 +304,6 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
       : {
           ...baseTurnItem,
           type: "assistant_message",
-          ...(row.phase ? { phase: row.phase } : {}),
           messageId,
           text: row.text,
           ...(context !== undefined ? { context } : {}),
@@ -354,7 +349,6 @@ const make = Effect.gen(function* () {
         text,
         attachments_json,
         context_json,
-        phase,
         is_streaming,
         created_at,
         updated_at,
@@ -379,7 +373,6 @@ const make = Effect.gen(function* () {
           message.text,
           message.attachments_json,
           message.context_json,
-          message.phase,
           message.is_streaming,
           message.created_at,
           message.updated_at,
@@ -401,7 +394,7 @@ const make = Effect.gen(function* () {
           AND message.role IN ('user', 'assistant')
         ORDER BY message.created_at DESC, message.message_id DESC
         LIMIT 1
-      `;
+      `.pipe(NodeSqliteClient.readOnly);
     const latestUser = yield* sql<LegacyMessageRow>`
         SELECT
           message.message_id,
@@ -410,7 +403,6 @@ const make = Effect.gen(function* () {
           message.text,
           message.attachments_json,
           message.context_json,
-          message.phase,
           message.is_streaming,
           message.created_at,
           message.updated_at,
@@ -432,7 +424,7 @@ const make = Effect.gen(function* () {
           AND message.role = 'user'
         ORDER BY message.created_at DESC, message.message_id DESC
         LIMIT 1
-      `;
+      `.pipe(NodeSqliteClient.readOnly);
     return [latestUser[0], latest[0]].filter(
       (message, index, selected): message is LegacyMessageRow =>
         message !== undefined &&
@@ -484,7 +476,7 @@ const make = Effect.gen(function* () {
          OR json_type(projection.payload_json, '$.branchPullRequest') IS NULL
          OR json_type(projection.payload_json, '$.activeOrderKey') IS NULL
       ORDER BY thread.created_at ASC, thread.thread_id ASC
-    `;
+    `.pipe(NodeSqliteClient.readOnly);
     let repairedThreadCount = 0;
     for (const row of repairRows) {
       const decoded = decodeStoredThread(row.payload_json);
@@ -582,7 +574,7 @@ const make = Effect.gen(function* () {
           AND event.event_type = 'thread.created'
       )
       ORDER BY thread.created_at ASC, thread.thread_id ASC
-    `;
+    `.pipe(NodeSqliteClient.readOnly);
     let importedThreadCount = repairedThreadCount;
     let importedMessageCount = 0;
     for (const row of rows) {
@@ -652,10 +644,6 @@ const make = Effect.gen(function* () {
       importedThreadCount += 1;
       importedMessageCount += previews.length;
     }
-    yield* restoreDulliNativeContinuity.pipe(
-      Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.provideService(EventSink.EventSinkV2, eventSink),
-    );
     return { importedThreadCount, importedMessageCount };
   });
 
@@ -689,29 +677,13 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  // transcript_imported_at never resets; cache confirmed imports for the process lifetime to skip repeated locks and reads.
+  // Both results are final for this process: transcript_imported_at never resets, and only startup shell reconciliation creates legacy rows.
   const confirmedTranscriptThreadIds = new Set<ThreadId>();
-
-  // Old Dulli subagent runs are a best-effort extra. A thread whose
-  // history cannot be folded must still open, and must not stop the background
-  // transcript hydration of every other thread. Without a marker it retries on
-  // the next start.
-  const importSubagentHistory = (threadId?: ThreadId) =>
-    importDulliLegacySubagentHistory(threadId).pipe(
-      Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.provideService(EventSink.EventSinkV2, eventSink),
-      Effect.catchCauseIf(
-        (cause) => !Cause.hasInterrupts(cause),
-        (cause) =>
-          Effect.logWarning("Failed to import legacy Dulli subagent history", { threadId, cause }),
-      ),
-    );
 
   const ensureTranscriptBase = (threadId: ThreadId) =>
     transcriptImports.withLock(
       threadId,
       Effect.gen(function* () {
-        yield* importSubagentHistory(threadId);
         const imports = yield* sql<LegacyImportRow>`
           SELECT thread_id, transcript_imported_at
           FROM orchestration_v2_legacy_imports
@@ -720,9 +692,7 @@ const make = Effect.gen(function* () {
         `.pipe(NodeSqliteClient.readOnly);
         const imported = imports[0];
         if (imported === undefined || imported.transcript_imported_at !== null) {
-          if (imported !== undefined) {
-            confirmedTranscriptThreadIds.add(threadId);
-          }
+          confirmedTranscriptThreadIds.add(threadId);
           return { importedThreadCount: 0, importedMessageCount: 0 };
         }
         const messages = yield* listMessages(threadId);
@@ -793,7 +763,6 @@ const make = Effect.gen(function* () {
         );
 
   const importPendingTranscripts = Effect.gen(function* () {
-    yield* importSubagentHistory();
     const rows = yield* sql<LegacyImportRow>`
       SELECT thread_id, transcript_imported_at
       FROM orchestration_v2_legacy_imports

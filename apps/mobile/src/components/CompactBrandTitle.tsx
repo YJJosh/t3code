@@ -1,6 +1,5 @@
 import { NATIVE_WORKSPACE_COLUMNS_SUPPORTED } from "../native/NativeWorkspaceColumns";
 import Constants from "expo-constants";
-import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { useState } from "react";
 import { Platform, View } from "react-native";
 
@@ -30,8 +29,6 @@ export function CompactBrandTitle(
   } = {},
 ) {
   const stageLabel = resolveMobileStageLabel(Constants.expoConfig?.extra?.appVariant);
-  const brandWord = resolveMobileBrandWord(Constants.expoConfig?.extra?.appBrand);
-  const brandName = resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand);
   const titleOffset = brandTitleOffset();
   const { scale } = useAndroidControlSizing();
   const [availableWidth, setAvailableWidth] = useState<number | null>(null);
@@ -46,7 +43,10 @@ export function CompactBrandTitle(
         props.fit && showStage ? (event) => setFullWidth(event.nativeEvent.layout.width) : undefined
       }
       aria-level={1}
-      accessibilityLabel={props.accessibilityLabel ?? `${brandName}, Threads`}
+      accessibilityLabel={
+        props.accessibilityLabel ??
+        `${resolveMobileBrandName(Constants.expoConfig?.extra?.appBrand)}, Threads`
+      }
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"
@@ -64,7 +64,7 @@ export function CompactBrandTitle(
         className="font-t3-medium text-foreground-muted"
         style={{ fontSize: 21 * scale, letterSpacing: -0.5 * scale }}
       >
-        {brandWord}
+        {resolveMobileBrandWord(Constants.expoConfig?.extra?.appBrand)}
       </Text>
       {showStage ? (
         <View
@@ -98,19 +98,4 @@ export function CompactBrandTitle(
   ) : (
     title
   );
-}
-
-function renderCompactBrandTitle() {
-  return <CompactBrandTitle allowFontScaling={Platform.OS === "ios"} />;
-}
-
-export function getCompactBrandHeaderOptions(
-  fallbackTitleStyle?: NativeStackNavigationOptions["headerTitleStyle"],
-): NativeStackNavigationOptions {
-  return {
-    headerTitle: renderCompactBrandTitle,
-    headerTitleStyle: fallbackTitleStyle,
-    title: "Threads",
-    unstable_headerLeftItems: undefined,
-  };
 }

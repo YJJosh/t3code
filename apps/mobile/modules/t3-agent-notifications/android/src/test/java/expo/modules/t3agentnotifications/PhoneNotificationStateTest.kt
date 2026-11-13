@@ -84,6 +84,28 @@ class PhoneNotificationStateTest {
         .put("lineage", JSONObject().put("relationshipToParent", "subagent"))
     }
     assertTrue(state.thread("env", subagent("three"), 0).alerts.isEmpty())
+    val delegated = thread(run = "delegated", status = "completed")
+      .put("delegatedFrom", JSONObject().put("threadId", "parent"))
+    assertTrue(state.thread("env", delegated, 0).alerts.isEmpty())
+    assertEquals(
+      1,
+      state.thread(
+        "env",
+        delegated.put(
+          "pendingRuntimeRequest",
+          JSONObject().put("id", "question").put("kind", "user_input")
+        ),
+        0
+      ).alerts.size
+    )
+    assertEquals(
+      1,
+      state.thread(
+        "env",
+        thread(run = "root", status = "completed").put("delegatedFrom", JSONObject.NULL),
+        0
+      ).alerts.size
+    )
     assertEquals(
       1,
       state.thread(

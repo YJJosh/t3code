@@ -246,11 +246,11 @@ const make = Effect.fn("desktop.environment.make")(function* (
     ),
     linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment, isDulli),
     linuxWmClass: isDevelopment ? "t3code-dev" : isDulli ? "t3-dulli" : "t3code",
+    isDulli,
+    allowsPrereleaseUpdates: isDulli,
     linuxApplicationsDir,
     desktopLauncherPath: config.desktopLauncherPath,
     appImagePath: config.appImagePath,
-    isDulli,
-    allowsPrereleaseUpdates: isDulli,
     defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),
     runtimeInfo: resolveDesktopRuntimeInfo({
       platform: input.platform,

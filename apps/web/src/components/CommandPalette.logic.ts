@@ -1,4 +1,3 @@
-import type { MultiRepoProjectSetup } from "@t3tools/client-runtime/state/project-grouping";
 import {
   foldSearchQuery,
   PALETTE_SECONDARY_LIMIT,
@@ -11,10 +10,7 @@ import {
   type ThreadSearchSubject,
 } from "@t3tools/shared/paletteSearch";
 import { threadSearchSubject } from "@t3tools/client-runtime/state/thread-search";
-import type {
-  CommandPaletteLinkedThreads,
-  CommandPaletteMultiRepoSetup,
-} from "../commandPaletteBus";
+import type { CommandPaletteLinkedThreads } from "../commandPaletteBus";
 import {
   addProjectRemoteSourceLabel,
   addProjectRemoteSourcePathHint,
@@ -23,7 +19,9 @@ import {
   type AddProjectRemoteSourceReadiness,
 } from "@t3tools/client-runtime/operations/projects";
 import {
+  type ScopedThreadRef,
   type EnvironmentId,
+  type ProjectId,
   type EnvironmentMachineKind,
   type FilesystemBrowseEntry,
   type KeybindingCommand,
@@ -35,7 +33,7 @@ import { filterFilesystemBrowseEntries } from "@t3tools/client-runtime/state/fil
 import { type ReactNode } from "react";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { type Project, type SidebarThreadSummary, type Thread } from "../types";
-import { isSidebarSubagentThread } from "./Sidebar.logic";
+import { isSidebarHiddenThread } from "./Sidebar.logic";
 
 export const RECENT_THREAD_LIMIT = 12;
 export const ITEM_ICON_CLASS = "size-4 text-icon-muted";
@@ -51,6 +49,7 @@ export function buildLinkedThreadActionItems(
   return input.threads.map((thread) => ({
     kind: "action",
     value: `thread:${input.environmentId}:${thread.id}`,
+    threadRef: { environmentId: input.environmentId, threadId: thread.id },
     title: thread.title || "Untitled thread",
     description: thread.archivedAt === null ? "Linked thread" : "Archived thread",
     searchTerms: [input.query, thread.title],
@@ -75,7 +74,6 @@ export function browseInputEndPaddingClass(input: {
 export type SearchOverlayMode = "command" | "files" | "content";
 
 export type CommandPaletteOpenIntent =
-  | ({ readonly kind: "multi-repo-setup" } & CommandPaletteMultiRepoSetup)
   | { readonly kind: "add-project" | "new-thread-in" | "change-theme" }
   | {
       readonly kind: "search";
@@ -102,7 +100,6 @@ export type CommandPaletteUiAction =
       readonly query: string;
       readonly linkedThreads?: CommandPaletteLinkedThreads;
     }
-  | ({ readonly _tag: "OpenMultiRepoSetup" } & CommandPaletteMultiRepoSetup)
   | { readonly _tag: "OpenAddProject" }
   | { readonly _tag: "OpenNewThreadIn" }
   | { readonly _tag: "OpenChangeTheme" }
@@ -157,12 +154,6 @@ export function reduceCommandPaletteUiState(
         query: action.query,
         ...(action.linkedThreads ? { linkedThreads: action.linkedThreads } : {}),
       });
-    case "OpenMultiRepoSetup":
-      return openWithIntent({
-        kind: "multi-repo-setup",
-        environmentId: action.environmentId,
-        setup: action.setup,
-      });
     case "OpenAddProject":
       return openWithIntent({ kind: "add-project" });
     case "OpenNewThreadIn":
@@ -205,6 +196,7 @@ export interface CommandPaletteItem {
   readonly timestamp?: string;
   /** Thread rows rank by this, with use history, instead of by `searchTerms`. */
   readonly threadSearch?: ThreadSearchSubject;
+  readonly threadRef?: ScopedThreadRef;
   /** Shown in place of the description when the match is not in the title. */
   readonly matchHint?: SearchMatchHint;
   readonly icon: ReactNode;
@@ -219,6 +211,14 @@ export interface CommandPaletteActionItem extends CommandPaletteItem {
   readonly kind: "action";
   readonly keepOpen?: boolean;
   readonly run: () => Promise<void>;
+  /** A pin toggle on the row, also reached with the pin shortcut while the row is highlighted. */
+  readonly pin?: CommandPaletteItemPin;
+}
+
+export interface CommandPaletteItemPin {
+  readonly name: string;
+  readonly pinned: boolean;
+  readonly toggle: () => void;
 }
 
 export interface CommandPaletteSubmenuItem extends CommandPaletteItem {
@@ -375,24 +375,29 @@ export function buildProjectActionItems(input: {
   searchTerms?: (project: CommandPaletteProject) => ReadonlyArray<string>;
   renderDescription?: (project: CommandPaletteProject) => ReactNode;
   shortcutCommand?: KeybindingCommand;
+  pin?: (project: CommandPaletteProject) => CommandPaletteItemPin | null;
 }): CommandPaletteActionItem[] {
-  return input.projects.map((project) => ({
-    kind: "action",
-    value: `${input.valuePrefix}:${project.environmentId}:${project.id}`,
-    searchTerms: [
-      project.displayName,
-      project.title,
-      project.workspaceRoot,
-      ...(input.searchTerms?.(project) ?? []),
-    ],
-    title: project.displayName,
-    description: input.renderDescription?.(project) ?? project.workspaceRoot,
-    icon: input.icon(project),
-    ...(input.shortcutCommand !== undefined ? { shortcutCommand: input.shortcutCommand } : {}),
-    run: async () => {
-      await input.runProject(project);
-    },
-  }));
+  return input.projects.map((project) => {
+    const pin = input.pin?.(project) ?? null;
+    return {
+      kind: "action",
+      value: `${input.valuePrefix}:${project.environmentId}:${project.id}`,
+      searchTerms: [
+        project.displayName,
+        project.title,
+        project.workspaceRoot,
+        ...(input.searchTerms?.(project) ?? []),
+      ],
+      title: project.displayName,
+      description: input.renderDescription?.(project) ?? project.workspaceRoot,
+      icon: input.icon(project),
+      ...(input.shortcutCommand !== undefined ? { shortcutCommand: input.shortcutCommand } : {}),
+      ...(pin ? { pin } : {}),
+      run: async () => {
+        await input.runProject(project);
+      },
+    };
+  });
 }
 
 export type BuildThreadActionItemsThread = Pick<
@@ -432,7 +437,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
 }): CommandPaletteActionItem[] {
   // Callers order these: recents by last use, search results by rank.
   const visibleThreads = input.threads.filter(
-    (thread) => thread.archivedAt === null && !isSidebarSubagentThread(thread),
+    (thread) => thread.archivedAt === null && !isSidebarHiddenThread(thread),
   );
 
   return visibleThreads.map((thread) => {
@@ -464,6 +469,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
       {
         kind: "action" as const,
         value: `thread:${thread.environmentId}:${thread.id}`,
+        threadRef: { environmentId: thread.environmentId, threadId: thread.id },
         searchTerms: [thread.title],
         threadSearch: threadSearchSubject(
           {
@@ -824,10 +830,6 @@ export type AddProjectCloneFlow =
       readonly repositoryInput: string;
       readonly repository: SourceControlRepositoryInfo | null;
       readonly remoteUrl: string;
-      readonly multiRepo?: {
-        readonly setup: MultiRepoProjectSetup;
-        readonly sourceLabel: string;
-      };
     };
 
 export function remoteProjectInputPlaceholder(flow: AddProjectCloneFlow | null): string | null {
@@ -875,4 +877,34 @@ export function overlayModeForCommand(command: string | null): SearchOverlayMode
   return command in OVERLAY_MODE_BY_COMMAND
     ? OVERLAY_MODE_BY_COMMAND[command as keyof typeof OVERLAY_MODE_BY_COMMAND]
     : null;
+}
+
+export function resolveCommandPaletteProject<TProject>(
+  projects: ReadonlyMap<string, TProject>,
+  environmentId: EnvironmentId | null,
+  projectId: ProjectId | null,
+) {
+  return environmentId && projectId ? projects.get(`${environmentId}:${projectId}`) : undefined;
+}
+
+/**
+ * Where "No project" goes among the new-thread picker's real projects: at the
+ * scratch project's own place when it is pinned or current, else after the
+ * pinned projects and the first unpinned one.
+ */
+export function newThreadNoProjectIndex(
+  entries: ReadonlyArray<{
+    readonly isScratch: boolean;
+    readonly pinned: boolean;
+    readonly isPreferred: boolean;
+  }>,
+): number {
+  const projects = entries.filter((entry) => !entry.isScratch);
+  const scratchAt = entries.findIndex((entry) => entry.isScratch);
+  const scratch = entries[scratchAt];
+  if (scratch && (scratch.pinned || scratch.isPreferred)) {
+    return entries.slice(0, scratchAt).filter((entry) => !entry.isScratch).length;
+  }
+  const pinnedCount = projects.filter((entry) => entry.pinned).length;
+  return Math.min(pinnedCount + 1, projects.length);
 }

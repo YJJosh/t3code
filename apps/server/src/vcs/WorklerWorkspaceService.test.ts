@@ -12,6 +12,7 @@ import * as Fiber from "effect/Fiber";
 
 import * as WorklerWorkspaceService from "./WorklerWorkspaceService.ts";
 
+// @effect-diagnostics-next-line extendsNativeError:off -- reproduces the external library error shape.
 class StubWorklerError extends Error {
   readonly code: string;
 

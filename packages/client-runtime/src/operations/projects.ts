@@ -1,3 +1,4 @@
+import { isNetworkGitRemoteUrl, normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
 import type {
   CommandId,
@@ -8,8 +9,8 @@ import type {
   SourceControlDiscoveryResult,
   SourceControlRepositoryInfo,
 } from "@t3tools/contracts";
-import { isNetworkGitRemoteUrl, normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import { SourceControlProviderKind } from "@t3tools/contracts";
+import { cloneUrlRepositoryPath } from "@t3tools/shared/cloneUrl";
 import { newProjectFolderName } from "@t3tools/shared/path";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -107,9 +108,29 @@ export function defaultHostCloneUrl(repository: string): string | null {
     : `git@${definition.publicHost}:${path}`;
 }
 
+/** Owner present, repository name missing: `owner/` or `owner//`. */
+const INCOMPLETE_GITHUB_OWNER_PATH = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})\/+$/;
+
+const INCOMPLETE_GITHUB_OWNER_REPOSITORY_MESSAGE = "Enter the full owner/repository name.";
+
+/**
+ * Message to show when a GitHub add-project field is only `owner/`.
+ * Lookup would send that to GitHub and come back as a generic failure.
+ * Returns null for complete names, bare repo names, URLs, and other sources.
+ */
+export function githubIncompleteOwnerRepositoryMessage(
+  source: AddProjectRemoteSource,
+  input: string,
+): string | null {
+  if (source !== "github") return null;
+  if (!INCOMPLETE_GITHUB_OWNER_PATH.test(input.trim())) return null;
+  return INCOMPLETE_GITHUB_OWNER_REPOSITORY_MESSAGE;
+}
+
 export function normalizePastedCloneUrl(input: string): string {
   const trimmed = input.trim();
-  return REPOSITORY_SHORTHAND.test(trimmed) ? (defaultHostCloneUrl(trimmed) ?? trimmed) : trimmed;
+  if (REPOSITORY_SHORTHAND.test(trimmed)) return defaultHostCloneUrl(trimmed) ?? trimmed;
+  return sourceControlClients.repositoryUrlFromPage(trimmed) ?? trimmed;
 }
 
 export function getDefaultCloneUrl(
@@ -189,53 +210,24 @@ export function getCloneDirectoryName(repositoryOrRemoteUrl: string | null | und
   return lastSegment.endsWith(".git") ? lastSegment.slice(0, -".git".length) : lastSegment;
 }
 
-/** A repository to clone into a new multi-repo project, at `path` inside its folder. */
-export interface MultiRepoCloneMember {
-  readonly path: string;
-  readonly remoteUrl: string;
+/** The folder a clone gets below its base: `<repo>`, or `<host>/<owner>/<repo>` like ghq. */
+export function getCloneDirectoryPath(
+  remoteUrl: string,
+  ghqCloneLayout: boolean,
+  repository = remoteUrl,
+): string {
+  return (
+    (ghqCloneLayout ? cloneUrlRepositoryPath(remoteUrl) : null) ?? getCloneDirectoryName(repository)
+  );
 }
 
-/**
- * Accept network remotes only: another environment must be able to clone them.
- * Repeated repository names get -2 and later suffixes to keep folders distinct.
- */
-export function parseMultiRepoCloneInput(input: string): {
-  readonly members: ReadonlyArray<MultiRepoCloneMember>;
-  readonly invalid: ReadonlyArray<string>;
-} {
-  const members: Array<MultiRepoCloneMember> = [];
-  const invalid: Array<string> = [];
-  const usedPaths = new Set<string>();
-  const seenRemotes = new Set<string>();
-  for (const token of input.split(/[\s,]+/)) {
-    if (token.length === 0) continue;
-    const remoteUrl = normalizePastedCloneUrl(token);
-    const name = getCloneDirectoryName(remoteUrl);
-    // Hidden repositories such as an organization's `.github` are
-    // valid members; only path escapes and Workler's own names are reserved.
-    if (
-      !isNetworkGitRemoteUrl(remoteUrl) ||
-      name.length === 0 ||
-      [".", "..", ".git", ".worktrees", ".workler"].includes(name.toLowerCase())
-    ) {
-      invalid.push(token);
-      continue;
-    }
-    // Compare normalized remotes, so `acme/api` and the browser's
-    // `https://github.com/acme/api` (or its SSH form) don't clone twice into
-    // `api` and `api-2`.
-    const key = normalizeGitRemoteUrl(remoteUrl);
-    if (seenRemotes.has(key)) continue;
-    seenRemotes.add(key);
-    // Case-insensitive, so two members can't share a folder on macOS or Windows.
-    let path = name;
-    for (let suffix = 2; usedPaths.has(path.toLowerCase()); suffix += 1) {
-      path = `${name}-${suffix}`;
-    }
-    usedPaths.add(path.toLowerCase());
-    members.push({ path, remoteUrl });
-  }
-  return { members, invalid };
+/** The clone's own folder, which folder browsing keeps at the end of the destination. */
+export function getCloneDirectoryLeafName(
+  remoteUrl: string,
+  ghqCloneLayout: boolean,
+  repository = remoteUrl,
+): string {
+  return getCloneDirectoryPath(remoteUrl, ghqCloneLayout, repository).split("/").at(-1) ?? "";
 }
 
 export function getCloneDestinationPath(
@@ -246,7 +238,8 @@ export function getCloneDestinationPath(
   if (name.length === 0) {
     return directoryPath;
   }
-  return `${ensureBrowseDirectoryPath(directoryPath)}${name}`;
+  const base = ensureBrowseDirectoryPath(directoryPath);
+  return `${base}${base.endsWith("\\") ? name.replaceAll("/", "\\") : name}`;
 }
 
 export function getNewProjectPathPreview(newProjectsRoot: string, name: string): string {
@@ -353,4 +346,50 @@ export function buildProjectCreateCommand(input: {
     createWorkspaceRootIfMissing: true,
     defaultModelSelection: null,
   };
+}
+
+/** A repository to clone into a new multi-repo project, at `path` inside its folder. */
+export interface MultiRepoCloneMember {
+  readonly path: string;
+  readonly remoteUrl: string;
+}
+
+/** Network remotes or GitHub owner/repo, with collision-free member folder names. */
+export function parseMultiRepoCloneInput(input: string): {
+  readonly members: ReadonlyArray<MultiRepoCloneMember>;
+  readonly invalid: ReadonlyArray<string>;
+} {
+  const members: Array<MultiRepoCloneMember> = [];
+  const invalid: Array<string> = [];
+  const usedPaths = new Set<string>();
+  const seenRemotes = new Set<string>();
+  for (const token of input.split(/[\s,]+/)) {
+    if (token.length === 0) continue;
+    const remoteUrl = normalizePastedCloneUrl(token);
+    const name = getCloneDirectoryName(remoteUrl);
+    // Hidden repositories such as an organization's `.github` are
+    // valid members; only path escapes and Workler's own names are reserved.
+    if (
+      !isNetworkGitRemoteUrl(remoteUrl) ||
+      name.length === 0 ||
+      [".", "..", ".git", ".worktrees", ".workler"].includes(name.toLowerCase())
+    ) {
+      invalid.push(token);
+      continue;
+    }
+    // Compare normalized remotes, so `acme/api` and the browser's
+    // `https://github.com/acme/api` (or its SSH form) don't clone twice into
+    // `api` and `api-2`.
+    const key = normalizeGitRemoteUrl(remoteUrl);
+    if (seenRemotes.has(key)) continue;
+    seenRemotes.add(key);
+    // Case-insensitive, so two members can't share a folder on macOS or Windows.
+    let path = name;
+    for (let suffix = 2; usedPaths.has(path.toLowerCase()); suffix += 1) {
+      path = `${name}-${suffix}`;
+    }
+    usedPaths.add(path.toLowerCase());
+    members.push({ path, remoteUrl });
+  }
+  return { members, invalid };
 }

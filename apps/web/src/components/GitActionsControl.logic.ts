@@ -174,6 +174,19 @@ export function buildMenuItems(
   ];
 }
 
+export function hasUsableGitMenuContent(input: {
+  readonly menuItems: readonly GitActionMenuItem[];
+  readonly canWriteSourceControl: boolean;
+  readonly canPublishRepository: boolean;
+  readonly hasNotice: boolean;
+}): boolean {
+  return (
+    input.canPublishRepository ||
+    input.hasNotice ||
+    (input.canWriteSourceControl && input.menuItems.some((item) => !item.disabled))
+  );
+}
+
 export function resolveQuickAction(
   gitStatus: VcsStatusResult | null,
   isBusy: boolean,
@@ -212,7 +225,7 @@ export function resolveQuickAction(
   }
 
   if (hasChanges) {
-    if (!gitStatus.hasUpstream && !hasPrimaryRemote) {
+    if (isBehind || (!gitStatus.hasUpstream && !hasPrimaryRemote)) {
       return { label: "Commit", disabled: false, kind: "run_action", action: "commit" };
     }
     if (hasOpenPr || isDefaultRef) {
@@ -426,12 +439,30 @@ export function resolveLiveThreadBranchUpdate(input: {
   };
 }
 
-/** Names a few repositories for a hint or toast, e.g. "api, web and 3 more". */
-export function summarizeRepositories(repositories: ReadonlyArray<string>, shown = 3): string {
-  if (repositories.length <= shown + 1) {
-    return repositories.length <= 1
-      ? (repositories[0] ?? "")
-      : `${repositories.slice(0, -1).join(", ")} and ${repositories.at(-1)}`;
-  }
-  return `${repositories.slice(0, shown).join(", ")} and ${repositories.length - shown} more`;
+export type ChangesLineTotals = {
+  readonly insertions: number;
+  readonly deletions: number;
+  /** Ref the counts compare against; `null` means they are uncommitted changes against HEAD. */
+  readonly baseRef: string | null;
+};
+
+// `branchChanges ?? workingTree` treats `{0,0}` as present, so a zero branch total hid a dirty
+// working tree and the Changes row read +0 while Diff still showed the work.
+export function resolveChangesTotals(
+  status: VcsStatusResult | null | undefined,
+): ChangesLineTotals | null {
+  if (!status) return null;
+  const branch = status.branchChanges;
+  const tree = { ...status.workingTree, baseRef: null };
+  const selected =
+    branch && (branch.insertions > 0 || branch.deletions > 0)
+      ? branch
+      : tree.insertions > 0 || tree.deletions > 0
+        ? tree
+        : (branch ?? tree);
+  return {
+    insertions: selected.insertions,
+    deletions: selected.deletions,
+    baseRef: selected.baseRef,
+  };
 }

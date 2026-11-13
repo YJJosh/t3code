@@ -16,34 +16,23 @@ import * as DateTime from "effect/DateTime";
 import { Atom } from "effect/reactivity";
 import * as Haptics from "expo-haptics";
 import { useMemo } from "react";
-import { Platform, Pressable, ScrollView, View } from "react-native";
-import { ScreenStack } from "react-native-screens";
+import { Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AndroidSheetHeader } from "../../components/ui/AndroidScreenHeader";
+import { SheetHeader } from "../../components/ui/SheetHeader";
 import { AppText as Text } from "../../components/ui/AppText";
 import { environmentThreadDetails } from "../../state/threads";
-import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
-import { NativeHeader, NativeScreen } from "../../native/ThemedScreenStack";
 import { useEnvironments } from "../../state/environments";
 import { SubagentRow } from "./SubagentRow";
-import { DulliAgentsInspector } from "./DulliSubagents";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { SubagentStopButton } from "./SubagentStopButton";
 import { ThreadWorkflowGroup } from "./ThreadWorkflowGroup";
 import { ScreenContent } from "../../components/ui/ScreenContent";
-import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { subagentThreadTarget } from "./threadAgentsPresentation";
 
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
 
-const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
-
-type AgentsTarget = {
-  readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId;
-  readonly subagentId?: string;
-};
+type AgentsTarget = { readonly environmentId: EnvironmentId; readonly threadId: ThreadId };
 
 const EMPTY_TURN_SUBAGENTS_ATOM = Atom.make<ThreadTurnSubagents | null>(null).pipe(
   Atom.withLabel("mobile-thread-turn-subagents:empty"),
@@ -58,14 +47,11 @@ export function useThreadTurnSubagents(target: AgentsTarget | null): ThreadTurnS
 }
 
 export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
-  const { layout } = useAdaptiveWorkspaceLayout();
   const target = route.params;
   const navigation = useNavigation();
   const openInspector = useOpenThreadInspector();
   const insets = useSafeAreaInsets();
   const turn = useThreadTurnSubagents(target);
-  const detail = useAtomValue(environmentThreadDetails.threadAtom(target));
-  const hasDulliAgents = (detail?.projection.dulliRuns?.length ?? 0) > 0;
   const subagents = turn?.subagents ?? [];
   const hasLiveAgent = (turn?.liveCount ?? 0) > 0;
   const workflowGroups = useMemo(
@@ -101,17 +87,13 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const content = (
     <ScrollView
       nestedScrollEnabled
-      keyboardShouldPersistTaps="handled"
       className="flex-1"
       // UIKit must inset content beneath the floating translucent iOS header.
-      contentInsetAdjustmentBehavior={Platform.OS === "ios" ? "automatic" : "never"}
+      contentInsetAdjustmentBehavior="automatic"
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
-      {hasDulliAgents && subagents.length > 0 ? (
-        <Text className="pt-4 text-sm font-bold text-foreground">Current agents</Text>
-      ) : null}
-      {subagents.length === 0 && !hasDulliAgents ? (
+      {subagents.length === 0 ? (
         <Text className="pt-6 text-center text-sm text-foreground-muted">
           No agents in this turn.
         </Text>
@@ -140,55 +122,13 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
           );
         })
       )}
-      {hasDulliAgents ? (
-        <View className="gap-3 pt-4">
-          <Text className="text-sm font-bold text-foreground">Dulli agents</Text>
-          <DulliAgentsInspector
-            key={`${target.environmentId}:${target.threadId}:${target.subagentId ?? ""}`}
-            target={target}
-            initialSubagentId={target.subagentId}
-          />
-        </View>
-      ) : null}
     </ScrollView>
   );
 
-  if (Platform.OS === "ios") {
-    // Plain formSheets lack stack headers; host one in a nested native stack.
-    return (
-      <View collapsable={false} className="flex-1 bg-sheet">
-        <ScreenStack style={{ flex: 1 }}>
-          <NativeScreen
-            activityState={2}
-            enabled
-            isNativeStack
-            screenId="thread-agents-sheet-native"
-            scrollEdgeEffects={HEADER_SCROLL_EDGE_EFFECTS}
-            className="flex-1 bg-sheet"
-          >
-            {content}
-            <NativeHeader
-              backgroundColor="rgba(0,0,0,0)"
-              tintColorClassName="accent-foreground"
-              hideBackButton
-              hideShadow={false}
-              title="Agents"
-              titleColorClassName="accent-foreground"
-              titleFontSize={18}
-              titleFontWeight="800"
-              translucent
-            />
-          </NativeScreen>
-        </ScreenStack>
-      </View>
-    );
-  }
-
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
-      <NativeStackScreenOptions options={{ sheetCornerRadius: 28 }} />
-      <AndroidSheetHeader title="Agents" onBack={() => navigation.goBack()} />
-      <ScreenContent insetHorizontal={layout.usesSplitView}>{content}</ScreenContent>
+      <SheetHeader title="Agents" onClose={() => navigation.goBack()} />
+      <ScreenContent>{content}</ScreenContent>
     </View>
   );
 }

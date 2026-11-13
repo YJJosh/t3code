@@ -20,7 +20,6 @@ import {
   type UnifiedSettings,
 } from "@t3tools/contracts/settings";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
-import { migrateForkPiPreferences } from "@t3tools/client-runtime/dulli-migration";
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
@@ -339,29 +338,17 @@ const modelPreferencesMigrationTargetsAtom = Atom.make((get) =>
     const settings = get(serverEnvironment.settingsValueAtom(environmentId));
     return generation === null || settings === null
       ? []
-      : [
-          {
-            environmentId,
-            generation,
-            settings,
-            cutover:
-              get(serverEnvironment.configValueAtom(environmentId))?.legacyPiProviderMigrated ===
-              true,
-          },
-        ];
+      : [{ environmentId, generation, settings }];
   }),
 ).pipe(Atom.withLabel("web-model-preferences-migration-targets"));
 
 function migrateModelPreferences(): void {
   if (clientSettingsHydrationStatus !== "ready") return;
-  for (const { environmentId, generation, settings, cutover } of appAtomRegistry.get(
+  for (const { environmentId, generation, settings } of appAtomRegistry.get(
     modelPreferencesMigrationTargetsAtom,
   )) {
     if (attemptedMigrationGenerations.get(environmentId) === generation) continue;
-    const patch = modelPreferencesMigrationPatch(
-      settings,
-      cutover ? migrateForkPiPreferences(clientSettingsSnapshot) : clientSettingsSnapshot,
-    );
+    const patch = modelPreferencesMigrationPatch(settings, clientSettingsSnapshot);
     if (!patch) continue;
     attemptedMigrationGenerations.set(environmentId, generation);
     void runAtomCommand(
@@ -428,29 +415,14 @@ export function useEnvironmentIdentificationMode(): EnvironmentIdentificationMod
   });
 }
 
-/** Legacy sidebar opt-ins still count, so those users land in the boring sidebar. */
-export function useBoringSidebarEnabled(): boolean {
-  return useClientSettings(
-    (settings) => settings.boringSidebarEnabled || settings.legacySidebarEnabled,
-  );
-}
-
 export async function prepareModelPreferencesPatch(
   settings: ServerSettings,
   patch: ServerSettingsPatch,
-  cutover = false,
 ): Promise<ServerSettingsPatch> {
   if (settings.favorites === null || settings.providerModelPreferences === null) {
     await ensureClientSettingsHydrated();
   }
-  const client = getClientSettings();
-  return {
-    ...modelPreferencesMigrationPatch(
-      settings,
-      cutover ? migrateForkPiPreferences(client) : client,
-    ),
-    ...patch,
-  };
+  return { ...modelPreferencesMigrationPatch(settings, getClientSettings()), ...patch };
 }
 
 export function useUpdateEnvironmentModelPreferences(environmentId: EnvironmentId | null) {
@@ -462,12 +434,7 @@ export function useUpdateEnvironmentModelPreferences(environmentId: EnvironmentI
     if (!environmentId || !settings) return;
     let prepared: ServerSettingsPatch;
     try {
-      prepared = await prepareModelPreferencesPatch(
-        settings,
-        patch,
-        appAtomRegistry.get(serverEnvironment.configValueAtom(environmentId))
-          ?.legacyPiProviderMigrated === true,
-      );
+      prepared = await prepareModelPreferencesPatch(settings, patch);
     } catch {
       toastManager.add({
         type: "error",
@@ -505,14 +472,7 @@ export function useToggleEnvironmentModelFavorite(environmentId: EnvironmentId |
       }
     }
     const currentSettings = registry.get(settingsAtom) ?? settings;
-    const client = getClientSettings();
-    const cutover =
-      registry.get(serverEnvironment.configValueAtom(environmentId))?.legacyPiProviderMigrated ===
-      true;
-    const favorites = resolveModelPreferences(
-      currentSettings,
-      cutover ? migrateForkPiPreferences(client) : client,
-    ).favorites;
+    const favorites = resolveModelPreferences(currentSettings, getClientSettings()).favorites;
     const key = JSON.stringify([environmentId, provider, model]);
     const previous = pendingFavorites.current.get(key);
     // Keep the acknowledged choice until the config stream catches up with the RPC reply.
@@ -621,8 +581,12 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
     reportFailure: false,
   });
   const { environments } = useEnvironments();
-  const persistServerSettings = async (request: Parameters<typeof persist>[0]) => {
+  const persistServerSettings = async (
+    request: Parameters<typeof persist>[0],
+    onFailed?: () => void,
+  ) => {
     const result = await persist(request);
+    if (result._tag === "Failure") onFailed?.();
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       const label =
         environments.find((environment) => environment.environmentId === request.environmentId)
@@ -637,7 +601,10 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
     return result;
   };
   const sharedSettingsSyncTargetIds = useSharedSettingsSyncTargetIds(true);
-  const updateSettings = (patch: UnifiedSettingsPatch) => {
+  const updateSettings = (
+    patch: UnifiedSettingsPatch,
+    options?: { readonly onFailed?: () => void; readonly onSaved?: () => void },
+  ) => {
     const { serverPatch, clientPatch } = splitPatch(patch);
 
     const canWriteServerPatch =
@@ -646,6 +613,7 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
         readEnvironmentScope(environmentId, scope),
       );
     if (Object.keys(serverPatch).length > 0 && !canWriteServerPatch) {
+      options?.onFailed?.();
       toastManager.add({
         type: "warning",
         title: "Setting not saved",
@@ -655,17 +623,21 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
     if (Object.keys(serverPatch).length > 0 && canWriteServerPatch) {
       const { sharedPatch, localPatch } = splitSharedServerPatch(serverPatch);
       // Dropping the write silently leaves the control looking saved.
-      const warnUnsaved = (description = PRIMARY_SETTINGS_UNAVAILABLE_MESSAGE) =>
-        toastManager.add({
+      const warnUnsaved = (description = PRIMARY_SETTINGS_UNAVAILABLE_MESSAGE) => {
+        options?.onFailed?.();
+        return toastManager.add({
           type: "warning",
           title: "Setting not saved",
           description,
         });
+      };
       if (Object.keys(localPatch).length > 0) {
         if (environmentId) {
-          void persistServerSettings({
-            environmentId,
-            input: { patch: localPatch },
+          void persistServerSettings(
+            { environmentId, input: { patch: localPatch } },
+            options?.onFailed,
+          ).then((result) => {
+            if (result._tag === "Success") options?.onSaved?.();
           });
         } else {
           warnUnsaved();
@@ -721,6 +693,12 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
               result: await persist(request),
             })),
           ).then((outcomes) => {
+            if (
+              deniedLabels.length > 0 ||
+              outcomes.some(({ result }) => result._tag === "Failure")
+            ) {
+              options?.onFailed?.();
+            }
             const failures = outcomes.flatMap(({ label, result }) => {
               if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return [];
               const error = squashAtomCommandFailure(result);
@@ -728,6 +706,12 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
                 `Could not save on ${label}: ${error instanceof Error ? error.message : "The save failed. Try reconnecting and saving again."}`,
               ];
             });
+            if (
+              deniedLabels.length === 0 &&
+              outcomes.every(({ result }) => result._tag === "Success")
+            ) {
+              options?.onSaved?.();
+            }
             if (failures.length === 0) return;
             const saved = outcomes
               .filter(({ result }) => result._tag === "Success")

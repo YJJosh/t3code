@@ -4,16 +4,15 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeZlib from "node:zlib";
 
 import { afterEach, assert, beforeEach, describe, it } from "@effect/vitest";
-import type { TranscriptUsageFormat } from "@t3tools/provider-core/server/usage";
+import { totalTokens, type TranscriptUsageFormat } from "@t3tools/provider-core/server/usage";
 import * as Schema from "effect/Schema";
 
 import { TEST_FORMATS } from "./usageTestFormats.ts";
 import {
   listTranscriptFiles,
-  readDirectoryVolumeId,
-  readDirectoryAncestorVolumeIds,
   readTranscriptRecords,
   transcriptLineGate,
 } from "./usageTranscriptReader.ts";
@@ -77,58 +76,104 @@ function codexUsageLine(outputTokens: number, secondsOffset: number): string {
   })}\n`;
 }
 
-describe("readTranscriptRecords resume", () => {
-  it("persists Dulli header/model state across streaming projection and unterminated tails", async () => {
-    const path = NodePath.join(dir, "dulli.jsonl");
-    const usage = (id: string) =>
-      JSON.stringify({
-        type: "message",
-        id,
-        timestamp: "2026-08-01T10:00:00Z",
-        message: { role: "assistant", usage: { output: 7 } },
-      });
-    await NodeFSP.writeFile(
-      path,
-      [
-        JSON.stringify({
-          type: "session",
-          id: "session",
-          cwd: "/workspace/project",
-          padding: "x".repeat(5000),
-        }),
-        JSON.stringify({ type: "model_change", provider: "openai", modelId: "model" }),
-        usage("one"),
-        usage("tail"),
-      ].join("\n"),
-    );
-    const first = await readTranscriptRecords(path, TEST_FORMATS.dulli, undefined, {
-      streamingThresholdBytes: 1,
-    });
-    assert.isNotNull(first);
-    assert.strictEqual(first.records.length, 1);
-    assert.strictEqual(first.tailRecords.length, 1);
-    assert.deepStrictEqual(first.position.state, {
-      sessionId: "session",
-      projectPath: "/workspace/project",
-      provider: "openai",
-      model: "model",
-    });
-    await NodeFSP.appendFile(path, "\n" + usage("two") + "\n");
-    const second = await readTranscriptRecords(path, TEST_FORMATS.dulli, first.position);
-    assert.isNotNull(second);
-    assert.isTrue(second.resumed);
+describe("compressed transcripts", () => {
+  it("discovers nested plain and zstd JSONL files within the requested window", async () => {
+    const nested = NodePath.join(dir, "nested");
+    await NodeFSP.mkdir(nested);
+    const plain = NodePath.join(dir, "active.jsonl");
+    const compressed = NodePath.join(nested, "archived.jsonl.zst");
+    const old = NodePath.join(nested, "old.jsonl.zst");
+    await NodeFSP.writeFile(plain, claudeLine(1, 5));
+    await NodeFSP.writeFile(compressed, NodeZlib.zstdCompressSync(claudeLine(2, 7)));
+    await NodeFSP.writeFile(old, NodeZlib.zstdCompressSync(claudeLine(3, 11)));
+    await NodeFSP.writeFile(NodePath.join(nested, "unrelated.zst"), "ignored");
+    await NodeFSP.writeFile(NodePath.join(nested, "partial.jsonl.zst.tmp"), "ignored");
+    await NodeFSP.utimes(old, 1, 1);
+
+    const listed = await listTranscriptFiles(dir, Date.parse("2026-01-01T00:00:00Z"));
     assert.deepStrictEqual(
-      second.records.map(({ model, sessionId, dedupeKey }) => ({ model, sessionId, dedupeKey })),
-      [
-        { model: "openai/model", sessionId: "session", dedupeKey: "pi:tail" },
-        { model: "openai/model", sessionId: "session", dedupeKey: "pi:two" },
-      ],
+      listed.files.map((file) => file.path).sort(),
+      [plain, compressed].sort(),
     );
-    const cold = await readTranscriptRecords(path, TEST_FORMATS.dulli);
-    assert.isNotNull(cold);
-    assert.deepStrictEqual([...first.records, ...second.records], cold.records);
+    assert.strictEqual(listed.failedPaths, 0);
+    assert.isAbove(listed.files.find((file) => file.path === compressed)?.size ?? 0, 0);
   });
 
+  it.each([
+    { parser: "native", streamingThresholdBytes: undefined },
+    { parser: "projected", streamingThresholdBytes: 1024 },
+  ])(
+    "matches plain Codex records and unfinished tails through long lines ($parser)",
+    async ({ streamingThresholdBytes }) => {
+      const plain = NodePath.join(dir, "rollout.jsonl");
+      const compressed = plain + ".zst";
+      const large = codexUsageLine(9, 5).replace(
+        '"payload":',
+        '"padding":' + JSON.stringify("日本語 é".repeat(128 * 1024)) + ',"payload":',
+      );
+      const content =
+        codexMetaLine() +
+        codexModelLine("gpt-6-astra") +
+        codexTierLine("ultrafast") +
+        large +
+        codexUsageLine(13, 6).replace('"output_tokens":13', '"output_tokens":"invalid"') +
+        codexUsageLine(21, 8).trimEnd();
+      await NodeFSP.writeFile(plain, content);
+      await NodeFSP.writeFile(compressed, NodeZlib.zstdCompressSync(content));
+
+      const options =
+        streamingThresholdBytes === undefined ? undefined : { streamingThresholdBytes };
+      const expected = await readTranscriptRecords(plain, TEST_FORMATS.codex, undefined, options);
+      const actual = await readTranscriptRecords(
+        compressed,
+        TEST_FORMATS.codex,
+        undefined,
+        options,
+      );
+      assert.isNotNull(expected);
+      assert.isNotNull(actual);
+      assert.strictEqual(expected.records.length, 1);
+      assert.strictEqual(expected.tailRecords.length, 1);
+      assert.deepStrictEqual(actual.records, expected.records);
+      assert.deepStrictEqual(actual.tailRecords, expected.tailRecords);
+      assert.strictEqual(expected.malformedRecords, 1);
+      assert.strictEqual(actual.malformedRecords, expected.malformedRecords);
+      assert.strictEqual(actual.records[0]?.speed, "ultrafast");
+      assert.isFalse(actual.resumed);
+      assert.strictEqual(actual.position.resumeOffset, 0);
+    },
+  );
+
+  it("ignores a prior resume position and rereads compressed rollouts from their start", async () => {
+    const plain = NodePath.join(dir, "rollout.jsonl");
+    const content = codexMetaLine() + codexModelLine("gpt-6-astra") + codexUsageLine(9, 5);
+    await NodeFSP.writeFile(plain, content);
+    const first = await readTranscriptRecords(plain, TEST_FORMATS.codex);
+    assert.isNotNull(first);
+
+    const compressed = plain + ".zst";
+    await NodeFSP.writeFile(compressed, NodeZlib.zstdCompressSync(content + codexUsageLine(21, 8)));
+    const actual = await readTranscriptRecords(compressed, TEST_FORMATS.codex, first.position);
+    assert.isNotNull(actual);
+    assert.isFalse(actual.resumed);
+    assert.deepStrictEqual(
+      actual.records.map((record) => record.totals.outputTokens),
+      [9, 21],
+    );
+    const repeated = await readTranscriptRecords(compressed, TEST_FORMATS.codex, actual.position);
+    assert.isNotNull(repeated);
+    assert.isFalse(repeated.resumed);
+    assert.deepStrictEqual(repeated.records, actual.records);
+  });
+
+  it("returns null for zstd decoder errors rather than caching an empty parse", async () => {
+    const path = NodePath.join(dir, "corrupt.jsonl.zst");
+    await NodeFSP.writeFile(path, "not a zstd frame");
+    assert.isNull(await readTranscriptRecords(path, TEST_FORMATS.claude));
+  });
+});
+
+describe("readTranscriptRecords resume", () => {
   it.each([
     { mode: "buffered", streamingThresholdBytes: Infinity },
     { mode: "streaming", streamingThresholdBytes: 0 },
@@ -153,7 +198,7 @@ describe("readTranscriptRecords resume", () => {
           state.errors += 1;
           return [];
         }
-        return TEST_FORMATS.claude.parseProjected(value, { piDriven: false });
+        return TEST_FORMATS.claude.parseProjected(value, undefined);
       },
       readMalformedRecords: (state: { errors: number }) => state.errors,
     };
@@ -213,67 +258,6 @@ describe("readTranscriptRecords resume", () => {
     const full = await readTranscriptRecords(path, TEST_FORMATS.claude);
     assert.isNotNull(full);
     assert.deepStrictEqual([...first.records, ...second.records], [...full.records]);
-  });
-
-  it.each(
-    [
-      {
-        marker: "Pi's system prompt note",
-        line: {
-          type: "attachment",
-          attachment: {
-            type: "prompt_snapshot",
-            systemPrompt: ["You are Claude Code.", "## Conversation replay\nPi runs each turn"],
-          },
-        },
-      },
-      {
-        marker: "Pi's text replay",
-        line: {
-          type: "user",
-          message: { role: "user", content: [{ type: "text", text: "USER:\n" }] },
-        },
-      },
-    ].flatMap((marker) => [
-      { ...marker, mode: "buffered", streamingThresholdBytes: Infinity },
-      { ...marker, mode: "streaming", streamingThresholdBytes: 0 },
-    ]),
-  )(
-    "skips Claude usage that Pi drives, marked by $marker in $mode reads, also after resume",
-    async ({ line, streamingThresholdBytes }) => {
-      // Pi records this usage in its own session, which the Dulli reader counts.
-      const path = NodePath.join(dir, "pi-driven.jsonl");
-      const options = { streamingThresholdBytes };
-      // Lines enter the projected parser only when they cross a stream chunk.
-      const padded = { ...line, padding: "x".repeat(256 * 1024) };
-      await NodeFSP.writeFile(path, `${JSON.stringify(padded)}\n${claudeLine(1, 5)}`);
-      const first = await readTranscriptRecords(path, TEST_FORMATS.claude, undefined, options);
-      assert.isNotNull(first);
-      assert.deepStrictEqual(first.records, []);
-
-      await NodeFSP.appendFile(path, claudeLine(2, 7));
-      const resumed = await readTranscriptRecords(
-        path,
-        TEST_FORMATS.claude,
-        first.position,
-        options,
-      );
-      assert.isNotNull(resumed);
-      assert.isTrue(resumed.resumed);
-      assert.deepStrictEqual(resumed.records, []);
-    },
-  );
-
-  it("keeps Claude usage whose first prompt only quotes Pi's replay labels", async () => {
-    const path = NodePath.join(dir, "native.jsonl");
-    const user = {
-      type: "user",
-      message: { role: "user", content: [{ type: "text", text: "Why does USER:\n appear here?" }] },
-    };
-    await NodeFSP.writeFile(path, `${JSON.stringify(user)}\n${claudeLine(1, 5)}`);
-    const read = await readTranscriptRecords(path, TEST_FORMATS.claude);
-    assert.isNotNull(read);
-    assert.strictEqual(read.records.length, 1);
   });
 
   it("carries the Codex reducer state across the resume boundary", async () => {
@@ -397,6 +381,82 @@ describe("readTranscriptRecords resume", () => {
     },
   );
 
+  it.each([
+    { mode: "buffered", streamingThresholdBytes: Infinity },
+    { mode: "streaming", streamingThresholdBytes: 0 },
+  ])(
+    "bills a Codex request whose turn was interrupted before its token_count ($mode)",
+    async (options) => {
+      const path = NodePath.join(dir, "rollout.jsonl");
+      const usage = (input: number, output: number) => ({
+        input_tokens: input,
+        cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
+        output_tokens: output,
+        reasoning_output_tokens: 0,
+        total_tokens: input + output,
+      });
+      const context = (turn: number) => ({
+        type: "turn_context",
+        timestamp: `2026-11-02T10:00:0${turn * 4 - 4}.000Z`,
+        payload: { turn_id: `turn-${turn}`, model: "gpt-6-sol" },
+      });
+      const request = (turn: number, id: number, timestamp: string, last: unknown) => ({
+        type: "token_usage_record",
+        timestamp,
+        payload: { turn_id: `turn-${turn}`, response_id: `resp_${id}`, usage: last },
+      });
+      const tokenCount = (timestamp: string, last: unknown, total: unknown) => ({
+        type: "event_msg",
+        timestamp,
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: last, total_token_usage: total },
+        },
+      });
+      const lines = [
+        {
+          type: "session_meta",
+          timestamp: "2026-11-02T10:00:00.000Z",
+          payload: { id: "aborted-turn-repro", model_provider: "openai" },
+        },
+        context(1),
+        request(1, 1, "2026-11-02T10:00:01.000Z", usage(100, 20)),
+        tokenCount("2026-11-02T10:00:01.001Z", usage(100, 20), usage(100, 20)),
+        // Interrupted after this request finished: no token_count reports it.
+        request(1, 2, "2026-11-02T10:00:02.000Z", usage(150, 10)),
+        {
+          type: "event_msg",
+          timestamp: "2026-11-02T10:00:03.000Z",
+          payload: { type: "turn_aborted", turn_id: "turn-1", reason: "interrupted" },
+        },
+        context(2),
+        request(2, 3, "2026-11-02T10:00:05.000Z", usage(200, 30)),
+        tokenCount("2026-11-02T10:00:05.001Z", usage(200, 30), usage(450, 60)),
+      ];
+      // Lines longer than a read chunk take the projected path when streaming.
+      const padding = "x".repeat(256 * 1024);
+      await NodeFSP.writeFile(
+        path,
+        lines.map((line) => `${JSON.stringify({ padding, ...line })}\n`).join(""),
+      );
+
+      const result = await readTranscriptRecords(path, TEST_FORMATS.codex, undefined, options);
+      assert.isNotNull(result);
+      const requests = [...result.records, ...result.tailRecords]
+        .map((record) => totalTokens(record.totals))
+        .toSorted((a, b) => a - b);
+      assert.deepStrictEqual(
+        {
+          billedTokens: requests.reduce((sum, tokens) => sum + tokens, 0),
+          requests,
+          malformedRecords: result.malformedRecords,
+        },
+        { billedTokens: 510, requests: [120, 160, 230], malformedRecords: 0 },
+      );
+    },
+  );
+
   it("re-parses from the start when the guard bytes no longer match", async () => {
     const path = NodePath.join(dir, "claude.jsonl");
     await NodeFSP.writeFile(path, claudeLine(1, 5));
@@ -491,51 +551,5 @@ describe("transcriptLineGate", () => {
         assert.isFalse(gates[kind](Buffer.from(`{"text":"日本語 é ${marker.slice(1, -1)}"}`)));
       }
     }
-  });
-});
-
-describe("transcript directory coverage", () => {
-  it("reports an unreadable listing instead of claiming an empty directory", async () => {
-    const listing = await listTranscriptFiles(NodePath.join(dir, "missing"), 0);
-    assert.deepStrictEqual(listing, { files: [], failedPaths: 1, unreadableDirectories: 1 });
-  });
-
-  it("bounds both ordinary discovery and run-session discovery", async () => {
-    const files = [
-      "direct.jsonl",
-      "run/events.v1.jsonl",
-      "run/session/child.jsonl",
-      "run/session/deeper/not-a-session.jsonl",
-      "run/workflow/trace.jsonl",
-    ];
-    for (const file of files) {
-      const path = NodePath.join(dir, file);
-      await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
-      await NodeFSP.writeFile(path, "{}\n");
-    }
-    const relativePaths = async (options: Parameters<typeof listTranscriptFiles>[2]) =>
-      (await listTranscriptFiles(dir, 0, options)).files
-        .map((file) => NodePath.relative(dir, file.path).split(NodePath.sep).join("/"))
-        .sort();
-    assert.deepStrictEqual(await relativePaths({ maxDepth: 0 }), ["direct.jsonl"]);
-    assert.deepStrictEqual(await relativePaths({ maxDepth: 1 }), [
-      "direct.jsonl",
-      "run/events.v1.jsonl",
-    ]);
-    assert.deepStrictEqual(
-      await relativePaths({ maxDepth: 2, filePattern: "pi-subagent-session" }),
-      ["run/session/child.jsonl"],
-    );
-    assert.deepStrictEqual(await relativePaths({ maxDepth: 2, fileName: "child.jsonl" }), [
-      "run/session/child.jsonl",
-    ]);
-  });
-
-  it("supplies parent filesystem identities nearest first", async () => {
-    const child = NodePath.join(dir, "run", "session");
-    await NodeFSP.mkdir(child, { recursive: true });
-    const ancestors = await readDirectoryAncestorVolumeIds(child);
-    assert.strictEqual(ancestors[0], await readDirectoryVolumeId(NodePath.dirname(child)));
-    assert.strictEqual(ancestors[1], await readDirectoryVolumeId(dir));
   });
 });

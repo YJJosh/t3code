@@ -1,21 +1,23 @@
+import * as NodePath from "@effect/platform-node/NodePath";
 import { SourceControlProviderKind } from "@t3tools/contracts";
-import { assert, describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import {
   OrchestrationDispatchCommandError,
   ProjectId,
   projectCloneProgressSummary,
+  type SourceControlCloneProtocol,
   SourceControlRepositoryError,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as ProjectCloneTracker from "./ProjectCloneTracker.ts";
+import { ProjectConflictError } from "./ProjectService.ts";
 import { parseGitCloneProgressLine } from "./gitCloneProgress.ts";
 
 const projectId = ProjectId.make("project-1");
@@ -41,7 +43,7 @@ function makeHarness(options?: {
     onCloned: (input) => Effect.sync(() => void cloned.push(input.projectId)),
   };
   const layer = ProjectCloneTracker.layer.pipe(
-    Layer.provide(Path.layer),
+    Layer.provide(NodePath.layer),
     Layer.provide(
       Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
         prepareClone: (input) =>
@@ -60,21 +62,6 @@ function makeHarness(options?: {
               repository: null,
             })),
         discardClone: (destination) => Effect.sync(() => void discarded.push(destination)),
-        prepareMultiRepoClone: (input) =>
-          Effect.succeed({
-            destinationPath: input.destinationPath,
-            members: input.members.map((member) => ({
-              path: member.path,
-              remoteUrl: member.remoteUrl,
-              cloneUrl: member.remoteUrl,
-            })),
-          }),
-        cloneMultiRepo: () => Effect.never,
-        discardMultiRepoClone: (prepared) =>
-          Effect.sync(
-            () =>
-              void discarded.push(`multi-repo:${prepared.members.map((m) => m.path).join(",")}`),
-          ),
       }),
     ),
   );
@@ -163,12 +150,12 @@ describe("ProjectCloneTracker", () => {
   });
 
   it.effect("keeps a failed clone with git's own explanation and retries it", () => {
-    let attempts = 0;
+    const protocols: Array<SourceControlCloneProtocol | undefined> = [];
     const harness = makeHarness({
       clone: (input) =>
         Effect.suspend(() => {
-          attempts += 1;
-          return attempts === 1
+          protocols.push(input.protocol);
+          return protocols.length === 1
             ? Effect.fail(
                 new SourceControlRepositoryError({
                   operation: "cloneRepository",
@@ -185,7 +172,7 @@ describe("ProjectCloneTracker", () => {
     });
     return Effect.gen(function* () {
       const tracker = yield* ProjectCloneTracker.ProjectCloneTracker;
-      yield* tracker.start(startInput, harness.hooks);
+      yield* tracker.start({ ...startInput, protocol: "ssh" }, harness.hooks);
       yield* Effect.yieldNow;
       const failed = yield* tracker.get(projectId);
       expect(failed).toMatchObject({ phase: "failed", error: "fatal: repository not found" });
@@ -194,7 +181,7 @@ describe("ProjectCloneTracker", () => {
       expect(harness.discarded).toEqual(["/workspace/t3code"]);
       yield* Effect.yieldNow;
       expect((yield* tracker.get(projectId))?.phase).toBe("done");
-      expect(attempts).toBe(2);
+      expect(protocols).toEqual(["ssh", "ssh"]);
     }).pipe(Effect.provide(harness.layer));
   });
 
@@ -210,110 +197,6 @@ describe("ProjectCloneTracker", () => {
       expect(harness.discarded).toEqual(["/workspace/t3code"]);
       expect(yield* tracker.cancel(projectId)).toBe(false);
       expect(yield* tracker.retry(projectId)).toBe(true);
-    }).pipe(Effect.provide(harness.layer));
-  });
-
-  it.effect("sets up a multi-repo project and cancels it member by member", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const tracker = yield* ProjectCloneTracker.ProjectCloneTracker;
-      yield* tracker.start(
-        {
-          projectId,
-          title: "product",
-          createdAt: startInput.createdAt,
-          destinationPath: "/workspace/product",
-          members: [
-            { path: "api", remoteUrl: "git@github.com:acme/api.git" },
-            { path: "web", remoteUrl: "git@github.com:acme/web.git" },
-          ],
-        },
-        harness.hooks,
-      );
-      yield* Effect.yieldNow;
-      expect(yield* tracker.get(projectId)).toMatchObject({
-        phase: "running",
-        remoteUrl: "git@github.com:acme/api.git",
-      });
-
-      expect(yield* tracker.cancel(projectId)).toBe(true);
-      // The folder holds several clones, so the single-repository discard would refuse it.
-      expect(harness.discarded).toEqual(["multi-repo:api,web"]);
-    }).pipe(Effect.provide(harness.layer));
-  });
-
-  it.effect("reserves a multi-repo clone's member folders against other clones", () => {
-    const harness = makeHarness({ clone: () => Effect.never });
-    return Effect.gen(function* () {
-      const tracker = yield* ProjectCloneTracker.ProjectCloneTracker;
-      yield* tracker.start(
-        {
-          ...startInput,
-          destinationPath: "/workspace/product",
-          members: [{ path: "api", remoteUrl: startInput.remoteUrl }],
-        },
-        harness.hooks,
-      );
-      const error = yield* Effect.flip(
-        tracker.start(
-          {
-            ...startInput,
-            projectId: ProjectId.make("member-project"),
-            destinationPath: "/workspace/product/api",
-          },
-          harness.hooks,
-        ),
-      );
-      expect(error.message).toContain("already in progress");
-      expect(harness.created).toHaveLength(1);
-
-      // A shared name prefix is not a shared folder.
-      yield* tracker.start(
-        {
-          ...startInput,
-          projectId: ProjectId.make("sibling-project"),
-          destinationPath: "/workspace/product-other",
-        },
-        harness.hooks,
-      );
-      const parentError = yield* Effect.flip(
-        tracker.start(
-          {
-            ...startInput,
-            projectId: ProjectId.make("parent-project"),
-            destinationPath: "/workspace",
-            members: [{ path: "product-other", remoteUrl: startInput.remoteUrl }],
-          },
-          harness.hooks,
-        ),
-      );
-      expect(parentError.message).toContain("already in progress");
-      expect(harness.created).toHaveLength(2);
-    }).pipe(Effect.provide(harness.layer));
-  });
-
-  it.effect("refuses multi-repo members without a network remote", () => {
-    const harness = makeHarness();
-    return Effect.gen(function* () {
-      const tracker = yield* ProjectCloneTracker.ProjectCloneTracker;
-      const error = yield* Effect.flip(
-        tracker.start(
-          {
-            projectId,
-            title: "product",
-            createdAt: startInput.createdAt,
-            destinationPath: "/workspace/product",
-            members: [
-              { path: "api", remoteUrl: "git@github.com:acme/api.git" },
-              { path: "web", remoteUrl: "/srv/git/web.git" },
-            ],
-          },
-          harness.hooks,
-        ),
-      );
-      assert(error._tag === "SourceControlRepositoryError");
-      expect(error.detail).toContain("'web' has no network remote");
-      expect(yield* tracker.get(projectId)).toBeNull();
     }).pipe(Effect.provide(harness.layer));
   });
 
@@ -345,7 +228,7 @@ describe("ProjectCloneTracker", () => {
         }),
     });
     const layer = ProjectCloneTracker.layer.pipe(
-      Layer.provide(Path.layer),
+      Layer.provide(NodePath.layer),
       Layer.provide(
         Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
           prepareClone: (input) =>
@@ -403,10 +286,39 @@ describe("ProjectCloneTracker", () => {
     }).pipe(Effect.provide(harness.layer));
   });
 
+  it.effect("clones for the project that already owns the empty destination", () => {
+    const owner = ProjectId.make("project-stranded");
+    const harness = makeHarness();
+    const hooks: ProjectCloneTracker.ProjectCloneHooks = {
+      ...harness.hooks,
+      createProject: (input) =>
+        Effect.fail(
+          new ProjectConflictError({
+            projectId: input.projectId,
+            workspaceRoot: input.workspaceRoot,
+            conflictingProjectId: owner,
+          }),
+        ),
+    };
+    return Effect.gen(function* () {
+      const tracker = yield* ProjectCloneTracker.ProjectCloneTracker;
+      const result = yield* tracker.start(startInput, hooks);
+      expect(result.projectId).toBe(owner);
+      yield* Effect.yieldNow;
+      expect(yield* tracker.get(owner)).toMatchObject({
+        projectId: owner,
+        destinationPath: "/workspace/t3code",
+        phase: "done",
+      });
+      expect(harness.cloned).toEqual([owner]);
+      expect(yield* tracker.get(projectId)).toBeNull();
+    }).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect("does not create a project when the clone cannot be prepared", () => {
     const harness = makeHarness();
     const layer = ProjectCloneTracker.layer.pipe(
-      Layer.provide(Path.layer),
+      Layer.provide(NodePath.layer),
       Layer.provide(
         Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
           prepareClone: () =>

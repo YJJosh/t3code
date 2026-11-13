@@ -1,5 +1,8 @@
+import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as WorklerWorkspaceService from "../vcs/WorklerWorkspaceService.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import * as NodePath from "@effect/platform-node/NodePath";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -17,8 +20,6 @@ import {
 
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import * as VcsProcess from "../vcs/VcsProcess.ts";
-import * as WorklerWorkspaceService from "../vcs/WorklerWorkspaceService.ts";
 import type * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import * as SourceControlProviderRegistry from "./SourceControlProviderRegistry.ts";
 import * as SourceControlRepositoryService from "./SourceControlRepositoryService.ts";
@@ -100,7 +101,7 @@ function layer(input: {
         Layer.provide(Layer.succeed(FileSystem.FileSystem, input.fileSystem)),
         Layer.provideMerge(NodePath.layer),
       )
-    : layerService.pipe(Layer.provideMerge(NodeServices.layer));
+    : layerService.pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 }
 
 const lookupFailingWith = (cause: unknown, detail: string) =>
@@ -193,7 +194,7 @@ it.effect("clones a looked-up repository after creating missing parent directori
         }),
       ),
     );
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["--bare", "source.git"])(
@@ -227,7 +228,7 @@ it.effect.each(["--bare", "source.git"])(
               prefix: "t3-clone-options-config-",
             }),
           ),
-          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         ),
       ),
     ),
@@ -290,7 +291,7 @@ it.effect("reports clone progress from git's stderr and keeps its error text on 
       error.detail,
       "fatal: early EOF fatal: unable to access 'https://github.com/octocat/t3code.git/': could not resolve host",
     );
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 function rejectingSsh(
@@ -339,7 +340,7 @@ const cloneInTemporaryDirectory = (
         destinationPath: path.join(parent, "t3code"),
       });
     }).pipe(Effect.provide(layer({ git }).pipe(Layer.orDie)));
-  }).pipe(Effect.provide(NodeServices.layer));
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 it.effect("retries a clone over HTTPS when the SSH login is refused", () =>
   Effect.gen(function* () {
@@ -369,6 +370,25 @@ it.effect("reports both failures when the HTTPS retry fails too", () =>
 );
 
 it.effect.each([
+  "git@ssh.dev.azure.com:v3/Fabrikam/Project1/fab_repo",
+  "ssh://user:pa@rt@ssh.dev.azure.com/v3/Fabrikam/Project1/fab_repo",
+  "ssh://us%40er:pa%40ss@ssh.dev.azure.com/v3/Fabrikam/Project1/fab_repo",
+])("retries Azure SSH URL %s using its HTTPS host and repository path", (remoteUrl) =>
+  Effect.gen(function* () {
+    const urls: Array<string> = [];
+    const result = yield* cloneInTemporaryDirectory(rejectingSsh(urls, false), {
+      remoteUrl,
+    });
+
+    assert.deepStrictEqual(urls, [
+      remoteUrl,
+      "https://dev.azure.com/Fabrikam/Project1/_git/fab_repo",
+    ]);
+    assert.strictEqual(result.remoteUrl, "https://dev.azure.com/Fabrikam/Project1/_git/fab_repo");
+  }),
+);
+
+it.effect.each([
   ["the caller asked for SSH", "ssh", "authentication_failed"],
   ["git failed for another reason", undefined, "remote_unreachable"],
 ] as const)("does not retry over HTTPS when %s", ([, protocol, reason]) =>
@@ -382,6 +402,62 @@ it.effect.each([
     );
 
     assert.deepStrictEqual(urls, [CLONE_URLS.sshUrl]);
+  }),
+);
+
+it.effect.each([
+  ["a plain token", "s3cret"],
+  ["a token with an apostrophe", "s3'cret"],
+  ["a token with a double quote", 's3"cret'],
+  ["a host-only token with an at sign", "abc@secret"],
+  ["an unquoted token with an apostrophe", "s3'cret", true],
+  ["an unquoted token with a double quote", 's3"cret', true],
+  ["an unquoted URL with an apostrophe in its path", "path-token", true],
+] as const)("keeps %s in the query out of a failed clone's error text", ([, token, unquoted]) =>
+  Effect.gen(function* () {
+    const remote =
+      token === "abc@secret"
+        ? "https://github.com"
+        : token === "path-token"
+          ? "https://github.com/octocat/t3code's.git"
+          : "https://github.com/octocat/t3code.git";
+    const error = yield* Effect.flip(
+      cloneInTemporaryDirectory(
+        {
+          execute: (input) =>
+            Effect.gen(function* () {
+              const cloneUrl = input.args.at(-2)!;
+              // Git treats @ in a pathless URL's query as userinfo, losing the query delimiter.
+              const diagnosticUrl =
+                cloneUrl === "https://github.com?access_token=abc@secret"
+                  ? "https://secret"
+                  : cloneUrl;
+              yield* (
+                input.progress?.onStderrLine?.(
+                  unquoted
+                    ? `fatal: ${diagnosticUrl}/info/refs not valid: is this a git repository?`
+                    : `fatal: unable to access '${diagnosticUrl}/': Could not resolve host: github.com`,
+                ) ?? Effect.void
+              );
+              return yield* new GitCommandError({
+                operation: input.operation,
+                command: "git",
+                cwd: input.cwd,
+                detail: "Git command exited with a non-zero status.",
+                exitCode: 128,
+              });
+            }),
+        },
+        { remoteUrl: `${remote}?access_token=${token}` },
+      ),
+    );
+
+    assert.strictEqual(
+      error.detail,
+      unquoted
+        ? `fatal: ${remote} not valid: is this a git repository?`
+        : `fatal: unable to access '${remote}${token === "abc@secret" ? "/" : ""}': Could not resolve host: github.com`,
+    );
   }),
 );
 
@@ -413,7 +489,7 @@ it.effect("strips embedded credentials from the remote URL it reports", () =>
     );
     assert.equal(result.remoteUrl, "https://github.com/octocat/t3code.git");
     assert.equal(result.cloneUrl, "https://user:s3cret@github.com/octocat/t3code.git");
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("discards only a directory git wrote to", () =>
@@ -444,90 +520,7 @@ it.effect("discards only a directory git wrote to", () =>
     assert.deepStrictEqual(yield* fs.readDirectory(partial), []);
     assert.deepStrictEqual(yield* fs.readDirectory(foreign), ["notes.txt"]);
     assert.strictEqual(yield* fs.readFileString(replaced), "not a directory");
-  }).pipe(Effect.provide(NodeServices.layer)),
-);
-
-it.effect("clones every member of a multi-repo project, then lists them in .workler", () =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-source-control-multi-" });
-    const destinationPath = path.join(parent, "product");
-    const clones: Array<string> = [];
-    // Stands in for git: a clone leaves a folder with a .git inside.
-    const fakeClone = (input: GitVcsDriver.ExecuteGitInput) =>
-      Effect.gen(function* () {
-        const [, , , url, folder] = input.args;
-        clones.push(`${url} -> ${path.relative(destinationPath, path.join(input.cwd, folder!))}`);
-        yield* fs.makeDirectory(path.join(input.cwd, folder!, ".git"), { recursive: true });
-        return processOutput();
-      }).pipe(Effect.orDie);
-
-    yield* Effect.gen(function* () {
-      const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
-      for (const [members, message] of [
-        // A `project` line in .workler cannot hold control characters.
-        [[{ path: "api\nproject other", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
-        [[{ path: "api\rweb", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
-        [[{ path: "api\tweb", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
-        [[{ path: "../outside", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
-        [[{ path: "/abs", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
-        [[{ path: ".worktrees/a", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
-        [[{ path: "api/.GIT/web", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
-        [
-          [
-            { path: "api", remoteUrl: "git@x:a/api.git" },
-            { path: "api/v2", remoteUrl: "git@x:a/v2.git" },
-          ],
-          "would share a folder",
-        ],
-      ] as const) {
-        const error = yield* Effect.flip(
-          service.prepareMultiRepoClone({ destinationPath, members }),
-        );
-        assert.include(error.detail, message);
-      }
-
-      const prepared = yield* service.prepareMultiRepoClone({
-        destinationPath,
-        members: [
-          { path: "api", remoteUrl: "https://user:token@github.com/acme/api.git" },
-          { path: "./projects\\web app", remoteUrl: "git@github.com:acme/web.git" },
-        ],
-      });
-      assert.deepStrictEqual(
-        prepared.members.map((member) => [member.path, member.remoteUrl]),
-        [
-          ["api", "https://github.com/acme/api.git"],
-          ["projects/web app", "git@github.com:acme/web.git"],
-        ],
-      );
-      yield* service.cloneMultiRepo(prepared);
-      // Git gets the URL the user gave, credentials included.
-      assert.deepStrictEqual(clones, [
-        "https://user:token@github.com/acme/api.git -> api",
-        `git@github.com:acme/web.git -> ${path.join("projects", "web app")}`,
-      ]);
-      assert.strictEqual(
-        yield* fs.readFileString(path.join(destinationPath, ".workler")),
-        'project api\nproject "projects/web app"\n',
-      );
-
-      // A cancelled or failed setup leaves the destination as empty as it was.
-      yield* service.discardMultiRepoClone(prepared);
-      assert.deepStrictEqual(yield* fs.readDirectory(destinationPath), []);
-
-      // Finder's .DS_Store doesn't make the folder "not empty"; any other file does.
-      const members = [{ path: "api", remoteUrl: "git@x:a/api.git" }];
-      yield* fs.writeFileString(path.join(destinationPath, ".DS_Store"), "");
-      yield* service.prepareMultiRepoClone({ destinationPath, members });
-      yield* fs.writeFileString(path.join(destinationPath, "notes.md"), "");
-      const notEmpty = yield* Effect.flip(
-        service.prepareMultiRepoClone({ destinationPath, members }),
-      );
-      assert.include(notEmpty.detail, "not empty");
-    }).pipe(Effect.provide(layer({ git: { execute: fakeClone } })));
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("redacts query tokens and userinfo containing '@' from reported URLs", () =>
@@ -548,7 +541,7 @@ it.effect("redacts query tokens and userinfo containing '@' from reported URLs",
       });
       assert.equal(nested.remoteUrl, "https://github.com/octocat/t3code.git");
     }).pipe(Effect.provide(layer({})));
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("preserves destination probe failures instead of treating them as missing paths", () => {
@@ -657,6 +650,52 @@ it.effect("explains a rejected SSH push after creating the repository", () =>
   }).pipe(Effect.provide(layer({ git: failingPush("authentication_failed") }))),
 );
 
+// regression: an auto-selected SSH remote kept failing every later fetch after a refused push
+it.effect("switches an auto-selected remote to HTTPS when the SSH push is refused", () => {
+  const gitArgs: Array<ReadonlyArray<string>> = [];
+  let pushAttempts = 0;
+  return Effect.gen(function* () {
+    const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+    const result = yield* service.publishRepository({
+      cwd: "/workspace",
+      provider: SourceControlProviderKind.make("github"),
+      repository: "octocat/t3code",
+      visibility: "private",
+    });
+
+    assert.strictEqual(result.status, "pushed");
+    assert.strictEqual(result.remoteUrl, CLONE_URLS.url);
+    assert.strictEqual(pushAttempts, 2);
+    assert.deepStrictEqual(gitArgs, [
+      ["rev-parse", "--verify", "HEAD"],
+      ["remote", "set-url", "origin", CLONE_URLS.url],
+    ]);
+  }).pipe(
+    Effect.provide(
+      layer({
+        git: {
+          execute: (input) =>
+            Effect.sync(() => {
+              gitArgs.push(input.args);
+              return processOutput();
+            }),
+          pushCurrentBranch: (cwd) => {
+            pushAttempts += 1;
+            return pushAttempts === 1
+              ? failingPush("authentication_failed").pushCurrentBranch(cwd)
+              : Effect.succeed({
+                  status: "pushed" as const,
+                  branch: "main",
+                  upstreamBranch: "origin/main",
+                  setUpstream: true,
+                });
+          },
+        },
+      }),
+    ),
+  );
+});
+
 // regression: #19219 publishing did not explain why the first push failed
 it.effect("says the repository exists when an unclassified publish push fails", () =>
   Effect.gen(function* () {
@@ -754,7 +793,7 @@ it.effect("clones real repositories into a usable group and discards it safely",
     Layer.provideMerge(GitVcsDriver.layer),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-real-group-clone-" })),
     Layer.provide(VcsProcess.layer),
-    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -807,3 +846,86 @@ it.effect("clones real repositories into a usable group and discards it safely",
     assert.isFalse(yield* fs.exists(path.join(prepared.destinationPath, ".workler")));
   }).pipe(Effect.scoped, Effect.provide(layer));
 });
+
+it.effect("clones every member of a multi-repo project, then lists them in .workler", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-source-control-multi-" });
+    const destinationPath = path.join(parent, "product");
+    const clones: Array<string> = [];
+    // Stands in for git: a clone leaves a folder with a .git inside.
+    const fakeClone = (input: GitVcsDriver.ExecuteGitInput) =>
+      Effect.gen(function* () {
+        const [, , , url, folder] = input.args;
+        clones.push(`${url} -> ${path.relative(destinationPath, path.join(input.cwd, folder!))}`);
+        yield* fs.makeDirectory(path.join(input.cwd, folder!, ".git"), { recursive: true });
+        return processOutput();
+      }).pipe(Effect.orDie);
+
+    yield* Effect.gen(function* () {
+      const service = yield* SourceControlRepositoryService.SourceControlRepositoryService;
+      for (const [members, message] of [
+        // A `project` line in .workler cannot hold control characters.
+        [[{ path: "api\nproject other", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: "api\rweb", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: "api\tweb", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: "../outside", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: "/abs", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: ".worktrees/a", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [[{ path: "api/.GIT/web", remoteUrl: "git@x:a/b.git" }], "not a folder inside"],
+        [
+          [
+            { path: "api", remoteUrl: "git@x:a/api.git" },
+            { path: "api/v2", remoteUrl: "git@x:a/v2.git" },
+          ],
+          "would share a folder",
+        ],
+      ] as const) {
+        const error = yield* Effect.flip(
+          service.prepareMultiRepoClone({ destinationPath, members }),
+        );
+        assert.include(error.detail, message);
+      }
+
+      const prepared = yield* service.prepareMultiRepoClone({
+        destinationPath,
+        members: [
+          { path: "api", remoteUrl: "https://user:token@github.com/acme/api.git" },
+          { path: "./projects\\web app", remoteUrl: "git@github.com:acme/web.git" },
+        ],
+      });
+      assert.deepStrictEqual(
+        prepared.members.map((member) => [member.path, member.remoteUrl]),
+        [
+          ["api", "https://github.com/acme/api.git"],
+          ["projects/web app", "git@github.com:acme/web.git"],
+        ],
+      );
+      yield* service.cloneMultiRepo(prepared);
+      // Git gets the URL the user gave, credentials included.
+      assert.deepStrictEqual(clones, [
+        "https://user:token@github.com/acme/api.git -> api",
+        `git@github.com:acme/web.git -> ${path.join("projects", "web app")}`,
+      ]);
+      assert.strictEqual(
+        yield* fs.readFileString(path.join(destinationPath, ".workler")),
+        'project api\nproject "projects/web app"\n',
+      );
+
+      // A cancelled or failed setup leaves the destination as empty as it was.
+      yield* service.discardMultiRepoClone(prepared);
+      assert.deepStrictEqual(yield* fs.readDirectory(destinationPath), []);
+
+      // Finder's .DS_Store doesn't make the folder "not empty"; any other file does.
+      const members = [{ path: "api", remoteUrl: "git@x:a/api.git" }];
+      yield* fs.writeFileString(path.join(destinationPath, ".DS_Store"), "");
+      yield* service.prepareMultiRepoClone({ destinationPath, members });
+      yield* fs.writeFileString(path.join(destinationPath, "notes.md"), "");
+      const notEmpty = yield* Effect.flip(
+        service.prepareMultiRepoClone({ destinationPath, members }),
+      );
+      assert.include(notEmpty.detail, "not empty");
+    }).pipe(Effect.provide(layer({ git: { execute: fakeClone } })));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);

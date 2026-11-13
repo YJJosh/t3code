@@ -1,23 +1,7 @@
 name: Release
 
-# Upstream publishing is disabled; Dulli releases use fork-desktop-release.yml.
-
 on:
-  workflow_dispatch:
-    inputs:
-      channel:
-        description: "Release channel"
-        required: false
-        default: preview
-        type: choice
-        options:
-          - preview
-          - stable
-          - nightly
-      version:
-        description: "Stable version override (for example 1.2.3). Defaults to the version the latest nightly previewed."
-        required: false
-        type: string
+  workflow_dispatch: null
 
 # Serialize nightlies (scheduled and manual) so overlapping runs cannot build
 # the same commit twice or publish out of order. Stable tag releases get their
@@ -44,7 +28,7 @@ jobs:
   # have already run. Scheduled runs also decide here whether a nightly is due.
   resolve_commit:
     name: Resolve release commit
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (github.repository == 'pingdotgg/t3code') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -63,6 +47,8 @@ jobs:
         env:
           DISPATCH_CHANNEL: ${{ inputs.channel }}
         with:
+          # Every call here is a read; retry GitHub's transient 5xx and dropped connections.
+          retries: 3
           script: |
             const {
               assertCommitOnDefaultBranch,
@@ -96,7 +82,9 @@ jobs:
   preflight:
     name: Preflight
     needs: [resolve_commit]
-    if: ${{ false }}
+    if: |-
+      ${{ github.repository == 'pingdotgg/t3code' && (needs.resolve_commit.result == 'success' &&
+      (github.event_name != 'schedule' || needs.resolve_commit.outputs.has_changes == 'true')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -224,7 +212,7 @@ jobs:
   quality:
     name: Release quality checks
     needs: [preflight]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!failure() && !cancelled() && needs.preflight.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -256,7 +244,7 @@ jobs:
   test:
     name: Release tests
     needs: [preflight]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!failure() && !cancelled() && needs.preflight.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -292,7 +280,7 @@ jobs:
   test_web:
     name: Release web tests
     needs: [preflight]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!failure() && !cancelled() && needs.preflight.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -346,7 +334,7 @@ jobs:
   test_server:
     name: Release server tests ${{ matrix.shard }}
     needs: [preflight]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!failure() && !cancelled() && needs.preflight.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
@@ -382,11 +370,17 @@ jobs:
     # Consumes only the release commit, not preflight's resolved version, so it
     # runs alongside preflight instead of after it. The condition mirrors preflight's.
     needs: [resolve_commit]
-    if: ${{ false }}
+    if: |-
+      ${{ github.repository == 'pingdotgg/t3code' && (needs.resolve_commit.result == 'success' &&
+      (github.event_name != 'schedule' || needs.resolve_commit.outputs.has_changes == 'true')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # Previews build any branch, but production admits only main and v* tags.
+    # The empty name runs previews with no environment, so their Clerk and relay
+    # ids come from .env.example. Everything else matches nightly: the tracing
+    # read below needs only repository-level Cloudflare credentials.
     environment:
-      name: production
+      name: ${{ inputs.channel != 'preview' && 'production' || '' }}
     outputs:
       clerk_publishable_key: ${{ steps.public_config.outputs.clerk_publishable_key }}
       clerk_jwt_template: ${{ steps.public_config.outputs.clerk_jwt_template }}
@@ -452,8 +446,18 @@ jobs:
       - id: public_config
         name: Resolve production relay public config
         shell: bash
+        env:
+          PREVIEW: ${{ inputs.channel == 'preview' }}
         run: |
           set -euo pipefail
+
+          if [[ "$PREVIEW" == "true" ]]; then
+            env_example() { sed -n "s|^T3CODE_$1=||p" .env.example; }
+            CLERK_PUBLISHABLE_KEY="$(env_example CLERK_PUBLISHABLE_KEY)"
+            CLERK_JWT_TEMPLATE="$(env_example CLERK_JWT_TEMPLATE)"
+            CLERK_CLI_OAUTH_CLIENT_ID="$(env_example CLERK_CLI_OAUTH_CLIENT_ID)"
+            RELAY_DOMAIN="$(sed -n 's|^T3CODE_RELAY_URL=https://||p' .env.example)"
+          fi
 
           relay_domain="${RELAY_DOMAIN:-}"
           if [[ -z "$relay_domain" && -n "${RELAY_API_ZONE_NAME:-}" ]]; then
@@ -490,9 +494,11 @@ jobs:
     # Same gating as relay_public_config: only the release commit is needed, so
     # this runs alongside preflight. See the condition comment there.
     needs: [preflight, relay_public_config]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      npm_launcher_artifact_id: ${{ steps.npm_launcher.outputs.artifact-id }}
     env:
       T3CODE_CLERK_PUBLISHABLE_KEY: ${{ needs.relay_public_config.outputs.clerk_publishable_key }}
       T3CODE_CLERK_JWT_TEMPLATE: ${{ needs.relay_public_config.outputs.clerk_jwt_template }}
@@ -541,22 +547,32 @@ jobs:
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
-      - uses: ./.github/actions/setup-apt-mirrors
+      # Older release refs lack build:desktop:bundle and use the full build,
+      # which compiles the Linux browser secret helper and needs libsecret.
+      - name: Check bundle-only build support
+        id: bundle_build
+        run: |
+          script="$(node -p "require('./package.json').scripts['build:desktop:bundle'] ? 'build:desktop:bundle' : 'build:desktop'")"
+          echo "script=$script" >> "$GITHUB_OUTPUT"
 
-      # @t3tools/desktop#build compiles the Linux browser secret helper on a
-      # Linux host before packing, and that needs libsecret headers.
+      - if: steps.bundle_build.outputs.script == 'build:desktop'
+        uses: ./.github/actions/setup-apt-mirrors
+
       - name: Install browser secret helper build libraries
+        if: steps.bundle_build.outputs.script == 'build:desktop'
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
-      # Runs t3#build (which depends on @t3tools/web#build) and
-      # @t3tools/desktop#build, so apps/server/dist holds the server bundle
-      # plus the web client and apps/desktop/dist-electron the Electron main.
+      # Runs t3#build (which depends on @t3tools/web#build) and the desktop
+      # bundle, so apps/server/dist holds the server bundle plus the web client
+      # and apps/desktop/dist-electron the Electron main. build:desktop:bundle
+      # skips the Linux browser secret helper, which this artifact does not
+      # carry; each Linux package job compiles its own per arch.
       # The release channel is already stable, nightly, or preview. Builds in
       # other repositories report "dev" telemetry.
       - name: Build JS bundle
         env:
           T3CODE_TELEMETRY_CHANNEL: ${{ github.repository == 'pingdotgg/t3code' && needs.preflight.outputs.release_channel || 'dev' }}
-        run: vp run build:desktop
+        run: vp run ${{ steps.bundle_build.outputs.script }}
 
       # Two paths under apps/ so the artifact root is apps/; consumers download
       # into `apps` to restore both at their original locations.
@@ -570,6 +586,22 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # publish_cli publishes this exact tarball, so the trusted publisher
+      # needs no workspace checkout or install. It is version-matched here.
+      - name: Build the npm launcher
+        run: node scripts/build-npm-launcher.ts --version "${{ needs.preflight.outputs.version }}" --output-dir npm-packages
+
+      # GitHub allows a failed-jobs rerun for 30 days. publish_cli downloads
+      # this upload by its ID, which a publish_cli-only rerun keeps.
+      - name: Upload the npm launcher
+        id: npm_launcher
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-launcher
+          path: npm-packages/t3.tgz
+          if-no-files-found: error
+          retention-days: 30
+
   # One job per platform and architecture (see release-desktop.yml), each
   # gated only on the JS bundle. Windows targets build on Linux and run their
   # native checks on a Windows runner of their own architecture.
@@ -581,7 +613,7 @@ jobs:
   desktop_mac_arm64:
     name: Desktop macOS arm64
     needs: [preflight, relay_public_config, build_bundle]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build_bundle.result == 'success') }}
     uses: ./.github/workflows/release-desktop.yml
     secrets: inherit
     with:
@@ -593,7 +625,7 @@ jobs:
       clerk_cli_oauth_client_id: ${{ needs.relay_public_config.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.relay_public_config.outputs.relay_url }}
       label: macOS arm64
-      runner: blacksmith-12vcpu-macos-26
+      runner: macos-26
       platform: mac
       target: dmg
       arch: arm64
@@ -601,11 +633,13 @@ jobs:
       resource_key: darwin-arm64
       cli_archive: true
       launch_check: true
+      # desktop_mac_x64 saves the shared pnpm store; this job finishes last.
+      save_pnpm_store: false
 
   desktop_mac_x64:
     name: Desktop macOS x64
     needs: [preflight, relay_public_config, build_bundle]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build_bundle.result == 'success') }}
     uses: ./.github/workflows/release-desktop.yml
     secrets: inherit
     with:
@@ -617,7 +651,7 @@ jobs:
       clerk_cli_oauth_client_id: ${{ needs.relay_public_config.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.relay_public_config.outputs.relay_url }}
       label: macOS x64
-      runner: blacksmith-12vcpu-macos-26
+      runner: macos-26
       platform: mac
       target: dmg
       arch: x64
@@ -631,7 +665,7 @@ jobs:
   desktop_linux_x64:
     name: Desktop Linux x64
     needs: [preflight, relay_public_config, build_bundle]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build_bundle.result == 'success') }}
     uses: ./.github/workflows/release-desktop.yml
     secrets: inherit
     with:
@@ -657,7 +691,7 @@ jobs:
   desktop_linux_arm64:
     name: Desktop Linux arm64
     needs: [preflight, relay_public_config, build_bundle]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build_bundle.result == 'success') }}
     uses: ./.github/workflows/release-desktop.yml
     secrets: inherit
     with:
@@ -685,7 +719,7 @@ jobs:
   desktop_win_x64:
     name: Desktop Windows x64
     needs: [preflight, relay_public_config, build_bundle]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build_bundle.result == 'success') }}
     uses: ./.github/workflows/release-desktop.yml
     secrets: inherit
     with:
@@ -697,7 +731,7 @@ jobs:
       clerk_cli_oauth_client_id: ${{ needs.relay_public_config.outputs.clerk_cli_oauth_client_id }}
       relay_url: ${{ needs.relay_public_config.outputs.relay_url }}
       label: Windows x64
-      runner: blacksmith-16vcpu-ubuntu-2404
+      runner: ubuntu-24.04
       verify_runner: windows-2025
       platform: win
       target: nsis
@@ -709,7 +743,7 @@ jobs:
   desktop_win_arm64:
     name: Desktop Windows arm64
     needs: [preflight, relay_public_config, build_bundle]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.build_bundle.result == 'success') }}
     uses: ./.github/workflows/release-desktop.yml
     secrets: inherit
     with:
@@ -747,7 +781,7 @@ jobs:
         desktop_win_x64,
         desktop_win_arm64,
       ]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!failure() && !cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.quality.result == 'success' && needs.test.result == 'success' && needs.test_web.result == 'success' && needs.test_server.result == 'success' && needs.desktop_mac_arm64.result == 'success' && needs.desktop_mac_x64.result == 'success' && needs.desktop_linux_x64.result == 'success' && needs.desktop_linux_arm64.result == 'success' && needs.desktop_win_x64.result == 'success' && needs.desktop_win_arm64.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -772,6 +806,24 @@ jobs:
         with:
           install-args: --filter=@t3tools/scripts...
 
+      # Overlaps the artifact downloads. The wait below ends it before any
+      # workspace script runs, so the Play key lives only in this process.
+      # `exec` lets the runner's stop signals reach node directly.
+      - id: android_apk
+        name: Download nightly Android APK
+        if: needs.preflight.outputs.release_channel == 'nightly'
+        background: true
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          PACKAGE_NAME: com.t3tools.t3code
+          APK_OUTPUT_DIR: ${{ runner.temp }}/android-apk
+        run: |
+          if [ -n "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            exec node .github/scripts/mirror-play-apk.cjs
+          fi
+
       - name: Download all desktop artifacts
         uses: actions/download-artifact@v8
         with:
@@ -785,18 +837,6 @@ jobs:
           pattern: cli-*
           merge-multiple: true
           path: release-assets
-
-      - name: Download internal Android APK for Nightly
-        if: needs.preflight.outputs.release_channel == 'nightly'
-        continue-on-error: true
-        env:
-          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
-          PACKAGE_NAME: com.t3tools.t3code
-          APK_OUTPUT_DIR: release-assets
-        run: |
-          if [ -n "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" ]; then
-            node .github/scripts/mirror-play-apk.cjs
-          fi
 
       # Installers verify archives against this file, so it is written from the
       # signed bytes that get uploaded, never from an earlier stage.
@@ -813,6 +853,10 @@ jobs:
           fi
           sha256sum "${archives[@]}" > SHA256SUMS
           cat SHA256SUMS
+
+      # Always runs, even after a failed step, and keeps that failure.
+      - name: Wait for nightly Android APK
+        wait: android_apk
 
       # The desktop build omits the publish config for preview versions, so
       # electron-builder emits no updater manifests for them. Refuse to publish
@@ -879,10 +923,13 @@ jobs:
               echo 'release-assets/*.yml'
             fi
             echo 'release-assets/*.tar.gz'
-            # Only list APKs when Play has a processed internal build available.
-            for apk in release-assets/*.apk; do
-              [[ -f "$apk" ]] && echo "$apk"
-            done
+            # A failed or timed-out fetch can leave partial bytes, so list the APK
+            # only when this attempt's fetch succeeded and Play had one ready.
+            if [[ "${{ steps.android_apk.outcome }}" == "success" ]]; then
+              for apk in "$RUNNER_TEMP"/android-apk/*.apk; do
+                [[ -f "$apk" ]] && echo "$apk"
+              done
+            fi
             echo 'release-assets/SHA256SUMS'
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
@@ -976,34 +1023,65 @@ jobs:
   # nothing resolves unless asked for by name.
   publish_cli:
     name: Publish CLI to npm
-    needs: [preflight, release]
-    if: ${{ false }}
-    runs-on: ubuntu-24.04
+    needs: [preflight, build_bundle, release]
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success') }}
+    runs-on: ubuntu-24.04 # ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
     steps:
+      # Only what setup-ci-deps reads to install the project's Node and npm.
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
           sparse-checkout: |
-            /*
-            !/.repos/
+            /.github/actions/setup-ci-deps/
+            /package.json
+            /pnpm-workspace.yaml
           sparse-checkout-cone-mode: false
 
-      - name: Setup dependencies
+      - name: Setup Node.js
         uses: ./.github/actions/setup-ci-deps
         with:
-          install-args: --filter=t3... --filter=@t3tools/scripts...
+          install: "false"
 
-      - name: Build the npm launcher
-        run: node scripts/build-npm-launcher.ts --version "${{ needs.preflight.outputs.version }}" --output-dir npm-packages
+      # Bind to build_bundle's exact upload: a name lookup takes the newest
+      # same-name artifact, and an empty ID downloads every artifact in the
+      # run. A later same-name upload hides this ID, so the download fails.
+      - name: Check the npm launcher artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.build_bundle.outputs.npm_launcher_artifact_id }}
+        run: |
+          if [[ ! "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::build_bundle gave no valid npm-launcher artifact ID: '$ARTIFACT_ID'." >&2
+            exit 1
+          fi
+
+      - name: Download the npm launcher
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build_bundle.outputs.npm_launcher_artifact_id }}
+          path: npm-packages
+          digest-mismatch: error
+
+      - name: Check the npm launcher version
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          built="$(tar -xzOf npm-packages/t3.tgz package/package.json | jq -r .version)"
+          if [[ "$built" != "$RELEASE_VERSION" ]]; then
+            echo "::error::npm-launcher holds t3@$built, expected t3@$RELEASE_VERSION." >&2
+            exit 1
+          fi
 
       - name: Publish the npm launcher
+        env:
+          DIST_TAG: ${{ needs.preflight.outputs.cli_dist_tag }}
         run: |
-          if ! node apps/server/scripts/cli.ts publish --packages-dir npm-packages --tag "${{ needs.preflight.outputs.cli_dist_tag }}" --provenance --verbose; then
+          # The ./ keeps npm from reading the path as a GitHub owner/repo spec.
+          if ! npm publish --access public --tag "$DIST_TAG" --provenance ./npm-packages/t3.tgz; then
             echo "::error::npm publish failed. Make sure package t3 has a trusted publisher registered for .github/workflows/release.yml (see docs/operations/release.md)." >&2
             exit 1
           fi
@@ -1011,7 +1089,7 @@ jobs:
   publish_aur:
     name: Publish AUR package
     needs: [preflight, release]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' && needs.preflight.outputs.release_channel != 'preview') }}
     uses: ./.github/workflows/publish-aur.yml
     with:
       release_tag: ${{ needs.preflight.outputs.tag }}
@@ -1027,7 +1105,7 @@ jobs:
   build_web:
     name: Build hosted web app
     needs: [preflight, relay_public_config]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && needs.preflight.result == 'success' && needs.relay_public_config.result == 'success' && needs.preflight.outputs.release_channel != 'preview') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -1128,7 +1206,7 @@ jobs:
   deploy_web:
     name: Deploy hosted web app
     needs: [preflight, build_web, release, publish_cli]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!failure() && !cancelled() && needs.preflight.result == 'success' && needs.build_web.result == 'success' && needs.release.result == 'success' && needs.publish_cli.result == 'success' && needs.preflight.outputs.release_channel != 'preview') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -1141,13 +1219,16 @@ jobs:
       T3CODE_WEB_NIGHTLY_DOMAIN: ${{ vars.T3CODE_WEB_NIGHTLY_DOMAIN }}
       VERCEL_TEAM_SLUG: ${{ vars.VERCEL_TEAM_SLUG }}
     steps:
+      # Only what setup-ci-deps reads to install vp and Node. The alias call
+      # names its deployment and scope, so it reads nothing else from the repo.
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
           sparse-checkout: |
-            /*
-            !/.repos/
+            /.github/actions/setup-ci-deps/
+            /package.json
+            /pnpm-workspace.yaml
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
@@ -1200,7 +1281,7 @@ jobs:
   build_marketing:
     name: Build marketing site
     needs: [preflight]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.release_channel == 'nightly') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -1267,7 +1348,7 @@ jobs:
   deploy_marketing:
     name: Deploy marketing site
     needs: [preflight, build_marketing, release]
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!failure() && !cancelled() && needs.preflight.result == 'success' && needs.build_marketing.result == 'success' && needs.release.result == 'success' && needs.preflight.outputs.release_channel == 'nightly') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -1309,7 +1390,7 @@ jobs:
 
   finalize:
     name: Finalize release
-    if: ${{ false }}
+    if: ${{ github.repository == 'pingdotgg/t3code' && (!failure() && !cancelled() && needs.preflight.result == 'success' && needs.release.result == 'success' && needs.preflight.outputs.release_channel == 'stable') }}
     needs: [preflight, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -1378,12 +1459,19 @@ jobs:
           git config user.email "${{ steps.app_bot.outputs.email }}"
 
           git add apps/server/package.json apps/desktop/package.json apps/web/package.json packages/contracts/package.json pnpm-lock.yaml
-          git commit -m "chore(release): prepare $RELEASE_TAG"
+          git commit --no-verify -m "chore(release): prepare $RELEASE_TAG"
           git push origin HEAD:main
 
   announce_discord:
     name: Announce release on Discord
-    if: ${{ false }}
+    if: |-
+      ${{ github.repository == 'pingdotgg/t3code' && (always() && !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.preflight.outputs.release_channel != 'preview' &&
+      needs.relay_public_config.result == 'success' &&
+      needs.release.result == 'success' &&
+      needs.deploy_web.result == 'success' &&
+      (needs.finalize.result == 'success' || needs.finalize.result == 'skipped')) }}
     needs: [preflight, relay_public_config, release, deploy_web, finalize]
     runs-on: ubuntu-24.04
     timeout-minutes: 10

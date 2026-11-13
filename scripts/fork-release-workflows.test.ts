@@ -5,12 +5,21 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { describe, expect, it } from "vite-plus/test";
-import YAML from "yaml";
+import * as Schema from "effect/Schema";
+import { fromYaml } from "@t3tools/shared/schemaYaml";
 
 interface WorkflowJob {
   readonly if?: string;
   readonly needs?: string | ReadonlyArray<string>;
-  readonly steps?: ReadonlyArray<{ readonly id?: string; readonly run?: string }>;
+  readonly uses?: string;
+  readonly steps?: ReadonlyArray<{
+    readonly id?: string;
+    readonly name?: string;
+    readonly run?: string;
+    readonly if?: string;
+    readonly "continue-on-error"?: boolean | string;
+    readonly "working-directory"?: string;
+  }>;
 }
 
 interface Workflow {
@@ -21,7 +30,9 @@ interface Workflow {
 const workflowsDir = NodePath.resolve(import.meta.dirname, "../.github/workflows");
 
 function readWorkflow(name: string): Workflow {
-  return YAML.parse(NodeFS.readFileSync(NodePath.join(workflowsDir, name), "utf8")) as Workflow;
+  return Schema.decodeSync(fromYaml(Schema.Unknown))(
+    NodeFS.readFileSync(NodePath.join(workflowsDir, name), "utf8"),
+  ) as Workflow;
 }
 
 function runPreflightStep(
@@ -54,6 +65,7 @@ function runPreflightStep(
     const result = NodeChildProcess.spawnSync("bash", ["-c", script], {
       cwd: root,
       encoding: "utf8",
+      timeout: 10_000,
       env: { ...process.env, ...env, GITHUB_OUTPUT: outputPath },
     });
     if (result.error) throw result.error;
@@ -75,136 +87,123 @@ function resolvePreviousTag(currentTag: string, tags: ReadonlyArray<string>) {
   return runPreflightStep("previous_tag", { CURRENT_TAG: currentTag }, tags).output;
 }
 
-const hardDisabledWorkflows = {
-  "deploy-relay.yml": ["deploy_relay"],
-  "desktop-macos-preview.yml": ["build"],
-  "desktop-macos-preview-publish.yml": ["resolve", "build", "publish", "cleanup"],
-  "mobile-eas-preview.yml": ["preview"],
-  "mobile-android-apk.yml": ["mirror"],
-  "mobile-eas-production.yml": ["production"],
-  "publish-aur.yml": ["publish"],
-  "web-preview.yml": ["deploy"],
-} as const;
-
-describe("fork release workflow safety", () => {
-  it.each([
-    ["0.0.40-pi.1", "0.0.40-pi.1"],
-    ["v0.0.40-pi.1", "0.0.40-pi.1"],
-    ["0.0.40-dulli.2", "0.0.40-dulli.2"],
-    ["v0.0.40-dulli.2", "0.0.40-dulli.2"],
-    ["0.0.41-dulli.0", "0.0.41-dulli.0"],
-    ["0.1.0-dulli.1", "0.1.0-dulli.1"],
-    ["v0.2.15-dulli.3", "0.2.15-dulli.3"],
-  ])("accepts the migration and Dulli release sequence (%s)", (version, normalized) => {
-    expect(validateReleaseVersion(version)).toEqual({
-      status: 0,
-      stderr: "",
-      output: `version=${normalized}\ntag=v${normalized}\n`,
-    });
-  });
-
-  it.each(["0.0.40-dulli.0", "0.0.40-dulli.1"])(
-    "rejects build slots that cannot upgrade the migration APK (%s)",
+describe("fork release safety", () => {
+  it.each(["0.1.9-dulli.0", "v0.1.9-dulli.1", "0.2.15-dulli.3"])(
+    "accepts canonical fork versions (%s)",
     (version) => {
-      const result = validateReleaseVersion(version);
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("0.0.40-dulli.2 or newer");
-      expect(result.output).toBe("");
+      const normalized = version.replace(/^v/, "");
+      expect(validateReleaseVersion(version)).toEqual({
+        status: 0,
+        stderr: "",
+        output: `version=${normalized}\ntag=v${normalized}\n`,
+      });
     },
   );
-
   it.each([
-    "0.0.36-pi.3",
-    "0.0.39-pi.1",
-    "0.0.40-pi.2",
-    "0.0.41-pi.1",
-    "0.0.40-beta.1",
-    "0.0.40",
-    "0.0.040-dulli.1",
-    "0.0.40-dulli.01",
-    "0.0.40-dulli.1+build",
-    "0.0.40-dulli.1\n",
+    "0.0.40-pi.1",
+    "0.1.9",
+    "0.1.9-dulli.01",
+    "0.01.9-dulli.1",
+    "0.1.9-dulli.1\n",
+    "0.1.9-dulli.1+build",
     "1.0.0-dulli.1",
-    "0.01.0-dulli.1",
-  ])("rejects non-canonical new release versions (%s)", (version) => {
+    "0.1.1000-dulli.1",
+    "0.1.9-dulli.10000",
+    "0.999.999-dulli.1",
+  ])("rejects invalid versions or overflowing APK slots (%s)", (version) => {
     const result = validateReleaseVersion(version);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("0.<minor>.<patch>-dulli.<build>");
     expect(result.output).toBe("");
   });
-
-  it("rejects patch numbers that overflow the Android versionCode slot", () => {
-    const result = validateReleaseVersion("0.1.1000-dulli.1");
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("versionCode");
-    expect(result.output).toBe("");
+  it("compares notes against the preceding Dulli release rather than upstream tags", () => {
+    expect(
+      resolvePreviousTag("v0.1.9-dulli.2", [
+        "v0.1.9",
+        "v0.1.9-dulli.1",
+        "v0.1.9-dulli.3",
+        "v0.1.8-dulli.99",
+      ]),
+    ).toBe("previous_tag=v0.1.9-dulli.1\n");
+    expect(resolvePreviousTag("v0.1.9-dulli.1", ["v0.1.9"])).toBe("previous_tag=\n");
   });
-
-  it.each([
-    ["v0.0.45-dulli.11", "v0.0.45-dulli.10"],
-    ["v0.0.46-dulli.0", "v0.0.45-dulli.10"],
-    ["v0.0.45-dulli.5", "v0.0.45-dulli.3"],
-    ["v0.1.0-dulli.1", "v0.0.45-dulli.10"],
-  ])("compares %s release notes against the previous Dulli tag", (current, previous) => {
-    const tags = [
-      "v0.0.40-pi.1",
-      "v0.0.45-dulli.3",
-      "v0.0.45-dulli.9",
-      "v0.0.45-dulli.10",
-      "v0.0.46-preview.20261010.2909",
-      "v0.0.50",
+  it("gates every artifact and publish job on typecheck and release integration tests", () => {
+    const workflow = readWorkflow("fork-desktop-release.yml");
+    const preflight = workflow.jobs.preflight;
+    const typecheck = preflight?.steps?.find((step) => step.name === "Typecheck");
+    expect(typecheck?.run).toBe("vp run typecheck");
+    const serverTests = preflight?.steps?.find(
+      (step) => step.name === "Test release server integrations",
+    );
+    expect(serverTests?.["working-directory"]).toBe("apps/server");
+    const files = [
+      "src/vcs/GitVcsDriver.test.ts",
+      "src/vcs/GitVcsDriverCore.test.ts",
+      "src/vcs/WorklerWorkspaceService.test.ts",
+      "src/vcs/WorklerWorkspaceService.bundle.test.ts",
     ];
-    expect(resolvePreviousTag(current, tags)).toBe(`previous_tag=${previous}\n`);
-  });
-
-  it("lets GitHub choose release notes when no Dulli tag precedes the release", () => {
-    expect(resolvePreviousTag("v0.0.45-dulli.2", ["v0.0.40-pi.1", "v0.0.50"])).toBe(
-      "previous_tag=\n",
+    expect(
+      serverTests?.run
+        ?.trim()
+        .split(/\s+/)
+        .filter((word) => word !== "\\"),
+    ).toEqual(["vp", "test", "run", ...files]);
+    for (const file of files) {
+      expect(NodeFS.existsSync(NodePath.resolve(import.meta.dirname, "../apps/server", file))).toBe(
+        true,
+      );
+    }
+    const integrations = preflight?.steps?.find(
+      (step) => step.name === "Test release integrations",
     );
-  });
-
-  it("keeps Ubuntu CI setup independent of upstream's runner vendor", () => {
-    const ci = NodeFS.readFileSync(NodePath.join(workflowsDir, "ci.yml"), "utf8");
-    const aptSetup = NodeFS.readFileSync(
-      NodePath.resolve(workflowsDir, "../actions/setup-apt-mirrors/action.yml"),
-      "utf8",
-    );
-    expect(ci).not.toMatch(/blacksmith|self-hosted/i);
-    expect(aptSetup).not.toMatch(/blacksmith|self-hosted/i);
-    expect(ci).toContain("libsecret-1-dev");
-    expect(aptSetup).toContain("/etc/apt/t3-ubuntu-mirrors.txt");
-  });
-
-  it("keeps every upstream release job hard-disabled", () => {
-    const workflow = readWorkflow("release.yml");
-
-    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
-    expect(Object.keys(workflow.jobs)).not.toHaveLength(0);
-    for (const job of Object.values(workflow.jobs)) {
-      expect(job.if).toBe("${{ false }}");
+    expect(integrations?.run).toMatch(/^vp test run\s/);
+    for (const file of [
+      "scripts/fork-release-workflows.test.ts",
+      "packages/contracts/src/settings.test.ts",
+      "packages/contracts/src/provider.test.ts",
+      "packages/client-runtime/src/state/subagentRuntime.test.ts",
+      "apps/web/src/components/settings/ProviderSettingsForm.test.ts",
+      "apps/mobile/plugins/withAndroidAutolinkingExclude.test.ts",
+      "apps/mobile/src/lib/modelOptions.test.ts",
+    ]) {
+      expect(integrations?.run).toContain(file);
+      expect(NodeFS.existsSync(NodePath.resolve(import.meta.dirname, "..", file))).toBe(true);
+    }
+    for (const step of [typecheck, integrations, serverTests]) {
+      expect(step?.if).toBeUndefined();
+      expect(step?.["continue-on-error"]).toBeUndefined();
+    }
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      if (name === "preflight") continue;
+      const needs = typeof job.needs === "string" ? [job.needs] : job.needs;
+      expect(needs, name).toContain("preflight");
     }
   });
-
-  it("keeps upstream infrastructure and preview publishers hard-disabled", () => {
-    for (const [name, jobs] of Object.entries(hardDisabledWorkflows)) {
-      const workflow = readWorkflow(name);
-      for (const jobName of jobs) {
-        expect(workflow.jobs[jobName]?.if, `${name}:${jobName}`).toBe("${{ false }}");
+  it.each([
+    "release",
+    "release-desktop",
+    "deploy-relay",
+    "relay-preview",
+    "relay-preview-cleanup",
+    "desktop-macos-preview",
+    "desktop-macos-preview-publish",
+    "mobile-eas-preview",
+    "mobile-eas-preview-fork",
+    "mobile-eas-production",
+    "publish-aur",
+    "web-preview",
+    "mobile-android-apk",
+    "mobile-dev-client",
+  ])("prevents %s from publishing or deploying in the fork", (name) => {
+    const workflow = readWorkflow(`${name}.yml`);
+    expect(Object.keys(workflow.on)).toEqual([
+      ["release-desktop", "publish-aur"].includes(name) ? "workflow_call" : "workflow_dispatch",
+    ]);
+    for (const job of Object.values(workflow.jobs)) {
+      expect(job.if).toContain("github.repository == 'pingdotgg/t3code'");
+      if (job.uses?.startsWith("./.github/workflows/")) {
+        const called = readWorkflow(NodePath.basename(job.uses));
+        expect(called.on).toHaveProperty("workflow_call");
       }
     }
-  });
-
-  it("allows Dulli publishing only through manual fork release dispatch", () => {
-    const workflow = readWorkflow("fork-desktop-release.yml");
-    const source = NodeFS.readFileSync(
-      NodePath.join(workflowsDir, "fork-desktop-release.yml"),
-      "utf8",
-    );
-
-    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
-    expect(workflow.jobs.release?.needs).toEqual(["preflight", "build", "build_android"]);
-    expect(workflow.jobs.publish_cli?.needs).toEqual(["preflight", "build", "release"]);
-    expect(source).not.toMatch(/expo\/expo-github-action|\beas\s+(?:build|submit|update)\b/i);
-    expect(source).not.toMatch(/deploy-relay|t3code-relay|vercel deploy/i);
   });
 });

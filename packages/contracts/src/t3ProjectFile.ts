@@ -46,6 +46,12 @@ export const T3ProjectFileScript = Schema.Struct({
         "When true, the script runs in the thread's worktree each time the thread settles, for example to delete build output. Threads without their own worktree skip it.",
     }),
   ),
+  stopOnSettle: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description:
+        "When true, T3 stops this action's terminal and child processes when its thread settles.",
+    }),
+  ),
   async: Schema.optionalKey(
     Schema.Boolean.annotate({
       description:
@@ -112,7 +118,6 @@ export type T3ProjectFile = typeof T3ProjectFile.Type;
 
 /** Keys must be nullable in ServerSettings so both environment and project overrides can inherit t3.json. */
 export const PROJECT_FILE_BACKED_SETTINGS = {
-  // Dulli starts new threads in worktrees unless t3.json or a setting says otherwise.
   defaultThreadEnvMode: { field: "defaultThreadEnvMode", builtIn: "worktree" },
   worktreeSubmodules: { field: "worktreeSubmodules", builtIn: "recursive" },
 } as const satisfies {

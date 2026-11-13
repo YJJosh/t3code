@@ -7,8 +7,6 @@ type AddProjectDestinationRouteParams = {
   readonly remoteUrl?: string | string[];
   readonly repositoryTitle?: string | string[];
   readonly repositoryName?: string | string[];
-  readonly sourceEnvironmentId?: string | string[];
-  readonly sourceProjectId?: string | string[];
   readonly prompt?: string | string[];
 };
 

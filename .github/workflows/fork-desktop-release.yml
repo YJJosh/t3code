@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "T3 Dulli version (0.<minor>.<patch>-dulli.<build>, e.g. 0.1.2-dulli.1)"
+        description: "T3 Dulli version (0.<minor>.<patch>-dulli.<build>, e.g. 0.1.9-dulli.1)"
         required: true
         type: string
 
@@ -20,6 +20,7 @@ concurrency:
 jobs:
   preflight:
     name: Preflight
+    if: github.repository == 'YJJosh/t3code'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -51,12 +52,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${RAW_VERSION#v}"
-          if [[ "$version" != "0.0.40-pi.1" && ! "$version" =~ ^0\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dulli\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Fork releases require the 0.<minor>.<patch>-dulli.<build> sequence, or the one-time 0.0.40-pi.1 migration release." >&2
-            exit 1
-          fi
-          if [[ "$version" == "0.0.40-dulli.0" || "$version" == "0.0.40-dulli.1" ]]; then
-            echo "The first Dulli-suffix release must be 0.0.40-dulli.2 or newer to upgrade 0.0.40-pi.1." >&2
+          if [[ ! "$version" =~ ^0\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dulli\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Fork releases require the 0.<minor>.<patch>-dulli.<build> sequence." >&2
             exit 1
           fi
           # Android shares the release version and must never overflow or reuse a slot.
@@ -98,31 +95,24 @@ jobs:
           )"
           echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
 
-      - name: Check
-        run: vp check
-
       - name: Typecheck
         run: vp run typecheck
 
       - name: Test release integrations
         run: |
-          vp test --retry=1 \
+          vp test run \
             scripts/fork-release-workflows.test.ts \
             scripts/build-desktop-artifact.test.ts \
+            scripts/build-cli-archive.test.ts \
+            scripts/build-npm-launcher.test.ts \
             scripts/extract-android-cert-sha256.test.ts \
             apps/desktop/src/app/DesktopEnvironment.test.ts \
+            apps/desktop/src/app/DesktopUserData.test.ts \
             apps/desktop/src/electron/ElectronProtocol.test.ts \
-            apps/desktop/src/electron/ElectronUpdater.test.ts \
-            apps/desktop/src/electron/DulliGitHubProvider.test.ts \
             apps/desktop/src/updates/DesktopUpdates.test.ts \
             packages/contracts/src/settings.test.ts \
             packages/contracts/src/provider.test.ts \
             packages/client-runtime/src/state/subagentRuntime.test.ts \
-            packages/provider-dulli/src/server/adapter.test.ts \
-            packages/provider-dulli/src/server/status.test.ts \
-            packages/provider-dulli/src/server/mcpInjection.test.ts \
-            packages/provider-dulli/src/server/piRpcProtocol.test.ts \
-            packages/provider-dulli/src/server/commands.test.ts \
             apps/web/src/branding.test.ts \
             apps/web/src/components/settings/ProviderSettingsForm.test.ts \
             apps/mobile/plugins/withAndroidAutolinkingExclude.test.ts \
@@ -130,13 +120,10 @@ jobs:
             apps/mobile/scripts/dulli-fork-version.test.ts \
             apps/mobile/src/lib/modelOptions.test.ts
 
-      # Server tests need apps/server's vite config: its setup file pins git
-      # behaviour (filemode, autocrlf, signing) for the repositories they create.
       - name: Test release server integrations
         working-directory: apps/server
         run: |
-          vp test --retry=1 \
-            scripts/cli.test.ts \
+          vp test run \
             src/vcs/GitVcsDriver.test.ts \
             src/vcs/GitVcsDriverCore.test.ts \
             src/vcs/WorklerWorkspaceService.test.ts \
@@ -183,98 +170,92 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  build_wsl_runtime:
-    name: Build WSL CLI runtime (linux-x64)
+  build_cli:
+    name: CLI ${{ matrix.key }}
     needs: [preflight, build_bundle]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      VITE_DESKTOP_BUILD_BRAND: dulli
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {
+              runner: ubuntu-24.04,
+              platform: linux,
+              arch: x64,
+              key: linux-x64,
+              rust: x86_64-unknown-linux-gnu,
+            }
+          - {
+              runner: ubuntu-24.04-arm,
+              platform: linux,
+              arch: arm64,
+              key: linux-arm64,
+              rust: aarch64-unknown-linux-gnu,
+            }
+          - {
+              runner: macos-26,
+              platform: mac,
+              arch: arm64,
+              key: darwin-arm64,
+              rust: aarch64-apple-darwin,
+            }
+          - {
+              runner: windows-2025,
+              platform: win,
+              arch: x64,
+              key: win32-x64,
+              rust: x86_64-pc-windows-msvc,
+            }
+          - {
+              runner: windows-11-arm,
+              platform: win,
+              arch: arm64,
+              key: win32-arm64,
+              rust: aarch64-pc-windows-msvc,
+            }
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
-
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+      - uses: ./.github/actions/setup-ci-deps
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version-file: package.json
-          cache: true
-          run-install: true
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
-      # The executable embeds apps/server/package.json's version. The archive
-      # stem must also match the desktop's exact version, including -dulli.N.
-      - name: Align package versions
+          targets: ${{ matrix.rust }}
+      - name: Align versions
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
-
-      - name: Download JS bundle
-        uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8
         with:
           name: dulli-js-bundle
           path: apps
-
-      # CLI build applies development icons; npm publish normally replaces
-      # them with --brand dulli, but this embedded archive is never published.
-      - name: Apply Dulli CLI web icons
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import { copyFileSync } from "node:fs";
-          import { resolveWebIconOverrides } from "./scripts/lib/brand-assets.ts";
-
-          for (const icon of resolveWebIconOverrides("dulli", "apps/server/dist/client")) {
-            copyFileSync(icon.sourceRelativePath, icon.targetRelativePath);
-          }
-          NODE
-
-      # Setup Vite+ selects the exact engines.node version from package.json,
-      # which apps/server/vite.config.ts requires for native executables.
-      - name: Build CLI single-executable
+      - name: Apply Dulli icons
+        run: node scripts/apply-web-brand-assets.ts dulli apps/server/dist/client
+      - name: Build executable with pinned Node
         run: node apps/server/scripts/cli.ts build-exe --verbose
-
       - name: Build resource monitor
-        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu
-
-      - name: Stage resource monitor for the CLI archive
+        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target ${{ matrix.rust }}
+      - name: Assemble and smoke-test archive
         shell: bash
         run: |
           set -euo pipefail
-          target_dir="$RUNNER_TEMP/cli-resource-monitor/linux-x64"
-          mkdir -p "$target_dir"
-          cp native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor "$target_dir/t3-resource-monitor"
-
-      # Retain the upstream t3 archive/executable names: desktop validation
-      # and WSL installation rely on this layout, not the npm package name.
-      - name: Build CLI archive
-        shell: bash
-        run: |
-          node scripts/build-cli-archive.ts \
-            --platform linux \
-            --arch x64 \
-            --version "${{ needs.preflight.outputs.version }}" \
-            --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" \
-            --output-dir release-cli
-
-      - name: Smoke-test CLI archive
-        run: node scripts/smoke-cli-archive.ts --archive "release-cli/t3-${{ needs.preflight.outputs.version }}-linux-x64.tar.gz" --expect-version "${{ needs.preflight.outputs.version }}"
-
-      - name: Upload CLI archive
-        uses: actions/upload-artifact@v7
+          binary="t3-resource-monitor"
+          ext="tar.gz"
+          if [[ "${{ matrix.platform }}" == "win" ]]; then binary="$binary.exe"; ext="zip"; fi
+          mkdir -p "$RUNNER_TEMP/cli-resource-monitor/${{ matrix.key }}"
+          cp "native/resource-monitor/target/${{ matrix.rust }}/release/$binary" "$RUNNER_TEMP/cli-resource-monitor/${{ matrix.key }}/$binary"
+          node scripts/build-cli-archive.ts --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}" \
+            --version "${{ needs.preflight.outputs.version }}" --resource-monitor-dir "$RUNNER_TEMP/cli-resource-monitor" --output-dir release-cli
+          node scripts/smoke-cli-archive.ts --archive "release-cli/t3-${{ needs.preflight.outputs.version }}-${{ matrix.key }}.$ext" --expect-version "${{ needs.preflight.outputs.version }}"
+      - uses: actions/upload-artifact@v7
         with:
-          name: cli-linux-x64
-          path: release-cli/t3-${{ needs.preflight.outputs.version }}-linux-x64.tar.gz
+          name: cli-${{ matrix.key }}
+          path: release-cli/t3-*
           if-no-files-found: error
 
   build:
     name: Build ${{ matrix.label }}
     # Matrix jobs share needs; only Windows downloads/embeds the Linux archive.
-    needs: [preflight, build_bundle, build_wsl_runtime]
+    needs: [preflight, build_bundle, build_cli]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -473,6 +454,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${{ matrix.platform }}" == "mac" ]]; then ulimit -n 65536; fi
           args=(
             --brand dulli
             --platform "${{ matrix.platform }}"
@@ -608,79 +590,22 @@ jobs:
           if-no-files-found: error
 
   publish_cli:
-    name: Publish CLI to npm
-    # npm versions are immutable, so publish only after the GitHub release and
-    # every desktop/Android artifact have completed successfully.
-    needs: [preflight, build, release]
-    if: ${{ !failure() && !cancelled() && needs.preflight.result == 'success' && needs.build.result == 'success' && needs.release.result == 'success' }}
+    name: Publish @yjosh/t3 to npm
+    needs: [preflight, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      VITE_DESKTOP_BUILD_BRAND: dulli
     permissions:
       contents: read
-      # npm trusted publishing exchanges the workflow's OIDC token for publish
-      # access; no NPM_TOKEN secret is involved. The @yjosh/t3 package must be
-      # published manually once before the trusted publisher can be configured.
       id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.preflight.outputs.ref }}
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
-
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
-        with:
-          node-version-file: package.json
-          cache: true
-          run-install: |
-            args:
-              - --filter=t3...
-              - --filter=@t3tools/web...
-              - --filter=@t3tools/scripts...
-
-      - name: Align package versions
-        run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
-
-      - name: Build web package
-        run: vp run --filter @t3tools/web build
-
-      - name: Build CLI package
-        run: vp run --filter t3 build
-
-      - name: Download resource monitors
-        uses: actions/download-artifact@v8
-        with:
-          pattern: resource-monitor-*
-          path: ${{ runner.temp }}/resource-monitors
-
-      - name: Bundle resource monitors into CLI package
-        shell: bash
-        run: |
-          set -euo pipefail
-          for artifact_dir in "$RUNNER_TEMP"/resource-monitors/resource-monitor-*; do
-            resource_key="${artifact_dir##*/resource-monitor-}"
-            target_dir="apps/server/dist/resource-monitor/${resource_key}"
-            mkdir -p "$target_dir"
-            cp "$artifact_dir"/t3-resource-monitor* "$target_dir/"
-            chmod +x "$target_dir"/t3-resource-monitor 2>/dev/null || true
-          done
-
-      - name: Publish CLI package
-        run: |
-          node apps/server/scripts/cli.ts publish \
-            --package-name "@yjosh/t3" \
-            --repository-url "https://github.com/${{ github.repository }}" \
-            --brand dulli \
-            --tag latest \
-            --app-version "${{ needs.preflight.outputs.version }}" \
-            --provenance \
-            --verbose
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Build launcher package
+        run: node scripts/build-npm-launcher.ts --version "${{ needs.preflight.outputs.version }}" --output-dir npm-packages
+      - name: Publish after release assets exist
+        run: node apps/server/scripts/cli.ts publish --packages-dir npm-packages --tag latest --provenance --verbose
 
   build_android:
     name: Build Android APK
@@ -694,6 +619,7 @@ jobs:
       NODE_ENV: production
       NODE_OPTIONS: --max-old-space-size=8192
       T3CODE_MOBILE_FORK_BRAND: dulli
+      T3CODE_MOBILE_UPDATES_ENABLED: "0"
       T3CODE_MOBILE_FORK_VERSION: ${{ needs.preflight.outputs.version }}
     steps:
       - name: Checkout
@@ -749,7 +675,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Import Android release keystore
         shell: bash
@@ -778,7 +704,7 @@ jobs:
         working-directory: apps/mobile
         env:
           EXPO_NO_GIT_STATUS: "1"
-        run: pnpm exec expo prebuild --platform android --no-install
+        run: ./node_modules/.bin/expo prebuild --clean --platform android --no-install
 
       - name: Build release APK
         working-directory: apps/mobile/android
@@ -838,7 +764,7 @@ jobs:
 
   release:
     name: Publish T3 Dulli release
-    needs: [preflight, build, build_android]
+    needs: [preflight, build, build_cli, build_android]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -864,6 +790,19 @@ jobs:
           pattern: desktop-*
           merge-multiple: true
           path: release-assets
+
+      - name: Download CLI archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Checksum CLI archives
+        shell: bash
+        run: |
+          cd release-assets
+          sha256sum t3-*.tar.gz t3-*.zip > SHA256SUMS
 
       - name: Download Android artifact
         uses: actions/download-artifact@v8
@@ -896,7 +835,9 @@ jobs:
           generate_release_notes: true
           previous_tag: ${{ needs.preflight.outputs.previous_tag }}
           body: |
-            T3 Dulli community build from `YJJosh/t3code`.
+            T3 Dulli community build from `YJJosh/t3code`, based on upstream v0.1.9.
+
+            Install the CLI with `npm install -g @yjosh/t3`, then run `t3`.
 
             The Android APK is signed with the persistent Dulli community keystore but is not
             distributed through Google Play, so Android requires enabling installs from unknown
@@ -912,6 +853,8 @@ jobs:
             The Windows installer is unsigned and may display a Microsoft Defender SmartScreen
             warning; choose **More info → Run anyway** only if you trust this build.
           files: |
+            release-assets/SHA256SUMS
+            release-assets/*.tar.gz
             release-assets/*.dmg
             release-assets/*.zip
             release-assets/*.AppImage

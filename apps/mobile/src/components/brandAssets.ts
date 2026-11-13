@@ -4,7 +4,7 @@ const appVariant = Constants.expoConfig?.extra?.appVariant;
 
 export const T3_CODE_BRAND_MARK_SOURCE =
   Constants.expoConfig?.extra?.appBrand === "dulli"
-    ? require("../../../../assets/dulli/dulli-universal-1024.png")
+    ? require("../../assets/dulli/dulli-universal-1024.png")
     : appVariant === "development"
       ? require("../../../../assets/dev/blueprint-ios-1024.png")
       : appVariant === "preview"

@@ -5,7 +5,6 @@ import {
   resolveNewTaskBranchLabel,
   resolveNewTaskBranchWorktreePath,
   resolveNewTaskLocalWorkspaceSelection,
-  resolveNewTaskDraftWorkspace,
   resolveNewTaskWorkspaceSelection,
 } from "./new-task-context-presentation";
 
@@ -36,35 +35,6 @@ describe("resolveNewTaskWorkspaceSelection", () => {
       ).toEqual({ mode: "local", branch: null, worktreePath: null });
     },
   );
-
-  it("keeps multi-repo drafts in worktree mode without root repository refs", () => {
-    const input = {
-      canChooseWorkspace: true,
-      defaultMode: "worktree",
-      defaultModeSettled: true,
-      isGitRepo: false,
-      multiRepo: true,
-      branches: [],
-      projectCwd: "/multi-repo",
-    } as const;
-    expect(resolveNewTaskDraftWorkspace({ ...input, selection: undefined })).toEqual({
-      mode: "worktree",
-      branch: "HEAD",
-      worktreePath: null,
-    });
-    expect(
-      resolveNewTaskDraftWorkspace({
-        ...input,
-        selection: { mode: "worktree", branch: null, worktreePath: null, startFromOrigin: true },
-      }),
-    ).toEqual({ mode: "worktree", branch: "HEAD", worktreePath: null, startFromOrigin: true });
-    expect(
-      resolveNewTaskDraftWorkspace({
-        ...input,
-        selection: { mode: "local", branch: null, worktreePath: null },
-      }),
-    ).toEqual({ mode: "local", branch: null, worktreePath: null });
-  });
 
   // regression: #21404 use current checkout for non-git projects
   it("preserves the selection and defaults for git projects", () => {

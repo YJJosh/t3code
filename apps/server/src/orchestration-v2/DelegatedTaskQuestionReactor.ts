@@ -36,19 +36,16 @@ const make = Effect.gen(function* () {
     if (task.childThreadId === null) return;
     const key = `${task.threadId}:${request.id}`;
     const label = reportLabel(task.title?.trim() || task.prompt);
-    const instructions = request.humanOnly
-      ? `Delegated task ${task.id} is waiting for the user. Tell the user to answer in the child thread in T3 or the Pi terminal; you cannot answer this request. Child threadId ${task.childThreadId} and requestId ${request.id}.`
-      : `${
-          request.responseCapability.type === "message"
-            ? `Delegated task ${task.id} asked a question and is still working.`
-            : `Delegated task ${task.id} is blocked on a question and cannot continue until it is answered.`
-        } Read it with t3_pending_request action read, threadId ${task.childThreadId} and requestId ${request.id}. Answer it with action respond when the answer follows from the task or the user's instructions; otherwise ask the user, then answer it.`;
+    const situation =
+      request.responseCapability.type === "message"
+        ? `Delegated task ${task.id} asked a question and is still working.`
+        : `Delegated task ${task.id} is blocked on a question and cannot continue until it is answered.`;
     yield* engine.dispatch({
       type: "message.dispatch",
       commandId: CommandId.make(`server:delegated-task-question:${key}`),
       threadId: task.threadId,
       messageId: MessageId.make(`message:delegated-task-question:${key}`),
-      text: `${instructions} If it is no longer pending, it was answered or dismissed.`,
+      text: `${situation} Read it with t3_pending_request action read, threadId ${task.childThreadId}, and requestId ${request.id}. Answer it with action respond when the answer follows from the task or the user's instructions; otherwise ask the user, then answer it. If it is no longer pending, it was answered or dismissed.`,
       notification: {
         source: { kind: "delegated_task", taskIds: [task.id], childThreadId: task.childThreadId },
         outcome: "updated",
@@ -84,7 +81,7 @@ const make = Effect.gen(function* () {
           ]);
           for (const request of child.runtimeRequests) {
             if (
-              (request.kind !== "user_input" && !request.humanOnly) ||
+              request.kind !== "user_input" ||
               request.status !== "pending" ||
               request.responseCapability.type !== "live"
             ) {
@@ -103,10 +100,7 @@ const make = Effect.gen(function* () {
         }
         return;
       }
-      if (
-        event.type !== "runtime-request.updated" ||
-        (event.payload.kind !== "user_input" && !event.payload.humanOnly)
-      ) {
+      if (event.type !== "runtime-request.updated" || event.payload.kind !== "user_input") {
         return;
       }
       const child = yield* projections.getThread(event.threadId);

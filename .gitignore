@@ -17,7 +17,6 @@ release/
 release-mock/
 .t3
 .portler/
-.worktrees/
 .idea/
 apps/web/.playwright
 apps/web/playwright-report
@@ -40,6 +39,7 @@ apps/mobile/.android-cache/
 artifacts/app-store/screenshots/
 artifacts/mobile-e2e/
 artifacts/mobile-behavior/
+scripts/.e2e/
 .github/pr-assets/
 native/**/target/
 node_modules/
@@ -50,3 +50,6 @@ node_modules/
 
 # pnpm content-addressable store; never belongs in the repo.
 .pnpm-store/
+
+# Workler independent workspace clones
+.worktrees/

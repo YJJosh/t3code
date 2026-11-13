@@ -24,9 +24,17 @@ export const APP_WORDMARK_LABEL = APP_BASE_NAME.replace(/^T3 /, "");
 export const APP_STAGE_LABEL =
   injectedDesktopAppBranding?.stageLabel ??
   HOSTED_APP_CHANNEL_LABEL ??
-  (desktopBuildBrand === "dulli" ? "Latest" : import.meta.env.DEV ? "Dev" : "Beta");
+  (import.meta.env.DEV ? "Dev" : desktopBuildBrand === "dulli" ? "Latest" : "Beta");
 export const APP_DISPLAY_NAME =
   injectedDesktopAppBranding?.displayName ??
   formatAppDisplayName({ baseName: APP_BASE_NAME, stageLabel: APP_STAGE_LABEL });
 export const APP_VERSION = import.meta.env.APP_VERSION || "0.0.0";
-export const DESKTOP_DOWNLOAD_URL = "https://t3.codes/download";
+export const DESKTOP_DOWNLOAD_URL =
+  APP_BASE_NAME === "T3 Dulli"
+    ? "https://github.com/YJJosh/t3code/releases"
+    : "https://t3.codes/download";
+// Redirects to the App Store or Google Play to match the phone that opens it.
+export const MOBILE_APP_URL =
+  APP_BASE_NAME === "T3 Dulli"
+    ? "https://github.com/YJJosh/t3code/releases"
+    : "https://t3.codes/mobile";

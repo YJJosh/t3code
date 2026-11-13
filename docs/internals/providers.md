@@ -88,12 +88,23 @@ either the resolved path or its real target, since those installers place real f
 symlinks there. Volta is proven by its `volta-shim` link plus the package's image directory. When
 nothing is proven, the provider's own updater (`claude update`, `codex update`, `opencode upgrade`,
 `pi update --self`, `grok update`) runs instead, because each one detects its installer itself;
-the runner's version check catches an updater that exits 0 without updating. Mise installs stay
-manual-only because their version is pinned in mise's config. A Grok cask whose Homebrew prefix
+the runner's version check catches an updater that exits 0 without updating. Mise is checked
+first, since a `mise x` wrapper can sit at a native installer's path, and `MISE_DATA_DIR` can put
+installs anywhere, so `mise which` is asked whenever mise is on `PATH`. Each driver names its fixed
+mise tool; mise must resolve the binary and list it in an active install of that tool requested as
+`latest`, which gets `mise upgrade <tool>`. T3 Code keeps launching the configured path, so that
+path must be a shim or under the tool's `latest` link, which the upgrade repoints: a version
+directory (including one `mise activate` put on `PATH`) would keep running the old binary until mise
+prunes it. Everything else mise touches (fixed version paths, pinned tools, wrappers, OpenCode 1.x,
+whose mise tool crosses into 2.x) stays manual-only, so T3 Code never edits mise config. `mise latest` supplies the version, because settings such as
+`minimum_release_age` can hold mise behind npm. A Grok cask whose Homebrew prefix
 cannot be verified also stays manual-only: `grok update` would install a second copy. npm updates pin `--prefix` because the
 `npm` on `PATH` can belong to a different Node than the one that owns the provider. Homebrew
 compares against `brew info` since casks trail npm by hours; native installs share npm's version
-train, so the registry stays authoritative for them.
+train, so the registry stays authoritative for them. A Chocolatey install of Claude stays
+manual-only: its package directory is writable only by administrators, and `claude update` through
+the shim installs a native copy elsewhere. The latest version comes from `choco search`, and the
+card shows `choco upgrade claude-code` without running it.
 See the [resolver](../../apps/server/src/provider/providerMaintenanceRunner.ts).
 
 Ownership is cached per instance and re-read immediately before an update runs. The
@@ -129,22 +140,6 @@ Capabilities must describe what the provider can actually do. Antigravity can ca
 checkpoints but cannot roll back its conversation. The [checkpoint boundary](./overview.md#turn-completion-and-checkpoints)
 therefore rejects revert before touching files. Native permission and question option IDs must
 also survive normalization; a display label is not necessarily a valid reply.
-
-### Assistant message phases
-
-An adapter can attach `commentary` or `final_answer` to assistant item completion. Ingestion
-persists that optional phase with the message through events, SQL projections, snapshots, and
-client reduction. Omitted phases preserve an existing classification; old history stays unclassified.
-Clients fold settled commentary, retain explicit answers, and anchor answer footers by turn rather
-than allowing a later commentary item to take over the checkpoint display.
-
-The [Pi adapter](../../apps/server/src/provider/Layers/PiAdapter.ts) uses native stop reasons,
-explicit tool boundaries, and known background-result message sources—not wording or text length.
-Adjacent text blocks alone are not a work boundary. Replies to subagent and workflow notifications
-after a primary answer are commentary; ambiguous first results and partial answers stay unclassified
-and visible. A finished background terminal starts a fresh answer like a user message, because it
-usually ends the work it was started for.
-`agent_settled`, not an individual assistant stop response, remains the turn lifecycle boundary.
 
 ## Attachments and stored history
 

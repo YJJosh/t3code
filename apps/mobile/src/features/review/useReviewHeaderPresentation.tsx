@@ -27,7 +27,7 @@ export function useReviewHeaderPresentation(props: {
   readonly selectedSection: ReviewSectionItem | null;
   readonly onRefresh: () => Promise<void>;
 }): ReviewHeaderPresentation {
-  const { selectedThread, selectedThreadProject } = useThreadSelection();
+  const { selectedThread } = useThreadSelection();
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const gitStatusQuery = useEnvironmentQuery(
@@ -42,9 +42,9 @@ export function useReviewHeaderPresentation(props: {
   const gitMenuAvailable =
     selectedThread !== null && String(selectedThread.id) === String(props.threadId);
   const gitMenu = useThreadGitMenuDefinition({
+    isMultiRepoProject: gitState.isMultiRepoProject,
     environmentId: props.environmentId,
     threadId: props.threadId,
-    showGitControls: !selectedThreadProject?.multiRepo,
     currentBranch: selectedThread?.branch ?? null,
     gitStatus: gitStatusQuery.data,
     gitOperationLabel: gitState.gitOperationLabel,
