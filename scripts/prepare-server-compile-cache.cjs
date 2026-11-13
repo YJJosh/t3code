@@ -11,6 +11,12 @@ module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => 
     return;
   }
   const targetArch = ["ia32", "x64", "armv7l", "arm64", "universal"][arch];
+  // Upstream builds Windows on Linux, so its installer never carries the cache. The fork builds on
+  // Windows, where the cache's 20+ files exceed WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT.
+  if (electronPlatformName === "win32") {
+    console.log(`[server-compile-cache] Skipping Windows target win32/${targetArch}`);
+    return;
+  }
   const runsWithRosetta =
     electronPlatformName === "darwin" &&
     process.platform === "darwin" &&
