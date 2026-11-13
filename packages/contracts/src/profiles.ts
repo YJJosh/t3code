@@ -137,6 +137,7 @@ export const ProfilesSyncState = Schema.Struct({
   hash: Schema.String,
   /** Hash at the last sync; differs from `hash` while this copy has unsynced changes. */
   syncedHash: Schema.NullOr(Schema.String),
+  /** When the content last changed. The latest change wins a sync. */
   updatedAt: Schema.NullOr(Schema.String),
 });
 export type ProfilesSyncState = typeof ProfilesSyncState.Type;
@@ -240,6 +241,8 @@ export type ProfilesBundleFile = typeof ProfilesBundleFile.Type;
 export const ProfilesSyncReadInput = Schema.Struct({ includeFiles: Schema.Boolean });
 export const ProfilesSyncReadResult = Schema.Struct({
   state: ProfilesSyncState,
+  /** False when this environment's sync switch is off; it neither sends nor receives copies. */
+  enabled: Schema.Boolean,
   files: Schema.optionalKey(Schema.Array(ProfilesBundleFile)),
   /** Paths left out: node_modules, .git, too large, or not regular files. */
   skipped: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -251,7 +254,8 @@ export const ProfilesSyncWriteInput = Schema.Struct({
   expectedRevision: Schema.Int,
   // Sync can replace content at the same revision. Older clients omit it.
   expectedHash: Schema.optionalKey(Schema.String),
-  source: Schema.Struct({ revision: Schema.Int, hash: Schema.String }),
+  /** `updatedAt` is when the source content last changed; the copy keeps it. */
+  source: Schema.Struct({ hash: Schema.String, updatedAt: Schema.NullOr(Schema.String) }),
   files: Schema.Array(ProfilesBundleFile),
 });
 export const ProfilesSyncWriteResult = Schema.Struct({

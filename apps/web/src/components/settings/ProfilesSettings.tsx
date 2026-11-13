@@ -36,6 +36,7 @@ import { Checkbox } from "../ui/checkbox";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { requestConfirmDialog } from "../../confirmDialog";
@@ -472,6 +473,20 @@ function FolderAndSync(props: {
               Open in editor
             </Button>
           </span>
+        }
+      />
+      <SettingsRow
+        title="Sync with other machines"
+        description="Copy profiles to and from your other connected machines. The latest change wins. Turn off to keep this machine's profiles to itself."
+        control={
+          <Switch
+            checked={settings.profilesSync}
+            disabled={!canWriteSettings}
+            onCheckedChange={(checked) =>
+              update({ profilesSync: checked }, { onSaved: () => void syncProfilesNow() })
+            }
+            aria-label="Sync with other machines"
+          />
         }
       />
       <SettingsRow

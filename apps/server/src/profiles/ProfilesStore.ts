@@ -121,6 +121,7 @@ async function scan(root: string) {
   const files: ProfilesBundleFile[] = [];
   const skipped: string[] = [];
   let total = 0;
+  let newestMs = 0;
   async function visit(relative: string) {
     const absolute = NodePath.join(root, relative);
     const info = await stat(absolute);
@@ -139,6 +140,7 @@ async function scan(root: string) {
       const content = await readRegular(absolute);
       total += content.length;
       if (total > TOTAL_LIMIT) throw invalid();
+      newestMs = Math.max(newestMs, info.mtimeMs);
       files.push({
         path: relative,
         contentBase64: content.toString("base64"),
@@ -147,7 +149,7 @@ async function scan(root: string) {
     } else skipped.push(relative);
   }
   await visit("");
-  return { files, skipped, hash: bundleHash(files) };
+  return { files, skipped, hash: bundleHash(files), newestMs };
 }
 function validateBundle(files: readonly ProfilesBundleFile[]) {
   const paths = new Set<string>();
@@ -211,13 +213,19 @@ const make = Effect.gen(function* () {
             }),
     }).pipe(Effect.uninterruptible),
   );
+  const readSettings = settings.getSettings.pipe(
+    Effect.mapError(
+      () =>
+        new ProfilesError({ reason: "io", message: "Could not read profiles folder settings." }),
+    ),
+  );
+  const syncOff = () =>
+    new ProfilesError({
+      reason: "unavailable",
+      message: "Profile sync is off on this environment.",
+    });
   const folder = Effect.fn("ProfilesStore.folder")(function* () {
-    const value = yield* settings.getSettings.pipe(
-      Effect.mapError(
-        () =>
-          new ProfilesError({ reason: "io", message: "Could not read profiles folder settings." }),
-      ),
-    );
+    const value = yield* readSettings;
     const root = NodePath.resolve(Profiles.resolveFolder(config.baseDir, value.profilesFolder));
     return yield* io(async () => {
       const info = await stat(root);
@@ -249,7 +257,14 @@ const make = Effect.gen(function* () {
         }
       }
       if (current.hash !== state.hash) {
-        state = { ...state, hash: current.hash, revision: state.revision + 1, updatedAt: now };
+        // An edit outside T3 is dated by its files, so a copy edited while offline is not newer
+        // than it is. A deletion leaves no file time behind and is dated now.
+        const edited = DateTime.formatIso(DateTime.makeUnsafe(current.newestMs));
+        const updatedAt =
+          state.updatedAt === null || Date.parse(edited) > Date.parse(state.updatedAt)
+            ? edited
+            : now;
+        state = { ...state, hash: current.hash, revision: state.revision + 1, updatedAt };
         await persist(root, state);
       }
       return { ...current, state };
@@ -388,9 +403,12 @@ const make = Effect.gen(function* () {
   const syncRead = Effect.fn("ProfilesStore.syncRead")(function* (
     input: typeof ProfilesSyncReadInput.Type,
   ) {
+    const enabled = (yield* readSettings).profilesSync;
+    if (!enabled && input.includeFiles) return yield* syncOff();
     const current = yield* snapshot(yield* folder());
     return {
       state: current.state,
+      enabled,
       skipped: current.skipped,
       ...(input.includeFiles ? { files: current.files } : {}),
     };
@@ -398,6 +416,7 @@ const make = Effect.gen(function* () {
   const syncWrite = Effect.fn("ProfilesStore.syncWrite")(function* (
     input: typeof ProfilesSyncWriteInput.Type,
   ) {
+    if (!(yield* readSettings).profilesSync) return yield* syncOff();
     const root = yield* folder();
     const before = yield* snapshot(root);
     if (
@@ -409,9 +428,8 @@ const make = Effect.gen(function* () {
     return yield* io(async () => {
       validateBundle(input.files);
       if (
-        !Number.isSafeInteger(input.source.revision) ||
-        input.source.revision < 0 ||
-        bundleHash(input.files) !== input.source.hash
+        bundleHash(input.files) !== input.source.hash ||
+        (input.source.updatedAt !== null && Number.isNaN(Date.parse(input.source.updatedAt)))
       )
         throw invalid();
       for (const file of input.files) {
@@ -444,10 +462,10 @@ const make = Effect.gen(function* () {
       const after = await scan(root);
       if (after.hash !== input.source.hash) throw invalid();
       const state = {
-        revision: input.source.revision,
+        revision: before.state.revision + 1,
         hash: after.hash,
         syncedHash: after.hash,
-        updatedAt: now,
+        updatedAt: input.source.updatedAt ?? now,
       };
       await persist(root, state);
       return { state, ...(backupPath === undefined ? {} : { backupPath }) };

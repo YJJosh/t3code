@@ -532,7 +532,7 @@ it.effect("rejects profile writes and provider commands before handlers without 
     expect(
       (yield* client[WS_METHODS.profilesSyncWrite]({
         expectedRevision: 0,
-        source: { revision: 0, hash: "hash" },
+        source: { hash: "hash", updatedAt: null },
         files: [],
       }).pipe(Effect.flip))._tag,
     ).toBe("EnvironmentAuthorizationError");

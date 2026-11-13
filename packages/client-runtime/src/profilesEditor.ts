@@ -310,6 +310,8 @@ export function syncStatusText(input: {
       return { text: `Updated; its own changes were saved to ${status.path}`, tone: "warning" };
     case "failed":
       return { text: `Failed: ${status.message}`, tone: "error" };
+    case "off":
+      return { text: `Sync off, revision ${status.revision}`, tone: "muted" };
     case "unsupported":
       return { text: "Its T3 version does not sync profiles", tone: "muted" };
   }

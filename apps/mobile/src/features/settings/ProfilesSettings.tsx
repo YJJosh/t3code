@@ -108,7 +108,8 @@ function ProfilesFolderSettings(props: {
     setSaving(false);
     if (result._tag === "Success") {
       props.refresh();
-      if (patch.profilesFolder !== undefined) void syncProfilesNow();
+      if (patch.profilesFolder !== undefined || patch.profilesSync !== undefined)
+        void syncProfilesNow();
     } else {
       const failure = squashAtomCommandFailure(result);
       setError(failure instanceof Error ? failure.message : "Could not save profiles settings.");
@@ -171,6 +172,13 @@ function ProfilesFolderSettings(props: {
             onPress={() => {}}
           />
         </Menu>
+        <ListToggleRow
+          label="Sync with other machines"
+          description="The latest change wins. Turn off to keep this machine's profiles to itself."
+          disabled={!canWrite || saving}
+          value={settings.profilesSync}
+          onValueChange={(value) => void update({ profilesSync: value })}
+        />
         <Button
           label="Sync now"
           disabled={!canSync || sync.running}

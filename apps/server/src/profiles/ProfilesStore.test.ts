@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -63,8 +64,13 @@ it.effect(
         yield* fs.writeFileString(`${root}/profiles/stale.txt`, "old");
         yield* fs.makeDirectory(`${root}/profiles/node_modules`, { recursive: true });
         yield* fs.writeFileString(`${root}/profiles/node_modules/keep`, "keep");
+        // An edit made outside T3 is dated by its file, not by when T3 notices it.
+        const editedAt = DateTime.toDateUtc(DateTime.makeUnsafe("2030-01-01T00:00:00.000Z"));
+        yield* fs.utimes(`${root}/profiles/prompts/coding.md`, editedAt, editedAt);
         const changed = yield* store.syncRead({ includeFiles: true });
         assert.equal(changed.state.revision, bundle.state.revision + 1);
+        assert.equal(changed.state.updatedAt, "2030-01-01T00:00:00.000Z");
+        assert.isTrue(changed.enabled);
         assert.equal(
           (yield* store
             .write({ expectedRevision: first.sync.revision, prompts: { remove: ["coding"] } })
@@ -133,16 +139,20 @@ it.effect(
         assert.isFalse(yield* fs.exists(`${root}/profiles/stale.txt`));
         assert.equal(yield* fs.readFileString(`${root}/profiles/node_modules/keep`), "keep");
         assert.equal(synced.state.syncedHash, bundle.state.hash);
-        assert.equal(
-          (yield* store.syncRead({ includeFiles: false })).state.revision,
-          bundle.state.revision,
-        );
+        // A copy counts as a change here but keeps the time its content last changed.
+        assert.deepEqual(yield* store.syncRead({ includeFiles: false }), {
+          state: synced.state,
+          enabled: true,
+          skipped: changed.skipped!,
+        });
+        assert.equal(synced.state.revision, changed.state.revision + 1);
+        assert.equal(synced.state.updatedAt, bundle.state.updatedAt);
         const tied = yield* store.syncWrite({
           expectedRevision: synced.state.revision,
-          source: { revision: synced.state.revision, hash: changed.state.hash },
+          source: { hash: changed.state.hash, updatedAt: changed.state.updatedAt },
           files: changed.files!,
         });
-        assert.equal(tied.state.revision, synced.state.revision);
+        assert.equal(tied.state.revision, synced.state.revision + 1);
         assert.equal(
           (yield* store
             .write({
@@ -208,6 +218,48 @@ it.effect(
         ),
       );
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect("neither sends nor receives profile copies while sync is off", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped();
+    yield* fs.makeDirectory(`${root}/profiles`, { recursive: true });
+    yield* fs.writeFileString(`${root}/profiles/profiles.json`, '{"profiles":{}}');
+    yield* Effect.gen(function* () {
+      const store = yield* ProfilesStore.ProfilesStore;
+      const read = yield* store.syncRead({ includeFiles: false });
+      assert.isFalse(read.enabled);
+      assert.equal(
+        (yield* store.syncRead({ includeFiles: true }).pipe(Effect.flip)).reason,
+        "unavailable",
+      );
+      assert.equal(
+        (yield* store
+          .syncWrite({
+            expectedRevision: read.state.revision,
+            source: { hash: read.state.hash, updatedAt: null },
+            files: [],
+          })
+          .pipe(Effect.flip)).reason,
+        "unavailable",
+      );
+      assert.equal(yield* fs.readFileString(`${root}/profiles/profiles.json`), '{"profiles":{}}');
+    }).pipe(
+      Effect.provide(
+        ProfilesStore.layer.pipe(
+          Layer.provide([
+            Profiles.layer,
+            ServerSettings.layerTest({ profilesSync: false }),
+            ServerConfig.layerTest(root, root),
+            Layer.succeed(ProfilesCommandRunner.ProfilesCommandRunner, {
+              run: () => Effect.succeed("ok"),
+            }),
+          ]),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
 
 it.effect(

@@ -36,6 +36,8 @@ export type ProfilesSyncStatus =
       readonly path: string;
     }
   | { readonly kind: "failed"; readonly message: string }
+  /** Sync is switched off on that environment; it is left alone. */
+  | { readonly kind: "off"; readonly revision: number }
   /** The server predates profile sync; it is left alone. */
   | { readonly kind: "unsupported" };
 
@@ -58,7 +60,7 @@ export interface ProfilesSyncIo {
     input: {
       readonly expectedRevision: number;
       readonly expectedHash: string;
-      readonly source: { readonly revision: number; readonly hash: string };
+      readonly source: { readonly hash: string; readonly updatedAt: string | null };
       readonly files: NonNullable<ProfilesSyncReadResult["files"]>;
     },
   ) => Promise<ProfilesSyncAnswer<ProfilesSyncWriteResult>>;
@@ -69,7 +71,7 @@ export interface ProfilesSyncIo {
   readonly now: () => string;
 }
 
-/** Highest revision wins; ties go to the latest change, then to a stable environment order. */
+/** The latest change wins; ties go to the higher revision, then to a stable environment order. */
 export function pickProfilesSyncWinner(
   participants: ReadonlyArray<ProfilesSyncParticipant>,
 ): ProfilesSyncParticipant | undefined {
@@ -80,13 +82,18 @@ export function pickProfilesSyncWinner(
   return winner;
 }
 
+const changedAt = (state: ProfilesSyncState) => {
+  const at = state.updatedAt === null ? Number.NaN : Date.parse(state.updatedAt);
+  return Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at;
+};
+
 function compareParticipants(left: ProfilesSyncParticipant, right: ProfilesSyncParticipant) {
+  const leftAt = changedAt(left.state);
+  const rightAt = changedAt(right.state);
+  if (leftAt !== rightAt) return leftAt > rightAt ? 1 : -1;
   if (left.state.revision !== right.state.revision) {
     return left.state.revision - right.state.revision;
   }
-  const leftAt = left.state.updatedAt ?? "";
-  const rightAt = right.state.updatedAt ?? "";
-  if (leftAt !== rightAt) return leftAt > rightAt ? 1 : -1;
   return left.environmentId < right.environmentId
     ? 1
     : left.environmentId > right.environmentId
@@ -98,15 +105,10 @@ export function planProfilesSync(
   participants: ReadonlyArray<ProfilesSyncParticipant>,
 ): ProfilesSyncPlan {
   const winner = pickProfilesSyncWinner(participants);
-  // Equal content must also share a revision, or the lower copy's next edit loses.
   const targets =
     winner === undefined
       ? []
-      : participants.filter(
-          (participant) =>
-            participant.state.hash !== winner.state.hash ||
-            participant.state.revision !== winner.state.revision,
-        );
+      : participants.filter((participant) => participant.state.hash !== winner.state.hash);
   if (winner === undefined || targets.length === 0) {
     return { kind: "inSync" };
   }
@@ -135,8 +137,10 @@ async function runProfilesSyncOnce(
   );
   const participants: ProfilesSyncParticipant[] = [];
   for (const { environmentId, answer } of reads) {
-    if (answer.ok) participants.push({ environmentId, state: answer.value.state });
-    else statuses.set(environmentId, failedStatus(answer.failure));
+    if (!answer.ok) statuses.set(environmentId, failedStatus(answer.failure));
+    else if (answer.value.enabled === false)
+      statuses.set(environmentId, { kind: "off", revision: answer.value.state.revision });
+    else participants.push({ environmentId, state: answer.value.state });
   }
   const plan = planProfilesSync(participants);
   if (plan.kind === "inSync") {
@@ -167,8 +171,7 @@ async function runProfilesSyncOnce(
   for (const participant of participants) {
     if (
       participant.environmentId !== plan.winner.environmentId &&
-      participant.state.hash === winnerState.hash &&
-      participant.state.revision === winnerState.revision
+      participant.state.hash === winnerState.hash
     ) {
       statuses.set(participant.environmentId, {
         kind: "inSync",
@@ -182,15 +185,14 @@ async function runProfilesSyncOnce(
   const targets = participants.filter(
     (participant) =>
       participant.environmentId !== plan.winner.environmentId &&
-      (participant.state.hash !== winnerState.hash ||
-        participant.state.revision !== winnerState.revision),
+      participant.state.hash !== winnerState.hash,
   );
   await Promise.all(
     targets.map(async (target) => {
       const answer = await io.write(target.environmentId, {
         expectedRevision: target.state.revision,
         expectedHash: target.state.hash,
-        source: { revision: winnerState.revision, hash: winnerState.hash },
+        source: { hash: winnerState.hash, updatedAt: winnerState.updatedAt },
         files,
       });
       if (answer.ok) {

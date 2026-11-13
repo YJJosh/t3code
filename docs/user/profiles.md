@@ -28,10 +28,13 @@ A broken profile stays in the list with a warning; the others keep working.
 
 You do not run Git for this. When you save in **Settings → Profiles**, T3 copies the folder to every
 environment the app is connected to. An environment that was offline gets the newer copy when the app
-connects to it again, and **Sync now** does the same on demand. Each save raises a folder's revision,
-and the copy with the higher revision wins; on a tie, the most recently changed copy wins. If an
+connects to it again, and **Sync now** does the same on demand. The most recently changed copy wins,
+judged by each machine's clock; an edit made outside T3 counts from when its file changed. If an
 environment's folder was also changed by hand since its last sync, T3 keeps that version in a backup
 folder under `<T3 home>/profiles-backups` and shows a notice.
+
+To keep one machine's profiles to itself, turn off **Sync with other machines** on that machine. It
+then neither sends nor receives copies.
 
 An environment no app connects to keeps its last copy until the app connects to it. `node_modules` is
 never copied: a skill that needs dependencies shows **Install** on each machine.
