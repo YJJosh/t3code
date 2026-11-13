@@ -57,6 +57,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
 import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as ClaudeSessionInventory from "./ClaudeSessionInventory.ts";
 import * as ProviderInstanceRegistryHydration from "./ProviderInstanceRegistryHydration.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as ServerConfig from "../config.ts";
@@ -2842,6 +2843,7 @@ it.layer(
           Layer.provideMerge(
             ProviderInstanceRegistryHydration.layer.pipe(Layer.provide(PortScanner.layerTest)),
           ),
+          Layer.provideMerge(ClaudeSessionInventory.layer),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -2960,6 +2962,7 @@ it.layer(
           Layer.provideMerge(
             ProviderInstanceRegistryHydration.layer.pipe(Layer.provide(PortScanner.layerTest)),
           ),
+          Layer.provideMerge(ClaudeSessionInventory.layer),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -3076,7 +3079,11 @@ it.layer(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
           ),
           Layer.provideMerge(
-            ServerConfig.layerTest(process.cwd(), { prefix: "t3-provider-registry-" }),
+            ClaudeSessionInventory.layer.pipe(
+              Layer.provideMerge(
+                ServerConfig.layerTest(process.cwd(), { prefix: "t3-provider-registry-" }),
+              ),
+            ),
           ),
           Layer.provideMerge(layerTestHttpClient),
           Layer.provideMerge(

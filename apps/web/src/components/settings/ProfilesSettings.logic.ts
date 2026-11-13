@@ -191,7 +191,7 @@ export interface SettingsOption {
   readonly description?: string;
   /** Whether the provider reports it on by default here. */
   readonly enabled?: boolean;
-  /** False for a stored name this machine's provider did not report. */
+  /** False only when a successful list confirms a stored name is missing. */
   readonly detected: boolean;
 }
 
@@ -205,6 +205,7 @@ export function settingsOptions(
       }>
     | undefined,
   stored: Iterable<string>,
+  error?: string,
 ): SettingsOption[] {
   const options: SettingsOption[] = (detected ?? []).map((option) => ({
     ...option,
@@ -214,7 +215,7 @@ export function settingsOptions(
   for (const name of [...stored].toSorted()) {
     if (!seen.has(name)) {
       seen.add(name);
-      options.push({ name, detected: false });
+      options.push({ name, detected: Boolean(error) && (detected?.length ?? 0) === 0 });
     }
   }
   return options;

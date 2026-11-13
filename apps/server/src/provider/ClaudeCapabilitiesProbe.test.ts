@@ -7,6 +7,7 @@ import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as ProviderSettingsProbe from "../profiles/ProviderSettingsProbe.ts";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -55,7 +56,11 @@ it.effect("keeps the probe subprocess alive while gateway model discovery can fi
       return {
         initializationResult: async () => ({
           account: { email: "dev@example.com", subscriptionType: "pro", tokenSource: "oauth" },
-          commands: [{ name: "review", description: "Review changes", argumentHint: "[path]" }],
+          commands: [
+            { name: "review", description: "Review changes", argumentHint: "[path]" },
+            { name: "clear", description: "Clear conversation", argumentHint: "" },
+            { name: "compact", description: "Compact conversation", argumentHint: "" },
+          ],
           models: [{ value: "gateway/claude-relay", displayName: "Relay", description: "" }],
         }),
         usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: () =>
@@ -86,5 +91,14 @@ it.effect("keeps the probe subprocess alive while gateway model discovery can fi
     assert.equal(abortSignal?.aborted, false);
     yield* TestClock.adjust("3 seconds");
     assert.equal(abortSignal?.aborted, true);
+    const options = yield* Effect.gen(function* () {
+      return yield* (yield* ProviderSettingsProbe.ProviderSettingsProbe).run({
+        driver: "claudeAgent",
+        config: { binaryPath: "claude" },
+        environment: { PATH: (yield* HostProcess.Environment).PATH, CLAUDE_CONFIG_DIR: configDir },
+        cwd: configDir,
+      });
+    }).pipe(Effect.provide(ProviderSettingsProbe.layer));
+    assert.deepEqual(options.claudeAgent?.skills, []);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

@@ -29,6 +29,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as ClaudeSessionInventory from "../../provider/ClaudeSessionInventory.ts";
 import * as ServerConfig from "../../config.ts";
 import {
   isWindowsClaudeLauncherShimPath,
@@ -1056,7 +1057,10 @@ function layerClaudeProviderAdapterRegistryReplay(
         IdAllocator.layer,
         NodeServices.layer,
         NodeCrypto.layer,
-        layerServerConfig,
+        ClaudeSessionInventory.layer.pipe(
+          Layer.provideMerge(layerServerConfig),
+          Layer.provide(NodeServices.layer),
+        ),
       ),
     ),
   );
