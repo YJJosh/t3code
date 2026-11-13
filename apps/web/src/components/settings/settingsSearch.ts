@@ -26,6 +26,7 @@ export type SettingsPath =
   | "/settings/keybindings"
   | "/settings/snap-shot"
   | "/settings/providers"
+  | "/settings/profiles"
   | "/settings/threads"
   | "/settings/browser"
   | "/settings/devices"
@@ -101,6 +102,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/keybindings": "Keybindings",
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
+  "/settings/profiles": "Profiles",
   "/settings/threads": "Threads",
   "/settings/browser": "Browser",
   "/settings/devices": "Devices",
@@ -138,6 +140,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     heading: "Agents",
     paths: [
       "/settings/providers",
+      "/settings/profiles",
       "/settings/threads",
       "/settings/browser",
       "/settings/devices",
@@ -220,6 +223,52 @@ const SOURCE_CONTROL_HOST_TERMS = sourceControlClients.definitions
   .join(" ");
 
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "profiles",
+    title: "Profiles folder and sync",
+    to: "/settings/profiles",
+    scope: "environment-defaults",
+    environmentOnly: true,
+    searchTerms: [
+      "profiles folder path open in editor sync now copy environments machines revision backup create profiles.json",
+    ],
+  },
+  {
+    id: "profiles-list",
+    title: "Profiles",
+    to: "/settings/profiles",
+    scope: "environment-defaults",
+    environmentOnly: true,
+    searchTerms: [
+      "profile default new threads prompts skills provider settings add duplicate rename delete model effort",
+    ],
+  },
+  {
+    id: "profiles-provider-settings",
+    title: "Provider settings",
+    to: "/settings/profiles",
+    scope: "environment-defaults",
+    environmentOnly: true,
+    searchTerms: [
+      "claude codex pi blocked tools bundled skills plugins auto memory co-author attribution chrome features prompt templates config",
+    ],
+  },
+  {
+    id: "profiles-prompts",
+    title: "Profile prompts",
+    to: "/settings/profiles",
+    scope: "environment-defaults",
+    environmentOnly: true,
+    searchTerms: ["prompt parts instructions system prompt markdown"],
+  },
+  {
+    id: "profiles-skills",
+    title: "Profile skills",
+    to: "/settings/profiles",
+    scope: "environment-defaults",
+    environmentOnly: true,
+    searchTerms: ["skills npx add install dependencies update remove repo source SKILL.md"],
+  },
   {
     id: "storage-worktree-keep-when",
     targetId: "storage-worktrees",
@@ -1354,6 +1403,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/snap-shot": null,
   "/settings/keybindings": null,
   "/settings/providers": null,
+  "/settings/profiles": "environment-defaults",
   "/settings/threads": null,
   "/settings/browser": null,
   "/settings/devices": null,
