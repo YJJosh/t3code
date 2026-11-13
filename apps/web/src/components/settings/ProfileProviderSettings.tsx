@@ -32,7 +32,7 @@ import {
   uniqueName,
   withFeature,
   withKey,
-} from "./ProfilesSettings.logic";
+} from "@t3tools/client-runtime/profiles-editor";
 
 type Entry = ClaudeProviderSettings | CodexProviderSettings | PiProviderSettings;
 

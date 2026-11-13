@@ -1,4 +1,4 @@
-import type { ProfilesSyncStatus } from "@t3tools/client-runtime/state/profiles-sync";
+import type { ProfilesSyncStatus } from "./state/profiles-sync.ts";
 import type {
   ClaudeProviderSettings,
   Profile,
@@ -211,7 +211,7 @@ export function settingsOptions(
     detected: true,
   }));
   const seen = new Set(options.map(({ name }) => name));
-  for (const name of [...stored].toSorted()) {
+  for (const name of [...stored].sort()) {
     if (!seen.has(name)) {
       seen.add(name);
       options.push({ name, detected: false });
