@@ -1,7 +1,6 @@
 import { supportsProfiles } from "@t3tools/shared/profiles";
 import * as Profiles from "../profiles/Profiles.ts";
 import * as ServerConfig from "../config.ts";
-import * as Path from "effect/Path";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -17,6 +16,7 @@ import {
   ProviderSessionId,
   ThreadId,
   type ProviderThreadId,
+  type ResolvedProviderSettings,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -361,7 +361,6 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
       const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
       const profiles = yield* Profiles.Profiles.pipe(Effect.provide(Profiles.layer));
       const mcpSessionRegistry = yield* McpSessionRegistry.McpSessionRegistry;
       const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
@@ -2465,6 +2464,7 @@ export const layerWithOptions = (
                 ),
               );
               let profileInstructions: string | undefined;
+              let providerSettings: ResolvedProviderSettings | undefined;
               const profileId = input.modelSelection.profileId;
               if (
                 profileId &&
@@ -2483,7 +2483,10 @@ export const layerWithOptions = (
                   ),
                 );
                 const loaded = yield* profiles.load(
-                  settings.profilesFolder || path.join(config.value.baseDir, "profiles"),
+                  Profiles.resolveFolder(config.value.baseDir, settings.profilesFolder),
+                );
+                providerSettings = loaded.providerSettings[profileId]?.find(
+                  (entry) => entry._tag === adapter.driver,
                 );
                 profileInstructions = Object.hasOwn(loaded.instructions, profileId)
                   ? loaded.instructions[profileId]
@@ -2531,6 +2534,7 @@ export const layerWithOptions = (
                   runtimePolicy: input.runtimePolicy,
                   promptSuggestions: promptSuggestionsEnabled,
                   ...(profileInstructions === undefined ? {} : { profileInstructions }),
+                  ...(providerSettings === undefined ? {} : { providerSettings }),
                   ...(input.resumeFromSession === undefined
                     ? {}
                     : { resumeFromSession: input.resumeFromSession }),

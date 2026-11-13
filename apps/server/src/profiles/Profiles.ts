@@ -220,3 +220,6 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(Profiles, make);
+
+export const resolveFolder = (baseDir: string, profilesFolder: string) =>
+  profilesFolder || `${baseDir}/profiles`;
