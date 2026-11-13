@@ -1,4 +1,4 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthOrchestrationOperateScope,
@@ -27,6 +27,7 @@ import {
   useProfilesSyncSnapshot,
 } from "../../state/profiles";
 import { useEnvironmentQuery } from "../../state/query";
+import { serverEnvironment } from "../../state/server";
 import { useEnvironmentScope, useEnvironmentsWithScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
@@ -124,6 +125,14 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
   const canManageSkills = useAtomValue(profilesEnvironment.runSkills.permissionAtom(environmentId));
   const write = useAtomCommand(profilesEnvironment.writeEditor, { reportFailure: false });
   const state = editorQuery.data;
+  const refreshCatalog = useAtomRefresh(
+    serverEnvironment.profileConfig({ environmentId, input: {} }),
+  );
+  const reload = () => {
+    // REVIEW: The composer reads a separate catalog, not the editor query.
+    editorQuery.refresh();
+    refreshCatalog();
+  };
 
   const savedProfiles = state?.profiles ?? EMPTY_PROFILES;
   const savedProviderSettings = state?.providerSettings ?? {};
@@ -257,7 +266,7 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
         state={state}
         error={editorQuery.error}
         pending={editorQuery.isPending}
-        onReload={editorQuery.refresh}
+        onReload={reload}
         canWrite={canWrite}
         onCreate={() => void save({ profiles: EMPTY_PROFILES }, () => undefined)}
       />
@@ -442,7 +451,8 @@ function FolderAndSync(props: {
               disabled={!canWriteSettings}
               onBlur={(event) => {
                 if (event.target.value !== settings.profilesFolder) {
-                  void update({ profilesFolder: event.target.value });
+                  // REVIEW: The editor query is independent of settings and otherwise keeps the old folder.
+                  update({ profilesFolder: event.target.value }, { onSaved: props.onReload });
                 }
               }}
             />
