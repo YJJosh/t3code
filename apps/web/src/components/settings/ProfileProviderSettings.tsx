@@ -453,7 +453,11 @@ function ClaudeForm(props: {
       <NameChecklist
         title="Blocked tools"
         description="Claude may not use these. T3’s own tools are never blocked."
-        options={settingsOptions(props.options?.tools, entry.blockedTools ?? [])}
+        options={settingsOptions(
+          props.options?.tools,
+          entry.blockedTools ?? [],
+          props.options?.error,
+        )}
         checked={entry.blockedTools}
         disabled={disabled}
         onChange={(next) => set("blockedTools", next)}
@@ -469,7 +473,11 @@ function ClaudeForm(props: {
       <NameChecklist
         title="Turned-off skills"
         description="Installed Claude skills left out of the session."
-        options={settingsOptions(props.options?.skills, entry.disabledSkills ?? [])}
+        options={settingsOptions(
+          props.options?.skills,
+          entry.disabledSkills ?? [],
+          props.options?.error,
+        )}
         checked={entry.disabledSkills}
         disabled={disabled}
         onChange={(next) => set("disabledSkills", next)}
@@ -477,7 +485,11 @@ function ClaudeForm(props: {
       <NameChecklist
         title="Turned-off plugins"
         description="Installed Claude plugins left out of the session."
-        options={settingsOptions(props.options?.plugins, entry.disabledPlugins ?? [])}
+        options={settingsOptions(
+          props.options?.plugins,
+          entry.disabledPlugins ?? [],
+          props.options?.error,
+        )}
         checked={entry.disabledPlugins}
         disabled={disabled}
         onChange={(next) => set("disabledPlugins", next)}
@@ -525,7 +537,11 @@ function CodexForm(props: {
   onJsonValidity: (valid: boolean) => void;
 }) {
   const { entry, disabled } = props;
-  const features = settingsOptions(props.options?.features, Object.keys(entry.features ?? {}));
+  const features = settingsOptions(
+    props.options?.features,
+    Object.keys(entry.features ?? {}),
+    props.options?.error,
+  );
   const unapplied = [...(entry.disabledSkills ?? []), ...(entry.disabledPlugins ?? [])];
   return (
     <div className="space-y-3">

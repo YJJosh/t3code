@@ -12,6 +12,7 @@ import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ClaudeSessionInventory from "../provider/ClaudeSessionInventory.ts";
 import * as ProviderSettingsProbe from "./ProviderSettingsProbe.ts";
 
 export class ProviderSettingsDetection extends Context.Service<
@@ -26,6 +27,7 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const probe = yield* ProviderSettingsProbe.ProviderSettingsProbe;
+  const inventory = yield* ClaudeSessionInventory.ClaudeSessionInventory;
   const secrets = yield* SecretResolver.SecretResolver;
   const hostEnvironment = yield* HostProcess.Environment;
   const detect = Effect.fn("ProviderSettingsDetection.detect")(function* () {
@@ -84,6 +86,27 @@ const make = Effect.gen(function* () {
               ? { claudeAgent: { tools: [], skills: [], plugins: [], error } }
               : { pi: { skills: [], promptTemplates: [], error } },
         );
+      }
+      if (driver === "claudeAgent") {
+        const recorded = yield* inventory.get(selected.instanceId);
+        const probed = options.claudeAgent;
+        const skills = new Map((probed?.skills ?? []).map((skill) => [skill.name, skill]));
+        for (const name of recorded?.skills ?? []) {
+          if (!skills.has(name)) skills.set(name, { name });
+        }
+        Object.assign(options, {
+          claudeAgent: {
+            tools: (recorded?.tools ?? []).map((name) => ({ name })),
+            plugins: (recorded?.plugins ?? []).map((name) => ({ name })),
+            skills: [...skills.values()],
+            ...(recorded === undefined
+              ? {
+                  error:
+                    "Start one Claude thread on this machine, then Refresh, to list Claude's tools and plugins.",
+                }
+              : {}),
+          },
+        });
       }
     }
     return options;

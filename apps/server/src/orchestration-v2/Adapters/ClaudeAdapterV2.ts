@@ -177,6 +177,7 @@ import {
   type CompiledClaudeModelSelection,
 } from "../../claudeModelOptions.ts";
 import * as ServerConfig from "../../config.ts";
+import * as ClaudeSessionInventory from "../../provider/ClaudeSessionInventory.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -4922,6 +4923,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+  const inventory = yield* Effect.serviceOption(ClaudeSessionInventory.ClaudeSessionInventory);
   const { attachmentsDir, fileSystem, path, random, idAllocator, queryRunner } = adapterOptions;
   const loadModelCatalog = (
     adapterOptions.modelCatalog ?? Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG)
@@ -11232,7 +11234,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       resultsReportingNewContextWindow.add(message);
                     }
                   }
-                  return handleSdkMessage({ query: querySession, message });
+                  return (
+                    message.type === "system" &&
+                    message.subtype === "init" &&
+                    Option.isSome(inventory)
+                      ? inventory.value.record(adapterOptions.instanceId, message)
+                      : Effect.void
+                  ).pipe(Effect.andThen(handleSdkMessage({ query: querySession, message })));
                 }),
               ),
             ),
@@ -12518,7 +12526,8 @@ export type ClaudeAdapterV2DriverEnv =
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions
   | Path.Path
-  | ServerConfig.ServerConfig;
+  | ServerConfig.ServerConfig
+  | ClaudeSessionInventory.ClaudeSessionInventory;
 
 export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
   function* (
@@ -12531,6 +12540,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const queryRunner = yield* ClaudeAgentSdkQueryRunner;
     const serverConfig = yield* ServerConfig.ServerConfig;
+    const inventory = yield* ClaudeSessionInventory.ClaudeSessionInventory;
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const baseEnvironment = yield* mergeClaudeProcessEnvironment(
       config,
@@ -12556,7 +12566,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
       queryRunner,
       continuationRequests,
       ...hooks,
-    });
+    }).pipe(Effect.provideService(ClaudeSessionInventory.ClaudeSessionInventory, inventory));
   },
   (effect, input, _hooks) =>
     effect.pipe(

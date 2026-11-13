@@ -113,6 +113,13 @@ describe("provider settings forms", () => {
       { name: "Read", detected: true },
       { name: "WebFetch", detected: false },
     ]);
+    expect(settingsOptions([], ["Bash"], "Discovery failed")).toEqual([
+      { name: "Bash", detected: true },
+    ]);
+    expect(settingsOptions([{ name: "Read" }], ["Bash"], "Discovery incomplete")).toEqual([
+      { name: "Read", detected: true },
+      { name: "Bash", detected: false },
+    ]);
   });
 
   it.each([

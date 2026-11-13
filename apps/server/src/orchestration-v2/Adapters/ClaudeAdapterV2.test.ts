@@ -80,6 +80,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
+import * as ClaudeSessionInventory from "../../provider/ClaudeSessionInventory.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.ts";
@@ -1411,9 +1412,11 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
     {},
   ).pipe(
     Effect.provide(
-      ServerConfig.layerTest(process.cwd(), {
-        prefix: "t3-claude-binary-path-",
-      }),
+      ClaudeSessionInventory.layer.pipe(
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-claude-binary-path-" }),
+        ),
+      ),
     ),
     Effect.provideService(ClaudeAdapterV2.ClaudeAgentSdkQueryRunner, {
       allocateSessionId: Effect.succeed("native-thread-claude-binary-path"),
@@ -5110,6 +5113,79 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       },
     ],
   } satisfies ClaudeSdk.McpServerStatus;
+
+  it.effect("records Claude init inventories across sessions and reloads their union", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const inventoryLayer = ClaudeSessionInventory.layer.pipe(
+        Layer.provide(ServerConfig.layerTest(root, root)),
+      );
+      const instanceId = ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID;
+      yield* Effect.gen(function* () {
+        const inventory = yield* ClaudeSessionInventory.ClaudeSessionInventory;
+        assert.isUndefined(yield* inventory.get(instanceId));
+        for (const [index, tools] of [
+          ["Read", "Bash", "mcp__t3-code__read", "mcp__other__tool"],
+          ["Read"],
+        ].entries()) {
+          const harness = yield* makeWakeHarnessWithOptions();
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`inventory-${index}`),
+              text: "Hello",
+              attachments: [],
+            }),
+          );
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              type: "system",
+              subtype: "init",
+              uuid: `inventory-init-${index}`,
+              session_id: WAKE_NATIVE_SESSION,
+              tools,
+              plugins: [
+                { name: "formatter@tools", path: "/plugins/formatter" },
+                { name: "reviewer", path: "/claude/plugins/cache/community/reviewer/1.0" },
+                { name: "local", path: "/workspace/local" },
+              ],
+              skills: [index === 0 ? "review" : "explain"],
+              slash_commands: ["clear", "compact", "config", "review"],
+            }),
+          );
+          assert.deepEqual((yield* inventory.get(instanceId))?.tools, ["Bash", "Read"]);
+          yield* TestClock.adjust("1 minute");
+        }
+        const entry = yield* inventory.get(instanceId);
+        assert.deepEqual(entry?.plugins, ["formatter@tools", "reviewer@community"]);
+        assert.deepEqual(entry?.skills, ["explain", "review"]);
+        assert.equal(entry?.lastSeen, 60_000);
+        assert.isUndefined(yield* inventory.get(ProviderInstanceId.make("other-claude")));
+      }).pipe(Effect.provide(inventoryLayer), Effect.scoped);
+      yield* Effect.gen(function* () {
+        const entry = yield* (yield* ClaudeSessionInventory.ClaudeSessionInventory).get(instanceId);
+        assert.deepEqual(entry, {
+          tools: ["Bash", "Read"],
+          plugins: ["formatter@tools", "reviewer@community"],
+          skills: ["explain", "review"],
+          lastSeen: 60_000,
+        });
+      }).pipe(Effect.provide(inventoryLayer), Effect.scoped);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
 
   const runClaudeMcpAppToolTurn = Effect.fnUntraced(function* (
     capabilities: ReadonlyArray<string>,

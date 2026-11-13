@@ -47,7 +47,7 @@ const make = Effect.gen(function* () {
       switch (input.driver) {
         case "claudeAgent": {
           const settings = yield* decodeClaude(input.config);
-          const result = yield* probeClaudeCapabilities(
+          yield* probeClaudeCapabilities(
             settings,
             yield* mergeClaudeProcessEnvironment(settings, undefined, input.environment),
             input.cwd,
@@ -56,13 +56,9 @@ const make = Effect.gen(function* () {
           return {
             claudeAgent: {
               tools: [],
-              skills: result.slashCommands.map(({ name, description }) => ({
-                name,
-                ...(description === undefined ? {} : { description }),
-              })),
+              // Initialization commands do not distinguish skills from built-in slash commands.
+              skills: [],
               plugins: [],
-              error:
-                "This Claude initialization API reports skills but not tools or plugins without a turn. Those lists are unavailable.",
             },
           };
         }
