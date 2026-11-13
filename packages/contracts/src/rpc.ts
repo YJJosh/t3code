@@ -160,6 +160,20 @@ import {
   ReviewDiffPreviewResult,
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
+import {
+  ProfilesEditorState,
+  ProfilesEditorWriteInput,
+  ProfilesError,
+  ProfilesSkillsInput,
+  ProfilesSkillsResult,
+  ProfilesSyncMarkInput,
+  ProfilesSyncReadInput,
+  ProfilesSyncReadResult,
+  ProfilesSyncState,
+  ProfilesSyncWriteInput,
+  ProfilesSyncWriteResult,
+  ProviderSettingsOptions,
+} from "./profiles.ts";
 import { OrchestrationSearchThreadsError } from "./threadSearch.ts";
 import {
   ProviderUploadFeedbackError,
@@ -513,6 +527,13 @@ export const WS_METHODS = {
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
+  profilesEditorRead: "profiles.editor.read",
+  profilesEditorWrite: "profiles.editor.write",
+  profilesSkills: "profiles.skills",
+  profilesDetectOptions: "profiles.detectOptions",
+  profilesSyncRead: "profiles.sync.read",
+  profilesSyncWrite: "profiles.sync.write",
+  profilesSyncMark: "profiles.sync.mark",
   serverGetNpmRelease: "server.getNpmRelease",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
@@ -656,6 +677,43 @@ const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
   payload: Schema.Struct({}),
   success: ServerConfig,
   error: Schema.Union([KeybindingsConfigError, ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+const ProfilesRpcError = Schema.Union([ProfilesError, EnvironmentAuthorizationError]);
+const WsProfilesEditorReadRpc = Rpc.make(WS_METHODS.profilesEditorRead, {
+  payload: Schema.Struct({}),
+  success: ProfilesEditorState,
+  error: ProfilesRpcError,
+});
+const WsProfilesEditorWriteRpc = Rpc.make(WS_METHODS.profilesEditorWrite, {
+  payload: ProfilesEditorWriteInput,
+  success: ProfilesEditorState,
+  error: ProfilesRpcError,
+});
+const WsProfilesSkillsRpc = Rpc.make(WS_METHODS.profilesSkills, {
+  payload: ProfilesSkillsInput,
+  success: ProfilesSkillsResult,
+  error: ProfilesRpcError,
+});
+const WsProfilesDetectOptionsRpc = Rpc.make(WS_METHODS.profilesDetectOptions, {
+  payload: Schema.Struct({}),
+  success: ProviderSettingsOptions,
+  error: ProfilesRpcError,
+});
+const WsProfilesSyncReadRpc = Rpc.make(WS_METHODS.profilesSyncRead, {
+  payload: ProfilesSyncReadInput,
+  success: ProfilesSyncReadResult,
+  error: ProfilesRpcError,
+});
+const WsProfilesSyncWriteRpc = Rpc.make(WS_METHODS.profilesSyncWrite, {
+  payload: ProfilesSyncWriteInput,
+  success: ProfilesSyncWriteResult,
+  error: ProfilesRpcError,
+});
+const WsProfilesSyncMarkRpc = Rpc.make(WS_METHODS.profilesSyncMark, {
+  payload: ProfilesSyncMarkInput,
+  success: ProfilesSyncState,
+  error: ProfilesRpcError,
 });
 
 export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
@@ -2215,6 +2273,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsEnsureScratchRpc,
   WsProjectsCreateNewRpc,
   WsProjectsMakeMultiRepoRpc,
+  WsProfilesEditorReadRpc,
+  WsProfilesEditorWriteRpc,
+  WsProfilesSkillsRpc,
+  WsProfilesDetectOptionsRpc,
+  WsProfilesSyncReadRpc,
+  WsProfilesSyncWriteRpc,
+  WsProfilesSyncMarkRpc,
   WsProjectsInspectMultiRepoFolderRpc,
   WsProjectsCreateFromThreadRpc,
   WsProjectsWriteFileRpc,
