@@ -135,14 +135,14 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
 
   /** Saves one change; on a conflict the section is reloaded and its edit dropped. */
   const save = async (
-    input: Omit<ProfilesEditorWriteInput, "expectedRevision">,
+    input: Omit<ProfilesEditorWriteInput, "expectedRevision" | "expectedHash">,
     onConflict: () => void,
   ): Promise<ProfilesEditorState | null> => {
     if (state === null) return null;
     setSaving(true);
     const result = await write({
       environmentId,
-      input: { expectedRevision: state.sync.revision, ...input },
+      input: { expectedRevision: state.sync.revision, expectedHash: state.sync.hash, ...input },
     });
     setSaving(false);
     if (result._tag === "Success") return result.value;
@@ -167,7 +167,7 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
 
   const saveSection = async <T,>(
     section: ReturnType<typeof useDraft<T>>,
-    input: Omit<ProfilesEditorWriteInput, "expectedRevision">,
+    input: Omit<ProfilesEditorWriteInput, "expectedRevision" | "expectedHash">,
   ) => {
     if (section.stale) {
       section.discard();

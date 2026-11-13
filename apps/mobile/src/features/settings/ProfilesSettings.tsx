@@ -236,7 +236,11 @@ function ProfilesEditor(props: {
     setNotice(null);
     const result = await write({
       environmentId,
-      input: { expectedRevision: state.sync.revision, profiles: file },
+      input: {
+        expectedRevision: state.sync.revision,
+        expectedHash: state.sync.hash,
+        profiles: file,
+      },
     });
     pending.current = false;
     setSaving(false);

@@ -57,6 +57,7 @@ export interface ProfilesSyncIo {
     environmentId: EnvironmentId,
     input: {
       readonly expectedRevision: number;
+      readonly expectedHash: string;
       readonly source: { readonly revision: number; readonly hash: string };
       readonly files: NonNullable<ProfilesSyncReadResult["files"]>;
     },
@@ -188,6 +189,7 @@ async function runProfilesSyncOnce(
     targets.map(async (target) => {
       const answer = await io.write(target.environmentId, {
         expectedRevision: target.state.revision,
+        expectedHash: target.state.hash,
         source: { revision: winnerState.revision, hash: winnerState.hash },
         files,
       });

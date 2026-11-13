@@ -360,7 +360,11 @@ const make = Effect.gen(function* () {
     const decoded = yield* decodeWrite(input).pipe(Effect.mapError(() => invalid()));
     const root = yield* folder();
     const before = yield* snapshot(root);
-    if (input.expectedRevision !== before.state.revision) return yield* conflict();
+    if (
+      input.expectedRevision !== before.state.revision ||
+      (input.expectedHash !== undefined && input.expectedHash !== before.state.hash)
+    )
+      return yield* conflict();
     yield* io(async () => {
       const writes: Array<[string, string]> = [];
       if (decoded.profiles !== undefined)
@@ -398,7 +402,11 @@ const make = Effect.gen(function* () {
   ) {
     const root = yield* folder();
     const before = yield* snapshot(root);
-    if (input.expectedRevision !== before.state.revision) return yield* conflict();
+    if (
+      input.expectedRevision !== before.state.revision ||
+      (input.expectedHash !== undefined && input.expectedHash !== before.state.hash)
+    )
+      return yield* conflict();
     const now = DateTime.formatIso(yield* DateTime.now);
     return yield* io(async () => {
       validateBundle(input.files);

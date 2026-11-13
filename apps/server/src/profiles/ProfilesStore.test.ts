@@ -130,6 +130,39 @@ it.effect(
           (yield* store.syncRead({ includeFiles: false })).state.revision,
           bundle.state.revision,
         );
+        const tied = yield* store.syncWrite({
+          expectedRevision: synced.state.revision,
+          source: { revision: synced.state.revision, hash: changed.state.hash },
+          files: changed.files!,
+        });
+        assert.equal(tied.state.revision, synced.state.revision);
+        assert.equal(
+          (yield* store
+            .write({
+              expectedRevision: synced.state.revision,
+              expectedHash: synced.state.hash,
+              prompts: { upsert: [{ name: "coding", content: "stale editor" }] },
+            })
+            .pipe(Effect.flip)).reason,
+          "conflict",
+        );
+        assert.equal(
+          (yield* store
+            .syncWrite({
+              expectedRevision: synced.state.revision,
+              expectedHash: synced.state.hash,
+              source: bundle.state,
+              files: bundle.files!,
+            })
+            .pipe(Effect.flip)).reason,
+          "conflict",
+        );
+        yield* store.syncWrite({
+          expectedRevision: tied.state.revision,
+          expectedHash: tied.state.hash,
+          source: bundle.state,
+          files: bundle.files!,
+        });
         yield* fs.symlink(`${root}/profiles/prompts`, `${root}/profiles/link`);
         const linked = yield* store.syncRead({ includeFiles: true });
         assert.include(linked.skipped!, "link");
