@@ -175,7 +175,14 @@ it.effect(
         const initial = yield* store.read();
         assert.equal(initial.skills[0]?.source, "owner/repo");
         assert.isTrue(initial.skills[0]?.needsInstall);
-        for (const source of ["-bad", "owner/repo --global", "owner\nrepo", "owner\0repo"]) {
+        for (const source of [
+          "-bad",
+          "owner/repo --global",
+          " owner/repo",
+          "owner/repo ",
+          "owner\nrepo",
+          "owner\0repo",
+        ]) {
           assert.equal(
             (yield* store.skills({ _tag: "add", source }).pipe(Effect.flip)).reason,
             "invalid",

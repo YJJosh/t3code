@@ -73,6 +73,7 @@ const safeRelative = (file: string) =>
   file.length > 0 &&
   !file.includes("\\") &&
   !file.includes("\0") &&
+  !/^[a-zA-Z]:/.test(file) &&
   !NodePath.posix.isAbsolute(file) &&
   NodePath.posix.normalize(file) === file &&
   file
@@ -210,7 +211,7 @@ const make = Effect.gen(function* () {
               reason: "io",
               message: "Could not read or write the profiles folder. Check file permissions.",
             }),
-    }),
+    }).pipe(Effect.uninterruptible),
   );
   const folder = Effect.fn("ProfilesStore.folder")(function* () {
     const value = yield* settings.getSettings.pipe(
@@ -219,7 +220,12 @@ const make = Effect.gen(function* () {
           new ProfilesError({ reason: "io", message: "Could not read profiles folder settings." }),
       ),
     );
-    return NodePath.resolve(Profiles.resolveFolder(config.baseDir, value.profilesFolder));
+    const root = NodePath.resolve(Profiles.resolveFolder(config.baseDir, value.profilesFolder));
+    return yield* io(async () => {
+      const info = await stat(root);
+      if (info?.isSymbolicLink() || (info && !info.isDirectory())) throw invalid();
+      return root;
+    });
   });
   const persist = async (root: string, state: ProfilesSyncState) => {
     const target = NodePath.join(root, ".t3-sync.json");
@@ -452,12 +458,16 @@ const make = Effect.gen(function* () {
     return state;
   }, lock.withPermit);
   const skills = Effect.fn("ProfilesStore.skills")(function* (input: ProfilesSkillsInput) {
+    if (input._tag === "add" && /^-|[\s\x00-\x1f\x7f]/.test(input.source)) return yield* invalid();
     const decoded = yield* decodeSkills(input).pipe(Effect.mapError(() => invalid()));
     if (decoded._tag === "add" && /^-|[\s\x00-\x1f\x7f]/.test(decoded.source))
       return yield* invalid();
     const root = yield* folder();
     const before = yield* snapshot(root);
-    yield* io(() => NodeFSP.mkdir(root, { recursive: true }));
+    yield* io(async () => {
+      await safeTarget(root, ".agents/skills");
+      await NodeFSP.mkdir(root, { recursive: true });
+    });
     let cwd = root;
     let command = "npx";
     let args: string[];
