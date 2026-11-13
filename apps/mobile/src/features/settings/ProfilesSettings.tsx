@@ -256,6 +256,9 @@ function ProfilesEditor(props: {
   function nameProfile(id?: string) {
     Dialog.prompt({
       title: id === undefined ? "Add profile" : "Rename profile",
+      ...(id === undefined
+        ? {}
+        : { message: "Threads that already use this profile keep its old name." }),
       initialValue: id ?? "",
       confirmText: id === undefined ? "Add" : "Rename",
       onConfirm: (name) => {

@@ -129,7 +129,7 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
     serverEnvironment.profileConfig({ environmentId, input: {} }),
   );
   const reload = () => {
-    // REVIEW: The composer reads a separate catalog, not the editor query.
+    // The composer reads its own catalog query, not the editor's.
     editorQuery.refresh();
     refreshCatalog();
   };
@@ -218,7 +218,6 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
     );
     if (saved !== null) {
       profiles.rebase(nextProfiles, (value) => renameProviderSettingsRefs(value, driver, from, to));
-      // REVIEW: A removed entry no longer has a JSON editor to repair its validation error.
       setInvalidJson((current) => {
         const next = new Set(current);
         next.delete(`${driver}:${from}`);
@@ -451,7 +450,6 @@ function FolderAndSync(props: {
               disabled={!canWriteSettings}
               onBlur={(event) => {
                 if (event.target.value !== settings.profilesFolder) {
-                  // REVIEW: The editor query is independent of settings and otherwise keeps the old folder.
                   update({ profilesFolder: event.target.value }, { onSaved: props.onReload });
                 }
               }}
@@ -700,6 +698,10 @@ function ProfilesEditor(props: {
               Delete
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Threads that already use this profile keep its old name. After a rename or delete, pick
+            a profile again in those threads.
+          </p>
           {renameError ? <p className="text-xs text-destructive">{renameError}</p> : null}
           <Input
             aria-label="Profile description"
