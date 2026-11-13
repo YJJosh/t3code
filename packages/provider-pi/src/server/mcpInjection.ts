@@ -1,3 +1,4 @@
+import type { ResolvedProviderSettings } from "@t3tools/contracts";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -247,6 +248,7 @@ export const materializePiT3McpExtension = Effect.fn("materializePiT3McpExtensio
 });
 
 export function buildPiRpcLaunch(input: {
+  readonly providerSettings?: ResolvedProviderSettings;
   readonly launchArgs: ReadonlyArray<string>;
   readonly environment: NodeJS.ProcessEnv;
   readonly mcpSession: McpProviderSessionConfig | undefined;
@@ -263,6 +265,7 @@ export function buildPiRpcLaunch(input: {
   readonly args: ReadonlyArray<string>;
   readonly env: NodeJS.ProcessEnv;
 } {
+  const profile = input.providerSettings?._tag === "pi" ? input.providerSettings.settings : {};
   const hasT3Extension = input.disableExtensions !== true && input.extensionPath !== undefined;
   const hasT3Mcp = hasT3Extension && input.mcpSession !== undefined;
   const extensionSafeArgs =
@@ -280,6 +283,8 @@ export function buildPiRpcLaunch(input: {
         ? ["--session", input.sessionPath]
         : []),
     ...launchArgs,
+    ...(profile.skills === false ? ["--no-skills"] : []),
+    ...(profile.promptTemplates === false ? ["--no-prompt-templates"] : []),
     ...(input.shortLived === true && !launchArgs.includes("--offline") ? ["--offline"] : []),
     // Restrictions must follow launch args so user flags cannot re-enable unattended tools/extensions.
     ...(input.disableExtensions === true ? ["--no-extensions"] : []),

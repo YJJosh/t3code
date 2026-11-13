@@ -1,3 +1,5 @@
+import { claudeProfileOptions } from "../../profiles/providerSettings.ts";
+import type { ResolvedProviderSettings } from "@t3tools/contracts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import {
   compactDynamicToolOutput,
@@ -1755,6 +1757,7 @@ const subagentDeviceInstructions: HookCallback = () =>
 
 export function makeClaudeQueryOptions(input: {
   readonly profileInstructions?: string;
+  readonly providerSettings?: ResolvedProviderSettings;
   readonly modelSelection: ModelSelection;
   readonly modelCatalog?: ClaudeModelCatalog;
   readonly nativeThreadId: string;
@@ -1783,6 +1786,7 @@ export function makeClaudeQueryOptions(input: {
   // Flag settings, because a user's settings.json env beats the process env in Claude Code.
   readonly toolSearchOverride?: "true";
 }): ClaudeAgentSdkQueryOptions {
+  const profile = claudeProfileOptions(input.providerSettings);
   const compiledSelection = compileClaudeModelSelection(input.modelSelection, input.modelCatalog);
   const {
     // claudeLaunchArgDirectories reads every --add-dir into additionalDirectories.
@@ -1802,6 +1806,7 @@ export function makeClaudeQueryOptions(input: {
     input.appendSystemPromptFileText?.replace(/\r?\n$/, ""),
     launchArgAppendSystemPrompt,
   ].filter((text): text is string => typeof text === "string" && text.length > 0);
+  if (profile.chrome) extraArgs.chrome = null;
   const requestThinkingSummaries =
     compiledSelection.settings.alwaysThinkingEnabled !== false &&
     extraArgs["thinking-display"] !== "omitted";
@@ -1816,12 +1821,20 @@ export function makeClaudeQueryOptions(input: {
     Object.keys(compiledSelection.settings).length === 0
       ? undefined
       : (compiledSelection.settings as ClaudeSdkSettings);
+  const baseSettings =
+    Object.keys(profile.settings).length === 0
+      ? input.sdkSettings
+      : ({
+          ...(typeof input.sdkSettings === "object" ? input.sdkSettings : {}),
+          ...profile.settings,
+        } as ClaudeSdkSettings);
   const querySettings =
     selectionSettings === undefined
-      ? input.sdkSettings
-      : typeof input.sdkSettings === "object" && input.sdkSettings !== null
-        ? ({ ...input.sdkSettings, ...selectionSettings } as ClaudeSdkSettings)
-        : selectionSettings;
+      ? baseSettings
+      : ({
+          ...(typeof baseSettings === "object" ? baseSettings : {}),
+          ...selectionSettings,
+        } as ClaudeSdkSettings);
   const compactQuerySettings =
     input.settings?.autoCompactWindow === undefined || input.settings.autoCompactWindow.length === 0
       ? querySettings
@@ -1858,7 +1871,13 @@ export function makeClaudeQueryOptions(input: {
     ...threadIdentity,
     ...(input.resumeSessionAt === undefined ? {} : { resumeSessionAt: input.resumeSessionAt }),
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
-    ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
+    ...((input.disallowedTools?.length ?? 0) + profile.blockedTools.length === 0
+      ? {}
+      : {
+          disallowedTools: [
+            ...new Set([...(input.disallowedTools ?? []), ...profile.blockedTools]),
+          ],
+        }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
     ...(input.allowDangerouslySkipPermissions === true
       ? { allowDangerouslySkipPermissions: true }
@@ -3038,8 +3057,10 @@ export function claudeEffectiveQueryPolicyKey(
     readonly allowedTools?: ReadonlyArray<string>;
     readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
   },
+  providerSettings?: ResolvedProviderSettings,
 ): string {
   return JSON.stringify({
+    providerSettings,
     runtimePolicy: claudeRuntimeQueryPolicyKey({
       ...queryPolicy,
       ...(mcpOverrides.allowedTools === undefined
@@ -10925,7 +10946,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const queryPolicyKey = claudeEffectiveQueryPolicyKey(
+            queryPolicy,
+            mcpOverrides,
+            input.providerSettings,
+          );
           const compiledSelection = compileClaudeModelSelection(
             turnInput.modelSelection,
             modelCatalog,
@@ -11043,6 +11068,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             launchArgSettings,
           );
           const queryOptions = makeClaudeQueryOptions({
+            ...(input.providerSettings === undefined
+              ? {}
+              : { providerSettings: input.providerSettings }),
             ...(input.profileInstructions === undefined
               ? {}
               : { profileInstructions: input.profileInstructions }),

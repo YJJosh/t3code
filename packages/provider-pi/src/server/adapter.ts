@@ -481,6 +481,9 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         return yield* protocolError(resolvedLaunchArgs.message);
       }
       const launch = buildPiRpcLaunch({
+        ...(input.providerSettings === undefined
+          ? {}
+          : { providerSettings: input.providerSettings }),
         launchArgs: resolvedLaunchArgs.args,
         environment: {
           ...options.environment,
@@ -3336,6 +3339,9 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             // CLI --fork uses Pi's own session format and sets the destination cwd. RPC
             // switch_session/clone alone would retain the source cwd.
             const forkLaunch = buildPiRpcLaunch({
+              ...(input.providerSettings === undefined
+                ? {}
+                : { providerSettings: input.providerSettings }),
               launchArgs: resolvedLaunchArgs.args,
               environment: options.environment,
               mcpSession: undefined,

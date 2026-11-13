@@ -45,6 +45,11 @@ describe("pi T3 MCP injection", () => {
       mcpSession,
       extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
       runtimeMode: "approval-required",
+      providerSettings: {
+        _tag: "pi",
+        id: "lean",
+        settings: { skills: false, promptTemplates: false },
+      },
     });
     assert.deepEqual(launch.args, [
       "--mode",
@@ -62,6 +67,8 @@ describe("pi T3 MCP injection", () => {
       "--name",
       "-review",
       "--extension-flag=kept",
+      "--no-skills",
+      "--no-prompt-templates",
       "--extension",
       "/tmp/cache/pi-t3-mcp-extension.ts",
     ]);
