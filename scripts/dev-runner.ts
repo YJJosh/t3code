@@ -340,6 +340,8 @@ export const createDevRunnerEnv = Effect.fn("dev-runner.createDevRunnerEnv")(fun
   // Each worktree has its own state, so a dev server would count as a new
   // install of the developer's real accounts. Set it explicitly to opt in.
   output.T3CODE_TELEMETRY_ENABLED = baseEnv.T3CODE_TELEMETRY_ENABLED ?? "false";
+  // Fork dev servers show T3 Dulli; desktop dev keeps its injected upstream identity.
+  output.VITE_DESKTOP_BUILD_BRAND = baseEnv.VITE_DESKTOP_BUILD_BRAND ?? "dulli";
 
   if (!isDesktopMode) {
     output.T3CODE_PORT = String(serverPort);

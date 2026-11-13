@@ -22,3 +22,4 @@ services:
       HOST: ""
       T3CODE_PORT: server.port
       T3CODE_SINGLE_ORIGIN_DEV: "1"
+      VITE_DESKTOP_BUILD_BRAND: dulli
