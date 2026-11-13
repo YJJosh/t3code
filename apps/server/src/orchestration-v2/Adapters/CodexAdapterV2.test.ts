@@ -592,6 +592,7 @@ function makeCodexReplayTurn(input: {
 }
 
 function codexReplayPreamble(input: {
+  readonly threadConfig?: Readonly<Record<string, Schema.Json>>;
   readonly nativeThreadId: string;
   readonly nativeTurnId: string;
   readonly prompt: string;
@@ -637,7 +638,7 @@ function codexReplayPreamble(input: {
       frame: {
         id: 2,
         method: "thread/start",
-        params: { config: CodexAdapterV2.CODEX_THREAD_CONFIG },
+        params: { config: input.threadConfig ?? CodexAdapterV2.CODEX_THREAD_CONFIG },
       },
     },
     {
@@ -1253,6 +1254,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     onUsageLimits?: CodexAdapterV2.CodexAdapterV2Options["onUsageLimits"],
     promptSuggestions: Effect.Effect<boolean> = Effect.succeed(false),
+    providerSettings?: ProviderAdapter.ProviderAdapterV2OpenSessionInput["providerSettings"],
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1329,6 +1331,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         modelSelection: CODEX_TEST_MODEL_SELECTION,
         runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
         promptSuggestions,
+        ...(providerSettings === undefined ? {} : { providerSettings }),
       });
       const providerThread = yield* runtime.ensureThread({
         threadId,
@@ -2934,7 +2937,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       Effect.gen(function* () {
         const scenario = "codex-resume-metadata";
         const nativeThreadId = `native-${scenario}-thread`;
+        const providerSettings = {
+          _tag: "codex",
+          id: "lean",
+          settings: { features: { memories: false } },
+        } as const;
+        const threadConfig = { ...CodexAdapterV2.CODEX_THREAD_CONFIG, "features.memories": false };
         const preamble = codexReplayPreamble({
+          threadConfig,
           nativeThreadId,
           nativeTurnId: "unused-turn",
           prompt: "unused-prompt",
@@ -2952,7 +2962,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 params: {
                   threadId: nativeThreadId,
                   excludeTurns: true,
-                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  config: threadConfig,
                 },
               },
             },
@@ -2970,7 +2980,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 params: {
                   threadId: nativeThreadId,
                   excludeTurns: true,
-                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  config: threadConfig,
                 },
               },
             },
@@ -2988,7 +2998,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 params: {
                   threadId: nativeThreadId,
                   excludeTurns: true,
-                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                  config: threadConfig,
                 },
               },
             },
@@ -3007,6 +3017,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             Effect.sync(() => {
               if (method === "thread/resume") resumeThreadEnvs.push(threadEnvOf(params));
             }),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          providerSettings,
         );
         const resumed = yield* harness.runtime.resumeThread({
           providerThread: harness.providerThread,
@@ -8619,7 +8634,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       Effect.gen(function* () {
         const nativeThreadId = "fallback-source-thread";
         const forkThreadId = "fallback-fork-thread";
+        const providerSettings = {
+          _tag: "codex",
+          id: "lean",
+          settings: { features: { memories: false } },
+        } as const;
+        const threadConfig = { ...CodexAdapterV2.CODEX_THREAD_CONFIG, "features.memories": false };
         const preamble = codexReplayPreamble({
+          threadConfig,
           nativeThreadId,
           nativeTurnId: "fallback-source-turn",
           prompt: "unused",
@@ -8634,7 +8656,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               frame: {
                 id: 3,
                 method: "thread/fork",
-                params: { threadId: nativeThreadId, config: CodexAdapterV2.CODEX_THREAD_CONFIG },
+                params: { threadId: nativeThreadId, config: threadConfig },
               },
             },
             {
@@ -8723,6 +8745,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               outbound.push(method);
               if (method === "thread/fork") forkThreadEnvs.push(threadEnvOf(params));
             }),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          providerSettings,
         );
         const now = yield* DateTime.now;
         const firstTurn = codexReplaySourceTurn({
