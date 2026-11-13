@@ -214,8 +214,7 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
 
   const deletePrompt = async (name: string) => {
     if (!(name in savedPrompts)) {
-      const { [name]: _removed, ...rest } = prompts.value;
-      prompts.set(rest);
+      prompts.set(withKey(prompts.value, name, undefined));
       return;
     }
     const users = profilesUsingPrompt(savedProfiles, name);
@@ -234,7 +233,7 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
     );
     if (saved !== null) {
       profiles.rebase(nextProfiles, (value) => renamePromptRefs(value, name, null));
-      const { [name]: _removed, ...rest } = prompts.value;
+      const rest = withKey(prompts.value, name, undefined);
       prompts.rebase(Object.fromEntries(saved.prompts.map((p) => [p.name, p.content])), () => rest);
     }
   };
