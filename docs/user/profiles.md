@@ -1,73 +1,69 @@
 # Profiles
 
-Profiles combine reusable prompt parts and skills with optional provider, model, and effort presets. Keep the folder in a Git repository and sync a checkout onto each environment. T3 reads that environment's checkout; your browser or phone never needs filesystem access to it. T3 does not run Git sync for you.
+A profile bundles prompt parts, skills and, for each provider, a named set of **provider settings**
+that shape how that provider's harness runs. Pick a profile beside the composer on web, desktop or
+mobile. New threads use the default profile. Delegated tasks do not inherit a parent's profile.
 
-In **Settings → General → Profiles** on web/desktop, or **Settings → Providers** on mobile, set the environment's profiles folder (blank uses `<T3 home>/profiles`), then **Refresh profiles**. A missing `profiles.json` disables the feature. A broken profile stays listed with a warning and cannot be chosen until repaired; other profiles keep working. Invalid `profiles.json` is reported as a catalog error. You can choose a default for new threads, use the folder's default, or choose **No profile**.
+Manage everything in **Settings → Profiles**. Mobile shows the same page with fewer controls; edit
+provider settings and prompt text on web or desktop.
+
+## The profiles folder
+
+Each environment keeps its profiles in a folder, `<T3 home>/profiles` unless you set another path in
+**Settings → Profiles**. **Open in editor** opens it on the machine you are using, so it appears only
+for an environment on that machine.
 
 ```text
 profiles/
-  profiles.json
-  prompts/
-    coding.md
-  skills/
-    review/
-      SKILL.md
+  profiles.json            profiles and the default
+  provider-settings.json   named provider settings per provider
+  prompts/<name>.md        prompt parts
+  .agents/skills/<name>/   skills, one SKILL.md each
+  skills-lock.json         where installed skills came from
 ```
 
-```json
-{
-  "default": "coding",
-  "profiles": {
-    "coding": {
-      "description": "Coding with review guidance",
-      "prompts": ["coding"],
-      "skills": ["review"]
-    },
-    "lean": {
-      "prompts": ["coding"],
-      "skills": [],
-      "provider": "claudeAgent-lean",
-      "model": "claude-haiku-4-5",
-      "effort": "low"
-    }
-  }
-}
-```
+A broken profile stays in the list with a warning; the others keep working.
 
-Names use letters, numbers, hyphens, or underscores. Prompt names omit `.md`. Each skill uses Agent Skills frontmatter:
+## Sharing between environments
 
-```markdown
----
-name: review
-description: Review a code change for correctness and regressions.
----
+You do not run Git for this. When you save in **Settings → Profiles**, T3 copies the folder to every
+environment the app is connected to. An environment that was offline gets the newer copy when the app
+connects to it again, and **Sync now** does the same on demand. The newest copy wins. If an
+environment's folder was also changed by hand since its last sync, T3 keeps that version in a backup
+folder next to it and shows a notice.
 
-Read the diff, check the changed behavior, and report actionable findings.
-```
+An environment no app connects to keeps its last copy until the app connects to it. `node_modules` is
+never copied: a skill that needs dependencies shows **Install** on each machine.
 
-Choose a profile beside the composer on web, desktop, or mobile. Its provider/model/effort are starting choices, not locks; you can change them afterwards. Provider switches are saved with the next sent message. **No profile** removes the profile without resetting your model settings. Delegated tasks do not inherit a parent's profile by default.
+## Skills
 
-Prompt parts are appended in the listed order. Selected skills contribute their name, description, and absolute `SKILL.md` path; the agent reads a skill when needed. Only select content you trust. Paths point to the environment running the agent, not your browser's machine.
+**Add skill** takes a repository such as `YJJosh/Portler` and installs it with the
+[`skills`](https://github.com/vercel-labs/skills) command (`npx skills`), so the environment needs Node
+and `npx`. **Update all** updates every installed skill from its source, then syncs. Skills you write
+yourself go in `.agents/skills/<name>/SKILL.md`; they are not updated.
 
-Profiles are read again at each session start. If a selected profile has become broken, session start reports its warning rather than omitting its instructions. Changing a profile or syncing its files does not rewrite an already-running session: stop and restart the thread to apply it. Claude, Codex, Muse, Pi, and generic ACP providers (including Replay) support profiles. Other providers gray out the profile picker and ignore the profile. Your selection is kept for when you switch back to a supported provider. Claude and Pi use their system-prompt append hooks; Codex uses developer context; Muse and ACP use their runtime-instruction channel.
+Skills are not added to profiles automatically. Tick them in each profile. A selected skill gives the
+agent its name, description and the path of its `SKILL.md`, which the agent reads when needed. Skills
+can contain scripts and run with the agent's permissions, and syncing copies them to every
+environment, so only add skills you trust.
 
-## Lean and full Claude
+## Provider settings
 
-Keep your usual Claude provider instance for the full experience. Add a second Claude instance in **Settings → Providers**, give it a separate home path, and set launch arguments to `--settings /absolute/path/claude-debloat.json`. The separate home becomes `CLAUDE_CONFIG_DIR`, isolating that instance's Claude configuration and login. Authenticate the instance separately if necessary.
+Provider settings are named per provider, such as `lean` or `full` for Claude. A profile picks one for
+each provider, so two threads on the same provider can run different settings at the same time.
+**Detect** reads what this machine's provider offers (tools, skills, plugins, features). An option
+another machine lacks is marked and skipped there.
 
-A small `claude-debloat.json` can start with:
+| Provider | What provider settings can change                                                                                    |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| Claude   | Blocked tools, bundled skills, skills and plugins, memory, attribution, Claude in Chrome, other Claude Code settings |
+| Codex    | Features and config that Codex applies per thread                                                                    |
+| Pi       | Pi's own skills and prompt templates on or off                                                                       |
 
-```json
-{
-  "autoMemoryEnabled": false,
-  "disableBundledSkills": true,
-  "disableWorkflows": true,
-  "syncClaudeAiSkills": false,
-  "syncClaudeAiPlugins": false,
-  "attribution": { "commit": "", "pr": "" }
-}
-```
+Login, binary path and home directory stay with the provider in **Settings → Providers**. Settings T3
+itself needs, such as its own tools and MCP servers, cannot be turned off. Provider settings are copied
+to every environment, so they cannot hold secrets.
 
-These are Claude settings and may vary with your installed Claude version. T3 passes the file through the SDK's settings option, retaining T3's required runtime settings. Do not disable tools that your workflow needs.
-
-Set a profile's `provider` to the second instance's **id**, not its display name. Use the same id on each environment. Portable ids such as `claudeAgent-lean`, `codex-work`, `muse-work`, and `pi-work` can fall back to the driver's default instance if that custom instance is missing. The picker shows a notice. If an opaque id cannot identify a driver, T3 keeps your current instance and warns; check the model before sending.
+Changes apply when a session starts or resumes, not to a turn that is running. Muse, Cursor, OpenCode
+and other providers do not support profiles; the picker is grayed out there and sessions start
+normally.
