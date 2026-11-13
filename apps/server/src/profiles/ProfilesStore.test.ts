@@ -42,14 +42,22 @@ it.effect(
         assert.equal(outcomes.filter((result) => result._tag === "Success").length, 1);
         const saved = yield* store.read();
         assert.equal(saved.sync.revision, first.sync.revision + 1);
+        yield* fs.writeFileString(`${root}/profiles/run.sh`, "#!/bin/sh\nexit 0\n");
+        yield* fs.chmod(`${root}/profiles/run.sh`, 0o755);
+        yield* fs.makeDirectory(`${root}/profiles/.git`, { recursive: true });
+        yield* fs.writeFileString(`${root}/profiles/.git/keep`, "private");
+        yield* fs.writeFileString(`${root}/profiles/oversized`, "x".repeat(1024 * 1024 + 1));
         const bundle = yield* store.syncRead({ includeFiles: true });
+        assert.include(bundle.skipped!, "oversized");
+        assert.include(bundle.skipped!, ".git");
+        assert.isTrue(bundle.files!.find((file) => file.path === "run.sh")?.executable);
         yield* store.syncMark({ hash: bundle.state.hash });
         yield* fs.writeFileString(`${root}/profiles/prompts/coding.md`, "outside edit");
         yield* fs.writeFileString(`${root}/profiles/stale.txt`, "old");
         yield* fs.makeDirectory(`${root}/profiles/node_modules`, { recursive: true });
         yield* fs.writeFileString(`${root}/profiles/node_modules/keep`, "keep");
         const changed = yield* store.syncRead({ includeFiles: true });
-        assert.equal(changed.state.revision, saved.sync.revision + 1);
+        assert.equal(changed.state.revision, bundle.state.revision + 1);
         assert.equal(
           (yield* store
             .write({ expectedRevision: first.sync.revision, prompts: { remove: ["coding"] } })
@@ -112,6 +120,9 @@ it.effect(
           "outside edit",
         );
         assert.equal(yield* fs.readFileString(`${root}/profiles/prompts/coding.md`), "original");
+        assert.notEqual((yield* fs.stat(`${root}/profiles/run.sh`)).mode & 0o111, 0);
+        assert.equal(yield* fs.readFileString(`${root}/profiles/.git/keep`), "private");
+        assert.isTrue(yield* fs.exists(`${root}/profiles/oversized`));
         assert.isFalse(yield* fs.exists(`${root}/profiles/stale.txt`));
         assert.equal(yield* fs.readFileString(`${root}/profiles/node_modules/keep`), "keep");
         assert.equal(synced.state.syncedHash, bundle.state.hash);
@@ -136,6 +147,12 @@ it.effect(
         const broken = yield* store.read();
         assert.isNull(broken.profiles);
         assert.isDefined(broken.error);
+        for (let i = 0; i < 9; i++)
+          yield* fs.writeFileString(`${root}/profiles/large-${i}`, "x".repeat(1024 * 1024));
+        assert.equal(
+          (yield* store.syncRead({ includeFiles: true }).pipe(Effect.flip)).reason,
+          "invalid",
+        );
       }).pipe(
         Effect.provide(
           ProfilesStore.layer.pipe(
