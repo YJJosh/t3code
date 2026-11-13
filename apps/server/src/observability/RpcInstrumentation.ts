@@ -41,6 +41,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.profilesEditorWrite]: "profiles",
   [WS_METHODS.profilesSkills]: "profiles",
   [WS_METHODS.profilesDetectOptions]: "profiles",
+  [WS_METHODS.profilesClearClaudeList]: "profiles",
   [WS_METHODS.profilesSyncRead]: "profiles",
   [WS_METHODS.profilesSyncWrite]: "profiles",
   [WS_METHODS.profilesSyncMark]: "profiles",

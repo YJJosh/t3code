@@ -19,6 +19,8 @@ export class ProviderSettingsDetection extends Context.Service<
   ProviderSettingsDetection,
   {
     readonly detect: () => Effect.Effect<ProviderSettingsOptions, ProfilesError>;
+    /** Forgets what Claude sessions reported for the instance `detect` shows; new sessions refill it. */
+    readonly clearClaudeList: () => Effect.Effect<void>;
   }
 >()("t3/profiles/ProviderSettingsDetection") {}
 
@@ -30,22 +32,27 @@ const make = Effect.gen(function* () {
   const inventory = yield* ClaudeSessionInventory.ClaudeSessionInventory;
   const secrets = yield* SecretResolver.SecretResolver;
   const hostEnvironment = yield* HostProcess.Environment;
+  const selectInstance = Effect.fn("ProviderSettingsDetection.selectInstance")(function* (
+    driver: "claudeAgent" | "codex" | "pi",
+  ) {
+    const candidates = (yield* registry.listInstances).filter(
+      (instance) => instance.enabled && instance.driverKind === driver,
+    );
+    return (
+      candidates.find(
+        (instance) => instance.instanceId === defaultInstanceIdForDriver(instance.driverKind),
+      ) ?? candidates[0]
+    );
+  });
   const detect = Effect.fn("ProviderSettingsDetection.detect")(function* () {
     const current = yield* settings.getSettings.pipe(
       Effect.mapError(
         () => new ProfilesError({ reason: "io", message: "Could not read provider settings." }),
       ),
     );
-    const instances = yield* registry.listInstances;
     const options: ProviderSettingsOptions = {};
     for (const driver of ["claudeAgent", "codex", "pi"] as const) {
-      const candidates = instances.filter(
-        (instance) => instance.enabled && instance.driverKind === driver,
-      );
-      const selected =
-        candidates.find(
-          (instance) => instance.instanceId === defaultInstanceIdForDriver(instance.driverKind),
-        ) ?? candidates[0];
+      const selected = yield* selectInstance(driver);
       if (!selected) continue;
       // Claude's startup probe cannot list tools, plugins or skills; only real sessions report them.
       if (driver === "claudeAgent") {
@@ -106,6 +113,10 @@ const make = Effect.gen(function* () {
     }
     return options;
   });
-  return ProviderSettingsDetection.of({ detect });
+  const clearClaudeList = Effect.fn("ProviderSettingsDetection.clearClaudeList")(function* () {
+    const selected = yield* selectInstance("claudeAgent");
+    if (selected) yield* inventory.clear(selected.instanceId);
+  });
+  return ProviderSettingsDetection.of({ detect, clearClaudeList });
 });
 export const layer = Layer.effect(ProviderSettingsDetection, make);

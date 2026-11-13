@@ -2422,6 +2422,7 @@ export const layerWsRpc = (
         [WS_METHODS.profilesSyncWrite]: (input) => profilesStore.syncWrite(input),
         [WS_METHODS.profilesSyncMark]: (input) => profilesStore.syncMark(input),
         [WS_METHODS.profilesDetectOptions]: () => providerSettingsDetection.detect(),
+        [WS_METHODS.profilesClearClaudeList]: () => providerSettingsDetection.clearClaudeList(),
         [WS_METHODS.serverGetConfig]: (_input) =>
           loadServerConfig({
             usageLimitsCommand: false,

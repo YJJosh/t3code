@@ -19,6 +19,7 @@ function Editor() {
         optionsError={null}
         optionsPending={false}
         onRefreshOptions={() => undefined}
+        onClearClaudeList={undefined}
         disabled={false}
         dirty={false}
         onChange={setValue}

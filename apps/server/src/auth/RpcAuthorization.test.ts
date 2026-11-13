@@ -83,7 +83,11 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.profilesSyncMark,
     ])
       expect(requiredScopeForRpcMethod(method)).toBe(AuthSettingsWriteScope);
-    for (const method of [WS_METHODS.profilesSkills, WS_METHODS.profilesDetectOptions])
+    for (const method of [
+      WS_METHODS.profilesSkills,
+      WS_METHODS.profilesDetectOptions,
+      WS_METHODS.profilesClearClaudeList,
+    ])
       expect(requiredScopeForRpcMethod(method)).toBe(AuthProvidersManageScope);
   });
 

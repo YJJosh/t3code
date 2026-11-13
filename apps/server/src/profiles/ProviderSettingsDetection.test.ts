@@ -46,7 +46,12 @@ it.effect("detects only enabled defaults and preserves other drivers when one pr
       assert.isUndefined(merged.claudeAgent?.error);
       assert.deepEqual(merged.codex?.features, [{ name: "memories", enabled: false }]);
       failCodex = true;
-      return yield* detector.detect();
+      const failed = yield* detector.detect();
+      yield* detector.clearClaudeList();
+      const cleared = (yield* detector.detect()).claudeAgent;
+      assert.deepEqual(cleared?.tools, []);
+      assert.equal(cleared?.error, empty?.error);
+      return failed;
     }).pipe(
       Effect.provide(
         ProviderSettingsDetection.layer.pipe(
@@ -101,7 +106,7 @@ it.effect("detects only enabled defaults and preserves other drivers when one pr
     );
     assert.deepEqual(
       called.map((entry) => entry.driver),
-      ["codex", "codex", "codex"],
+      ["codex", "codex", "codex", "codex"],
     );
     assert.deepInclude(called[0], { config: { binaryPath: "selected-codex" } });
     assert.isUndefined(result.claudeAgent?.error);

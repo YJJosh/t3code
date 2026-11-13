@@ -33,6 +33,7 @@ export class ClaudeSessionInventory extends Context.Service<
       },
     ) => Effect.Effect<void>;
     readonly get: (instanceId: ProviderInstanceId) => Effect.Effect<InventoryEntry | undefined>;
+    readonly clear: (instanceId: ProviderInstanceId) => Effect.Effect<void>;
   }
 >()("t3/provider/ClaudeSessionInventory") {}
 
@@ -114,7 +115,14 @@ const make = Effect.gen(function* () {
   const get = Effect.fn("ClaudeSessionInventory.get")(function* (instanceId: ProviderInstanceId) {
     return yield* Effect.sync(() => entries.get(instanceId));
   });
-  return ClaudeSessionInventory.of({ record, get });
+  const clear = Effect.fn("ClaudeSessionInventory.clear")(function* (
+    instanceId: ProviderInstanceId,
+  ) {
+    if (!entries.delete(instanceId)) return;
+    revision++;
+    yield* Queue.offer(changes, undefined);
+  });
+  return ClaudeSessionInventory.of({ record, get, clear });
 });
 
 export const layer = Layer.effect(ClaudeSessionInventory, make);

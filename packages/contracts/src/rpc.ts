@@ -531,6 +531,7 @@ export const WS_METHODS = {
   profilesEditorWrite: "profiles.editor.write",
   profilesSkills: "profiles.skills",
   profilesDetectOptions: "profiles.detectOptions",
+  profilesClearClaudeList: "profiles.claudeList.clear",
   profilesSyncRead: "profiles.sync.read",
   profilesSyncWrite: "profiles.sync.write",
   profilesSyncMark: "profiles.sync.mark",
@@ -699,6 +700,11 @@ const WsProfilesDetectOptionsRpc = Rpc.make(WS_METHODS.profilesDetectOptions, {
   payload: Schema.Struct({}),
   success: ProviderSettingsOptions,
   error: ProfilesRpcError,
+});
+const WsProfilesClearClaudeListRpc = Rpc.make(WS_METHODS.profilesClearClaudeList, {
+  payload: Schema.Struct({}),
+  success: Schema.Void,
+  error: EnvironmentAuthorizationError,
 });
 const WsProfilesSyncReadRpc = Rpc.make(WS_METHODS.profilesSyncRead, {
   payload: ProfilesSyncReadInput,
@@ -2277,6 +2283,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProfilesEditorWriteRpc,
   WsProfilesSkillsRpc,
   WsProfilesDetectOptionsRpc,
+  WsProfilesClearClaudeListRpc,
   WsProfilesSyncReadRpc,
   WsProfilesSyncWriteRpc,
   WsProfilesSyncMarkRpc,

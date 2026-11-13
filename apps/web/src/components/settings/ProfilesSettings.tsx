@@ -256,6 +256,10 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
   const detect = useEnvironmentQuery(
     profilesEnvironment.detectOptions({ environmentId, input: {} }),
   );
+  const canClearClaudeList = useAtomValue(
+    profilesEnvironment.clearClaudeList.permissionAtom(environmentId),
+  );
+  const clearClaudeList = useAtomCommand(profilesEnvironment.clearClaudeList, "clear Claude list");
   const [invalidJson, setInvalidJson] = useState<ReadonlySet<string>>(new Set());
   const disabled = !canWrite || saving || state === null;
 
@@ -315,6 +319,11 @@ function EnvironmentProfiles({ environmentId }: { environmentId: EnvironmentId }
               optionsError={detect.error}
               optionsPending={detect.isPending}
               onRefreshOptions={detect.refresh}
+              onClearClaudeList={
+                canClearClaudeList
+                  ? () => void clearClaudeList({ environmentId, input: {} })
+                  : undefined
+              }
               disabled={disabled}
               dirty={providerSettings.dirty}
               onChange={providerSettings.set}

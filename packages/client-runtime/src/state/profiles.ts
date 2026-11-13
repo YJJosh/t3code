@@ -39,13 +39,20 @@ export function createProfilesEnvironmentAtoms<R, E>(
       registry.refresh(editor({ environmentId, input: {} }));
       registry.refresh(catalog({ environmentId, input: {} }));
     });
+  const detectOptions = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:profiles:detect-options",
+    tag: WS_METHODS.profilesDetectOptions,
+    // Detecting starts provider probes on the environment; reuse an answer for a while.
+    staleTimeMs: 5 * 60_000,
+  });
   return {
     editor,
-    detectOptions: createEnvironmentRpcQueryAtomFamily(runtime, {
-      label: "environment-data:profiles:detect-options",
-      tag: WS_METHODS.profilesDetectOptions,
-      // Detecting starts provider probes on the environment; reuse an answer for a while.
-      staleTimeMs: 5 * 60_000,
+    detectOptions,
+    clearClaudeList: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:profiles:claude-list-clear",
+      tag: WS_METHODS.profilesClearClaudeList,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => registry.refresh(detectOptions({ environmentId, input: {} }))),
     }),
     localChangeAtom,
     writeEditor: createEnvironmentRpcCommand(runtime, {

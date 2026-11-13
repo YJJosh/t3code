@@ -48,6 +48,8 @@ export interface ProviderSettingsEditorProps {
   readonly optionsError: string | null;
   readonly optionsPending: boolean;
   readonly onRefreshOptions: () => void;
+  /** Absent without permission to manage providers. */
+  readonly onClearClaudeList: (() => void) | undefined;
   readonly disabled: boolean;
   /** Unsaved edits here; renames and deletes rewrite profiles and so need a clean section. */
   readonly dirty: boolean;
@@ -113,10 +115,23 @@ export function ProviderSettingsEditor(props: ProviderSettingsEditorProps) {
         >
           {props.optionsPending ? "Detecting…" : "Detect options again"}
         </Button>
+        {driver === "claudeAgent" && props.onClearClaudeList ? (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={props.optionsPending}
+            onClick={props.onClearClaudeList}
+          >
+            Clear list
+          </Button>
+        ) : null}
       </div>
       <p className="text-xs text-muted-foreground">
         Options come from what this machine’s {PROFILE_DRIVER_LABELS[driver]} reports. Muse and
         other providers have no provider settings.
+        {driver === "claudeAgent"
+          ? " Claude’s list keeps everything its threads have reported. Clear it after you uninstall something; the next Claude thread fills it again."
+          : ""}
       </p>
       {props.optionsError ? (
         <p role="alert" className="text-xs text-destructive">

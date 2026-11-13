@@ -72,6 +72,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.profilesSyncMark]: AuthSettingsWriteScope,
   [WS_METHODS.profilesSkills]: AuthProvidersManageScope,
   [WS_METHODS.profilesDetectOptions]: AuthProvidersManageScope,
+  [WS_METHODS.profilesClearClaudeList]: AuthProvidersManageScope,
   [WS_METHODS.serverGetNpmRelease]: AuthOrchestrationReadScope,
   [WS_METHODS.serverRefreshProviders]: AuthOrchestrationReadScope,
   [WS_METHODS.serverUpdateProvider]: AuthProvidersManageScope,

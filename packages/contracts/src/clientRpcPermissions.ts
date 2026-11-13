@@ -27,6 +27,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.profilesEditorWrite]: AuthSettingsWriteScope,
   // Skill commands download and run code on the environment, as installing a provider does.
   [WS_METHODS.profilesSkills]: AuthProvidersManageScope,
+  [WS_METHODS.profilesClearClaudeList]: AuthProvidersManageScope,
   [WS_METHODS.profilesSyncWrite]: AuthSettingsWriteScope,
   [WS_METHODS.profilesSyncMark]: AuthSettingsWriteScope,
   // Restarts the server, as an update does.

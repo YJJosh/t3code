@@ -39,6 +39,7 @@ vi.mock("../../state/profiles", async () => {
       detectOptions: () => detected,
       writeEditor: { permissionAtom: () => allowed },
       runSkills: { permissionAtom: () => allowed },
+      clearClaudeList: { permissionAtom: () => allowed },
     },
     syncProfilesNow: async () => undefined,
     useProfilesSyncSnapshot: () => ({ running: false, statuses: new Map(), lastRunAt: null }),
