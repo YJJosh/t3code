@@ -51,6 +51,9 @@ const setProcessEnv = (name: string, value: string) => {
   };
 };
 
+// The fork's default T3 home when neither --base-dir nor T3CODE_HOME is set.
+const DEFAULT_HOME = ".t3-dulli";
+
 const runCli = (args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
   Command.runWith(makeCli(), { version: "0.0.0" })(args).pipe(
     Effect.provide(
@@ -243,7 +246,7 @@ describe("t3 app", () => {
                 Effect.sync(() => setProcessEnv("TMPDIR", root)),
                 (restore) => Effect.sync(restore),
               );
-              const baseDir = NodePath.join(root, ".t3");
+              const baseDir = NodePath.join(root, DEFAULT_HOME);
               const userId = yield* HostProcess.UserId;
               assert(userId !== undefined);
               const expectedUserId =
@@ -300,7 +303,7 @@ describe("t3 app", () => {
   it.effect("prefers the installed desktop app when a dev desktop is also running", () =>
     withTempDirectory("t3-app-preferred-test-", (root) =>
       Effect.gen(function* () {
-        const baseDir = NodePath.join(root, ".t3");
+        const baseDir = NodePath.join(root, DEFAULT_HOME);
         const desktop = yield* fakeDesktop({ baseDir });
         const development = yield* fakeDesktop({ baseDir, stateSubdirectory: "dev" });
 
@@ -315,7 +318,7 @@ describe("t3 app", () => {
   it.effect("finds the dev desktop when the default desktop socket is absent", () =>
     withTempDirectory("t3-app-dev-test-", (root) =>
       Effect.gen(function* () {
-        const baseDir = NodePath.join(root, ".t3");
+        const baseDir = NodePath.join(root, DEFAULT_HOME);
         const development = yield* fakeDesktop({ baseDir, stateSubdirectory: "dev" });
 
         yield* runCli(["app"]);
@@ -348,7 +351,7 @@ describe("t3 app", () => {
     (responseKind) =>
       withTempDirectory("t3-app-response-test-", (root) =>
         Effect.gen(function* () {
-          const baseDir = NodePath.join(root, ".t3");
+          const baseDir = NodePath.join(root, DEFAULT_HOME);
           const desktop = yield* fakeDesktop({
             baseDir,
             reply: (request) =>

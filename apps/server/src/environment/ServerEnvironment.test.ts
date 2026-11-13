@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
+import { CLI_NPM_PACKAGE_NAME } from "@t3tools/shared/cliRelease";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
@@ -80,13 +81,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
       const fs = yield* FileSystem.FileSystem;
       const baseDir = yield* fs.makeTempDirectoryScoped();
       const prefix = `${baseDir}/node`;
-      const entry = `${prefix}/lib/node_modules/t3/dist/bin.mjs`;
-      yield* fs.makeDirectory(`${prefix}/lib/node_modules/t3/dist`, { recursive: true });
+      const entry = `${prefix}/lib/node_modules/${CLI_NPM_PACKAGE_NAME}/dist/bin.mjs`;
+      yield* fs.makeDirectory(`${prefix}/lib/node_modules/${CLI_NPM_PACKAGE_NAME}/dist`, {
+        recursive: true,
+      });
       yield* fs.makeDirectory(`${prefix}/bin`, { recursive: true });
       yield* fs.writeFileString(entry, "");
       yield* fs.writeFileString(
-        `${prefix}/lib/node_modules/t3/package.json`,
-        '{"name":"t3","version":"0.0.45","bin":{"t3":"./dist/bin.mjs"}}',
+        `${prefix}/lib/node_modules/${CLI_NPM_PACKAGE_NAME}/package.json`,
+        JSON.stringify({
+          name: CLI_NPM_PACKAGE_NAME,
+          version: "0.0.45",
+          bin: { t3: "./dist/bin.mjs" },
+        }),
       );
       yield* fs.symlink(entry, `${prefix}/bin/t3`);
       const config = yield* makeServerConfig(baseDir);

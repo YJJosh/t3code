@@ -79,7 +79,7 @@ describe("settingInheritanceLayers", () => {
       ["Project", "Inherits", false],
       ["Laptop", "Inherits", false],
       ["t3.json", "New worktree", true],
-      ["Default", "Current checkout", false],
+      ["Default", "New worktree", false],
     ]);
     const settings = { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "local" as const };
     const fromEnvironment = settingInheritanceLayers(
@@ -96,7 +96,7 @@ describe("settingInheritanceLayers", () => {
       ["Inherits", false],
       ["Current checkout", true],
       ["Inherits", false],
-      ["Current checkout", false],
+      ["New worktree", false],
     ]);
   });
 });
