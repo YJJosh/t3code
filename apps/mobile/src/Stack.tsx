@@ -92,6 +92,7 @@ import { SettingsNavigationRouteScreen } from "./features/settings/SettingsNavig
 import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppearanceRouteScreen";
 import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
 import { SettingsDiagnosticsRouteScreen } from "./features/diagnostics/SettingsDiagnosticsRouteScreen";
+import { SettingsProfilesRouteScreen } from "./features/settings/SettingsProfilesRouteScreen";
 import { ProfilesSyncHost } from "./state/profiles";
 import { SettingsProviderAccountsRouteScreen } from "./features/settings/SettingsProviderAccountsRouteScreen";
 import { SettingsAuthRouteScreen } from "./features/settings/SettingsAuthRouteScreen";
@@ -203,6 +204,11 @@ const SETTINGS_SCREENS = {
     screen: SettingsLabsRouteScreen,
     linking: "settings/labs",
     options: settingsPage("Labs"),
+  }),
+  SettingsProfiles: createNativeStackScreen({
+    screen: SettingsProfilesRouteScreen,
+    linking: "settings/profiles",
+    options: settingsPage("Profiles"),
   }),
   SettingsProviderAccounts: createNativeStackScreen({
     screen: SettingsProviderAccountsRouteScreen,

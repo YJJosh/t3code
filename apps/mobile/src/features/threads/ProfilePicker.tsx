@@ -1,3 +1,5 @@
+import { useNavigation } from "@react-navigation/native";
+import { openSettings } from "../settings/settings-navigation";
 import { updateComposerDraftSettings } from "../../state/use-composer-drafts";
 import type { EnvironmentId, ModelSelection, ServerConfig, ThreadId } from "@t3tools/contracts";
 import { selectProfile, supportsProfiles } from "@t3tools/shared/profiles";
@@ -16,43 +18,43 @@ export function ProfilePicker(props: {
   disabled: boolean;
   draftKey?: string;
 }) {
+  const navigation = useNavigation();
   // Settings → Refresh updates this query, not the connection's config copy.
   const fresh = useEnvironmentQuery(
     serverEnvironment.profileConfig({ environmentId: props.environmentId, input: {} }),
   );
   const catalog = fresh.data?.profiles ?? props.config?.profiles;
-  if (!catalog || (Object.keys(catalog.profiles).length === 0 && !props.selection.profileId))
-    return null;
+  if (!catalog) return null;
   const providers = props.config?.providers ?? [];
   const driver = providers.find(
     (provider) => provider.instanceId === props.selection.instanceId,
   )?.driver;
   const supported = driver !== undefined && supportsProfiles(driver);
-  if (!supported)
-    return (
-      <Button
-        onPress={() => {}}
-        tone="text"
-        label="Profiles"
-        accessibilityHint="This provider doesn't use profiles"
-        disabled
-      />
-    );
   return (
     <Menu
       accessibilityLabel="Profile"
       actions={[
-        { id: "", title: "No profile", state: props.selection.profileId ? "off" : "on" },
+        {
+          id: "",
+          title: "No profile",
+          state: props.selection.profileId ? "off" : "on",
+          attributes: { disabled: !supported },
+        },
         ...Object.entries(catalog.profiles).map(([id, profile]) => ({
           id,
           title: id,
           subtitle: profile.warning ?? profile.description,
-          attributes: { disabled: Boolean(profile.warning) },
+          attributes: { disabled: !supported || Boolean(profile.warning) },
           state: props.selection.profileId === id ? ("on" as const) : ("off" as const),
         })),
+        { id: "__edit_profiles__", title: "Edit profiles…" },
       ]}
       onPressAction={({ nativeEvent }) => {
-        if (props.disabled) return;
+        if (nativeEvent.event === "__edit_profiles__") {
+          openSettings(navigation, "SettingsProfiles", { environmentId: props.environmentId });
+          return;
+        }
+        if (props.disabled || !supported) return;
         const id = nativeEvent.event || null;
         if (id && catalog.profiles[id]?.warning) return;
         const picked = selectProfile(
@@ -80,7 +82,12 @@ export function ProfilePicker(props: {
       <Button
         onPress={() => {}}
         tone="text"
-        label={props.selection.profileId ?? "No profile"}
+        label={supported ? (props.selection.profileId ?? "No profile") : "Profiles"}
+        accessibilityHint={
+          supported
+            ? "Profile for the next session start"
+            : "This provider does not use profiles; open profile settings"
+        }
         disabled={props.disabled}
       />
     </Menu>

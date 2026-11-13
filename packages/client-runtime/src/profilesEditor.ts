@@ -1,4 +1,4 @@
-import type { ProfilesSyncStatus } from "./state/profiles-sync.ts";
+import type { ProfilesSyncStatus } from "./state/profilesSync.ts";
 import type {
   ClaudeProviderSettings,
   Profile,

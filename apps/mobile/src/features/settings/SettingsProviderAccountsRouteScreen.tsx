@@ -1,4 +1,4 @@
-import { ProfilesSettings } from "./ProfilesSettings";
+import { SettingsRow } from "./components/SettingsRow";
 import * as Dialog from "../../components/ui/Dialog";
 import {
   isAtomCommandInterrupted,
@@ -50,9 +50,9 @@ export function SettingsProviderAccountsRouteScreen() {
         contentContainerClassName="gap-6 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        {selectedTargets.map((environment) => (
-          <ProfilesSettings key={environment.environmentId} environment={environment} />
-        ))}
+        <SettingsSection>
+          <SettingsRow icon="person.crop.circle" label="Profiles" target="SettingsProfiles" />
+        </SettingsSection>
         {selectedTargets.length === 0 ? (
           <Text className="text-foreground-muted">Select a connected environment.</Text>
         ) : (
