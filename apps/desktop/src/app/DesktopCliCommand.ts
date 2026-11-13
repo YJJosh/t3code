@@ -86,7 +86,7 @@ export const make = Effect.gen(function* () {
   const env = yield* HostProcess.Environment;
   const path = environment.path;
   const windows = environment.platform === "win32";
-  const commandName = environment.isDulli ? "t3-dulli" : "t3";
+  const commandName = "t3";
   const launcher = DesktopCliShim.launcherPath(environment);
   const binDirectory = path.dirname(launcher);
   const ownedPathMarker = path.join(environment.stateDir, "cli-command-path-entry");

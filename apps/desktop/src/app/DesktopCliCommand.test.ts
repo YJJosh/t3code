@@ -102,7 +102,7 @@ const fakePowerShell = (initial: string, inherited: Record<string, string> = {})
 };
 
 it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
-  it.effect("installs and removes Dulli's command without replacing upstream t3", () =>
+  it.effect("installs and removes Dulli's t3 command without removing a foreign command", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -110,16 +110,17 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       const bin = path.join(home, ".local/bin");
       yield* fs.makeDirectory(bin, { recursive: true });
       const upstream = path.join(bin, "t3");
-      yield* fs.writeFileString(upstream, "upstream command");
       const command = yield* commandIn({
         home,
         baseDir: path.join(home, ".t3-dulli"),
         isDulli: true,
       });
       yield* command.installOnFirstLaunch;
-      expect((yield* command.state).installedPath).toBe(path.join(bin, "t3-dulli"));
+      expect((yield* command.state).installedPath).toBe(path.join(bin, "t3"));
       yield* command.uninstall;
-      expect(yield* fs.exists(path.join(bin, "t3-dulli"))).toBe(false);
+      expect(yield* fs.exists(path.join(bin, "t3"))).toBe(false);
+      yield* fs.writeFileString(upstream, "upstream command");
+      yield* command.uninstall;
       expect(yield* fs.readFileString(upstream)).toBe("upstream command");
     }).pipe(Effect.scoped),
   );

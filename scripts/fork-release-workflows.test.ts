@@ -12,7 +12,14 @@ interface WorkflowJob {
   readonly if?: string;
   readonly needs?: string | ReadonlyArray<string>;
   readonly uses?: string;
-  readonly steps?: ReadonlyArray<{ readonly id?: string; readonly run?: string }>;
+  readonly steps?: ReadonlyArray<{
+    readonly id?: string;
+    readonly name?: string;
+    readonly run?: string;
+    readonly if?: string;
+    readonly "continue-on-error"?: boolean | string;
+    readonly "working-directory"?: string;
+  }>;
 }
 
 interface Workflow {
@@ -118,6 +125,58 @@ describe("fork release safety", () => {
       ]),
     ).toBe("previous_tag=v0.1.9-dulli.1\n");
     expect(resolvePreviousTag("v0.1.9-dulli.1", ["v0.1.9"])).toBe("previous_tag=\n");
+  });
+  it("gates every artifact and publish job on typecheck and release integration tests", () => {
+    const workflow = readWorkflow("fork-desktop-release.yml");
+    const preflight = workflow.jobs.preflight;
+    const typecheck = preflight?.steps?.find((step) => step.name === "Typecheck");
+    expect(typecheck?.run).toBe("vp run typecheck");
+    const serverTests = preflight?.steps?.find(
+      (step) => step.name === "Test release server integrations",
+    );
+    expect(serverTests?.["working-directory"]).toBe("apps/server");
+    const files = [
+      "src/vcs/GitVcsDriver.test.ts",
+      "src/vcs/GitVcsDriverCore.test.ts",
+      "src/vcs/WorklerWorkspaceService.test.ts",
+      "src/vcs/WorklerWorkspaceService.bundle.test.ts",
+    ];
+    expect(
+      serverTests?.run
+        ?.trim()
+        .split(/\s+/)
+        .filter((word) => word !== "\\"),
+    ).toEqual(["vp", "test", "run", ...files]);
+    for (const file of files) {
+      expect(NodeFS.existsSync(NodePath.resolve(import.meta.dirname, "../apps/server", file))).toBe(
+        true,
+      );
+    }
+    const integrations = preflight?.steps?.find(
+      (step) => step.name === "Test release integrations",
+    );
+    expect(integrations?.run).toMatch(/^vp test run\s/);
+    for (const file of [
+      "scripts/fork-release-workflows.test.ts",
+      "packages/contracts/src/settings.test.ts",
+      "packages/contracts/src/provider.test.ts",
+      "packages/client-runtime/src/state/subagentRuntime.test.ts",
+      "apps/web/src/components/settings/ProviderSettingsForm.test.ts",
+      "apps/mobile/plugins/withAndroidAutolinkingExclude.test.ts",
+      "apps/mobile/src/lib/modelOptions.test.ts",
+    ]) {
+      expect(integrations?.run).toContain(file);
+      expect(NodeFS.existsSync(NodePath.resolve(import.meta.dirname, "..", file))).toBe(true);
+    }
+    for (const step of [typecheck, integrations, serverTests]) {
+      expect(step?.if).toBeUndefined();
+      expect(step?.["continue-on-error"]).toBeUndefined();
+    }
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      if (name === "preflight") continue;
+      const needs = typeof job.needs === "string" ? [job.needs] : job.needs;
+      expect(needs, name).toContain("preflight");
+    }
   });
   it.each([
     "release",
