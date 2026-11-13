@@ -3,6 +3,8 @@ import * as Schema from "effect/Schema";
 
 import { compareSemverVersions } from "./semver.ts";
 
+export const CLI_NPM_PACKAGE_NAME = "@yjosh/t3";
+
 const CLI_RELEASE_REPOSITORY = "YJJosh/t3code";
 export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
@@ -158,7 +160,7 @@ const NpmReleaseMigrationManifest = Schema.Struct({
 });
 const decodeNpmReleaseMigrationManifest = Schema.decodeUnknownOption(NpmReleaseMigrationManifest);
 
-/** Highest database migration a release's server knows, from its npm `t3` manifest. */
+/** Highest database migration a release's server knows, from its npm manifest. */
 export function npmReleaseDatabaseMigration(manifest: unknown): number | undefined {
   return Option.getOrUndefined(decodeNpmReleaseMigrationManifest(manifest))?.t3code
     .databaseMigration;

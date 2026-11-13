@@ -572,7 +572,7 @@ jobs:
           if-no-files-found: error
 
   publish_cli:
-    name: Publish t3-dulli to npm
+    name: Publish @yjosh/t3 to npm
     needs: [preflight, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -819,7 +819,7 @@ jobs:
           body: |
             T3 Dulli community build from `YJJosh/t3code`, based on upstream v0.1.9.
 
-            Install the CLI with `npm install -g t3-dulli`, then run `t3-dulli`.
+            Install the CLI with `npm install -g @yjosh/t3`, then run `t3`.
 
             The Android APK is signed with the persistent Dulli community keystore but is not
             distributed through Google Play, so Android requires enabling installs from unknown

@@ -9,7 +9,7 @@
     "directory": "apps/server"
   },
   "bin": {
-    "t3-dulli": "./dist/bin.mjs"
+    "t3": "./dist/bin.mjs"
   },
   "files": [
     "dist"

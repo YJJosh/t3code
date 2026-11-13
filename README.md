@@ -11,13 +11,13 @@ Download desktop installers and the Android APK from [T3 Dulli releases](https:/
 For the CLI:
 
 ```sh
-npm install -g t3-dulli
-t3-dulli
+npm install -g @yjosh/t3
+t3
 ```
 
-Or try a published release with `npx t3-dulli@latest`. The launcher downloads and verifies the matching native release archive. CLI archives support macOS Apple Silicon, Linux x64/arm64 (glibc), and Windows x64/arm64. Desktop downloads also include Intel macOS builds.
+Or try a published release with `npx @yjosh/t3@latest`. The launcher downloads and verifies the matching native release archive. CLI archives support macOS Apple Silicon, Linux x64/arm64 (glibc), and Windows x64/arm64. Desktop downloads also include Intel macOS builds.
 
-T3 Dulli can live beside upstream T3 Code: it uses its own app ID, icons, update feed, command, and `~/.t3-dulli` home. Existing fork userdata stays in that home. Do not point it at upstream's live data directory.
+T3 Dulli can live beside upstream T3 Code: it uses its own app ID, icons, update feed, and `~/.t3-dulli` home. Existing fork userdata stays in that home. Both CLIs use the command `t3`, so choose which installation owns it on your PATH. Do not point it at upstream's live data directory.
 
 Community macOS releases have a persistent self-signed signature, but no Apple notarization. After copying to Applications, the first launch may require **System Settings → Privacy & Security → Open Anyway**. Windows installers can trigger SmartScreen. Android APKs require sideloading and update by installing a newer APK, not through upstream's store/OTA channels. Only approve downloads you trust.
 

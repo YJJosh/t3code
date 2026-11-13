@@ -127,9 +127,11 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         const manifest = yield* decodeManifest(
           yield* fs.readFileString(path.join(output.packageDir, "package.json")),
         );
-        assert.equal(manifest.name, "t3-dulli");
+        assert.equal(manifest.name, "@yjosh/t3");
+        assert.equal(path.basename(output.packageDir), "yjosh-t3");
+        assert.equal(path.basename(output.tarball), "yjosh-t3.tgz");
         assert.equal(manifest.version, VERSION);
-        assert.deepStrictEqual(manifest.bin, { "t3-dulli": "./bin/t3.mjs" });
+        assert.deepStrictEqual(manifest.bin, { t3: "./bin/t3.mjs" });
         assert.isUndefined(manifest.dependencies);
         assert.isUndefined(manifest.optionalDependencies);
         assert.isAbove(npmReleaseDatabaseMigration(manifest) ?? 0, 0);
