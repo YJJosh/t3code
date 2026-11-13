@@ -51,6 +51,13 @@ it.effect(
         assert.include(bundle.skipped!, "oversized");
         assert.include(bundle.skipped!, ".git");
         assert.isTrue(bundle.files!.find((file) => file.path === "run.sh")?.executable);
+        // Windows cannot report executable bits, so they must not change the hash.
+        yield* fs.chmod(`${root}/profiles/run.sh`, 0o644);
+        assert.equal(
+          (yield* store.syncRead({ includeFiles: false })).state.hash,
+          bundle.state.hash,
+        );
+        yield* fs.chmod(`${root}/profiles/run.sh`, 0o755);
         yield* store.syncMark({ hash: bundle.state.hash });
         yield* fs.writeFileString(`${root}/profiles/prompts/coding.md`, "outside edit");
         yield* fs.writeFileString(`${root}/profiles/stale.txt`, "old");

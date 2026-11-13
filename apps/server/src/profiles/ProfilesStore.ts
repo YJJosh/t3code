@@ -57,16 +57,14 @@ const isMissing = (cause: unknown) =>
   typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT";
 const digest = (content: Uint8Array | string) =>
   NodeCrypto.createHash("sha256").update(content).digest("hex");
+// Windows reports no executable bits, so they are applied on write but left out of the hash;
+// otherwise a bundle with scripts could never match after copying to Windows.
 const bundleHash = (files: readonly ProfilesBundleFile[]) =>
   digest(
     JSON.stringify(
       [...files]
         .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-        .map((file) => [
-          file.path,
-          file.executable === true,
-          digest(Buffer.from(file.contentBase64, "base64")),
-        ]),
+        .map((file) => [file.path, digest(Buffer.from(file.contentBase64, "base64"))]),
     ),
   );
 const safeRelative = (file: string) =>
