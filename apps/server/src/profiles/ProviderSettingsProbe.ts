@@ -1,10 +1,8 @@
-import { mergeClaudeProcessEnvironment } from "../provider/Drivers/ClaudeHome.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import {
-  ClaudeSettings,
   CodexSettings,
   ProfilesError,
   type ProviderSettingsOptions,
@@ -12,18 +10,19 @@ import {
 } from "@t3tools/contracts";
 import { PiSettings } from "@t3tools/provider-pi/settings";
 import { detectPiProfileOptions } from "@t3tools/provider-pi/server";
-import { probeClaudeCapabilities } from "../provider/ClaudeProvider.ts";
 import { withCodexAppServerClient } from "../provider/CodexProvider.ts";
 
-const decodeClaude = Schema.decodeUnknownEffect(ClaudeSettings);
 const decodeCodex = Schema.decodeUnknownEffect(CodexSettings);
 const decodePi = Schema.decodeUnknownEffect(PiSettings);
+
+/** Claude is not probed: its tools, plugins and skills come from the session inventory. */
+type ProbedDriver = Exclude<ProfileProviderSettingsDriver, "claudeAgent">;
 
 export class ProviderSettingsProbe extends Context.Service<
   ProviderSettingsProbe,
   {
     readonly run: (input: {
-      readonly driver: ProfileProviderSettingsDriver;
+      readonly driver: ProbedDriver;
       readonly config: unknown;
       readonly environment: NodeJS.ProcessEnv;
       readonly cwd: string;
@@ -34,34 +33,16 @@ export class ProviderSettingsProbe extends Context.Service<
 const make = Effect.gen(function* () {
   const services = yield* Effect.context<
     | Effect.Services<ReturnType<typeof withCodexAppServerClient>>
-    | Effect.Services<ReturnType<typeof probeClaudeCapabilities>>
     | Effect.Services<ReturnType<typeof detectPiProfileOptions>>
   >();
   const run = Effect.fn("ProviderSettingsProbe.run")(
     function* (input: {
-      readonly driver: ProfileProviderSettingsDriver;
+      readonly driver: ProbedDriver;
       readonly config: unknown;
       readonly environment: NodeJS.ProcessEnv;
       readonly cwd: string;
     }) {
       switch (input.driver) {
-        case "claudeAgent": {
-          const settings = yield* decodeClaude(input.config);
-          yield* probeClaudeCapabilities(
-            settings,
-            yield* mergeClaudeProcessEnvironment(settings, undefined, input.environment),
-            input.cwd,
-            false,
-          );
-          return {
-            claudeAgent: {
-              tools: [],
-              // Initialization commands do not distinguish skills from built-in slash commands.
-              skills: [],
-              plugins: [],
-            },
-          };
-        }
         case "pi":
           return {
             pi: yield* detectPiProfileOptions(

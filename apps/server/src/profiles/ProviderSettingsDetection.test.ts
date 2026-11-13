@@ -18,7 +18,7 @@ it.effect("detects only enabled defaults and preserves other drivers when one pr
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped();
     const called: Array<{ driver: string; config: unknown }> = [];
-    let failClaude = false;
+    let failCodex = false;
     const instances = [
       ["codex-other", "codex", true],
       ["codex", "codex", true],
@@ -44,7 +44,8 @@ it.effect("detects only enabled defaults and preserves other drivers when one pr
       assert.deepEqual(merged.claudeAgent?.skills, [{ name: "explain" }, { name: "review" }]);
       assert.deepEqual(merged.claudeAgent?.plugins, [{ name: "formatter@tools" }]);
       assert.isUndefined(merged.claudeAgent?.error);
-      failClaude = true;
+      assert.deepEqual(merged.codex?.features, [{ name: "memories", enabled: false }]);
+      failCodex = true;
       return yield* detector.detect();
     }).pipe(
       Effect.provide(
@@ -83,10 +84,8 @@ it.effect("detects only enabled defaults and preserves other drivers when one pr
             Layer.succeed(ProviderSettingsProbe.ProviderSettingsProbe, {
               run: (input) => {
                 called.push({ driver: input.driver, config: input.config });
-                return input.driver === "claudeAgent"
-                  ? failClaude
-                    ? Effect.fail(new ProfilesError({ reason: "unavailable", message: "fixture" }))
-                    : Effect.succeed({ claudeAgent: { tools: [], skills: [], plugins: [] } })
+                return failCodex
+                  ? Effect.fail(new ProfilesError({ reason: "unavailable", message: "fixture" }))
                   : Effect.succeed({
                       codex: {
                         features: [{ name: "memories", enabled: false }],
@@ -102,12 +101,13 @@ it.effect("detects only enabled defaults and preserves other drivers when one pr
     );
     assert.deepEqual(
       called.map((entry) => entry.driver),
-      ["claudeAgent", "codex", "claudeAgent", "codex", "claudeAgent", "codex"],
+      ["codex", "codex", "codex"],
     );
-    assert.deepInclude(called[1], { config: { binaryPath: "selected-codex" } });
+    assert.deepInclude(called[0], { config: { binaryPath: "selected-codex" } });
     assert.isUndefined(result.claudeAgent?.error);
     assert.deepEqual(result.claudeAgent?.tools, [{ name: "Bash" }, { name: "Read" }]);
-    assert.deepEqual(result.codex?.features, [{ name: "memories", enabled: false }]);
+    assert.deepEqual(result.codex?.features, []);
+    assert.isString(result.codex?.error);
     assert.isUndefined(result.pi);
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );

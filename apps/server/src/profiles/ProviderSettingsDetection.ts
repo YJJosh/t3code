@@ -47,6 +47,24 @@ const make = Effect.gen(function* () {
           (instance) => instance.instanceId === defaultInstanceIdForDriver(instance.driverKind),
         ) ?? candidates[0];
       if (!selected) continue;
+      // Claude's startup probe cannot list tools, plugins or skills; only real sessions report them.
+      if (driver === "claudeAgent") {
+        const recorded = yield* inventory.get(selected.instanceId);
+        Object.assign(options, {
+          claudeAgent: {
+            tools: (recorded?.tools ?? []).map((name) => ({ name })),
+            plugins: (recorded?.plugins ?? []).map((name) => ({ name })),
+            skills: (recorded?.skills ?? []).map((name) => ({ name })),
+            ...(recorded === undefined
+              ? {
+                  error:
+                    "Start one Claude thread on this machine, then Refresh, to list Claude's tools and plugins.",
+                }
+              : {}),
+          },
+        });
+        continue;
+      }
       const entry = current.providerInstances[selected.instanceId];
       const result = yield* Effect.gen(function* () {
         const variables = entry?.environment ?? [];
@@ -82,31 +100,8 @@ const make = Effect.gen(function* () {
           options,
           driver === "codex"
             ? { codex: { features: [], skills: [], plugins: [], error } }
-            : driver === "claudeAgent"
-              ? { claudeAgent: { tools: [], skills: [], plugins: [], error } }
-              : { pi: { skills: [], promptTemplates: [], error } },
+            : { pi: { skills: [], promptTemplates: [], error } },
         );
-      }
-      if (driver === "claudeAgent") {
-        const recorded = yield* inventory.get(selected.instanceId);
-        const probed = options.claudeAgent;
-        const skills = new Map((probed?.skills ?? []).map((skill) => [skill.name, skill]));
-        for (const name of recorded?.skills ?? []) {
-          if (!skills.has(name)) skills.set(name, { name });
-        }
-        Object.assign(options, {
-          claudeAgent: {
-            tools: (recorded?.tools ?? []).map((name) => ({ name })),
-            plugins: (recorded?.plugins ?? []).map((name) => ({ name })),
-            skills: [...skills.values()],
-            ...(recorded === undefined
-              ? {
-                  error:
-                    "Start one Claude thread on this machine, then Refresh, to list Claude's tools and plugins.",
-                }
-              : {}),
-          },
-        });
       }
     }
     return options;

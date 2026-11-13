@@ -7,7 +7,6 @@ import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as ProviderSettingsProbe from "../profiles/ProviderSettingsProbe.ts";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -91,14 +90,5 @@ it.effect("keeps the probe subprocess alive while gateway model discovery can fi
     assert.equal(abortSignal?.aborted, false);
     yield* TestClock.adjust("3 seconds");
     assert.equal(abortSignal?.aborted, true);
-    const options = yield* Effect.gen(function* () {
-      return yield* (yield* ProviderSettingsProbe.ProviderSettingsProbe).run({
-        driver: "claudeAgent",
-        config: { binaryPath: "claude" },
-        environment: { PATH: (yield* HostProcess.Environment).PATH, CLAUDE_CONFIG_DIR: configDir },
-        cwd: configDir,
-      });
-    }).pipe(Effect.provide(ProviderSettingsProbe.layer));
-    assert.deepEqual(options.claudeAgent?.skills, []);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
