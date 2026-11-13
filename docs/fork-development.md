@@ -4,7 +4,7 @@ T3 Dulli is the `YJJosh/t3code` community fork of **T3 Code v0.1.9** (`24e77473e
 
 ## Identity and coexistence
 
-Build desktop artifacts with `--brand dulli`; omitting the flag retains upstream's desktop identity. The fork uses:
+Build desktop artifacts with `--brand dulli`; omitting the flag retains upstream's desktop identity. `vp run dev` and the Portler preview set `VITE_DESKTOP_BUILD_BRAND=dulli`, so the web preview reads T3 Dulli (Dev); desktop dev keeps upstream's injected identity. The fork uses:
 
 | Property                         | Value                                       |
 | -------------------------------- | ------------------------------------------- |
@@ -69,11 +69,11 @@ If Portler is installed and `portler.yml` is present, use the repository's Portl
 
 ## Fork database migrations
 
-Fork migrations belong in `apps/server/src/persistence/Migrations/dulli/` and the fork's separate migration ledger. Never allocate an ID in upstream's numbered sequence for a fork feature. Keep the upstream sequence intact so later upstream upgrades remain unambiguous. Retired Dulli-provider records are removed by the fork upgrade migrations, not resurrected through a provider compatibility bridge. Back up state read-only before testing upgrades, and run only against a sandbox copy.
+Fork migrations belong in `apps/server/src/persistence/Migrations/dulli/` and the fork's separate migration ledger. Never allocate an ID in upstream's numbered sequence for a fork feature. Keep the upstream sequence intact so later upstream upgrades remain unambiguous. The upgrade moves retired Dulli-provider threads to the Pi provider and archives Dulli-only data in `dulli_archived_*` tables; there is no Dulli provider compatibility bridge. Back up state read-only before testing upgrades, and run only against a sandbox copy.
 
 ## Fork features
 
 - **Workler workspaces and multi-repo projects:** fork workspace selection and repository grouping (workstream C).
 - **Agent terminals:** grouped thread terminals that the user and agent take turns controlling (workstream D).
 - **1Password agent vaults:** per-vault allowed or denied agent access, with no approval mode (workstream E).
-- **Profiles:** reusable prompt parts and skills from a git-synced folder (workstream F).
+- **Profiles:** reusable prompt parts, skills and provider settings from a folder the app copies between environments (workstream F).
