@@ -38,6 +38,7 @@ export type AndroidAnchoredMenuProps = {
   readonly actions: readonly MenuAction[];
   readonly title?: string;
   readonly onPressAction?: MenuComponentProps["onPressAction"];
+  readonly onOpenMenu?: () => void;
   readonly className?: string;
   readonly style?: StyleProp<ViewStyle>;
   readonly children: ReactNode | ((open: () => void) => ReactNode);
@@ -63,6 +64,7 @@ export function AndroidAnchoredMenu(props: AndroidAnchoredMenuProps) {
   };
 
   const open = () => {
+    props.onOpenMenu?.();
     anchorNode?.measureInWindow((x, y, width, height) => {
       setAnchor({ x, y, width, height, keyboardWasVisible: keyboardVisible });
     });

@@ -19,7 +19,7 @@ export function ProfilePicker(props: {
   draftKey?: string;
 }) {
   const navigation = useNavigation();
-  // Settings → Refresh updates this query, not the connection's config copy.
+  // Settings → Refresh and opening the menu update this query, not the connection's config copy.
   const fresh = useEnvironmentQuery(
     serverEnvironment.profileConfig({ environmentId: props.environmentId, input: {} }),
   );
@@ -33,6 +33,7 @@ export function ProfilePicker(props: {
   return (
     <Menu
       accessibilityLabel="Profile"
+      onOpenMenu={fresh.refresh}
       actions={[
         {
           id: "",

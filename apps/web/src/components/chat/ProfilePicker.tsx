@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { type EnvironmentId, type ModelSelection } from "@t3tools/contracts";
 import { selectProfile, supportsProfiles } from "@t3tools/shared/profiles";
 import { type ComposerThreadTarget, useComposerDraftStore } from "../../composerDraftStore";
@@ -22,9 +22,13 @@ export function ProfilePicker(props: {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const apply = useApplyThreadModelPick();
   const navigate = useNavigate();
-  const fresh = useAtomValue(
-    serverEnvironment.profileConfig({ environmentId: props.environmentId, input: {} }),
-  );
+  const freshAtom = serverEnvironment.profileConfig({
+    environmentId: props.environmentId,
+    input: {},
+  });
+  const fresh = useAtomValue(freshAtom);
+  // Hand edits to the folder reach the list when the menu opens.
+  const refresh = useAtomRefresh(freshAtom);
   const catalog = AsyncResult.getOrElse(fresh, () => null)?.profiles ?? config?.profiles;
   if (
     !config ||
@@ -42,6 +46,9 @@ export function ProfilePicker(props: {
         <Select
           value={props.selection.profileId ?? ""}
           disabled={props.disabled || !supported}
+          onOpenChange={(open) => {
+            if (open) refresh();
+          }}
           onValueChange={(value) => {
             if (value === EDIT_PROFILES) {
               void navigate({ to: "/settings/profiles", search: { machine: props.environmentId } });
