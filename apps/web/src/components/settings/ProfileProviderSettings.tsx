@@ -76,7 +76,6 @@ export function ProviderSettingsEditor(props: ProviderSettingsEditorProps) {
     renameTo === "" || renameTo === current ? null : profileNameError(renameTo, names);
 
   const selectEntry = (name: string | null) => {
-    // REVIEW: Switching entries discards JSON text, so its invalid flag must go with it.
     if (current !== null) props.onJsonValidity(`${driver}:${current}`, true);
     setSelected(name);
     setRenameTo("");

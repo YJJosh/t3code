@@ -158,7 +158,7 @@ export type ProfilesEditorState = typeof ProfilesEditorState.Type;
 export const ProfilesEditorWriteInput = Schema.Struct({
   /** Rejects the write when the folder changed since this revision was read. */
   expectedRevision: Schema.Int,
-  // REVIEW: Sync can replace content at the same revision; old clients may omit the hash.
+  // Sync can replace content at the same revision. Older clients omit it.
   expectedHash: Schema.optionalKey(Schema.String),
   profiles: Schema.optionalKey(ProfilesFile),
   providerSettings: Schema.optionalKey(ProviderSettingsFile),
@@ -249,7 +249,7 @@ export type ProfilesSyncReadResult = typeof ProfilesSyncReadResult.Type;
 export const ProfilesSyncWriteInput = Schema.Struct({
   /** Rejects the write when this copy changed since the client read it. */
   expectedRevision: Schema.Int,
-  // REVIEW: Sync can replace content at the same revision; old clients may omit the hash.
+  // Sync can replace content at the same revision. Older clients omit it.
   expectedHash: Schema.optionalKey(Schema.String),
   source: Schema.Struct({ revision: Schema.Int, hash: Schema.String }),
   files: Schema.Array(ProfilesBundleFile),

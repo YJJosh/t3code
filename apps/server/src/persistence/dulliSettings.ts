@@ -3,8 +3,8 @@ import * as Schema from "effect/Schema";
 const isRecord = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
 const PI_CONFIG_KEYS = new Set(["binaryPath", "launchArgs", "customModels"]);
 
-// REVIEW: the old fork enabled Dulli unless settings said otherwise, and ran an unconfigured
-// "dulli" default instance. Pi is off by default, so moved instances need `enabled` spelled out.
+// The old fork enabled Dulli unless settings said otherwise. Pi is off by default, so moved
+// instances spell out `enabled`.
 const DEFAULT_DULLI_ON_PI = { driver: "pi", displayName: "Pi (Dulli)", enabled: true };
 
 /** Dulli instances keep their ids, so threads and model picks that name them stay valid. */

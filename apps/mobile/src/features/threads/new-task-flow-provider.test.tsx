@@ -50,7 +50,6 @@ vi.mock("../../state/entities", () => ({
 vi.mock("../../state/vcs", () => ({
   vcsEnvironment: { status: mocks.status, listRefs: mocks.refs },
 }));
-// REVIEW: Keep the new profile query inside the test registry, not Expo's native connection runtime.
 vi.mock("../../state/server", () => ({
   serverEnvironment: { profileConfig: mocks.profileConfig },
 }));

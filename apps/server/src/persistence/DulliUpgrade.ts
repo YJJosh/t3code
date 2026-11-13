@@ -77,8 +77,8 @@ export const finishDulliUpgrade = Effect.fn("DulliUpgrade.finishUpgrade")(
     const path = yield* Path.Path;
     const settingsPath = path.join(path.dirname(dbPath), "settings.json");
     const settingsBackupPath = `${settingsPath}.before-dulli-upgrade`;
-    // REVIEW: an old-fork database (it was backed up) whose settings were never converted may
-    // still use the unconfigured default "dulli" instance; afterwards the user owns that entry.
+    // An old-fork database whose settings were never converted may still rely on the unconfigured
+    // default "dulli" instance. After the first conversion the user owns that entry.
     const addDefaultInstance =
       (yield* fs.exists(`${dbPath}.before-dulli-upgrade`)) &&
       !(yield* fs.exists(settingsBackupPath));

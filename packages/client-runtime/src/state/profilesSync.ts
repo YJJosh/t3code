@@ -98,6 +98,7 @@ export function planProfilesSync(
   participants: ReadonlyArray<ProfilesSyncParticipant>,
 ): ProfilesSyncPlan {
   const winner = pickProfilesSyncWinner(participants);
+  // Equal content must also share a revision, or the lower copy's next edit loses.
   const targets =
     winner === undefined
       ? []
@@ -107,7 +108,6 @@ export function planProfilesSync(
             participant.state.revision !== winner.state.revision,
         );
   if (winner === undefined || targets.length === 0) {
-    // REVIEW: Equal content must share a revision or the lower copy's next edit can lose to stale content.
     return { kind: "inSync" };
   }
   return { kind: "copy", winner, targets };
