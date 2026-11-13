@@ -5,6 +5,7 @@ import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Migrator from "effect/sql/Migrator";
@@ -75,20 +76,27 @@ export const finishDulliUpgrade = Effect.fn("DulliUpgrade.finishUpgrade")(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const settingsPath = path.join(path.dirname(dbPath), "settings.json");
-    if (!(yield* fs.exists(settingsPath))) return;
-    const raw = yield* fs.readFileString(settingsPath);
-    const parsed = yield* decodeSettings(raw).pipe(Effect.option);
+    const settingsBackupPath = `${settingsPath}.before-dulli-upgrade`;
+    // REVIEW: an old-fork database (it was backed up) whose settings were never converted may
+    // still use the unconfigured default "dulli" instance; afterwards the user owns that entry.
+    const addDefaultInstance =
+      (yield* fs.exists(`${dbPath}.before-dulli-upgrade`)) &&
+      !(yield* fs.exists(settingsBackupPath));
+    const raw = (yield* fs.exists(settingsPath))
+      ? yield* fs.readFileString(settingsPath)
+      : undefined;
+    if (raw === undefined && !addDefaultInstance) return;
+    const parsed =
+      raw === undefined ? Option.some<unknown>({}) : yield* decodeSettings(raw).pipe(Effect.option);
     if (parsed._tag === "None") return;
-    const movedJson = yield* encodeSettings(withDulliOnPi(parsed.value));
+    const movedJson = yield* encodeSettings(withDulliOnPi(parsed.value, { addDefaultInstance }));
     if (movedJson === (yield* encodeSettings(parsed.value))) return;
-    yield* fs
-      .writeFileString(`${settingsPath}.before-dulli-upgrade`, raw, { flag: "wx", mode: 0o600 })
-      .pipe(
-        Effect.catchIf(
-          (error) => error.reason._tag === "AlreadyExists",
-          () => Effect.void,
-        ),
-      );
+    yield* fs.writeFileString(settingsBackupPath, raw ?? "{}\n", { flag: "wx", mode: 0o600 }).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "AlreadyExists",
+        () => Effect.void,
+      ),
+    );
     yield* writeFileStringAtomically({ filePath: settingsPath, contents: `${movedJson}\n` });
   },
   (effect) =>
