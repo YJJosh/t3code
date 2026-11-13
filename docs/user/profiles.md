@@ -49,7 +49,7 @@ Choose a profile beside the composer on web, desktop, or mobile. Its provider/mo
 
 Prompt parts are appended in the listed order. Selected skills contribute their name, description, and absolute `SKILL.md` path; the agent reads a skill when needed. Only select content you trust. Paths point to the environment running the agent, not your browser's machine.
 
-Profiles are read again at each session start. Changing a profile or syncing its files does not rewrite an already-running session: stop and restart the thread to apply it. Claude, Codex, Muse, Pi, and generic ACP providers (including Replay) support profiles. Other providers show **Profiles not supported here**. Claude and Pi use their system-prompt append hooks; Codex uses developer context; Muse and ACP use their runtime-instruction channel.
+Profiles are read again at each session start. Changing a profile or syncing its files does not rewrite an already-running session: stop and restart the thread to apply it. Claude, Codex, Muse, Pi, and generic ACP providers (including Replay) support profiles. Other providers gray out the profile picker and ignore the profile. Your selection is kept for when you switch back to a supported provider. Claude and Pi use their system-prompt append hooks; Codex uses developer context; Muse and ACP use their runtime-instruction channel.
 
 ## Lean and full Claude
 

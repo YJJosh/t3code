@@ -28,6 +28,16 @@ export function ProfilePicker(props: {
     (provider) => provider.instanceId === props.selection.instanceId,
   )?.driver;
   const supported = driver !== undefined && supportsProfiles(driver);
+  if (!supported)
+    return (
+      <Button
+        onPress={() => {}}
+        tone="text"
+        label="Profiles"
+        accessibilityHint="This provider doesn't use profiles"
+        disabled
+      />
+    );
   return (
     <Menu
       accessibilityLabel="Profile"
@@ -68,9 +78,7 @@ export function ProfilePicker(props: {
       <Button
         onPress={() => {}}
         tone="text"
-        label={
-          supported ? (props.selection.profileId ?? "No profile") : "Profiles not supported here"
-        }
+        label={props.selection.profileId ?? "No profile"}
         disabled={props.disabled}
       />
     </Menu>

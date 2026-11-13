@@ -5,6 +5,7 @@ import { selectProfile, supportsProfiles } from "@t3tools/shared/profiles";
 import { type ComposerThreadTarget, useComposerDraftStore } from "../../composerDraftStore";
 import { serverEnvironment } from "../../state/server";
 import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../ui/select";
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { useApplyThreadModelPick } from "./useApplyThreadModelPick";
 
@@ -31,54 +32,58 @@ export function ProfilePicker(props: {
   )?.driver;
   const supported = driver !== undefined && supportsProfiles(driver);
   return (
-    <div>
-      <Select
-        value={props.selection.profileId ?? ""}
-        disabled={props.disabled}
-        onValueChange={(value) => {
-          const id = value || null;
-          const picked = selectProfile(
-            props.selection,
-            id,
-            id ? catalog.profiles[id] : undefined,
-            config.providers,
-          );
-          const selectedDriver = config.providers.find(
-            (provider) => provider.instanceId === picked.selection.instanceId,
-          )?.driver;
-          if (id && (!selectedDriver || !supportsProfiles(selectedDriver))) {
-            toastManager.add({ type: "warning", title: "Profiles not supported here" });
-            return;
-          }
-          useComposerDraftStore.getState().setModelSelection(props.target, picked.selection, {
-            explicit: true,
-            replaceOptions: true,
-          });
-          void apply(props.target);
-          toastManager.add({
-            type: "info",
-            title: picked.notice ?? "Profile selected for the next session start",
-          });
-        }}
-      >
-        <SelectTrigger size="compact" variant="ghost" aria-label="Profile">
-          <SelectValue>{props.selection.profileId ?? "No profile"}</SelectValue>
-        </SelectTrigger>
-        <SelectPopup>
-          <p className="max-w-72 px-3 py-2 text-xs text-muted-foreground">
-            {supported
-              ? "Changes apply at the next session start. Stop and restart the thread to apply immediately."
-              : "Profiles not supported here. Choose a profile naming a supported provider, or No profile."}
-          </p>
-          <SelectItem value="">No profile</SelectItem>
-          {Object.entries(catalog.profiles).map(([id, profile]) => (
-            <SelectItem key={id} value={id}>
-              {id}
-              {profile.description ? `: ${profile.description}` : ""}
-            </SelectItem>
-          ))}
-        </SelectPopup>
-      </Select>
-    </div>
+    <Tooltip>
+      <TooltipTrigger render={<div />}>
+        <Select
+          value={props.selection.profileId ?? ""}
+          disabled={props.disabled || !supported}
+          onValueChange={(value) => {
+            const id = value || null;
+            const picked = selectProfile(
+              props.selection,
+              id,
+              id ? catalog.profiles[id] : undefined,
+              config.providers,
+            );
+            const selectedDriver = config.providers.find(
+              (provider) => provider.instanceId === picked.selection.instanceId,
+            )?.driver;
+            if (id && (!selectedDriver || !supportsProfiles(selectedDriver))) {
+              toastManager.add({ type: "warning", title: "Profiles not supported here" });
+              return;
+            }
+            useComposerDraftStore.getState().setModelSelection(props.target, picked.selection, {
+              explicit: true,
+              replaceOptions: true,
+            });
+            void apply(props.target);
+            toastManager.add({
+              type: "info",
+              title: picked.notice ?? "Profile selected for the next session start",
+            });
+          }}
+        >
+          <SelectTrigger size="compact" variant="ghost" aria-label="Profile">
+            <SelectValue>{props.selection.profileId ?? "No profile"}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup>
+            <p className="max-w-72 px-3 py-2 text-xs text-muted-foreground">
+              Changes apply at the next session start. Stop and restart the thread to apply
+              immediately.
+            </p>
+            <SelectItem value="">No profile</SelectItem>
+            {Object.entries(catalog.profiles).map(([id, profile]) => (
+              <SelectItem key={id} value={id}>
+                {id}
+                {profile.description ? `: ${profile.description}` : ""}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      </TooltipTrigger>
+      <TooltipPopup>
+        {supported ? "Profile for the next session start" : "This provider doesn't use profiles"}
+      </TooltipPopup>
+    </Tooltip>
   );
 }

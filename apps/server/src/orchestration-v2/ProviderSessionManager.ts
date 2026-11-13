@@ -2462,14 +2462,12 @@ export const layerWithOptions = (
               );
               let profileInstructions: string | undefined;
               const profileId = input.modelSelection.profileId;
-              if (profileId && !supportsProfiles(adapter.driver))
-                return yield* new ProviderSessionOpenError({
-                  instanceId: input.modelSelection.instanceId,
-                  providerSessionId: input.providerSessionId,
-                  cause:
-                    "Profiles are not supported by this provider. Choose No profile before starting.",
-                });
-              if (profileId && Option.isSome(config) && Option.isSome(serverSettings)) {
+              if (
+                profileId &&
+                supportsProfiles(adapter.driver) &&
+                Option.isSome(config) &&
+                Option.isSome(serverSettings)
+              ) {
                 const settings = yield* serverSettings.value.getSettings.pipe(
                   Effect.mapError(
                     (cause) =>
