@@ -458,10 +458,7 @@ const make = Effect.gen(function* () {
     return state;
   }, lock.withPermit);
   const skills = Effect.fn("ProfilesStore.skills")(function* (input: ProfilesSkillsInput) {
-    if (input._tag === "add" && /^-|[\s\x00-\x1f\x7f]/.test(input.source)) return yield* invalid();
     const decoded = yield* decodeSkills(input).pipe(Effect.mapError(() => invalid()));
-    if (decoded._tag === "add" && /^-|[\s\x00-\x1f\x7f]/.test(decoded.source))
-      return yield* invalid();
     const root = yield* folder();
     const before = yield* snapshot(root);
     yield* io(async () => {

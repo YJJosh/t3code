@@ -172,7 +172,10 @@ export type ProfilesEditorWriteInput = typeof ProfilesEditorWriteInput.Type;
 export const ProfilesSkillsInput = Schema.Union([
   Schema.TaggedStruct("add", {
     /** `owner/repo`, a GitHub URL, or another source `npx skills add` accepts. */
-    source: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
+    source: Schema.NonEmptyString.check(
+      Schema.isMaxLength(512),
+      Schema.isPattern(/^(?!-)[^\s\x00-\x1f\x7f]+$/),
+    ),
     skill: Schema.optionalKey(ProfileId),
   }),
   Schema.TaggedStruct("update", {}),
