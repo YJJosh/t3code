@@ -84,7 +84,7 @@ import Migration0078 from "./Migrations/078_DropOrchestrationEventCorrelationInd
 import Migration0079 from "./Migrations/079_DelegatedRecoveryIndexes.ts";
 import Migration0080 from "./Migrations/080_ScheduledTaskThreadMode.ts";
 import Migration0081 from "./Migrations/081_ProjectionMessageSearchText.ts";
-import RetireDulli from "./Migrations/dulli/005_RetireDulli.ts";
+import MoveDulliToPi from "./Migrations/dulli/005_MoveDulliToPi.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -182,8 +182,8 @@ const makeMigrationLoader = (throughId?: number) =>
     ),
   );
 
-// IDs 001–004 belong to retired provider migrations and must never be reused.
-const dulliMigrationEntries = [[5, "RetireDulli", RetireDulli]] as const;
+// IDs 001–004 belong to the old fork's provider migrations and must never be reused.
+const dulliMigrationEntries = [[5, "MoveDulliToPi", MoveDulliToPi]] as const;
 
 const FIRST_V2_MIGRATION_ID = 55;
 

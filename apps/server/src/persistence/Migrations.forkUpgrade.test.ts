@@ -5,7 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { runMigrations } from "./Migrations.ts";
 
-it.effect("retires old fork threads and history without changing native providers", () =>
+it.effect("moves old fork threads to Pi and archives what this release cannot read", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`PRAGMA foreign_keys = ON`;
@@ -16,17 +16,15 @@ it.effect("retires old fork threads and history without changing native provider
       (3, 'PiSessionsSettlement'), (4, 'DulliRunIsolation')`;
     for (const table of [
       "dulli_fork_migrations",
-      "dulli_fork_native_threads",
       "dulli_projection_runs",
-      "dulli_projection_transcript",
       "pi_sessions_settlement",
       "projection_thread_activities",
     ]) {
       yield* sql`CREATE TABLE ${sql(table)} (thread_id TEXT)`;
-      yield* sql`INSERT INTO ${sql(table)} VALUES ('retired')`;
+      yield* sql`INSERT INTO ${sql(table)} VALUES ('old-fork')`;
     }
     for (const [id, driver, instance] of [
-      ["retired", "dulli", "custom-dulli"],
+      ["old-fork", "dulli", "custom-dulli"],
       ["native-pi", "pi", "pi"],
       ["native-claude", "claudeAgent", "claudeAgent"],
     ]) {
@@ -43,63 +41,96 @@ it.effect("retires old fork threads and history without changing native provider
       yield* sql`INSERT INTO orchestration_events
         (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
         VALUES (${id}, 'thread', ${id}, 0, 'thread.created', '2026-01-01', 'server', ${payload}, '{}', 2)`;
-      yield* sql`INSERT INTO orchestration_v2_legacy_imports
-        (thread_id, source_updated_at, shell_imported_at) VALUES (${id}, '2026-01-01', '2026-01-01')`;
       yield* sql`INSERT INTO orchestration_v2_projection_messages
         (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
-        VALUES (${id}, ${id}, 'user', 0, '2026-01-01', '2026-01-01', ${JSON.stringify({ id, text: "searchable history", attachments: [] })})`;
+        VALUES (${id}, ${id}, 'user', 0, '2026-01-01', '2026-01-01', ${JSON.stringify({ id, text: 'set "driver":"dulli" in the config', attachments: [] })})`;
     }
     yield* sql`INSERT INTO orchestration_v2_projection_subagents
       (subagent_id, thread_id, parent_node_id, provider, origin, status, updated_at, payload_json, driver, provider_instance_id)
-      VALUES ('dulli-child', 'native-claude', 'root', 'dulli', 'provider_native', 'completed', '2026-01-01', '{}', 'dulli', 'custom-dulli')`;
-    yield* sql`INSERT INTO orchestration_v2_projection_nodes
-      (node_id, thread_id, parent_node_id, root_node_id, kind, status, payload_json)
-      VALUES ('dulli-child', 'native-claude', NULL, 'dulli-child', 'subagent', 'completed', '{}'),
-        ('transcript-child', 'native-claude', 'dulli-child', 'dulli-child', 'message', 'completed', '{}')`;
+      VALUES ('dulli-child', 'native-claude', 'root', 'dulli', 'provider_native', 'completed', '2026-01-01', '{"driver":"dulli","providerInstanceId":"custom-dulli"}', 'dulli', 'custom-dulli')`;
     yield* sql`INSERT INTO orchestration_events
       (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
-      VALUES ('retired-child-event', 'thread', 'native-claude', 1, 'subagent.updated', '2026-01-01', 'provider', '{"id":"dulli-child"}', '{"driver":"dulli"}', 2)`;
-    yield* sql`INSERT INTO orchestration_v2_projection_turn_items
-      (turn_item_id, thread_id, node_id, ordinal, type, status, updated_at, payload_json)
-      VALUES ('dulli:child-item', 'native-claude', 'transcript-child', 1, 'message', 'completed', '2026-01-01', '{}')`;
-    yield* sql`INSERT INTO orchestration_v2_turn_item_positions (thread_id, turn_item_id, ordinal)
-      VALUES ('native-claude', 'dulli:child-item', 1)`;
-    const before =
-      yield* sql`SELECT * FROM orchestration_v2_projection_threads WHERE thread_id != 'retired' ORDER BY thread_id`;
+      VALUES ('child-event', 'thread', 'native-claude', 1, 'subagent.updated', '2026-01-01', 'provider', '{"id":"dulli-child"}', '{"driver":"dulli"}', 2),
+        ('transcript-event', 'thread', 'old-fork', 1, 'dulli-transcript.updated', '2026-01-01', 'provider', '{"text":"child"}', '{}', 2)`;
+    const messagesBefore =
+      yield* sql`SELECT message_id, payload_json FROM orchestration_v2_projection_messages ORDER BY message_id`;
     yield* runMigrations();
+
     assert.deepStrictEqual(
-      yield* sql`SELECT * FROM orchestration_v2_projection_threads ORDER BY thread_id`,
-      before,
+      yield* sql`SELECT thread_id, default_provider, provider_instance_id FROM orchestration_v2_projection_threads ORDER BY thread_id`,
+      [
+        {
+          thread_id: "native-claude",
+          default_provider: "claudeAgent",
+          provider_instance_id: "claudeAgent",
+        },
+        { thread_id: "native-pi", default_provider: "pi", provider_instance_id: "pi" },
+        { thread_id: "old-fork", default_provider: "pi", provider_instance_id: "custom-dulli" },
+      ],
     );
     assert.deepStrictEqual(
-      yield* sql`SELECT stream_id FROM orchestration_events WHERE aggregate_kind = 'thread' ORDER BY stream_id`,
-      [{ stream_id: "native-claude" }, { stream_id: "native-pi" }],
+      yield* sql`SELECT message_id, payload_json FROM orchestration_v2_projection_messages ORDER BY message_id`,
+      messagesBefore,
     );
-    assert.lengthOf(yield* sql`SELECT * FROM orchestration_v2_projection_messages`, 2);
-    assert.lengthOf(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, 2);
-    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_projection_subagents`, []);
-    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_projection_nodes`, []);
-    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_projection_turn_items`, []);
-    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_turn_item_positions`, []);
+    assert.deepStrictEqual(
+      yield* sql`SELECT driver, provider, provider_instance_id, payload_json FROM orchestration_v2_projection_subagents`,
+      [
+        {
+          driver: "pi",
+          provider: "pi",
+          provider_instance_id: "custom-dulli",
+          payload_json: '{"driver":"pi","providerInstanceId":"custom-dulli"}',
+        },
+      ],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT event_id, metadata_json FROM orchestration_events WHERE aggregate_kind = 'thread' ORDER BY event_id`,
+      [
+        { event_id: "child-event", metadata_json: '{"driver":"pi"}' },
+        { event_id: "native-claude", metadata_json: "{}" },
+        { event_id: "native-pi", metadata_json: "{}" },
+        { event_id: "old-fork", metadata_json: "{}" },
+      ],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT event_id, event_type, payload_json FROM dulli_archived_events`,
+      [
+        {
+          event_id: "transcript-event",
+          event_type: "dulli-transcript.updated",
+          payload_json: '{"text":"child"}',
+        },
+      ],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND (name GLOB 'dulli_*' OR name IN ('pi_sessions_settlement', 'projection_thread_activities')) ORDER BY name`,
+      [
+        "dulli_archived_events",
+        "dulli_archived_pi_sessions_settlement",
+        "dulli_archived_thread_activities",
+        "dulli_fork_migrations",
+        "dulli_projection_runs",
+        "dulli_sql_migrations",
+      ].map((name) => ({ name })),
+    );
+    assert.deepStrictEqual(yield* sql`SELECT thread_id FROM dulli_archived_thread_activities`, [
+      { thread_id: "old-fork" },
+    ]);
     assert.deepStrictEqual(
       yield* sql`SELECT migration_id FROM dulli_sql_migrations ORDER BY migration_id`,
       [1, 2, 3, 4, 5].map((migration_id) => ({ migration_id })),
-    );
-    assert.deepStrictEqual(
-      yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND (name LIKE 'dulli_%' OR name = 'pi_sessions_settlement') AND name NOT IN ('dulli_sql_migrations', 'dulli_retirement_cleanup')`,
-      [],
     );
     assert.deepStrictEqual(yield* runMigrations(), []);
     assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 
-it.effect("fresh installs reserve old fork ids without creating retired schemas", () =>
+it.effect("fresh installs reserve old fork ids and create no archive", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations();
     assert.deepStrictEqual(yield* sql`SELECT migration_id, name FROM dulli_sql_migrations`, [
-      { migration_id: 5, name: "RetireDulli" },
+      { migration_id: 5, name: "MoveDulliToPi" },
     ]);
     assert.deepStrictEqual(
       yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'dulli_%'`,

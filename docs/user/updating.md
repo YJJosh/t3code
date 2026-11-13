@@ -86,15 +86,19 @@ before continuing an important older thread.
 
 ## Upgrading an older T3 Dulli installation
 
-The stable-based T3 Dulli release keeps your existing `~/.t3-dulli` home, but retires the old
-Dulli provider. Its threads, subagent history, and provider settings are removed; threads belonging
-to other providers stay. Native Pi is separate and does not inherit Dulli sessions.
+The stable-based T3 Dulli release keeps your existing `~/.t3-dulli` home and every thread. The old
+Dulli provider ran your own Pi, so its threads move to the Pi provider under the same name and pick
+up the same Pi sessions when you send the next message. To continue one with another provider,
+pick that provider in the composer; T3 Code hands the conversation over.
 
-Before removing anything, the server saves `statev2.sqlite.before-dulli-retirement` beside the
-existing database in `userdata`, and saves changed settings as `settings.json.before-dulli-retirement`.
+Old subagent run history cannot be shown by this release. It is kept in `dulli_archived_*` tables
+in the same database, not deleted.
+
+Before changing anything, the server saves `statev2.sqlite.before-dulli-upgrade` beside the
+existing database in `userdata`, and saves changed settings as `settings.json.before-dulli-upgrade`.
 Allow extra disk space for a full database copy and time for the first startup. These backups are
 not deleted automatically. Keep them until you have checked the upgrade; restoring them requires
-stopping the server and using the older release. Your project files and worktrees are not deleted.
+stopping the server and using the older release. Your project files and worktrees are not touched.
 
 ## When versions don't match
 
