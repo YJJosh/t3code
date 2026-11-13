@@ -34,6 +34,7 @@ import { ReopenClosedViewShortcut } from "../components/ReopenClosedViewShortcut
 import { ProjectCloneToastCoordinator } from "../components/ProjectCloneToastCoordinator";
 import { ChatGptWelcomeCoordinator } from "../components/settings/ChatGptWelcomeCoordinator";
 import { ThemeEditorHost } from "../components/settings/ThemeEditorHost";
+import { ProfilesSyncHost } from "../state/profiles";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { Button } from "../components/ui/button";
 import { StandalonePage, StandalonePageHeader } from "../components/ui/standalone-page";
@@ -193,6 +194,7 @@ function RootRouteBranch() {
       <ProjectCloneToastCoordinator />
       <AddProjectToMachineDialogHost />
       <UseInAnotherAppDialogHost />
+      <ProfilesSyncHost />
       {import.meta.env.DEV && primaryEnvironmentAuthenticated ? <DevReplayHost /> : null}
     </>
   );
