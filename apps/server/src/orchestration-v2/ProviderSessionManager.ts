@@ -1,3 +1,4 @@
+import type * as Path from "effect/Path";
 import { supportsProfiles } from "@t3tools/shared/profiles";
 import * as Profiles from "../profiles/Profiles.ts";
 import * as ServerConfig from "../config.ts";

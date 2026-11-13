@@ -1,3 +1,7 @@
+import * as ProfilesStore from "./profiles/ProfilesStore.ts";
+import * as ProfilesCommandRunner from "./profiles/ProfilesCommandRunner.ts";
+import * as ProviderSettingsDetection from "./profiles/ProviderSettingsDetection.ts";
+import * as ProviderSettingsProbe from "./profiles/ProviderSettingsProbe.ts";
 import * as Profiles from "./profiles/Profiles.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -1523,7 +1527,17 @@ export const layerWsRpc = (
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const profiles = yield* Profiles.Profiles.pipe(Effect.provide(Profiles.layer));
-      const profilePath = yield* Path.Path;
+      const profilesStore = yield* ProfilesStore.ProfilesStore.pipe(
+        Effect.provide(
+          ProfilesStore.layer.pipe(Layer.provide([Profiles.layer, ProfilesCommandRunner.layer])),
+        ),
+      );
+      const providerSettingsDetection =
+        yield* ProviderSettingsDetection.ProviderSettingsDetection.pipe(
+          Effect.provide(
+            ProviderSettingsDetection.layer.pipe(Layer.provide(ProviderSettingsProbe.layer)),
+          ),
+        );
       const secretResolver = yield* SecretResolver.SecretResolver;
       const peerLinks = yield* PeerLinks.PeerLinks;
       const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
@@ -1982,7 +1996,7 @@ export const layerWsRpc = (
           },
           settings,
           profiles: (yield* profiles.load(
-            settings.profilesFolder || profilePath.join(config.baseDir, "profiles"),
+            Profiles.resolveFolder(config.baseDir, settings.profilesFolder),
           )).catalog,
           ...(serverSettings.managedPolicy === undefined
             ? {}
@@ -2401,6 +2415,13 @@ export const layerWsRpc = (
             Effect.andThen(scheduledTasks.getWebhookDelivery(input)),
           ),
         [WS_METHODS.serverProbe]: (_input) => Effect.succeed({}),
+        [WS_METHODS.profilesEditorRead]: () => profilesStore.read(),
+        [WS_METHODS.profilesEditorWrite]: (input) => profilesStore.write(input),
+        [WS_METHODS.profilesSkills]: (input) => profilesStore.skills(input),
+        [WS_METHODS.profilesSyncRead]: (input) => profilesStore.syncRead(input),
+        [WS_METHODS.profilesSyncWrite]: (input) => profilesStore.syncWrite(input),
+        [WS_METHODS.profilesSyncMark]: (input) => profilesStore.syncMark(input),
+        [WS_METHODS.profilesDetectOptions]: () => providerSettingsDetection.detect(),
         [WS_METHODS.serverGetConfig]: (_input) =>
           loadServerConfig({
             usageLimitsCommand: false,

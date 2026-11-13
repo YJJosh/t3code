@@ -11,7 +11,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 
-import { checkPiProviderStatus, MINIMUM_PI_VERSION } from "./status.ts";
+import { checkPiProviderStatus, detectPiProfileOptions, MINIMUM_PI_VERSION } from "./status.ts";
 
 const encoder = new TextEncoder();
 const decodeRpcRequest = Schema.decodeSync(
@@ -63,6 +63,7 @@ const piDiscoverySpawner = (
   options: {
     readonly version?: string;
     readonly state?: unknown;
+    readonly commands?: unknown;
     readonly authCheck?: string | undefined;
   } = {},
 ) =>
@@ -83,7 +84,7 @@ const piDiscoverySpawner = (
             request.type === "get_available_models"
               ? inventory
               : request.type === "get_commands"
-                ? { commands: [] }
+                ? { commands: options.commands ?? [] }
                 : request.type === "get_state"
                   ? (options.state ?? {})
                   : {};
@@ -127,6 +128,25 @@ const settings = {
 } as const;
 
 describe("PiProvider", () => {
+  it.effect("detects skills and prompt templates without submitting a prompt", () =>
+    Effect.gen(function* () {
+      const spawner = yield* piDiscoverySpawner([], {
+        commands: [
+          { name: "skill:review", description: "Review", source: "skill" },
+          { name: "plan", description: "Plan", source: "prompt" },
+          { name: "extension-command", source: "extension" },
+        ],
+      });
+      const result = yield* detectPiProfileOptions(settings, {}, "/workspace").pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
+      assert.deepEqual(result, {
+        skills: [{ name: "review", description: "Review" }],
+        promptTemplates: [{ name: "plan", description: "Plan" }],
+      });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("requires the first published Pi version with entries and settlement hooks", () =>
     Effect.gen(function* () {
       const snapshot = yield* checkPiProviderStatus(settings).pipe(
