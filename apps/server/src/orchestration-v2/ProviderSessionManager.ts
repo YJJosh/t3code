@@ -92,11 +92,15 @@ export class ProviderSessionOpenError extends Schema.TaggedError<ProviderSession
   {
     instanceId: ProviderInstanceId,
     providerSessionId: ProviderSessionId,
+    profileWarning: Schema.optionalKey(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return `Failed to open provider instance ${this.instanceId} session ${this.providerSessionId}.`;
+    return (
+      this.profileWarning ??
+      `Failed to open provider instance ${this.instanceId} session ${this.providerSessionId}.`
+    );
   }
 }
 
@@ -2462,14 +2466,12 @@ export const layerWithOptions = (
               );
               let profileInstructions: string | undefined;
               const profileId = input.modelSelection.profileId;
-              if (profileId && !supportsProfiles(adapter.driver))
-                return yield* new ProviderSessionOpenError({
-                  instanceId: input.modelSelection.instanceId,
-                  providerSessionId: input.providerSessionId,
-                  cause:
-                    "Profiles are not supported by this provider. Choose No profile before starting.",
-                });
-              if (profileId && Option.isSome(config) && Option.isSome(serverSettings)) {
+              if (
+                profileId &&
+                supportsProfiles(adapter.driver) &&
+                Option.isSome(config) &&
+                Option.isSome(serverSettings)
+              ) {
                 const settings = yield* serverSettings.value.getSettings.pipe(
                   Effect.mapError(
                     (cause) =>
@@ -2486,12 +2488,16 @@ export const layerWithOptions = (
                 profileInstructions = Object.hasOwn(loaded.instructions, profileId)
                   ? loaded.instructions[profileId]
                   : undefined;
-                if (loaded.catalog.error || profileInstructions === undefined)
+                const warning = Object.hasOwn(loaded.catalog.profiles, profileId)
+                  ? loaded.catalog.profiles[profileId]?.warning
+                  : undefined;
+                if (loaded.catalog.error || warning || profileInstructions === undefined)
                   return yield* new ProviderSessionOpenError({
                     instanceId: input.modelSelection.instanceId,
                     providerSessionId: input.providerSessionId,
-                    cause:
+                    profileWarning:
                       loaded.catalog.error ??
+                      warning ??
                       `Profile ${profileId} no longer exists. Select another profile or No profile.`,
                   });
               }

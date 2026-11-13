@@ -78,23 +78,32 @@ function EnvironmentProfilesSettings({ environmentId }: { environmentId: Environ
             <SelectPopup>
               <SelectItem value="__folder__">Folder default</SelectItem>
               <SelectItem value="">No profile</SelectItem>
-              {Object.keys(catalog?.profiles ?? {}).map((id) => (
-                <SelectItem key={id} value={id}>
+              {Object.entries(catalog?.profiles ?? {}).map(([id, profile]) => (
+                <SelectItem key={id} value={id} disabled={Boolean(profile.warning)}>
                   {id}
+                  {profile.warning ? `: ${profile.warning}` : ""}
                 </SelectItem>
               ))}
             </SelectPopup>
           </Select>
         }
       />
+      {Object.entries(catalog?.profiles ?? {}).map(([id, profile]) =>
+        profile.warning ? (
+          <p key={id} role="status" className="px-4 py-3 text-sm text-destructive">
+            {id}: {profile.warning}
+          </p>
+        ) : null,
+      )}
       {catalog?.error ? (
         <p role="alert" className="px-4 py-3 text-sm text-destructive">
           {catalog.error}
         </p>
       ) : (
         <p className="px-4 py-3 text-sm text-muted-foreground">
-          {Object.keys(catalog?.profiles ?? {}).length} profiles available. Refresh after syncing.
-          Profile changes apply at the next session start.
+          {Object.values(catalog?.profiles ?? {}).filter((profile) => !profile.warning).length}{" "}
+          profiles available. Refresh after syncing. Profile changes apply at the next session
+          start.
         </p>
       )}
     </SettingsSection>

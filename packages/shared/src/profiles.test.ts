@@ -43,6 +43,8 @@ it("applies portable provider instances, warns on fallback, and keeps explicit o
   assert.isNull(selectProfile(fallback.selection, null, undefined, providers).selection.profileId);
   // A default naming a profile removed from the folder must not break every new thread.
   assert.deepEqual(selectProfile(current, "removed", undefined, providers).selection, current);
+  const broken = { ...profile, warning: "Could not read coding.md" };
+  assert.deepEqual(selectProfile(current, "broken", broken, providers).selection, current);
   assert.isTrue(supportsProfiles("acpRegistry"));
   assert.isFalse(supportsProfiles("cursor"));
 });

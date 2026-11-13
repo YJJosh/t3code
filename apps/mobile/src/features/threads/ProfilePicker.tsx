@@ -28,6 +28,16 @@ export function ProfilePicker(props: {
     (provider) => provider.instanceId === props.selection.instanceId,
   )?.driver;
   const supported = driver !== undefined && supportsProfiles(driver);
+  if (!supported)
+    return (
+      <Button
+        onPress={() => {}}
+        tone="text"
+        label="Profiles"
+        accessibilityHint="This provider doesn't use profiles"
+        disabled
+      />
+    );
   return (
     <Menu
       accessibilityLabel="Profile"
@@ -36,13 +46,15 @@ export function ProfilePicker(props: {
         ...Object.entries(catalog.profiles).map(([id, profile]) => ({
           id,
           title: id,
-          subtitle: profile.description,
+          subtitle: profile.warning ?? profile.description,
+          attributes: { disabled: Boolean(profile.warning) },
           state: props.selection.profileId === id ? ("on" as const) : ("off" as const),
         })),
       ]}
       onPressAction={({ nativeEvent }) => {
         if (props.disabled) return;
         const id = nativeEvent.event || null;
+        if (id && catalog.profiles[id]?.warning) return;
         const picked = selectProfile(
           props.selection,
           id,
@@ -68,9 +80,7 @@ export function ProfilePicker(props: {
       <Button
         onPress={() => {}}
         tone="text"
-        label={
-          supported ? (props.selection.profileId ?? "No profile") : "Profiles not supported here"
-        }
+        label={props.selection.profileId ?? "No profile"}
         disabled={props.disabled}
       />
     </Menu>

@@ -574,6 +574,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 
 function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
+  readonly driver?: ProviderDriverKind;
   readonly idleTimeoutMs: number;
   readonly maxIdlePinMs?: number;
   readonly failEventStream?: boolean;
@@ -643,7 +644,11 @@ function layerTest(input: {
       ...(input.scopeCloseReached === undefined
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
-    }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
+    }).pipe(
+      Effect.map((adapter) =>
+        ProviderAdapterRegistry.layerSingle({ ...adapter, driver: input.driver ?? adapter.driver }),
+      ),
+    ),
   );
   const layerConfiguredMcpRegistry =
     input.pauseResolve === undefined
@@ -4702,8 +4707,8 @@ it.effect("loads profiles only when opening a session and rereads them after clo
         .pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(missing));
       yield* fs.remove(`${root}/profiles/prompts/coding.md`);
-      const result = yield* manager.open(input).pipe(Effect.exit);
-      assert.isTrue(Exit.isFailure(result));
+      const result = yield* manager.open(input).pipe(Effect.flip);
+      assert.include(result.message, "coding.md");
       assert.equal(opened.length, 3);
     }).pipe(
       Effect.provide(
@@ -4711,6 +4716,52 @@ it.effect("loads profiles only when opening a session and rereads them after clo
           state,
           idleTimeoutMs: 60_000,
           serverSettingsLayer: ServerSettings.layerTest(),
+          beforeOpen: (input) =>
+            Effect.sync(() => {
+              opened.push(input.profileInstructions);
+            }),
+        }).pipe(Layer.provide(ServerConfig.layerTest(root, root))),
+      ),
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect("ignores selected profiles for providers without profile support", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped();
+    yield* fs.makeDirectory(`${root}/profiles/prompts`, { recursive: true });
+    yield* fs.writeFileString(
+      `${root}/profiles/profiles.json`,
+      JSON.stringify({
+        profiles: { coder: { prompts: ["coding"], skills: [] } },
+      }),
+    );
+    yield* fs.writeFileString(`${root}/profiles/prompts/coding.md`, "Ignored instruction");
+    const state = yield* Ref.make(emptyState);
+    const opened: Array<string | undefined> = [];
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const threadId = ThreadId.make("thread-unsupported-profile");
+      const providerSessionId = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* manager.open({
+        threadId,
+        providerSessionId,
+        modelSelection: { ...modelSelection, profileId: "coder" },
+        runtimePolicy,
+      });
+      assert.deepEqual(opened, [undefined]);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          driver: ProviderDriverKind.make("cursor"),
+          serverSettingsLayer: ServerSettings.layerTest(),
+          idleTimeoutMs: 60_000,
           beforeOpen: (input) =>
             Effect.sync(() => {
               opened.push(input.profileInstructions);

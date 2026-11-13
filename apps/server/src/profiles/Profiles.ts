@@ -4,18 +4,20 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as SchemaIssue from "effect/SchemaIssue";
 import { parse as parseYaml } from "yaml";
-import { ProfilesFile, type ProfileCatalog } from "@t3tools/contracts";
+import { Profile, ProfileId, ProfilesFile, type ProfileCatalog } from "@t3tools/contracts";
 
 class ProfileLoadError extends Schema.TaggedError<ProfileLoadError>()("ProfileLoadError", {
   path: Schema.String,
   operation: Schema.Literals(["read", "decode", "default"]),
   cause: Schema.Defect(),
+  field: Schema.optionalKey(Schema.String),
 }) {
   override get message() {
     return this.operation === "default"
       ? `Default profile does not exist in ${this.path}.`
-      : `Could not ${this.operation} ${this.path}. Check the profiles format and file permissions.`;
+      : `Could not ${this.operation} ${this.path}.${this.field ? ` Check field ${this.field}.` : " Check the profiles format and file permissions."}`;
   }
 }
 
@@ -23,7 +25,23 @@ const SkillMetadata = Schema.Struct({
   name: Schema.NonEmptyString,
   description: Schema.NonEmptyString,
 });
-const decodeProfiles = Schema.decodeEffect(Schema.fromJsonString(ProfilesFile));
+const decodeProfiles = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      ...ProfilesFile.fields,
+      profiles: Schema.Record(ProfileId, Schema.Unknown),
+    }),
+  ),
+);
+const decodeProfile = Schema.decodeUnknownEffect(Profile);
+const formatFields = SchemaIssue.makeFormatterStandardSchemaV1({
+  leafHook: () => "Invalid field",
+  checkHook: () => "Invalid field",
+});
+const invalidFields = (cause: Schema.SchemaError) =>
+  formatFields(cause.issue)
+    .issues.map((issue) => issue.path?.join(".") || "profile")
+    .join(", ");
 const decodeSkillMetadata = Schema.decodeUnknownEffect(SkillMetadata);
 const isProfileLoadError = Schema.is(ProfileLoadError);
 const escapeXml = (text: string) =>
@@ -68,37 +86,69 @@ const make = Effect.gen(function* () {
         return yield* new ProfileLoadError({ path: file, operation: "default", cause: undefined });
       }
       const instructions: Record<string, string> = {};
-      for (const [id, profile] of Object.entries(config.profiles)) {
-        const parts: string[] = [];
-        for (const prompt of profile.prompts)
-          parts.push(yield* read(path.join(root, "prompts", `${prompt}.md`)));
-        const skills: string[] = [];
-        for (const skill of profile.skills) {
-          const skillPath = path.join(root, "skills", skill, "SKILL.md");
-          const content = yield* read(skillPath);
-          const rawMetadata = yield* Effect.try({
-            try: () => {
-              const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
-              return parseYaml(match?.[1] ?? "");
-            },
-            catch: (cause) => new ProfileLoadError({ path: skillPath, operation: "decode", cause }),
-          });
-          const metadata = yield* decodeSkillMetadata(rawMetadata).pipe(
+      const catalogProfiles: Record<string, ProfileCatalog["profiles"][string]> = {};
+      for (const [id, raw] of Object.entries(config.profiles)) {
+        let profile: Profile = { prompts: [], skills: [] };
+        const loaded = yield* Effect.gen(function* () {
+          profile = yield* decodeProfile(raw).pipe(
             Effect.mapError(
-              (cause) => new ProfileLoadError({ path: skillPath, operation: "decode", cause }),
+              (cause) =>
+                new ProfileLoadError({
+                  path: file,
+                  operation: "decode",
+                  field: invalidFields(cause),
+                  cause,
+                }),
             ),
           );
-          skills.push(
-            `<skill><name>${escapeXml(metadata.name)}</name><description>${escapeXml(metadata.description)}</description><location>${escapeXml(skillPath)}</location></skill>`,
-          );
-        }
-        if (skills.length > 0)
-          parts.push(
-            `Read a skill's SKILL.md before using it. Resolve relative paths against its directory.\n<available_skills>\n${skills.join("\n")}\n</available_skills>`,
-          );
-        instructions[id] = parts.join("\n\n");
+          const parts: string[] = [];
+          for (const prompt of profile.prompts)
+            parts.push(yield* read(path.join(root, "prompts", `${prompt}.md`)));
+          const skills: string[] = [];
+          for (const skill of profile.skills) {
+            const skillPath = path.join(root, "skills", skill, "SKILL.md");
+            const content = yield* read(skillPath);
+            const rawMetadata = yield* Effect.try({
+              try: () => {
+                const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
+                return parseYaml(match?.[1] ?? "");
+              },
+              catch: (cause) =>
+                new ProfileLoadError({ path: skillPath, operation: "decode", cause }),
+            });
+            const metadata = yield* decodeSkillMetadata(rawMetadata).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProfileLoadError({
+                    path: skillPath,
+                    operation: "decode",
+                    field: invalidFields(cause),
+                    cause,
+                  }),
+              ),
+            );
+            skills.push(
+              `<skill><name>${escapeXml(metadata.name)}</name><description>${escapeXml(metadata.description)}</description><location>${escapeXml(skillPath)}</location></skill>`,
+            );
+          }
+          if (skills.length > 0)
+            parts.push(
+              `Read a skill's SKILL.md before using it. Resolve relative paths against its directory.\n<available_skills>\n${skills.join("\n")}\n</available_skills>`,
+            );
+          return { profile, instructions: parts.join("\n\n") };
+        }).pipe(
+          Effect.catchTags({
+            ProfileLoadError: (error) =>
+              Effect.succeed({
+                profile: { ...profile, warning: error.message },
+                instructions: undefined,
+              }),
+          }),
+        );
+        catalogProfiles[id] = loaded.profile;
+        if (loaded.instructions !== undefined) instructions[id] = loaded.instructions;
       }
-      return { catalog: { folder: root, ...config }, instructions };
+      return { catalog: { folder: root, ...config, profiles: catalogProfiles }, instructions };
     }).pipe(
       Effect.catch((cause) =>
         Effect.succeed({
