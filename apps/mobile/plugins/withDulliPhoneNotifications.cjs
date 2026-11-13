@@ -4,26 +4,34 @@ const { withAndroidManifest, withDangerousMod } = require("expo/config-plugins")
 
 function applyDulliPhoneManifest(brand, manifest) {
   if (brand !== "dulli") {
-    manifest["uses-permission"] = manifest["uses-permission"]?.filter(
-      (entry) =>
-        ![
-          "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
-          "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
-        ].includes(entry.$["android:name"]),
-    );
+    // Assigning undefined would render a nameless empty element that fails the manifest merge.
+    if (manifest["uses-permission"]) {
+      manifest["uses-permission"] = manifest["uses-permission"].filter(
+        (entry) =>
+          ![
+            "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+            "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+          ].includes(entry.$["android:name"]),
+      );
+    }
     const application = manifest.application[0];
     if (application.$?.["android:fullBackupContent"] === "@xml/dulli_backup_rules") {
       application.$["android:fullBackupContent"] = "@xml/secure_store_backup_rules";
       application.$["android:dataExtractionRules"] = "@xml/secure_store_data_extraction_rules";
     }
-    application.service = application.service?.filter(
-      (entry) =>
-        entry.$["android:name"] !== "expo.modules.t3agentnotifications.PhoneConnectionService",
-    );
-    application.receiver = application.receiver?.filter(
-      (entry) =>
-        entry.$["android:name"] !== "expo.modules.t3agentnotifications.PhoneConnectionBootReceiver",
-    );
+    if (application.service) {
+      application.service = application.service.filter(
+        (entry) =>
+          entry.$["android:name"] !== "expo.modules.t3agentnotifications.PhoneConnectionService",
+      );
+    }
+    if (application.receiver) {
+      application.receiver = application.receiver.filter(
+        (entry) =>
+          entry.$["android:name"] !==
+          "expo.modules.t3agentnotifications.PhoneConnectionBootReceiver",
+      );
+    }
     return manifest;
   }
   const permissions = (manifest["uses-permission"] ??= []);

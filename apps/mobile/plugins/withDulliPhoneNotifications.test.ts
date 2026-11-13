@@ -37,6 +37,12 @@ describe("Dulli phone service manifest", () => {
     );
   });
 
+  it("adds no empty lists to upstream builds that have none", () => {
+    // An undefined list renders as a nameless <service/>, which fails the Android manifest merge.
+    const bare = { application: [{ $: {} }] };
+    expect(applyDulliPhoneManifest("t3code", bare)).toStrictEqual({ application: [{ $: {} }] });
+  });
+
   it("adds special-use and boot declarations only once while retaining the relay path", () => {
     const once = applyDulliPhoneManifest("dulli", manifest());
     const before = structuredClone(once);
