@@ -69,6 +69,13 @@ export function readPrimaryEnvironmentId(): EnvironmentId | null {
   return appAtomRegistry.get(primaryEnvironmentIdAtom);
 }
 
+/** Every environment's state now, for handlers that should not re-render on every change. */
+export function readEnvironments(): ReadonlyArray<EnvironmentPresentation> {
+  return [...appAtomRegistry.get(environmentPresentations.presentationsAtom)].map(
+    ([environmentId, presentation]) => projectEnvironmentPresentation(environmentId, presentation),
+  );
+}
+
 /** The environment's state now, for handlers that should not re-render on every change. */
 export function readEnvironment(environmentId: EnvironmentId): EnvironmentPresentation | null {
   const presentation = appAtomRegistry
