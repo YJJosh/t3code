@@ -23,10 +23,16 @@ const state = vi.hoisted(() => ({
   completed: deferred<void>(),
   show: vi.fn<
     (
-      items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
+      items: ReadonlyArray<ContextMenuItem<string>>,
       position: { x: number; y: number },
-    ) => Promise<ThreadActionMenuId | null>
+    ) => Promise<string | null>
   >(),
+  // REVIEW: the header menu now builds the same multi-repo setup items as the sidebar.
+  setupMenu: {
+    items: [] as ReadonlyArray<ContextMenuItem<string>>,
+    setupsByAction: new Map<string, unknown>(),
+  },
+  setupOpenedWith: null as unknown,
 }));
 
 function recordEffect(action: string) {
@@ -61,7 +67,20 @@ vi.mock("../state/entities", () => ({
   }),
   useProjects: () => [{ id: "project", environmentId: "secondary" }],
 }));
-vi.mock("../state/environments", () => ({ usePrimaryEnvironmentId: () => "primary" }));
+vi.mock("../state/environments", () => ({
+  usePrimaryEnvironmentId: () => "primary",
+  readEnvironments: () => [],
+}));
+vi.mock("../commandPaletteBus", () => ({
+  openCommandPalette: (detail: unknown) => {
+    state.setupOpenedWith = detail;
+    recordEffect("multi-repo-setup");
+  },
+}));
+vi.mock("../multiRepoSetupMenu", () => ({
+  buildMultiRepoProjectSetupMenu: () => state.setupMenu,
+  isMultiRepoSetupMenuId: (id: string | null) => id?.startsWith("multi-repo-setup:") === true,
+}));
 vi.mock("../state/threads", () => ({ threadEnvironment: { updateMetadata: "metadata" } }));
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand: () => async () => {
@@ -163,6 +182,8 @@ beforeEach(() => {
   state.effects = [];
   state.completed = deferred<void>();
   state.show.mockReset().mockResolvedValue(null);
+  state.setupMenu = { items: [], setupsByAction: new Map() };
+  state.setupOpenedWith = null;
 });
 
 describe("thread menu permissions", () => {
@@ -192,5 +213,21 @@ describe("thread menu permissions", () => {
     expect(items[0]?.disabled).not.toBe(true);
     expect(state.effects).toEqual(["find"]);
     expect(onFind).toHaveBeenCalledExactlyOnceWith(target);
+  });
+
+  // REVIEW: covers the header menu offering multi-repo setup like the sidebar's.
+  it("offers multi-repo setup after Project settings and opens it in the palette", async () => {
+    const intent = { environmentId: EnvironmentId.make("primary"), setup: { key: "k" } };
+    state.setupMenu = {
+      items: [{ id: "multi-repo-setup:primary", label: "Set up on Primary", icon: "folder" }],
+      setupsByAction: new Map([["multi-repo-setup:primary", intent]]),
+    };
+    state.show.mockResolvedValue("multi-repo-setup:primary");
+    createMenu().openMenu(position);
+    await state.completed.promise;
+    const ids = state.show.mock.calls[0]![0].map((item) => item.id);
+    expect(ids.indexOf("multi-repo-setup:primary")).toBe(ids.indexOf("project-settings") + 1);
+    expect(state.effects).toEqual(["multi-repo-setup"]);
+    expect(state.setupOpenedWith).toEqual({ multiRepoSetup: intent });
   });
 });

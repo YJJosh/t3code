@@ -381,10 +381,11 @@ and supply Git URLs or `owner/repo` names to clone its members. A project folder
 that already holds several repositories also offers **Make multi-repo project** in
 the thread details panel.
 
-To put a multi-repo project on another connected machine, right-click the project
-or one of its threads in the sidebar and choose **Set up on** followed by the
-machine's name, or pick it under **Add project → Set up from another machine**.
-T3 Code clones every member into a folder you choose on that machine.
+To put a multi-repo project on another connected machine, pick it under
+**Add project → Set up from another machine**. On web and desktop you can also
+right-click the project or one of its threads and choose **Set up on** followed by
+the machine's name. T3 Code clones every member into a folder you choose on that
+machine.
 
 A new workspace clones every member onto the same branch, starting from each
 repository's own remote default branch. If any member has no usable remote default,

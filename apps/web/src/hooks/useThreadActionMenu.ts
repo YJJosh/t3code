@@ -33,7 +33,9 @@ import {
   readThreadShell,
   useProjects,
 } from "../state/entities";
-import { usePrimaryEnvironmentId } from "../state/environments";
+import { readEnvironments, usePrimaryEnvironmentId } from "../state/environments";
+import { openCommandPalette } from "../commandPaletteBus";
+import { buildMultiRepoProjectSetupMenu, isMultiRepoSetupMenuId } from "../multiRepoSetupMenu";
 import { readLocalApi } from "../localApi";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import {
@@ -136,7 +138,31 @@ export function useThreadActionMenu(input: {
       };
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
-      const items = buildThreadActionMenuItems({
+      const threadProject = projects.find(
+        (candidate) =>
+          candidate.environmentId === thread.environmentId && candidate.id === thread.projectId,
+      );
+      const threadProjectKey =
+        threadProject === undefined
+          ? null
+          : (logicalProjectKeyByPhysicalKey.get(derivePhysicalProjectKey(threadProject)) ??
+            deriveLogicalProjectKeyFromSettings(threadProject, projectGroupingSettings));
+      const setupMenu = buildMultiRepoProjectSetupMenu({
+        projects,
+        projectRefs:
+          threadProjectKey === null
+            ? []
+            : projects
+                .filter(
+                  (candidate) =>
+                    (logicalProjectKeyByPhysicalKey.get(derivePhysicalProjectKey(candidate)) ??
+                      deriveLogicalProjectKeyFromSettings(candidate, projectGroupingSettings)) ===
+                    threadProjectKey,
+                )
+                .map((candidate) => scopeProjectRef(candidate.environmentId, candidate.id)),
+        environments: readEnvironments(),
+      });
+      const threadItems = buildThreadActionMenuItems({
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
         canFind: onFind !== undefined,
         branch: thread.branch ?? null,
@@ -153,8 +179,20 @@ export function useThreadActionMenu(input: {
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
       });
+      // Setup is a project action, so it sits after Project settings, as in the sidebar.
+      const setupIndex = threadItems.findIndex((item) => item.id === "project-settings") + 1;
+      const items = [
+        ...threadItems.slice(0, setupIndex),
+        ...setupMenu.items,
+        ...threadItems.slice(setupIndex),
+      ];
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
+      if (isMultiRepoSetupMenuId(clicked.value)) {
+        const multiRepoSetup = setupMenu.setupsByAction.get(clicked.value);
+        if (multiRepoSetup) openCommandPalette({ multiRepoSetup });
+        return;
+      }
       const action: ThreadActionMenuId = clicked.value;
       if (
         threadActionRequiresOperate(action) &&

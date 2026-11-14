@@ -228,6 +228,40 @@ describe("applyShellStreamEvent", () => {
     expect(next.projects[1]?.multiRepo).toBeUndefined();
   });
 
+  // REVIEW: covers the reverse transitions (group removed by hand, older server
+  // omitting the fields) and locks in that an unchanged refresh keeps the object.
+  it("resolved multi-repo null clears membership, an omitted one keeps it, and an unchanged refresh keeps the project object", () => {
+    const multiRepo = {
+      members: [{ path: "api", remoteUrl: "https://github.com/example/api.git" }],
+    };
+    const previous = {
+      ...v2ShellSnapshot,
+      snapshotSequence: 5,
+      projects: [{ ...v2Project, repositoryIdentity: null, multiRepo, nestedRepositories: [] }],
+    };
+    const options = { resolvedRepositoryIdentityRoots: [v2Project.workspaceRoot] };
+    const refresh = (project: (typeof v2ShellSnapshot.projects)[number]) =>
+      mergeShellSnapshotProjects(
+        previous,
+        { ...v2ShellSnapshot, snapshotSequence: 4, projects: [project] },
+        options,
+      );
+
+    const cleared = refresh({
+      ...v2Project,
+      repositoryIdentity: null,
+      multiRepo: null,
+      nestedRepositories: ["api"],
+    });
+    expect(cleared.projects[0]?.multiRepo).toBeNull();
+    expect(cleared.projects[0]?.nestedRepositories).toEqual(["api"]);
+
+    const kept = refresh({ ...v2Project, repositoryIdentity: null });
+    expect(kept.projects[0]?.multiRepo).toEqual(multiRepo);
+    expect(kept.projects[0]).toBe(previous.projects[0]);
+    expect(kept).toBe(previous);
+  });
+
   it("does not replace a live identity with one from an unmarked lower-sequence enrichment", () => {
     const liveIdentity = {
       canonicalKey: "github.com/example/live",

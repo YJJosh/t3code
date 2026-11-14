@@ -1,6 +1,8 @@
 import {
   OrchestrationProjectShell,
   OrchestrationV2ThreadShell,
+  ProjectMultiRepo,
+  RepositoryIdentity,
   ThreadPullRequestLink,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
@@ -9,6 +11,13 @@ import * as Schema from "effect/Schema";
 
 const sameThreadShell = Schema.toEquivalence(OrchestrationV2ThreadShell);
 const sameProjectShell = Schema.toEquivalence(OrchestrationProjectShell);
+const sameRepositoryIdentity = Schema.toEquivalence(
+  Schema.UndefinedOr(Schema.NullOr(RepositoryIdentity)),
+);
+const sameMultiRepo = Schema.toEquivalence(Schema.UndefinedOr(Schema.NullOr(ProjectMultiRepo)));
+const sameNestedRepositories = Schema.toEquivalence(
+  Schema.UndefinedOr(Schema.Array(Schema.String)),
+);
 const sameLinks = Schema.toEquivalence(Schema.UndefinedOr(Schema.Array(ThreadPullRequestLink)));
 
 export function sameThreadPullRequests(
@@ -104,9 +113,13 @@ export function mergeShellSnapshotProjects(
             ? { nestedRepositories: candidate.nestedRepositories }
             : {}),
         };
-        // Refreshes re-resolve every root; an unchanged project keeps its object
-        // so every subscriber (each pull request row, the sidebar) skips re-rendering.
-        return sameProjectShell(project, resolved) ? project : resolved;
+        // Refreshes re-resolve every root; an unchanged project keeps its object so
+        // subscribers (each pull request row, the sidebar) skip re-rendering.
+        return sameRepositoryIdentity(project.repositoryIdentity, resolved.repositoryIdentity) &&
+          sameMultiRepo(project.multiRepo, resolved.multiRepo) &&
+          sameNestedRepositories(project.nestedRepositories, resolved.nestedRepositories)
+          ? project
+          : resolved;
       }
       if (project.repositoryIdentity == null && candidate.repositoryIdentity != null) {
         return { ...project, repositoryIdentity: candidate.repositoryIdentity };

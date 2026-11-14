@@ -10,6 +10,7 @@ import {
   resolveDefaultBranchActionDialogCopy,
   resolveLiveThreadBranchUpdate,
   resolveQuickAction,
+  summarizeRepositories,
 } from "./GitActionsControl.logic";
 
 function status(overrides: Partial<VcsStatusResult> = {}): VcsStatusResult {
@@ -319,6 +320,21 @@ describe("resolveChangesTotals", () => {
         }),
       ),
       { insertions: 2, deletions: 0 },
+    );
+  });
+});
+
+// REVIEW: the multi-repo hint and toast are the only place member names are
+// spelled out, and the boundary counts are easy to break by hand.
+describe("summarizeRepositories", () => {
+  it("names every repository up to one past the shown count, then counts the rest", () => {
+    assert.equal(summarizeRepositories([]), "");
+    assert.equal(summarizeRepositories(["api"]), "api");
+    assert.equal(summarizeRepositories(["api", "web"]), "api and web");
+    assert.equal(summarizeRepositories(["api", "web", "docs", "cli"]), "api, web, docs and cli");
+    assert.equal(
+      summarizeRepositories(["api", "web", "docs", "cli", "e2e"]),
+      "api, web, docs and 2 more",
     );
   });
 });
