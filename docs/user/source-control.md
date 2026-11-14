@@ -377,9 +377,15 @@ Settings to use a fixed prefix instead.
 
 Choose **Add project → Multi-repo project** to use several Git repositories as one
 project. Select a folder containing repositories to group them, or an empty folder
-and supply Git URLs or `owner/repo` names to clone its members. Existing projects
-on another connected environment can supply the same member list; choose the
-folder on the destination machine rather than reusing a path from another machine.
+and supply Git URLs or `owner/repo` names to clone its members. A project folder
+that already holds several repositories also offers **Make multi-repo project** in
+the thread details panel.
+
+To put a multi-repo project on another connected machine, pick it under
+**Add project → Set up from another machine**. On web and desktop you can also
+right-click the project or one of its threads and choose **Set up on** followed by
+the machine's name. T3 Code clones every member into a folder you choose on that
+machine.
 
 A new workspace clones every member onto the same branch, starting from each
 repository's own remote default branch. If any member has no usable remote default,

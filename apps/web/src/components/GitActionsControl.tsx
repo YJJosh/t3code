@@ -4,6 +4,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
   SourceControlProviderKind,
+  type ProjectId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import {
@@ -31,6 +32,7 @@ import {
   CloudDownloadIcon,
   CloudUploadIcon,
   FileDiffIcon,
+  FoldersIcon,
   GitBranchPlusIcon,
   GitCommitIcon,
   InfoIcon,
@@ -62,6 +64,7 @@ import {
   resolveThreadBranchMetadataPatch,
   resolveQuickAction,
   resolveThreadBranchUpdate,
+  summarizeRepositories,
 } from "./GitActionsControl.logic";
 import { WizardPopup, WizardHeader, WizardSteps, WizardPanel, WizardFooter } from "./ui/wizard";
 import { StartTruncatedPath } from "./StartTruncatedPath";
@@ -94,6 +97,7 @@ import {
 import { useQuietThreadProjection, useQuietThreadShell } from "~/state/entities";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useEnvironmentQuery } from "~/state/query";
+import { projectEnvironment } from "~/state/projects";
 import { serverEnvironment } from "~/state/server";
 import { sourceControlEnvironment } from "~/state/sourceControl";
 import { threadEnvironment } from "~/state/threads";
@@ -122,6 +126,11 @@ interface GitActionsControlProps {
   showActions?: boolean;
   showChanges?: boolean;
   onOpenChanges?: () => void;
+  /** Repositories inside this plain project folder, which can then become a multi-repo project. */
+  multiRepoCandidate?: {
+    readonly projectId: ProjectId;
+    readonly repositories: ReadonlyArray<string>;
+  };
 }
 
 interface PendingDefaultBranchAction {
@@ -933,6 +942,7 @@ export default function GitActionsControl({
   showActions = true,
   showChanges = true,
   onOpenChanges,
+  multiRepoCandidate,
 }: GitActionsControlProps) {
   const panelAnchorRef = useRef<HTMLDivElement | null>(null);
   const updateThreadMetadata = useAtomCommand(
@@ -1431,6 +1441,46 @@ export default function GitActionsControl({
       );
     })();
   };
+  const makeMultiRepo = useAtomCommand(projectEnvironment.makeMultiRepo, {
+    reportFailure: false,
+  });
+  const canMakeMultiRepo = useAtomValue(
+    projectEnvironment.makeMultiRepo.permissionAtom(activeEnvironmentId),
+  );
+  const [isMakingMultiRepo, setIsMakingMultiRepo] = useState(false);
+  // The server re-sends the project once it groups the repositories, which hides Git here.
+  const makeMultiRepoProject = () => {
+    if (!multiRepoCandidate || activeEnvironmentId === null || isMakingMultiRepo) return;
+    setIsMakingMultiRepo(true);
+    void (async () => {
+      const result = await makeMultiRepo({
+        environmentId: activeEnvironmentId,
+        input: { projectId: multiRepoCandidate.projectId },
+      });
+      setIsMakingMultiRepo(false);
+      if (result._tag === "Success") {
+        toastManager.add(
+          stackedThreadToast({
+            type: "success",
+            title: "Made a multi-repo project",
+            description: `New worktrees now branch ${summarizeRepositories(result.value.members)} together. Edit .workler in the project folder to change the list.`,
+            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+          }),
+        );
+        return;
+      }
+      if (isAtomCommandInterrupted(result)) return;
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not make a multi-repo project",
+          description: error instanceof Error ? error.message : "An error occurred.",
+          ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+        }),
+      );
+    })();
+  };
   const gitItems = (
     <>
       {gitActionMenuItems.map((item) => {
@@ -1501,6 +1551,22 @@ export default function GitActionsControl({
 
   return (
     <>
+      {!showActions ? null : !isRepo && multiRepoCandidate ? (
+        <ThreadDetailsControl
+          size="xs"
+          variant="ghost"
+          part="row"
+          panel
+          title={`Groups ${summarizeRepositories(multiRepoCandidate.repositories)}, so a new worktree branches them all together.`}
+          disabled={!canMakeMultiRepo || isMakingMultiRepo}
+          onClick={makeMultiRepoProject}
+        >
+          <FoldersIcon className="size-3.5" aria-hidden />
+          <span className={cn("ml-0.5", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
+            {isMakingMultiRepo ? "Making multi-repo project..." : "Make multi-repo project"}
+          </span>
+        </ThreadDetailsControl>
+      ) : null}
       {!showActions ? null : !isRepo ? (
         <ThreadDetailsControl
           size="xs"

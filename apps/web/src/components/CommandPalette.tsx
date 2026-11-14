@@ -1,4 +1,9 @@
 import { MultiRepoProjectForm } from "./MultiRepoProjectForm";
+import { canSetUpMultiRepoProjects } from "../multiRepoSetupMenu";
+import {
+  listMultiRepoProjectsToSetUp,
+  type MultiRepoProjectSetup,
+} from "@t3tools/client-runtime/state/project-grouping";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -271,6 +276,11 @@ import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import { threadRecentUse } from "@t3tools/shared/paletteSearch";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
+/** Add project -> Multi-repo project, optionally cloning one another machine has. */
+interface CommandPaletteMultiRepoForm {
+  readonly environmentId: EnvironmentId;
+  readonly setup?: MultiRepoProjectSetup;
+}
 const ADD_PROJECT_ENTRY_GROUP = "add-project";
 const NEW_THREAD_IN_GROUP = "projects";
 
@@ -293,6 +303,7 @@ function openIntentView(intent: CommandPaletteOpenIntent | null): CommandPalette
         groups: [{ value: "themes", label: "Change theme", items: [] }],
       };
     case "search":
+    case "multi-repo-setup":
     case undefined:
       return null;
   }
@@ -518,7 +529,12 @@ function OpenCommandPaletteDialog(props: {
   const [addProjectEnvironmentId, setAddProjectEnvironmentId] = useState<EnvironmentId | null>(
     null,
   );
-  const [multiRepoEnvironment, setMultiRepoEnvironment] = useState<EnvironmentId | null>(null);
+  // Seeded by "Set up on <machine>", which opens the palette straight at the form.
+  const [multiRepoForm, setMultiRepoForm] = useState<CommandPaletteMultiRepoForm | null>(() =>
+    props.openIntent?.kind === "multi-repo-setup"
+      ? { environmentId: props.openIntent.environmentId, setup: props.openIntent.setup }
+      : null,
+  );
   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
   const [newProjectFlow, setNewProjectFlow] = useState<{
@@ -1058,10 +1074,10 @@ function OpenCommandPaletteDialog(props: {
       });
     }
 
-    if (
-      environments.find((environment) => environment.environmentId === environmentId)?.serverConfig
-        ?.environment.capabilities.multiRepoProjects === true
-    ) {
+    const capabilities = environments.find(
+      (environment) => environment.environmentId === environmentId,
+    )?.serverConfig?.environment.capabilities;
+    if (capabilities?.multiRepoProjects === true) {
       sourceItems.push({
         kind: "action",
         value: `action:add-project:${environmentId}:multi-repo`,
@@ -1071,7 +1087,7 @@ function OpenCommandPaletteDialog(props: {
         icon: <FolderGit2Icon className={ITEM_ICON_CLASS} />,
         keepOpen: true,
         run: async () => {
-          setMultiRepoEnvironment(environmentId);
+          setMultiRepoForm({ environmentId });
         },
       });
     }
@@ -1144,7 +1160,36 @@ function OpenCommandPaletteDialog(props: {
       });
     }
 
-    return [{ value: `sources:${environmentId}`, label: "Sources", items: sourceItems }];
+    const groups: Array<CommandPaletteView["groups"][number]> = [
+      { value: `sources:${environmentId}`, label: "Sources", items: sourceItems },
+    ];
+    const setupItems = canSetUpMultiRepoProjects(capabilities)
+      ? listMultiRepoProjectsToSetUp(projects, environmentId).map(
+          (setup): CommandPaletteActionItem => {
+            const sourceLabel = environmentLabelById.get(setup.source.environmentId);
+            return {
+              kind: "action",
+              value: `action:add-project:${environmentId}:multi-repo:${setup.key}`,
+              searchTerms: ["multi-repo", "set up", "another machine", sourceLabel ?? ""],
+              title: setup.source.title,
+              description: `${setup.members.length} repositories, from ${sourceLabel ?? "another machine"}`,
+              icon: <FolderGit2Icon className={ITEM_ICON_CLASS} />,
+              keepOpen: true,
+              run: async () => {
+                setMultiRepoForm({ environmentId, setup });
+              },
+            };
+          },
+        )
+      : [];
+    if (setupItems.length > 0) {
+      groups.push({
+        value: `multi-repo-setups:${environmentId}`,
+        label: "Set up from another machine",
+        items: setupItems,
+      });
+    }
+    return groups;
   };
 
   const startAddProjectSourceSelection = (environmentId: EnvironmentId): void => {
@@ -2895,12 +2940,22 @@ function OpenCommandPaletteDialog(props: {
     <span className="text-muted-foreground text-xs">Searching messages…</span>
   ) : null;
 
-  if (multiRepoEnvironment !== null)
+  if (multiRepoForm !== null)
     return (
       <MultiRepoProjectForm
-        environmentId={multiRepoEnvironment}
+        key={`${multiRepoForm.environmentId}:${multiRepoForm.setup?.key ?? ""}`}
+        environmentId={multiRepoForm.environmentId}
         projects={projects}
-        onBack={() => setMultiRepoEnvironment(null)}
+        {...(multiRepoForm.setup
+          ? {
+              setup: multiRepoForm.setup,
+              initialFolder: getCloneDestinationPath(
+                getAddProjectInitialQueryForEnvironment(multiRepoForm.environmentId),
+                inferProjectTitleFromPath(multiRepoForm.setup.source.workspaceRoot),
+              ),
+            }
+          : {})}
+        onBack={() => setMultiRepoForm(null)}
         onCreated={async (projectRef) => {
           if (!(await waitForProject(projectRef, 15_000))) {
             throw new Error(

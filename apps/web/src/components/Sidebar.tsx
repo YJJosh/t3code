@@ -126,6 +126,7 @@ import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
 import { useProjectPin } from "../hooks/useProjectGroupUpdate";
 import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
+import { buildMultiRepoProjectSetupMenu, isMultiRepoSetupMenuId } from "../multiRepoSetupMenu";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
@@ -137,8 +138,10 @@ import {
   useConnectedEnvironmentIds,
   useEnvironmentMachines,
   usePrimaryEnvironmentId,
+  readEnvironments,
 } from "../state/environments";
 import {
+  readProjects,
   readThreadShell,
   useAllEnvironmentProjectSnapshotsReady,
   useDelegatedUnderParent,
@@ -359,6 +362,15 @@ interface SidebarThreadPartitionInput {
   // on the clock, so the minute tick, the precise snooze-wake tick and the inbox
   // tracker's expiry version are inputs: a new key repartitions.
   readonly clockKey: string;
+}
+
+/** Read when a project menu opens, so the sidebar never re-renders on project or machine changes. */
+function readProjectSetupMenu(group: Pick<SidebarProjectSnapshot, "memberProjectRefs">) {
+  return buildMultiRepoProjectSetupMenu({
+    projects: readProjects(),
+    projectRefs: group.memberProjectRefs,
+    environments: readEnvironments(),
+  });
 }
 
 function scrollSidebarToTop(content: HTMLElement | null) {
@@ -1253,6 +1265,46 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       openProjectSettings(projectGroup);
     },
   );
+  // Right-click and the ContextMenu key only; the gear opens settings directly.
+  const handleProjectContextMenu = useStableCallback(
+    (
+      event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLInputElement>,
+      projectGroup: SidebarProjectSnapshot,
+    ) => {
+      const setupMenu = readProjectSetupMenu(projectGroup);
+      const api = readLocalApi();
+      if (setupMenu.items.length === 0 || !api) {
+        handleProjectSettings(event, projectGroup);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNextScopeChangeRef.current = true;
+      dispatchProjectScopeMenu({ type: "project-settings-opened" });
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const position =
+        "clientX" in event
+          ? { x: event.clientX, y: event.clientY }
+          : { x: bounds.left, y: bounds.bottom };
+      void (async () => {
+        const clicked = await settlePromise(() =>
+          api.contextMenu.show(
+            [
+              { id: "project-settings", label: "Project settings", icon: "settings" },
+              ...setupMenu.items,
+            ],
+            position,
+          ),
+        );
+        if (clicked._tag === "Failure") return;
+        const multiRepoSetup = isMultiRepoSetupMenuId(clicked.value)
+          ? setupMenu.setupsByAction.get(clicked.value)
+          : undefined;
+        if (multiRepoSetup) openCommandPalette({ multiRepoSetup });
+        else if (clicked.value === "project-settings") openProjectSettings(projectGroup);
+      })();
+    },
+  );
   const startThreadInProjectFolder = useStableCallback((group: SidebarProjectSnapshot) => {
     if (isMobile) setOpenMobile(false);
     void handleNewThread(scopeProjectRef(group.environmentId, group.id));
@@ -1261,6 +1313,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     (group: SidebarProjectSnapshot, position: { x: number; y: number }) => {
       const api = readLocalApi();
       if (!api) return;
+      const setupMenu = readProjectSetupMenu(group);
       void (async () => {
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
@@ -1275,11 +1328,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                   ]
                 : []),
               { id: "project-settings", label: "Project settings", icon: "settings" },
+              ...setupMenu.items,
             ],
             position,
           ),
         );
         if (clicked._tag === "Failure") return;
+        if (isMultiRepoSetupMenuId(clicked.value)) {
+          const multiRepoSetup = setupMenu.setupsByAction.get(clicked.value);
+          if (multiRepoSetup) openCommandPalette({ multiRepoSetup });
+          return;
+        }
         switch (clicked.value) {
           case "new-thread":
             startThreadInProjectFolder(group);
@@ -2627,46 +2686,54 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        const setupMenu = readProjectSetupMenu(threadProjectGroup ?? { memberProjectRefs: [] });
+        const threadMenuItems = buildThreadActionMenuItems({
+          canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
+          branch: thread.branch ?? null,
+          // An archived project is not a filter choice.
+          projectFilter:
+            threadProjectGroup && !threadProjectGroup.archived
+              ? {
+                  label: threadProjectGroup.displayName,
+                  isActive: projectScopeKeys.includes(threadProjectGroup.projectKey),
+                }
+              : null,
+          isPinned,
+          isSettled,
+          autoSettleEnabled: thread.autoSettleDisabledAt == null,
+          isSnoozed,
+          canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
+          isRegeneratingTitle,
+          isRunning: !threadRuntimeCanArchive(thread.runtime),
+          canShareWithGuest: appAtomRegistry.get(canShareWithGuestAtom(threadRef.environmentId)),
+          canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+          supports: {
+            settlement: configLoaded,
+            autoSettleOptOut: supportsAutoSettleOptOut,
+            snooze: configLoaded,
+            pinning: configLoaded,
+            titleRegeneration: configLoaded,
+          },
+          snoozePresets,
+        });
+        // Setup is a project action, so it sits after Project settings, above Archive and Delete.
+        const setupIndex = threadMenuItems.findIndex((item) => item.id === "project-settings") + 1;
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
-            buildThreadActionMenuItems({
-              canOperate: readEnvironmentScope(
-                threadRef.environmentId,
-                AuthOrchestrationOperateScope,
-              ),
-              branch: thread.branch ?? null,
-              // An archived project is not a filter choice.
-              projectFilter:
-                threadProjectGroup && !threadProjectGroup.archived
-                  ? {
-                      label: threadProjectGroup.displayName,
-                      isActive: projectScopeKeys.includes(threadProjectGroup.projectKey),
-                    }
-                  : null,
-              isPinned,
-              isSettled,
-              autoSettleEnabled: thread.autoSettleDisabledAt == null,
-              isSnoozed,
-              canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
-              isRegeneratingTitle,
-              isRunning: !threadRuntimeCanArchive(thread.runtime),
-              canShareWithGuest: appAtomRegistry.get(
-                canShareWithGuestAtom(threadRef.environmentId),
-              ),
-              canTurnIntoProject: canTurnThreadIntoProject(threadRef),
-              supports: {
-                settlement: configLoaded,
-                autoSettleOptOut: supportsAutoSettleOptOut,
-                snooze: configLoaded,
-                pinning: configLoaded,
-                titleRegeneration: configLoaded,
-              },
-              snoozePresets,
-            }),
+            [
+              ...threadMenuItems.slice(0, setupIndex),
+              ...setupMenu.items,
+              ...threadMenuItems.slice(setupIndex),
+            ],
             position,
           ),
         );
         if (clicked._tag === "Failure" || clicked.value === null) return;
+        if (isMultiRepoSetupMenuId(clicked.value)) {
+          const multiRepoSetup = setupMenu.setupsByAction.get(clicked.value);
+          if (multiRepoSetup) openCommandPalette({ multiRepoSetup });
+          return;
+        }
         if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
         if (clicked.value?.startsWith("snooze:")) {
           const preset =
@@ -3090,7 +3157,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         ) {
                           return;
                         }
-                        if (project) handleProjectSettings(event, project);
+                        if (project) handleProjectContextMenu(event, project);
                       }}
                       onChange={(event) =>
                         dispatchProjectScopeMenu({
@@ -3115,7 +3182,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             // The icon badge marks selection; Base UI's single value would shade one row.
                             data-selected={undefined}
                             onContextMenu={(event) => {
-                              if (project) handleProjectSettings(event, project);
+                              if (project) handleProjectContextMenu(event, project);
                             }}
                           >
                             <ProjectScopeRowIcon isSelected={isSelected}>

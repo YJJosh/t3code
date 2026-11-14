@@ -10,7 +10,10 @@ import {
   type ThreadSearchSubject,
 } from "@t3tools/shared/paletteSearch";
 import { threadSearchSubject } from "@t3tools/client-runtime/state/thread-search";
-import type { CommandPaletteLinkedThreads } from "../commandPaletteBus";
+import type {
+  CommandPaletteLinkedThreads,
+  CommandPaletteMultiRepoSetup,
+} from "../commandPaletteBus";
 import {
   addProjectRemoteSourceLabel,
   addProjectRemoteSourcePathHint,
@@ -74,6 +77,7 @@ export function browseInputEndPaddingClass(input: {
 export type SearchOverlayMode = "command" | "files" | "content";
 
 export type CommandPaletteOpenIntent =
+  | ({ readonly kind: "multi-repo-setup" } & CommandPaletteMultiRepoSetup)
   | { readonly kind: "add-project" | "new-thread-in" | "change-theme" }
   | {
       readonly kind: "search";
@@ -100,6 +104,7 @@ export type CommandPaletteUiAction =
       readonly query: string;
       readonly linkedThreads?: CommandPaletteLinkedThreads;
     }
+  | ({ readonly _tag: "OpenMultiRepoSetup" } & CommandPaletteMultiRepoSetup)
   | { readonly _tag: "OpenAddProject" }
   | { readonly _tag: "OpenNewThreadIn" }
   | { readonly _tag: "OpenChangeTheme" }
@@ -153,6 +158,12 @@ export function reduceCommandPaletteUiState(
         kind: "search",
         query: action.query,
         ...(action.linkedThreads ? { linkedThreads: action.linkedThreads } : {}),
+      });
+    case "OpenMultiRepoSetup":
+      return openWithIntent({
+        kind: "multi-repo-setup",
+        environmentId: action.environmentId,
+        setup: action.setup,
       });
     case "OpenAddProject":
       return openWithIntent({ kind: "add-project" });

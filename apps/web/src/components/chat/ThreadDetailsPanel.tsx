@@ -62,6 +62,9 @@ interface ThreadDetailsPanelProps extends Pick<
   openInShortcutEnabled: boolean;
   gitCwd: string | null;
   isGitRepo: boolean;
+  /** A multi-repo project has no repository of its own, so it shows no Git actions. */
+  isMultiRepoProject: boolean;
+  multiRepoCandidate?: ComponentProps<typeof GitActionsControl>["multiRepoCandidate"];
   envLocked: boolean;
   availableEnvironments: readonly EnvironmentOption[];
   autoEnvironmentLabel?: string | undefined;
@@ -156,6 +159,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
           branch: props.gitCwd !== null && props.isGitRepo && visible.branch,
           git:
             props.gitCwd !== null &&
+            !props.isMultiRepoProject &&
             props.activeProjectName !== undefined &&
             (visible.gitActions || (visible.changes && props.isGitRepo)),
         };
@@ -232,6 +236,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                         activeThreadRef={activeThreadRef}
                         {...(props.draftId ? { draftId: props.draftId } : {})}
                         {...(props.onOpenChanges ? { onOpenChanges: props.onOpenChanges } : {})}
+                        {...(props.multiRepoCandidate
+                          ? { multiRepoCandidate: props.multiRepoCandidate }
+                          : {})}
                       />
                     ) : null}
                   </div>

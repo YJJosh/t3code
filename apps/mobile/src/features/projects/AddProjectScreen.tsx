@@ -1,5 +1,9 @@
 import { parseMultiRepoCloneInput } from "@t3tools/client-runtime/operations/projects";
-import { listMultiRepoProjectsToSetUp } from "@t3tools/client-runtime/state/project-grouping";
+import {
+  deriveMultiRepoKey,
+  listMultiRepoProjectsToSetUp,
+  type MultiRepoProjectSetup,
+} from "@t3tools/client-runtime/state/project-grouping";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import * as Dialog from "../../components/ui/Dialog";
@@ -121,6 +125,8 @@ interface EnvironmentOption {
   readonly connectionErrorTraceId: string | null;
   readonly ghqCloneLayout: boolean;
   readonly multiRepoProjects: boolean;
+  /** Can clone every member of another machine's multi-repo project in one tracked clone. */
+  readonly multiRepoSetup: boolean;
 }
 
 const environmentOptionOrder = Order.mapInput(
@@ -417,6 +423,9 @@ function useEnvironmentOptions(
         connectionErrorTraceId: runtime?.connectionErrorTraceId ?? null,
         ghqCloneLayout: config?.settings.ghqCloneLayout === true,
         multiRepoProjects: config?.environment.capabilities.multiRepoProjects === true,
+        multiRepoSetup:
+          config?.environment.capabilities.multiRepoProjects === true &&
+          config.environment.capabilities.projectCloneTracking === true,
       };
     });
     return Arr.sort(
@@ -553,6 +562,10 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
         }),
   );
   const readiness = buildAddProjectRemoteSourceReadiness(discoveryState.data);
+  const projects = useProjects();
+  const multiRepoSetups = selectedEnvironment?.multiRepoSetup
+    ? listMultiRepoProjectsToSetUp(projects, selectedEnvironment.environmentId)
+    : [];
 
   return (
     <AddProjectShell title="Add project">
@@ -687,6 +700,43 @@ export function AddProjectSourceScreen(props: { readonly environmentId?: string 
               ),
             )}
           </ListSection>
+          {multiRepoSetups.length > 0 ? (
+            <>
+              <SectionTitle>Set up from another machine</SectionTitle>
+              <ListSection>
+                {multiRepoSetups.map((setup, index) => (
+                  <ListRow
+                    key={setup.key}
+                    title={setup.source.title}
+                    subtitle={`${setup.members.length} repositories, from ${
+                      environmentOptions.find(
+                        (environment) => environment.environmentId === setup.source.environmentId,
+                      )?.label ?? "another machine"
+                    }`}
+                    icon={
+                      <SymbolView
+                        name="folder"
+                        size={Platform.OS === "android" ? 24 : 17}
+                        tintColorClassName="accent-icon"
+                        type="monochrome"
+                      />
+                    }
+                    isFirst={index === 0}
+                    disabled={!canCloneProject}
+                    onPress={() =>
+                      navigation.dispatch(
+                        StackActions.push("AddProjectMultiRepo", {
+                          environmentId: selectedEnvironment.environmentId,
+                          sourceEnvironmentId: setup.source.environmentId,
+                          sourceProjectId: setup.source.id,
+                        }),
+                      )
+                    }
+                  />
+                ))}
+              </ListSection>
+            </>
+          ) : null}
           {discoveryState.isPending ? (
             <AppActivityIndicator colorClassName="accent-icon-muted" />
           ) : null}
@@ -1536,7 +1586,12 @@ export function AddProjectDestinationScreen(props: {
   );
 }
 
-export function AddProjectMultiRepoScreen(props: { readonly environmentId?: string | string[] }) {
+export function AddProjectMultiRepoScreen(props: {
+  readonly environmentId?: string | string[];
+  /** Another machine's multi-repo project to clone, from "Set up from another machine". */
+  readonly sourceEnvironmentId?: string | string[];
+  readonly sourceProjectId?: string | string[];
+}) {
   const environment = useEnvironmentFromParam(props.environmentId);
   const canWriteSourceControl = useEnvironmentScope(
     environment?.environmentId ?? null,
@@ -1562,18 +1617,34 @@ export function AddProjectMultiRepoScreen(props: { readonly environmentId?: stri
   const clone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
     reportFailure: false,
   });
-  const { pathInput, setPathInput, navigateToBrowsePath, isBrowseNavigating } =
-    useBrowsePathInput(environment);
-  const [repositories, setRepositories] = useState("");
-  const [members, setMembers] = useState<ReadonlyArray<{ path: string; remoteUrl: string }> | null>(
-    null,
+  const setups = environment
+    ? listMultiRepoProjectsToSetUp(projects, environment.environmentId)
+    : [];
+  // The route's project until the user picks or types; derived, so a cold link fills in once
+  // projects load. Cloning another machine's project keeps its member folders and title.
+  const sourceKey = deriveMultiRepoKey(
+    projects.find(
+      (project) =>
+        project.environmentId === stringParam(props.sourceEnvironmentId) &&
+        project.id === stringParam(props.sourceProjectId),
+    )?.multiRepo,
+  );
+  const [choice, setChoice] = useState<{
+    readonly setup: MultiRepoProjectSetup | null;
+    readonly repositories: string;
+  } | null>(null);
+  const sourceSetup = setups.find((setup) => setup.key === sourceKey) ?? null;
+  const selected = choice ? choice.setup : sourceSetup;
+  const repositories = choice ? choice.repositories : remoteList(selected);
+  const { pathInput, setPathInput, navigateToBrowsePath, isBrowseNavigating } = useBrowsePathInput(
+    environment,
+    "",
+    // The route's project names the folder, even after the repository list is edited.
+    sourceSetup ? inferProjectTitleFromPath(sourceSetup.source.workspaceRoot) : "",
   );
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
   const [error, setError] = useState<string | null>(null);
-  const setups = environment
-    ? listMultiRepoProjectsToSetUp(projects, environment.environmentId)
-    : [];
   const submit = () => {
     if (!environment || !canAddProject || submitting.current || isBrowseNavigating) return;
     submitting.current = true;
@@ -1590,10 +1661,10 @@ export function AddProjectMultiRepoScreen(props: { readonly environmentId?: stri
       if (folder.kind === "unavailable") throw new Error(folder.reason ?? "Choose another folder.");
       if (folder.kind === "empty" || folder.kind === "missing") {
         const parsed = parseMultiRepoCloneInput(repositories);
-        const selected = members ?? parsed.members;
-        if (selected.length === 0 || (members === null && parsed.invalid.length > 0))
+        const members = selected?.members ?? parsed.members;
+        if (members.length === 0 || (selected === null && parsed.invalid.length > 0))
           throw new Error("Enter Git URLs or owner/repo names to clone.");
-        const title = inferProjectTitleFromPath(folder.path);
+        const title = selected?.source.title ?? inferProjectTitleFromPath(folder.path);
         const result = await clone({
           environmentId: environment.environmentId,
           input: {
@@ -1601,7 +1672,7 @@ export function AddProjectMultiRepoScreen(props: { readonly environmentId?: stri
             title,
             createdAt: new Date().toISOString(),
             destinationPath: folder.path,
-            members: selected,
+            members,
           },
         });
         if (AsyncResult.isFailure(result)) throw Cause.squash(result.cause);
@@ -1658,8 +1729,7 @@ export function AddProjectMultiRepoScreen(props: { readonly environmentId?: stri
             placeholder="Git URLs or owner/repo names"
             value={repositories}
             onChangeText={(value) => {
-              setRepositories(value);
-              setMembers(null);
+              setChoice({ setup: null, repositories: value });
             }}
             multiline
             autoCapitalize="none"
@@ -1670,8 +1740,7 @@ export function AddProjectMultiRepoScreen(props: { readonly environmentId?: stri
               key={setup.key}
               title={`Use ${setup.source.title}`}
               onPress={() => {
-                setMembers(setup.members);
-                setRepositories(setup.members.map((member) => member.remoteUrl).join("\n"));
+                setChoice({ setup, repositories: remoteList(setup) });
               }}
             />
           ))}
@@ -1693,4 +1762,8 @@ export function AddProjectMultiRepoScreen(props: { readonly environmentId?: stri
       )}
     </AddProjectShell>
   );
+}
+
+function remoteList(setup: MultiRepoProjectSetup | null): string {
+  return setup?.members.map((member) => member.remoteUrl).join("\n") ?? "";
 }

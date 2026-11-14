@@ -3865,6 +3865,15 @@ export default function ChatView(props: ChatViewProps) {
                   }
                   gitCwd={gitCwd}
                   isGitRepo={isGitRepo}
+                  isMultiRepoProject={isMultiRepoProject}
+                  {...(activeProject?.nestedRepositories?.length && !activeThread.worktreePath
+                    ? {
+                        multiRepoCandidate: {
+                          projectId: activeProject.id,
+                          repositories: activeProject.nestedRepositories,
+                        },
+                      }
+                    : {})}
                   envLocked={envLocked}
                   availableEnvironments={logicalProjectEnvironments}
                   autoEnvironmentLabel={autoEnvironmentLabel}

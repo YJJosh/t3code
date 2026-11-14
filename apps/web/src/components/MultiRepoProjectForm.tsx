@@ -6,7 +6,10 @@ import {
 import { useEnvironmentScope } from "../state/session";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import { parseMultiRepoCloneInput } from "@t3tools/client-runtime/operations/projects";
-import { listMultiRepoProjectsToSetUp } from "@t3tools/client-runtime/state/project-grouping";
+import {
+  listMultiRepoProjectsToSetUp,
+  type MultiRepoProjectSetup,
+} from "@t3tools/client-runtime/state/project-grouping";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { inferProjectTitleFromPath } from "@t3tools/client-runtime/state/projects";
@@ -23,11 +26,14 @@ import { Textarea } from "./ui/textarea";
 export function MultiRepoProjectForm(props: {
   environmentId: EnvironmentId;
   projects: ReadonlyArray<EnvironmentProject>;
+  /** Starts on cloning this project from another machine into `initialFolder`. */
+  setup?: MultiRepoProjectSetup;
+  initialFolder?: string;
   onBack: () => void;
   onCreated: (project: ScopedProjectRef) => Promise<void>;
 }) {
-  const [folder, setFolder] = useState("");
-  const [repositories, setRepositories] = useState("");
+  const [folder, setFolder] = useState(props.initialFolder ?? "");
+  const [repositories, setRepositories] = useState(() => remoteList(props.setup));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
@@ -50,9 +56,8 @@ export function MultiRepoProjectForm(props: {
     projectEnvironment.inspectMultiRepoFolder.permissionAtom(props.environmentId),
   );
   const setups = listMultiRepoProjectsToSetUp(props.projects, props.environmentId);
-  const [members, setMembers] = useState<ReadonlyArray<{ path: string; remoteUrl: string }> | null>(
-    null,
-  );
+  // Cloning another machine's project keeps its member folders and title.
+  const [selected, setSelected] = useState<MultiRepoProjectSetup | null>(props.setup ?? null);
 
   const submit = () => {
     if (submitting.current || !folder.trim()) return;
@@ -74,18 +79,18 @@ export function MultiRepoProjectForm(props: {
         )?.id ?? newProjectId();
       if (target.kind === "empty" || target.kind === "missing") {
         const parsed = parseMultiRepoCloneInput(repositories);
-        const selected = members ?? parsed.members;
-        if (selected.length === 0 || (members === null && parsed.invalid.length > 0)) {
+        const members = selected?.members ?? parsed.members;
+        if (members.length === 0 || (selected === null && parsed.invalid.length > 0)) {
           throw new Error("Enter Git URLs or owner/repo names for the repositories to clone.");
         }
         const result = await clone({
           environmentId: props.environmentId,
           input: {
             projectId,
-            title: inferProjectTitleFromPath(target.path),
+            title: selected?.source.title ?? inferProjectTitleFromPath(target.path),
             destinationPath: target.path,
             createdAt: new Date().toISOString(),
-            members: selected,
+            members,
           },
         });
         if (result._tag === "Failure") throw squashAtomCommandFailure(result);
@@ -147,7 +152,7 @@ export function MultiRepoProjectForm(props: {
         value={repositories}
         onChange={(event) => {
           setRepositories(event.target.value);
-          setMembers(null);
+          setSelected(null);
         }}
         disabled={busy}
       />
@@ -156,12 +161,13 @@ export function MultiRepoProjectForm(props: {
           {setups.map((setup) => (
             <Button
               key={setup.key}
-              variant="outline"
+              variant={selected?.key === setup.key ? "secondary" : "outline"}
               size="sm"
               disabled={busy}
+              aria-pressed={selected?.key === setup.key}
               onClick={() => {
-                setMembers(setup.members);
-                setRepositories(setup.members.map((member) => member.remoteUrl).join("\n"));
+                setSelected(setup);
+                setRepositories(remoteList(setup));
               }}
             >
               Use {setup.source.title}
@@ -189,4 +195,8 @@ export function MultiRepoProjectForm(props: {
       </div>
     </div>
   );
+}
+
+function remoteList(setup: MultiRepoProjectSetup | null | undefined): string {
+  return setup?.members.map((member) => member.remoteUrl).join("\n") ?? "";
 }

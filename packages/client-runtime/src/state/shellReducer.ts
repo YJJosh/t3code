@@ -1,6 +1,7 @@
 import {
   OrchestrationProjectShell,
   OrchestrationV2ThreadShell,
+  ProjectMultiRepo,
   RepositoryIdentity,
   ThreadPullRequestLink,
   type OrchestrationV2ShellSnapshot,
@@ -10,10 +11,14 @@ import * as Schema from "effect/Schema";
 
 const sameThreadShell = Schema.toEquivalence(OrchestrationV2ThreadShell);
 const sameProjectShell = Schema.toEquivalence(OrchestrationProjectShell);
-const sameLinks = Schema.toEquivalence(Schema.UndefinedOr(Schema.Array(ThreadPullRequestLink)));
 const sameRepositoryIdentity = Schema.toEquivalence(
   Schema.UndefinedOr(Schema.NullOr(RepositoryIdentity)),
 );
+const sameMultiRepo = Schema.toEquivalence(Schema.UndefinedOr(Schema.NullOr(ProjectMultiRepo)));
+const sameNestedRepositories = Schema.toEquivalence(
+  Schema.UndefinedOr(Schema.Array(Schema.String)),
+);
+const sameLinks = Schema.toEquivalence(Schema.UndefinedOr(Schema.Array(ThreadPullRequestLink)));
 
 export function sameThreadPullRequests(
   left: OrchestrationV2ThreadShell["pullRequests"],
@@ -99,12 +104,22 @@ export function mergeShellSnapshotProjects(
         return project;
       }
       if (resolvedRootSet?.has(project.workspaceRoot) === true) {
-        // Refreshes re-resolve every root; an unchanged identity keeps the project's identity
-        // so every subscriber (each pull request row, the sidebar) skips re-rendering.
-        if (sameRepositoryIdentity(project.repositoryIdentity, candidate.repositoryIdentity)) {
-          return project;
-        }
-        return { ...project, repositoryIdentity: candidate.repositoryIdentity };
+        // Multi-repo membership comes from the same lookup as the identity.
+        const resolved = {
+          ...project,
+          repositoryIdentity: candidate.repositoryIdentity,
+          ...(candidate.multiRepo !== undefined ? { multiRepo: candidate.multiRepo } : {}),
+          ...(candidate.nestedRepositories !== undefined
+            ? { nestedRepositories: candidate.nestedRepositories }
+            : {}),
+        };
+        // Refreshes re-resolve every root; an unchanged project keeps its object so
+        // subscribers (each pull request row, the sidebar) skip re-rendering.
+        return sameRepositoryIdentity(project.repositoryIdentity, resolved.repositoryIdentity) &&
+          sameMultiRepo(project.multiRepo, resolved.multiRepo) &&
+          sameNestedRepositories(project.nestedRepositories, resolved.nestedRepositories)
+          ? project
+          : resolved;
       }
       if (project.repositoryIdentity == null && candidate.repositoryIdentity != null) {
         return { ...project, repositoryIdentity: candidate.repositoryIdentity };
