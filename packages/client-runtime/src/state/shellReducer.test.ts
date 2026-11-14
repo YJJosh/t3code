@@ -191,7 +191,10 @@ describe("applyShellStreamEvent", () => {
     expect(next.threads).toEqual([]);
   });
 
-  it("resolved null clears identity only for the marked root", () => {
+  it("resolved null clears identity and takes multi-repo membership only for the marked root", () => {
+    const multiRepo = {
+      members: [{ path: "api", remoteUrl: "https://github.com/example/api.git" }],
+    };
     const otherProject = {
       ...v2Project,
       id: ProjectId.make("project-other"),
@@ -209,8 +212,8 @@ describe("applyShellStreamEvent", () => {
         ...v2ShellSnapshot,
         snapshotSequence: 4,
         projects: [
-          { ...v2Project, repositoryIdentity: null },
-          { ...otherProject, repositoryIdentity: null },
+          { ...v2Project, repositoryIdentity: null, multiRepo, nestedRepositories: [] },
+          { ...otherProject, repositoryIdentity: null, multiRepo },
         ],
       },
       { resolvedRepositoryIdentityRoots: [v2Project.workspaceRoot] },
@@ -219,7 +222,10 @@ describe("applyShellStreamEvent", () => {
     expect(next.snapshotSequence).toBe(5);
     expect(next.projects).toHaveLength(2);
     expect(next.projects[0]?.repositoryIdentity).toBeNull();
+    expect(next.projects[0]?.multiRepo).toEqual(multiRepo);
+    expect(next.projects[0]?.nestedRepositories).toEqual([]);
     expect(next.projects[1]?.repositoryIdentity).toEqual(otherIdentity);
+    expect(next.projects[1]?.multiRepo).toBeUndefined();
   });
 
   it("does not replace a live identity with one from an unmarked lower-sequence enrichment", () => {

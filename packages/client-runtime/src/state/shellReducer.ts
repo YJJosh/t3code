@@ -1,7 +1,6 @@
 import {
   OrchestrationProjectShell,
   OrchestrationV2ThreadShell,
-  RepositoryIdentity,
   ThreadPullRequestLink,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
@@ -11,9 +10,6 @@ import * as Schema from "effect/Schema";
 const sameThreadShell = Schema.toEquivalence(OrchestrationV2ThreadShell);
 const sameProjectShell = Schema.toEquivalence(OrchestrationProjectShell);
 const sameLinks = Schema.toEquivalence(Schema.UndefinedOr(Schema.Array(ThreadPullRequestLink)));
-const sameRepositoryIdentity = Schema.toEquivalence(
-  Schema.UndefinedOr(Schema.NullOr(RepositoryIdentity)),
-);
 
 export function sameThreadPullRequests(
   left: OrchestrationV2ThreadShell["pullRequests"],
@@ -99,12 +95,18 @@ export function mergeShellSnapshotProjects(
         return project;
       }
       if (resolvedRootSet?.has(project.workspaceRoot) === true) {
-        // Refreshes re-resolve every root; an unchanged identity keeps the project's identity
+        // Multi-repo membership comes from the same lookup as the identity.
+        const resolved = {
+          ...project,
+          repositoryIdentity: candidate.repositoryIdentity,
+          ...(candidate.multiRepo !== undefined ? { multiRepo: candidate.multiRepo } : {}),
+          ...(candidate.nestedRepositories !== undefined
+            ? { nestedRepositories: candidate.nestedRepositories }
+            : {}),
+        };
+        // Refreshes re-resolve every root; an unchanged project keeps its object
         // so every subscriber (each pull request row, the sidebar) skips re-rendering.
-        if (sameRepositoryIdentity(project.repositoryIdentity, candidate.repositoryIdentity)) {
-          return project;
-        }
-        return { ...project, repositoryIdentity: candidate.repositoryIdentity };
+        return sameProjectShell(project, resolved) ? project : resolved;
       }
       if (project.repositoryIdentity == null && candidate.repositoryIdentity != null) {
         return { ...project, repositoryIdentity: candidate.repositoryIdentity };
