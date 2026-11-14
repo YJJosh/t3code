@@ -1262,12 +1262,25 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       event.stopPropagation();
       suppressNextScopeChangeRef.current = true;
       dispatchProjectScopeMenu({ type: "project-settings-opened" });
+      openProjectSettings(projectGroup);
+    },
+  );
+  // Right-click and the ContextMenu key only; the gear opens settings directly.
+  const handleProjectContextMenu = useStableCallback(
+    (
+      event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLInputElement>,
+      projectGroup: SidebarProjectSnapshot,
+    ) => {
       const setupMenu = readProjectSetupMenu(projectGroup);
       const api = readLocalApi();
       if (setupMenu.items.length === 0 || !api) {
-        openProjectSettings(projectGroup);
+        handleProjectSettings(event, projectGroup);
         return;
       }
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNextScopeChangeRef.current = true;
+      dispatchProjectScopeMenu({ type: "project-settings-opened" });
       const bounds = event.currentTarget.getBoundingClientRect();
       const position =
         "clientX" in event
@@ -3144,7 +3157,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         ) {
                           return;
                         }
-                        if (project) handleProjectSettings(event, project);
+                        if (project) handleProjectContextMenu(event, project);
                       }}
                       onChange={(event) =>
                         dispatchProjectScopeMenu({
@@ -3169,7 +3182,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             // The icon badge marks selection; Base UI's single value would shade one row.
                             data-selected={undefined}
                             onContextMenu={(event) => {
-                              if (project) handleProjectSettings(event, project);
+                              if (project) handleProjectContextMenu(event, project);
                             }}
                           >
                             <ProjectScopeRowIcon isSelected={isSelected}>
