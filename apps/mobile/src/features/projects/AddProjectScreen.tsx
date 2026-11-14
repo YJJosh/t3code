@@ -1633,14 +1633,14 @@ export function AddProjectMultiRepoScreen(props: {
     readonly setup: MultiRepoProjectSetup | null;
     readonly repositories: string;
   } | null>(null);
-  const selected = choice
-    ? choice.setup
-    : (setups.find((setup) => setup.key === sourceKey) ?? null);
+  const sourceSetup = setups.find((setup) => setup.key === sourceKey) ?? null;
+  const selected = choice ? choice.setup : sourceSetup;
   const repositories = choice ? choice.repositories : remoteList(selected);
   const { pathInput, setPathInput, navigateToBrowsePath, isBrowseNavigating } = useBrowsePathInput(
     environment,
     "",
-    selected ? inferProjectTitleFromPath(selected.source.workspaceRoot) : "",
+    // The route's project names the folder, even after the repository list is edited.
+    sourceSetup ? inferProjectTitleFromPath(sourceSetup.source.workspaceRoot) : "",
   );
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
