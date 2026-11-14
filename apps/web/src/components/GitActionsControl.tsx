@@ -1444,6 +1444,9 @@ export default function GitActionsControl({
   const makeMultiRepo = useAtomCommand(projectEnvironment.makeMultiRepo, {
     reportFailure: false,
   });
+  const canMakeMultiRepo = useAtomValue(
+    projectEnvironment.makeMultiRepo.permissionAtom(activeEnvironmentId),
+  );
   const [isMakingMultiRepo, setIsMakingMultiRepo] = useState(false);
   // The server re-sends the project once it groups the repositories, which hides Git here.
   const makeMultiRepoProject = () => {
@@ -1555,7 +1558,7 @@ export default function GitActionsControl({
           part="row"
           panel
           title={`Groups ${summarizeRepositories(multiRepoCandidate.repositories)}, so a new worktree branches them all together.`}
-          disabled={!canWriteSourceControl || isMakingMultiRepo}
+          disabled={!canMakeMultiRepo || isMakingMultiRepo}
           onClick={makeMultiRepoProject}
         >
           <FoldersIcon className="size-3.5" aria-hidden />

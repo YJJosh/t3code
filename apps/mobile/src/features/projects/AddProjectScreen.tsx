@@ -1620,22 +1620,28 @@ export function AddProjectMultiRepoScreen(props: {
   const setups = environment
     ? listMultiRepoProjectsToSetUp(projects, environment.environmentId)
     : [];
-  // Cloning another machine's project keeps its member folders and title.
-  const [selected, setSelected] = useState<MultiRepoProjectSetup | null>(() => {
-    const source = projects.find(
+  // The route's project until the user picks or types; derived, so a cold link fills in once
+  // projects load. Cloning another machine's project keeps its member folders and title.
+  const sourceKey = deriveMultiRepoKey(
+    projects.find(
       (project) =>
         project.environmentId === stringParam(props.sourceEnvironmentId) &&
         project.id === stringParam(props.sourceProjectId),
-    );
-    const key = deriveMultiRepoKey(source?.multiRepo);
-    return setups.find((setup) => setup.key === key) ?? null;
-  });
+    )?.multiRepo,
+  );
+  const [choice, setChoice] = useState<{
+    readonly setup: MultiRepoProjectSetup | null;
+    readonly repositories: string;
+  } | null>(null);
+  const selected = choice
+    ? choice.setup
+    : (setups.find((setup) => setup.key === sourceKey) ?? null);
+  const repositories = choice ? choice.repositories : remoteList(selected);
   const { pathInput, setPathInput, navigateToBrowsePath, isBrowseNavigating } = useBrowsePathInput(
     environment,
     "",
     selected ? inferProjectTitleFromPath(selected.source.workspaceRoot) : "",
   );
-  const [repositories, setRepositories] = useState(() => remoteList(selected));
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -1723,8 +1729,7 @@ export function AddProjectMultiRepoScreen(props: {
             placeholder="Git URLs or owner/repo names"
             value={repositories}
             onChangeText={(value) => {
-              setRepositories(value);
-              setSelected(null);
+              setChoice({ setup: null, repositories: value });
             }}
             multiline
             autoCapitalize="none"
@@ -1735,8 +1740,7 @@ export function AddProjectMultiRepoScreen(props: {
               key={setup.key}
               title={`Use ${setup.source.title}`}
               onPress={() => {
-                setSelected(setup);
-                setRepositories(remoteList(setup));
+                setChoice({ setup, repositories: remoteList(setup) });
               }}
             />
           ))}
