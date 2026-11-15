@@ -677,13 +677,13 @@ describe("t3_worktree_handoff", () => {
   it.effect.each([
     { startFromOrigin: false, baseRef: undefined, options: { memberBaseCommits: groupHeads } },
     { startFromOrigin: true, baseRef: undefined, options: undefined },
-    { startFromOrigin: false, baseRef: "main", options: undefined },
+    { startFromOrigin: false, baseRef: "main", options: { memberBaseCommits: groupHeads } },
   ])(
-    "starts a group's members at their checked-out commits by default (%o)",
+    "starts a group's members at their checked-out commits, ignoring baseRef (%o)",
     ({ startFromOrigin, baseRef, options }) => {
       const harness = makeHarness({ multiRepo: true, notARepo: true });
       return Effect.gen(function* () {
-        yield* runHandoff(harness, {
+        const result = yield* runHandoff(harness, {
           branch: "feature/group",
           startFromOrigin,
           ...(baseRef === undefined ? {} : { baseRef }),
@@ -692,6 +692,7 @@ describe("t3_worktree_handoff", () => {
           expect.anything(),
           ...(options === undefined ? [] : [options]),
         );
+        expect(result.baseRef).toBe("HEAD");
       });
     },
   );

@@ -214,7 +214,9 @@ const make = Effect.gen(function* () {
       );
     }
 
-    let baseRef = input.baseRef ?? (members !== null ? "HEAD" : undefined);
+    // A group's members share no ref, so `baseRef` is ignored there: each member starts
+    // at its checked-out commit, or with `startFromOrigin` at its remote default branch.
+    let baseRef = members !== null ? "HEAD" : input.baseRef;
     if (baseRef === undefined) {
       if (localStatus.refName === null) {
         return yield* failure(
@@ -231,12 +233,8 @@ const make = Effect.gen(function* () {
     let worktreeBaseRef = baseRef;
     let baseRefName = baseRef;
     let startedFromOrigin = false;
-    // Like a repository's checked-out branch, each member starts at its own checked-out commit.
     const memberBaseCommits =
-      members !== null &&
-      Option.isSome(multiRepo) &&
-      !startFromOrigin &&
-      input.baseRef === undefined
+      members !== null && Option.isSome(multiRepo) && !startFromOrigin
         ? yield* multiRepo.value
             .checkoutMemberCommits({ root: projectCwd, checkout: projectCwd })
             .pipe(asOperationFailed("Unable to read the members' checked-out commits"))
