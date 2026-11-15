@@ -99,6 +99,13 @@ export class MultiRepoWorkspaces extends Context.Service<
       readonly root: string;
       readonly checkout: string;
     }) => Effect.Effect<Record<string, string>, GitCommandError>;
+    /** Deletes `refName` in every member of the group at `cwd` that has it, such as after a workspace is removed. */
+    readonly deleteBranch: (input: {
+      readonly cwd: string;
+      readonly members: ReadonlyArray<string>;
+      readonly refName: string;
+      readonly force?: boolean;
+    }) => Effect.Effect<void, GitCommandError>;
     /** Renames the branch in every member of the workspace at `cwd`; finishes or rolls back even if interrupted. */
     readonly renameBranch: (input: {
       readonly cwd: string;
@@ -588,6 +595,22 @@ export const make = Effect.gen(function* () {
     return Object.fromEntries(commits);
   });
 
+  const deleteBranch: MultiRepoWorkspaces["Service"]["deleteBranch"] = Effect.fn(
+    "MultiRepoWorkspaces.deleteBranch",
+  )(function* (input) {
+    // Removal copies a branch back only where its commits are new, so some members may lack it.
+    for (const member of input.members) {
+      const cwd = path.join(input.cwd, member);
+      if ((yield* git.listLocalBranchNames(cwd)).includes(input.refName)) {
+        yield* git.deleteLocalBranch({
+          cwd,
+          refName: input.refName,
+          ...(input.force === undefined ? {} : { force: input.force }),
+        });
+      }
+    }
+  });
+
   const renameBranch: MultiRepoWorkspaces["Service"]["renameBranch"] = Effect.fn(
     "MultiRepoWorkspaces.renameBranch",
   )(function* (input) {
@@ -659,6 +682,7 @@ export const make = Effect.gen(function* () {
     createWorkspace,
     removeWorkspace,
     checkoutMemberCommits,
+    deleteBranch,
     renameBranch,
   });
 });

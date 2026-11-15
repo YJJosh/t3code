@@ -322,8 +322,16 @@ it.layer(TestLayer)("MultiRepoWorkspaces", (it) => {
       for (const member of ["api", "web"]) {
         // Removing keeps the branch in the project, as a linked worktree would.
         yield* git(path.join(group, member), ["rev-parse", "--verify", "refs/heads/feature/login"]);
-        yield* git(path.join(group, member), ["branch", "-D", "feature/login"]);
       }
+      // Members that lack the branch are skipped, so a failed launch can drop it everywhere.
+      yield* git(path.join(group, "api"), ["branch", "-D", "feature/login"]);
+      yield* workspaces.deleteBranch({
+        cwd: group,
+        members: ["api", "web"],
+        refName: "feature/login",
+        force: true,
+      });
+      assert.notInclude(yield* git(path.join(group, "web"), ["branch"]), "feature/login");
 
       // A branch gone everywhere (its workspace deleted by hand) isn't made up from HEAD.
       const missing = yield* workspaces
