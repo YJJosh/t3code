@@ -912,6 +912,12 @@ it.effect.each([
     expected: { model: "claude-opus-5-5" },
   },
   {
+    name: "a user's thread with no default profile stays unset",
+    createdBy: "user" as const,
+    noDefault: true,
+    expected: { model: "claude-opus-5-5" },
+  },
+  {
     name: "an agent's thread on a provider without profiles takes none",
     createdBy: "agent" as const,
     driver: "cursor",

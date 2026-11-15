@@ -783,23 +783,18 @@ const make = Effect.gen(function* () {
       settings.profilesFolder || path.value.join(config.value.baseDir, "profiles"),
     );
     const id = settings.defaultProfile ?? loaded.catalog.default;
+    // With no default the selection stays unset: a null would pass on to launches as "No profile".
+    if (!id) return current;
     const available = yield* providerRegistry.value.getProviders;
-    const picked = selectProfile(
-      current,
-      id || null,
-      id ? loaded.catalog.profiles[id] : undefined,
-      available,
-    );
-    // With no default a kept model stays unset: a null would pass on to launches as "No profile".
-    const selection = !keepModel
-      ? picked.selection
-      : picked.selection.profileId
+    const picked = selectProfile(current, id, loaded.catalog.profiles[id], available);
+    const selection =
+      keepModel && picked.selection.profileId
         ? { ...current, profileId: picked.selection.profileId }
-        : current;
+        : picked.selection;
     const driver = available.find(
       (provider) => provider.instanceId === selection.instanceId,
     )?.driver;
-    return !id || (driver && supportsProfiles(driver)) ? selection : current;
+    return driver && supportsProfiles(driver) ? selection : current;
   });
 
   const dispatch: ThreadManagementServiceShape["dispatch"] = Effect.fn("ThreadManagement.dispatch")(
