@@ -55,6 +55,8 @@ const clientLaunchHarness = (input: {
   readonly refusedByCeiling?: true;
   /** A thread the agent calls from; omitted, the caller is an MCP client outside T3. */
   readonly caller?: Partial<OrchestrationV2ThreadShell>;
+  /** What the default profile makes of a selection that may take its model. */
+  readonly defaultProfile?: ModelSelection;
 }) => {
   const callerThreadId = ThreadId.make("thread:caller");
   const projectId = ProjectId.make("project:client-target");
@@ -109,6 +111,8 @@ const clientLaunchHarness = (input: {
       capabilities: new Set(["orchestration" as const]),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
+      withDefaultProfile: (selection, { keepModel }) =>
+        Effect.succeed(keepModel ? selection : (input.defaultProfile ?? selection)),
       // A thread exists once a launch started it.
       getThreadShell: (threadId) => {
         if (input.caller !== undefined && threadId === callerThreadId)
@@ -215,9 +219,17 @@ it.effect(
           readonly overrideModel?: ModelSelection;
           readonly hostedAppUrl?: string;
           readonly refusedByCeiling?: true;
+          readonly defaultProfile?: ModelSelection;
         },
       ) {
-        const { targeted, overrideModel, hostedAppUrl, refusedByCeiling, ...input } = params;
+        const {
+          targeted,
+          overrideModel,
+          hostedAppUrl,
+          refusedByCeiling,
+          defaultProfile,
+          ...input
+        } = params;
         const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
         const { projectId, modelSelection, dependencies } = clientLaunchHarness({
           runtimeModeCeiling,
@@ -226,6 +238,7 @@ it.effect(
           ...(overrideModel === undefined ? {} : { overrideModel }),
           ...(hostedAppUrl === undefined ? {} : { hostedAppUrl }),
           ...(refusedByCeiling === undefined ? {} : { refusedByCeiling }),
+          ...(defaultProfile === undefined ? {} : { defaultProfile }),
         });
         const toolkit = yield* ProjectToolkit.pipe(
           Effect.provide(
@@ -289,6 +302,19 @@ it.effect(
         overrideModel,
       });
       expect(fromSettings.launched[0]?.modelSelection).toEqual(overrideModel);
+
+      // With no model chosen, the default profile picks it, as in the composer.
+      const defaultProfile = {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-profile",
+        options: [{ id: "effort", value: "low" }],
+        profileId: "dulli",
+      };
+      const fromProfile = yield* launchWith("full-access", "full-access", {
+        title: "Fix",
+        defaultProfile,
+      });
+      expect(fromProfile.launched[0]?.modelSelection).toEqual(defaultProfile);
 
       // An administrator's ceiling the orchestrator enforces is named, not reported as unavailable.
       const managed = yield* launchWith("full-access", "full-access", {

@@ -2791,6 +2791,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       saved: Ref.Ref<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>,
       task: ScheduledTask = existing,
       modes?: Ref.Ref<ReadonlyArray<ScheduledTaskUpsertInput["threadMode"]>>,
+      selections?: Ref.Ref<ReadonlyArray<ScheduledTaskUpsertInput["modelSelection"]>>,
     ) =>
       OrchestratorMcpService.layer.pipe(
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -2801,6 +2802,12 @@ describe("OrchestratorMcpService provider resolution", () => {
             NodeCrypto.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
               getThreadShell: () => Effect.succeed(null),
+              withDefaultProfile: (selection, { keepModel }) =>
+                Effect.succeed(
+                  keepModel
+                    ? selection
+                    : { ...selection, model: "gpt-profile", profileId: "dulli" },
+                ),
             }),
             ServerSettings.layerTest(),
             Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
@@ -2826,6 +2833,11 @@ describe("OrchestratorMcpService provider resolution", () => {
                       ? Effect.void
                       : Ref.update(modes, (all) => [...all, input.threadMode]),
                   ),
+                  Effect.andThen(
+                    selections === undefined
+                      ? Effect.void
+                      : Ref.update(selections, (all) => [...all, input.modelSelection]),
+                  ),
                   Effect.as({ task }),
                 ),
             }),
@@ -2843,12 +2855,19 @@ describe("OrchestratorMcpService provider resolution", () => {
     it.effect("starts from the project's default branch", () =>
       Effect.gen(function* () {
         const saved = yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]);
+        const selections = yield* Ref.make<
+          ReadonlyArray<ScheduledTaskUpsertInput["modelSelection"]>
+        >([]);
         const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
-          Effect.provide(service(masterRepository, saved)),
+          Effect.provide(service(masterRepository, saved, existing, undefined, selections)),
         );
         yield* mcp.scheduleTask(client, { projectId, prompt: "Check the build", schedule });
         assert.deepEqual(yield* Ref.get(saved), [
           { type: "worktree", baseRef: "origin/master", startFromOrigin: true },
+        ]);
+        // With no model chosen, the default profile picks it, as in the composer.
+        assert.deepEqual(yield* Ref.get(selections), [
+          { ...existing.modelSelection, model: "gpt-profile", profileId: "dulli" },
         ]);
       }),
     );
