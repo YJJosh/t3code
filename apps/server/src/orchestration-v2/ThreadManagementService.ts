@@ -789,11 +789,14 @@ const make = Effect.gen(function* () {
           id ? loaded.catalog.profiles[id] : undefined,
           available,
         );
-        // Agents chose or inherited their model, so they only take the profile, not its model.
+        // Agents chose or inherited their model, so they take only the profile id. With no
+        // default they stay unset: a null here would pass on to their launches as "No profile".
         const selection =
-          command.createdBy === "agent" && picked.selection.profileId !== undefined
-            ? { ...command.modelSelection, profileId: picked.selection.profileId }
-            : picked.selection;
+          command.createdBy === "user"
+            ? picked.selection
+            : picked.selection.profileId
+              ? { ...command.modelSelection, profileId: picked.selection.profileId }
+              : command.modelSelection;
         const driver = available.find(
           (provider) => provider.instanceId === selection.instanceId,
         )?.driver;

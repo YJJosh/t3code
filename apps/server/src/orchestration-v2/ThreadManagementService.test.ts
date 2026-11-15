@@ -906,6 +906,18 @@ it.effect.each([
     expected: { model: "claude-opus-5-5", profileId: null },
   },
   {
+    name: "an agent's thread with no default profile stays unset",
+    createdBy: "agent" as const,
+    noDefault: true,
+    expected: { model: "claude-opus-5-5" },
+  },
+  {
+    name: "an agent's thread on a provider without profiles takes none",
+    createdBy: "agent" as const,
+    driver: "cursor",
+    expected: { model: "claude-opus-5-5" },
+  },
+  {
     name: "a thread delegated from a linked environment takes no default",
     createdBy: "agent" as const,
     delegated: true,
@@ -931,7 +943,7 @@ it.effect.each([
           Effect.succeed({
             catalog: {
               folder: "/profiles",
-              default: "dulli",
+              ...("noDefault" in row ? {} : { default: "dulli" }),
               profiles: {
                 dulli: { prompts: [], skills: [], model: "claude-sonnet-5-5", effort: "low" },
               },
@@ -945,7 +957,11 @@ it.effect.each([
     Layer.provide(
       Layer.mock(ProviderRegistry.ProviderRegistry)({
         getProviders: Effect.succeed([
-          { instanceId, driver: ProviderDriverKind.make("claudeAgent"), models: [] },
+          {
+            instanceId,
+            driver: ProviderDriverKind.make("driver" in row ? row.driver : "claudeAgent"),
+            models: [],
+          },
         ] as unknown as ReadonlyArray<ServerProvider>),
       }),
     ),
