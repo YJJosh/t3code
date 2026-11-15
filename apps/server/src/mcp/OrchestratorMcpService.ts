@@ -105,6 +105,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
+import { copyCloneCommit, isWorklerCloneOf } from "../vcs/WorklerGitWorkspaceDriver.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -1087,20 +1088,30 @@ const make = Effect.gen(function* () {
             failure("invalid_request", "Unable to resolve the parent checkout commit."),
           ),
         );
-      // Launch preparation creates the worktree from the project root, so a
-      // parent checkout in another repository (such as a Git folder inside
-      // Scratch) would hand it a commit it cannot find.
+      // Launch preparation creates the worktree from the project root. Commits
+      // made in a Workler clone of the project are copied there; a checkout of
+      // another repository (such as a Git folder inside Scratch) is refused.
       if (parentThread.worktreePath !== null) {
-        yield* gitDriver
-          .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
-          .pipe(
-            Effect.mapError(() =>
-              failure(
-                "invalid_request",
-                `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
-              ),
-            ),
+        const missing = (cause?: unknown) =>
+          failure(
+            "invalid_request",
+            `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit.${cause === undefined ? "" : ` Copying it failed: ${errorMessage(cause)}`} Use isolation "shared" to work in the parent's checkout.`,
           );
+        const inProject = yield* gitDriver
+          .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
+          .pipe(Effect.isSuccess);
+        if (!inProject) {
+          const repository = { source: project.workspaceRoot, clone: checkout };
+          if (
+            !(yield* isWorklerCloneOf(gitDriver, repository).pipe(
+              Effect.orElseSucceed(() => false),
+            ))
+          )
+            return yield* missing();
+          yield* copyCloneCommit(gitDriver, { ...repository, commit: base.commitSha }).pipe(
+            Effect.mapError(missing),
+          );
+        }
       }
       return { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
     },

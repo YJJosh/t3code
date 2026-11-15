@@ -28,6 +28,7 @@ import * as ServerConfig from "../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import {
+  copyCloneCommit,
   keepWorklerCloneRefs,
   mapWorklerError,
   sanitizeWorklerWorkspaceName,
@@ -548,11 +549,11 @@ export const make = Effect.gen(function* () {
     const commits: Record<string, string> = {};
     // A member the group listed after this workspace was made keeps its default base.
     for (const member of rootMembers.filter((name) => checkoutMembers.includes(name))) {
-      const source = path.join(checkout, member);
+      const clone = path.join(checkout, member);
       const head = yield* git
         .execute({
           operation: "MultiRepoWorkspaces.checkoutMemberCommits.head",
-          cwd: source,
+          cwd: clone,
           args: ["rev-parse", "--verify", "HEAD^{commit}"],
         })
         .pipe(
@@ -566,38 +567,15 @@ export const make = Effect.gen(function* () {
       const commit = head.stdout.trim();
       commits[member] = commit;
       if (checkout === root) continue;
-      const target = path.join(root, member);
-      const present = yield* git.execute({
-        operation: "MultiRepoWorkspaces.checkoutMemberCommits.has",
-        cwd: target,
-        args: ["cat-file", "-e", `${commit}^{commit}`],
-        allowNonZeroExit: true,
-      });
-      if (present.exitCode === 0) continue;
-      yield* git
-        .execute({
-          operation: "MultiRepoWorkspaces.checkoutMemberCommits.copy",
-          cwd: target,
-          // Objects only: no ref, tag or FETCH_HEAD changes in the project's repository.
-          args: [
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            "--no-prune",
-            "--no-recurse-submodules",
-            "--no-write-fetch-head",
-            source,
-            commit,
-          ],
-        })
-        .pipe(
-          Effect.mapError((cause) =>
-            failure(
-              `Could not copy commit ${commit} of multi-repo member '${member}' into ${target}.`,
-              cause,
-            ),
+      const repository = path.join(root, member);
+      yield* copyCloneCommit(git, { source: repository, clone, commit }).pipe(
+        Effect.mapError((cause) =>
+          failure(
+            `Could not copy commit ${commit} of multi-repo member '${member}' into ${repository}.`,
+            cause,
           ),
-        );
+        ),
+      );
     }
     return commits;
   });

@@ -192,6 +192,64 @@ export const keepWorklerCloneRefs = Effect.fn("WorklerGitWorkspaceDriver.keepClo
   if (fastForwardIfAllowed.length > 0) yield* fetchFromClone(fastForwardIfAllowed);
 });
 
+/** Makes `commit` from a clone available in its `source` repository: objects only, no ref changes. */
+export const copyCloneCommit = Effect.fn("WorklerGitWorkspaceDriver.copyCloneCommit")(function* (
+  git: Pick<GitVcsDriver.GitVcsDriver["Service"], "execute">,
+  input: { readonly source: string; readonly clone: string; readonly commit: string },
+) {
+  const operation = "WorklerGitWorkspaceDriver.copyCloneCommit";
+  const present = yield* git.execute({
+    operation,
+    cwd: input.source,
+    args: ["cat-file", "-e", `${input.commit}^{commit}`],
+    allowNonZeroExit: true,
+  });
+  if (present.exitCode === 0) return;
+  yield* git.execute({
+    operation,
+    cwd: input.source,
+    args: [
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      "--no-prune",
+      "--no-recurse-submodules",
+      "--no-write-fetch-head",
+      input.clone,
+      input.commit,
+    ],
+  });
+});
+
+/** Whether `clone` is a Workler clone made from the repository at `source`. */
+export const isWorklerCloneOf = Effect.fn("WorklerGitWorkspaceDriver.isWorklerCloneOf")(function* (
+  git: Pick<GitVcsDriver.GitVcsDriver["Service"], "execute">,
+  input: { readonly source: string; readonly clone: string },
+) {
+  const operation = "WorklerGitWorkspaceDriver.isWorklerCloneOf";
+  // Workler records the source's real path, as `--show-toplevel` prints it.
+  const [recorded, top] = yield* Effect.all([
+    git.execute({
+      operation,
+      cwd: input.clone,
+      args: ["config", "--local", "--get", "workler.root"],
+      allowNonZeroExit: true,
+    }),
+    git.execute({
+      operation,
+      cwd: input.source,
+      args: ["rev-parse", "--show-toplevel"],
+      allowNonZeroExit: true,
+    }),
+  ]);
+  return (
+    recorded.exitCode === 0 &&
+    top.exitCode === 0 &&
+    recorded.stdout.trim() !== "" &&
+    recorded.stdout.trim() === top.stdout.trim()
+  );
+});
+
 function isPathInside(path: Path.Path, parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
   return (
