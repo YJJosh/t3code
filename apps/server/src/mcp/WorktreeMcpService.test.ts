@@ -234,10 +234,10 @@ const makeHarness = (options: HarnessOptions = {}) => {
       options.createWorktreeFails
         ? (Effect.fail("simulated worktree creation failure") as never)
         : options.createWorktreeFailsAfterClaim
-          ? (
+          ? ((
               createOptions?.progress?.onWorktreeClaimed?.("/worktrees/project/claimed") ??
               Effect.void
-            ).pipe(Effect.andThen(Effect.fail("simulated failure after the claim") as never))
+            ).pipe(Effect.andThen(Effect.fail("simulated failure after the claim"))) as never)
           : (options.createWorktreeGate ?? Effect.void).pipe(
               Effect.andThen(
                 Effect.succeed({
