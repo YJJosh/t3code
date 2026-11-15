@@ -231,6 +231,16 @@ const make = Effect.gen(function* () {
     let worktreeBaseRef = baseRef;
     let baseRefName = baseRef;
     let startedFromOrigin = false;
+    // Like a repository's checked-out branch, each member starts at its own checked-out commit.
+    const memberBaseCommits =
+      members !== null &&
+      Option.isSome(multiRepo) &&
+      !startFromOrigin &&
+      input.baseRef === undefined
+        ? yield* multiRepo.value
+            .checkoutMemberCommits({ root: projectCwd, checkout: projectCwd })
+            .pipe(asOperationFailed("Unable to read the members' checked-out commits"))
+        : undefined;
     if (startFromOrigin && members !== null && Option.isSome(multiRepo)) {
       const failed = yield* multiRepo.value.fetchMembers(projectCwd, members);
       if (failed.length > 0)
@@ -257,13 +267,16 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const worktree = yield* restore(
           gitWorkflow
-            .createWorktree({
-              cwd: projectCwd,
-              refName: worktreeBaseRef,
-              newRefName: input.branch,
-              baseRefName,
-              path: null,
-            })
+            .createWorktree(
+              {
+                cwd: projectCwd,
+                refName: worktreeBaseRef,
+                newRefName: input.branch,
+                baseRefName,
+                path: null,
+              },
+              ...(memberBaseCommits === undefined ? [] : [{ memberBaseCommits }]),
+            )
             .pipe(asOperationFailed("Unable to create the worktree")),
         );
         const worktreePath = worktree.worktree.path;

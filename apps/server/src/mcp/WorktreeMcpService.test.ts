@@ -121,6 +121,8 @@ interface HarnessOptions {
   readonly existsFails?: boolean;
 }
 
+const groupHeads = { api: "a".repeat(40), web: "b".repeat(40) };
+
 const makeHarness = (options: HarnessOptions = {}) => {
   const thread = options.thread === undefined ? {} : options.thread;
   const scope = makeScope(options.capabilities ?? new Set(["preview", "worktree"]));
@@ -300,6 +302,8 @@ const makeHarness = (options: HarnessOptions = {}) => {
         Layer.mock(MultiRepoWorkspaces.MultiRepoWorkspaces)({
           members: () => Effect.succeed(options.multiRepo ? ["api", "web"] : null),
           fetchMembers: () => Effect.succeed([]),
+          checkoutMemberCommits: ({ root, checkout }) =>
+            root === checkout ? Effect.succeed(groupHeads) : Effect.die("not the group root"),
         }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           dispatch,
@@ -666,6 +670,28 @@ describe("t3_worktree_handoff", () => {
           expect.objectContaining({ path: null }),
         );
         expect(result.worktreePath).toBe("/worktrees/project/feature/elsewhere");
+      });
+    },
+  );
+
+  it.effect.each([
+    { startFromOrigin: false, baseRef: undefined, options: { memberBaseCommits: groupHeads } },
+    { startFromOrigin: true, baseRef: undefined, options: undefined },
+    { startFromOrigin: false, baseRef: "main", options: undefined },
+  ])(
+    "starts a group's members at their checked-out commits by default (%o)",
+    ({ startFromOrigin, baseRef, options }) => {
+      const harness = makeHarness({ multiRepo: true, notARepo: true });
+      return Effect.gen(function* () {
+        yield* runHandoff(harness, {
+          branch: "feature/group",
+          startFromOrigin,
+          ...(baseRef === undefined ? {} : { baseRef }),
+        });
+        expect(harness.createWorktree).toHaveBeenCalledWith(
+          expect.anything(),
+          ...(options === undefined ? [] : [options]),
+        );
       });
     },
   );
