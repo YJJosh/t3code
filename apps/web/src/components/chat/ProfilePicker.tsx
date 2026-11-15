@@ -88,7 +88,7 @@ export function ProfilePicker(props: {
           }}
         >
           <ComposerSelectControl size={props.size} aria-label="Profile">
-            <span data-composer-control-label className="max-w-32 truncate">
+            <span data-composer-control-label className="max-w-20 truncate sm:max-w-32">
               <SelectValue>{props.selection.profileId ?? "No profile"}</SelectValue>
             </span>
             <ChevronDownIcon data-composer-control-chevron className="size-3.5 opacity-70" />
