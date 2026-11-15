@@ -918,6 +918,23 @@ it.effect.each([
     expected: { model: "claude-opus-5-5" },
   },
   {
+    name: "an agent's thread keeps its provider when the default profile names another",
+    createdBy: "agent" as const,
+    profile: { provider: ProviderInstanceId.make("claudeAgent-alt") },
+    expected: {
+      instanceId: "claudeAgent",
+      model: "claude-opus-5-5",
+      profileId: "dulli",
+      options: [{ id: "effort", value: "high" }],
+    },
+  },
+  {
+    name: "an agent's thread takes no default profile that failed to load",
+    createdBy: "agent" as const,
+    profile: { warning: "Could not read the profile." },
+    expected: { model: "claude-opus-5-5" },
+  },
+  {
     name: "a thread delegated from a linked environment takes no default",
     createdBy: "agent" as const,
     delegated: true,
@@ -945,7 +962,13 @@ it.effect.each([
               folder: "/profiles",
               ...("noDefault" in row ? {} : { default: "dulli" }),
               profiles: {
-                dulli: { prompts: [], skills: [], model: "claude-sonnet-5-5", effort: "low" },
+                dulli: {
+                  prompts: [],
+                  skills: [],
+                  model: "claude-sonnet-5-5",
+                  effort: "low",
+                  ...("profile" in row ? row.profile : {}),
+                },
               },
             },
             instructions: {},
@@ -960,6 +983,11 @@ it.effect.each([
           {
             instanceId,
             driver: ProviderDriverKind.make("driver" in row ? row.driver : "claudeAgent"),
+            models: [],
+          },
+          {
+            instanceId: ProviderInstanceId.make("claudeAgent-alt"),
+            driver: ProviderDriverKind.make("claudeAgent"),
             models: [],
           },
         ] as unknown as ReadonlyArray<ServerProvider>),

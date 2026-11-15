@@ -2070,11 +2070,12 @@ describe("OrchestratorMcpService provider resolution", () => {
   );
 
   it.live.each([
-    { name: "parent instance", parentEnabled: true, model: "gpt-5.4" },
-    { name: "alternate instance", parentEnabled: false, model: "gpt-5.5" },
+    { name: "parent instance", parentEnabled: true, model: "gpt-5.4", profileId: "dulli" },
+    { name: "alternate instance", parentEnabled: false, model: "gpt-5.5", profileId: "dulli" },
+    { name: "parent without a profile", parentEnabled: true, model: "gpt-5.4", profileId: null },
   ])(
     "replays accepted creation on the $name without authorizing new disabled work",
-    ({ parentEnabled, model }) =>
+    ({ parentEnabled, model, profileId }) =>
       Effect.scoped(
         Effect.gen(function* () {
           const altInstanceId = ProviderInstanceId.make("codex-alt");
@@ -2148,7 +2149,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               threadId: parentThreadId,
               projectId,
               title: "MCP parent",
-              modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4", profileId: "dulli" },
+              modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4", profileId },
               runtimeMode: "full-access",
               interactionMode: "default",
               branch: null,
@@ -2173,8 +2174,8 @@ describe("OrchestratorMcpService provider resolution", () => {
             const child = first.threads[0]!;
             // A new thread keeps its parent's profile, also on another instance.
             const selection = parentEnabled
-              ? { instanceId: codexInstanceId, model: "gpt-5.4", profileId: "dulli" }
-              : { instanceId: altInstanceId, model: "gpt-5.5", profileId: "dulli" };
+              ? { instanceId: codexInstanceId, model: "gpt-5.4", profileId }
+              : { instanceId: altInstanceId, model: "gpt-5.5", profileId };
             assert.equal(first.threads.length, 1);
             assert.equal(child.providerInstanceId, selection.instanceId);
             assert.equal(child.model, selection.model);
