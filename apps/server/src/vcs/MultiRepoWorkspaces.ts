@@ -71,10 +71,10 @@ export class MultiRepoWorkspaces extends Context.Service<
       members: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlyArray<string>>;
     /**
-     * Creates a workspace on `newRefName`. Each member starts from its own
-     * remote default branch (`origin/HEAD`), since the repositories of a group
-     * rarely share a base; from its current branch when any member has none.
-     * With a `path`, recreates that missing workspace on `refName`.
+     * Creates a workspace on `newRefName`. Members start at `options.memberBaseCommits`,
+     * else at their own `origin/HEAD` (group repositories rarely share a base), or at
+     * their current branch when any member has none. With a `path`, recreates that
+     * missing workspace on `refName`.
      */
     readonly createWorkspace: (
       input: VcsCreateWorktreeInput,
@@ -88,6 +88,16 @@ export class MultiRepoWorkspaces extends Context.Service<
     readonly removeWorkspace: (
       input: VcsRemoveWorktreeInput,
     ) => Effect.Effect<void, GitCommandError>;
+    /**
+     * The HEAD commit of each member of the group at `root`, as checked out in
+     * `checkout` (the group or one of its workspaces). Copies commits only
+     * `checkout` has into the group's repositories, without refs, so that new
+     * workspaces can start there.
+     */
+    readonly checkoutMemberCommits: (input: {
+      readonly root: string;
+      readonly checkout: string;
+    }) => Effect.Effect<Record<string, string>, GitCommandError>;
     /** Renames the branch in every member of the workspace at `cwd`; finishes or rolls back even if interrupted. */
     readonly renameBranch: (input: {
       readonly cwd: string;
@@ -334,6 +344,7 @@ export const make = Effect.gen(function* () {
   )(function* (input, options) {
     const root = path.resolve(input.cwd);
     const workspacesDir = path.join(root, WORKSPACES_DIR);
+    const startCommits = options?.memberBaseCommits ?? {};
     let branch = input.newRefName ?? input.refName;
     // Upstream's temporary namespace may be blocked in any member. Use one
     // flattened name for the entire group rather than probing its non-Git root.
@@ -427,6 +438,28 @@ export const make = Effect.gen(function* () {
       Effect.uninterruptible,
     );
     for (const member of (yield* members(created.path)) ?? []) {
+      const baseCommit = input.newRefName === undefined ? undefined : startCommits[member];
+      // The branch is new and nothing ran in the clone yet, so moving it loses nothing.
+      if (baseCommit !== undefined) {
+        yield* git
+          .execute({
+            operation: "MultiRepoWorkspaces.createWorkspace.memberBase",
+            cwd: path.join(created.path, member),
+            args: ["reset", "--hard", "--quiet", `${baseCommit}^{commit}`],
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitCommandError({
+                  operation: "MultiRepoWorkspaces.createWorkspace",
+                  command: "git reset",
+                  cwd: input.cwd,
+                  detail: `Could not start multi-repo member '${member}' at commit ${baseCommit}.`,
+                  cause,
+                }),
+            ),
+          );
+      }
       yield* initializeWorkspaceSubmodules({
         cwd: path.join(created.path, member),
         fileSystem,
@@ -492,6 +525,81 @@ export const make = Effect.gen(function* () {
           mapWorklerError("MultiRepoWorkspaces.removeWorkspace", input.cwd, error),
         ),
       );
+  });
+
+  const checkoutMemberCommits: MultiRepoWorkspaces["Service"]["checkoutMemberCommits"] = Effect.fn(
+    "MultiRepoWorkspaces.checkoutMemberCommits",
+  )(function* (input) {
+    const root = path.resolve(input.root);
+    const checkout = path.resolve(input.checkout);
+    const failure = (detail: string, cause?: unknown) =>
+      new GitCommandError({
+        operation: "MultiRepoWorkspaces.checkoutMemberCommits",
+        command: "git",
+        cwd: checkout,
+        detail,
+        ...(cause === undefined ? {} : { cause }),
+      });
+    const rootMembers = yield* members(root);
+    const checkoutMembers = checkout === root ? rootMembers : yield* members(checkout);
+    if (rootMembers === null || checkoutMembers === null) {
+      return yield* failure(`${checkout} is not a workspace of the multi-repo project at ${root}.`);
+    }
+    const commits: Record<string, string> = {};
+    // A member the group listed after this workspace was made keeps its default base.
+    for (const member of rootMembers.filter((name) => checkoutMembers.includes(name))) {
+      const source = path.join(checkout, member);
+      const head = yield* git
+        .execute({
+          operation: "MultiRepoWorkspaces.checkoutMemberCommits.head",
+          cwd: source,
+          args: ["rev-parse", "--verify", "HEAD^{commit}"],
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            failure(
+              `Could not read the checked out commit of multi-repo member '${member}'.`,
+              cause,
+            ),
+          ),
+        );
+      const commit = head.stdout.trim();
+      commits[member] = commit;
+      if (checkout === root) continue;
+      const target = path.join(root, member);
+      const present = yield* git.execute({
+        operation: "MultiRepoWorkspaces.checkoutMemberCommits.has",
+        cwd: target,
+        args: ["cat-file", "-e", `${commit}^{commit}`],
+        allowNonZeroExit: true,
+      });
+      if (present.exitCode === 0) continue;
+      yield* git
+        .execute({
+          operation: "MultiRepoWorkspaces.checkoutMemberCommits.copy",
+          cwd: target,
+          // Objects only: no ref, tag or FETCH_HEAD changes in the project's repository.
+          args: [
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-prune",
+            "--no-recurse-submodules",
+            "--no-write-fetch-head",
+            source,
+            commit,
+          ],
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            failure(
+              `Could not copy commit ${commit} of multi-repo member '${member}' into ${target}.`,
+              cause,
+            ),
+          ),
+        );
+    }
+    return commits;
   });
 
   const renameBranch: MultiRepoWorkspaces["Service"]["renameBranch"] = Effect.fn(
@@ -564,6 +672,7 @@ export const make = Effect.gen(function* () {
     fetchMembers,
     createWorkspace,
     removeWorkspace,
+    checkoutMemberCommits,
     renameBranch,
   });
 });

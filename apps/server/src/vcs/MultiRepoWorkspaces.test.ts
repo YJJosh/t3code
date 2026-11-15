@@ -349,6 +349,62 @@ it.layer(TestLayer)("MultiRepoWorkspaces", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("starts a new workspace at the members' commits in another workspace", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const workspaces = yield* MultiRepoWorkspaces.MultiRepoWorkspaces;
+      const group = yield* makeGroup;
+      const parent = (yield* workspaces.createWorkspace({
+        cwd: group,
+        refName: "HEAD",
+        newRefName: "feature/parent",
+        path: null,
+      })).worktree.path;
+      // Members may sit on different branches; each commit exists only in the parent's clone.
+      const parentApi = path.join(parent, "api");
+      const parentWeb = path.join(parent, "web");
+      yield* git(parentWeb, ["switch", "-c", "feature/web-only"]);
+      for (const repo of [parentApi, parentWeb]) {
+        yield* fileSystem.writeFileString(path.join(repo, "change.txt"), "committed\n");
+        yield* git(repo, ["add", "."]);
+        yield* git(repo, [
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@test.com",
+          "commit",
+          "-m",
+          "parent work",
+        ]);
+      }
+      yield* fileSystem.writeFileString(path.join(parentApi, "draft.txt"), "uncommitted\n");
+      const rootRefs = yield* git(path.join(group, "api"), ["for-each-ref"]);
+
+      const commits = yield* workspaces.checkoutMemberCommits({ root: group, checkout: parent });
+      assert.deepEqual(commits, {
+        api: yield* git(parentApi, ["rev-parse", "HEAD"]),
+        web: yield* git(parentWeb, ["rev-parse", "HEAD"]),
+      });
+      // The project's repositories get the objects, never a ref.
+      assert.equal(yield* git(path.join(group, "api"), ["for-each-ref"]), rootRefs);
+
+      const child = (yield* workspaces.createWorkspace(
+        { cwd: group, refName: "HEAD", newRefName: "feature/child", path: null },
+        { memberBaseCommits: commits },
+      )).worktree.path;
+      assert.deepEqual(yield* currentBranches(child), ["feature/child", "feature/child"]);
+      for (const member of ["api", "web"] as const) {
+        assert.equal(yield* git(path.join(child, member), ["rev-parse", "HEAD"]), commits[member]);
+      }
+      assert.isFalse(yield* fileSystem.exists(path.join(child, "api", "draft.txt")));
+      assert.deepEqual(yield* workspaces.checkoutMemberCommits({ root: group, checkout: group }), {
+        api: yield* git(path.join(group, "api"), ["rev-parse", "HEAD"]),
+        web: yield* git(path.join(group, "web"), ["rev-parse", "HEAD"]),
+      });
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("removing a workspace keeps its commits, or keeps it when they can't be copied", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

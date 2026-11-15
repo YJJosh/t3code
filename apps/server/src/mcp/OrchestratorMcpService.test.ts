@@ -56,6 +56,7 @@ import {
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as MultiRepoWorkspaces from "../vcs/MultiRepoWorkspaces.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
@@ -1946,6 +1947,118 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.equal(request.modelSelection.instanceId, altInstanceId);
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
     }),
+  );
+
+  it.effect(
+    "worktree isolation in a multi-repo project starts each member at the parent's commit",
+    () =>
+      Effect.gen(function* () {
+        const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+        const read = yield* Ref.make<ReadonlyArray<unknown>>([]);
+        const root = "/projects/group";
+        const parentWorkspace = `${root}/.worktrees/parent`;
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          runId: parentRunId,
+          parentNodeId,
+          origin: "app_owned",
+          createdBy: "agent",
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          providerThreadId: null,
+          childThreadId,
+          nativeTaskRef: null,
+          prompt: "Review the change.",
+          title: null,
+          model: "gpt-5.4",
+          status: "running",
+          result: null,
+          startedAt: null,
+          completedAt: null,
+        };
+        let delegated = false;
+        const parent = parentProjection([]);
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            getThreadRecords: (threadId) =>
+              Effect.succeed(
+                threadId === parentThreadId
+                  ? {
+                      ...parent,
+                      thread: { ...parent.thread, worktreePath: parentWorkspace },
+                      subagents: delegated ? [task] : [],
+                    }
+                  : childProjection,
+              ) as never,
+            dispatch: (command) =>
+              Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    delegated = true;
+                  }),
+                ),
+                Effect.as({
+                  sequence: 1,
+                  storedEvents: [
+                    {
+                      sequence: 1,
+                      commandId: null,
+                      event: { type: "subagent.updated", payload: task },
+                    },
+                  ],
+                } as never),
+              ),
+          }),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+          ]),
+          adapterRegistryLayer([codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () =>
+              Effect.succeedSome({ id: projectId, title: "Group", workspaceRoot: root } as never),
+          }),
+          // The group root is no repository, so a single-repository HEAD lookup there would fail.
+          Layer.mock(MultiRepoWorkspaces.MultiRepoWorkspaces)({
+            members: (cwd) => Effect.succeed(cwd === root ? ["api", "web"] : null),
+            checkoutMemberCommits: (input) =>
+              Ref.update(read, (inputs) => [...inputs, input]).pipe(
+                Effect.as({ api: "a".repeat(40), web: "b".repeat(40) }),
+              ),
+          }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          ServerSettings.layerTest(),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          yield* service.delegateTask(scope, {
+            task: "Review the change.",
+            isolation: "worktree",
+            mode: "async",
+            clientRequestId: "delegate-multi-repo-worktree-1",
+          });
+          assert.deepEqual(yield* Ref.get(read), [{ root, checkout: parentWorkspace }]);
+          const [request] = (yield* Ref.get(dispatched)) as ReadonlyArray<{
+            readonly workspaceStrategy?: unknown;
+          }>;
+          assert.deepEqual(request?.workspaceStrategy, {
+            type: "worktree",
+            baseRef: "HEAD",
+            startFromOrigin: false,
+            memberBaseCommits: { api: "a".repeat(40), web: "b".repeat(40) },
+          });
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      }),
   );
 
   it.effect(
