@@ -392,6 +392,7 @@ repository's own remote default branch. If any member has no usable remote defau
 the group falls back to its members' current local branches. A delegated task's own
 workspace instead starts each member at the commit its parent agent has checked out, so it
 sees committed work but not uncommitted changes. An agent moving its thread from the group
-root into a workspace does the same, unless it starts from the remote. Git actions at the group
+root into a workspace does the same when it does not start from the remote (the server
+default) or name a base branch. Git actions at the group
 root are hidden: run repository-specific Git operations in a member folder. Group membership lives in the folder's `.workler`
 file, so it travels with the project rather than being tied to one machine's database.

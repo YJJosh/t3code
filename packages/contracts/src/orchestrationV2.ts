@@ -690,7 +690,13 @@ export const OrchestrationV2WorkspacePreparation = Schema.Union([
   Schema.Struct({
     ...worktreeWorkspaceStrategyFields,
     /** Multi-repo worktrees: the commit each listed member starts at, instead of its default base. */
-    memberBaseCommits: Schema.optional(Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString)),
+    // Clients can send this, and the server passes it to Git: full object IDs only.
+    memberBaseCommits: Schema.optional(
+      Schema.Record(
+        TrimmedNonEmptyString,
+        TrimmedNonEmptyString.check(Schema.isPattern(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/)),
+      ),
+    ),
   }),
 ]);
 export type OrchestrationV2WorkspacePreparation = typeof OrchestrationV2WorkspacePreparation.Type;

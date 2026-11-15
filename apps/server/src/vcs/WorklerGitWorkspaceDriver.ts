@@ -192,6 +192,26 @@ export const keepWorklerCloneRefs = Effect.fn("WorklerGitWorkspaceDriver.keepClo
   if (fastForwardIfAllowed.length > 0) yield* fetchFromClone(fastForwardIfAllowed);
 });
 
+/** Whether `clone` is a Workler clone made from the repository at `source`. */
+const isWorklerCloneOf = Effect.fn("WorklerGitWorkspaceDriver.isWorklerCloneOf")(function* (
+  git: Pick<GitVcsDriver.GitVcsDriver["Service"], "execute">,
+  input: { readonly source: string; readonly clone: string },
+) {
+  const operation = "WorklerGitWorkspaceDriver.isWorklerCloneOf";
+  const run = (cwd: string, args: ReadonlyArray<string>) =>
+    git
+      .execute({ operation, cwd, args, allowNonZeroExit: true })
+      .pipe(Effect.map((result) => (result.exitCode === 0 ? result.stdout.trim() : "")));
+  const recorded = yield* run(input.clone, ["config", "--local", "--get", "workler.root"]);
+  if (recorded === "") return false;
+  // Workler records a native real path (backslashes on Windows); let Git spell both alike.
+  const [recordedTop, sourceTop] = yield* Effect.all([
+    run(recorded, ["rev-parse", "--show-toplevel"]),
+    run(input.source, ["rev-parse", "--show-toplevel"]),
+  ]);
+  return recordedTop !== "" && recordedTop === sourceTop;
+});
+
 /** Makes `commit` from a clone available in its `source` repository: objects only, no ref changes. */
 export const copyCloneCommit = Effect.fn("WorklerGitWorkspaceDriver.copyCloneCommit")(function* (
   git: Pick<GitVcsDriver.GitVcsDriver["Service"], "execute">,
@@ -205,6 +225,15 @@ export const copyCloneCommit = Effect.fn("WorklerGitWorkspaceDriver.copyCloneCom
     allowNonZeroExit: true,
   });
   if (present.exitCode === 0) return;
+  // Only a clone of `source` holds history that belongs there.
+  if (!(yield* isWorklerCloneOf(git, input).pipe(Effect.orElseSucceed(() => false)))) {
+    return yield* new GitCommandError({
+      operation,
+      command: "git fetch",
+      cwd: input.source,
+      detail: `${input.clone} is not a Workler clone of ${input.source}, so its commits were not copied.`,
+    });
+  }
   yield* git.execute({
     operation,
     cwd: input.source,
@@ -219,35 +248,6 @@ export const copyCloneCommit = Effect.fn("WorklerGitWorkspaceDriver.copyCloneCom
       input.commit,
     ],
   });
-});
-
-/** Whether `clone` is a Workler clone made from the repository at `source`. */
-export const isWorklerCloneOf = Effect.fn("WorklerGitWorkspaceDriver.isWorklerCloneOf")(function* (
-  git: Pick<GitVcsDriver.GitVcsDriver["Service"], "execute">,
-  input: { readonly source: string; readonly clone: string },
-) {
-  const operation = "WorklerGitWorkspaceDriver.isWorklerCloneOf";
-  // Workler records the source's real path, as `--show-toplevel` prints it.
-  const [recorded, top] = yield* Effect.all([
-    git.execute({
-      operation,
-      cwd: input.clone,
-      args: ["config", "--local", "--get", "workler.root"],
-      allowNonZeroExit: true,
-    }),
-    git.execute({
-      operation,
-      cwd: input.source,
-      args: ["rev-parse", "--show-toplevel"],
-      allowNonZeroExit: true,
-    }),
-  ]);
-  return (
-    recorded.exitCode === 0 &&
-    top.exitCode === 0 &&
-    recorded.stdout.trim() !== "" &&
-    recorded.stdout.trim() === top.stdout.trim()
-  );
 });
 
 function isPathInside(path: Path.Path, parent: string, candidate: string): boolean {

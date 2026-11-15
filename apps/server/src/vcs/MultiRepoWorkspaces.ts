@@ -439,14 +439,17 @@ export const make = Effect.gen(function* () {
       Effect.uninterruptible,
     );
     for (const member of (yield* members(created.path)) ?? []) {
-      const baseCommit = input.newRefName === undefined ? undefined : startCommits[member];
-      // The branch is new and nothing ran in the clone yet, so moving it loses nothing.
+      const baseCommit =
+        input.newRefName !== undefined && Object.hasOwn(startCommits, member)
+          ? startCommits[member]
+          : undefined;
+      // The branch is new, but Workler already applied its copy and link rules: `--keep` refuses to overwrite them.
       if (baseCommit !== undefined) {
         yield* git
           .execute({
             operation: "MultiRepoWorkspaces.createWorkspace.memberBase",
             cwd: path.join(created.path, member),
-            args: ["reset", "--hard", "--quiet", `${baseCommit}^{commit}`],
+            args: ["reset", "--keep", "--quiet", `${baseCommit}^{commit}`],
           })
           .pipe(
             Effect.mapError(
@@ -546,9 +549,14 @@ export const make = Effect.gen(function* () {
     if (rootMembers === null || checkoutMembers === null) {
       return yield* failure(`${checkout} is not a workspace of the multi-repo project at ${root}.`);
     }
-    const commits: Record<string, string> = {};
+    // Entries, not assignment: a member folder may be named `__proto__`.
+    const commits: Array<readonly [string, string]> = [];
+    const shared = rootMembers.filter((name) => checkoutMembers.includes(name));
+    if (rootMembers.length > 0 && shared.length === 0) {
+      return yield* failure(`${checkout} is not a workspace of the multi-repo project at ${root}.`);
+    }
     // A member the group listed after this workspace was made keeps its default base.
-    for (const member of rootMembers.filter((name) => checkoutMembers.includes(name))) {
+    for (const member of shared) {
       const clone = path.join(checkout, member);
       const head = yield* git
         .execute({
@@ -565,7 +573,7 @@ export const make = Effect.gen(function* () {
           ),
         );
       const commit = head.stdout.trim();
-      commits[member] = commit;
+      commits.push([member, commit]);
       if (checkout === root) continue;
       const repository = path.join(root, member);
       yield* copyCloneCommit(git, { source: repository, clone, commit }).pipe(
@@ -577,7 +585,7 @@ export const make = Effect.gen(function* () {
         ),
       );
     }
-    return commits;
+    return Object.fromEntries(commits);
   });
 
   const renameBranch: MultiRepoWorkspaces["Service"]["renameBranch"] = Effect.fn(
