@@ -263,6 +263,19 @@ const make = Effect.gen(function* () {
     // Mask interruption after worktree creation through setup; binding can detach and interrupt the caller.
     return yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
+        const removeWorktree = (path: string, branch: string) =>
+          Effect.suspend(() =>
+            gitWorkflow.removeWorktree({ cwd: projectCwd, path, force: true }),
+          ).pipe(
+            Effect.andThen(
+              Effect.suspend(() =>
+                gitWorkflow.deleteLocalBranch({ cwd: projectCwd, refName: branch, force: true }),
+              ),
+            ),
+            Effect.ignoreCause({ log: true }),
+          );
+        // A group workspace can fail after its clones exist, e.g. on a clash with a Workler rule.
+        let claimedPath: string | null = null;
         const worktree = yield* restore(
           gitWorkflow
             .createWorktree(
@@ -273,9 +286,21 @@ const make = Effect.gen(function* () {
                 baseRefName,
                 path: null,
               },
-              ...(memberBaseCommits === undefined ? [] : [{ memberBaseCommits }]),
+              {
+                progress: {
+                  onWorktreeClaimed: (path) =>
+                    Effect.sync(() => {
+                      claimedPath = path;
+                    }),
+                },
+                ...(memberBaseCommits === undefined ? {} : { memberBaseCommits }),
+              },
             )
             .pipe(asOperationFailed("Unable to create the worktree")),
+        ).pipe(
+          Effect.onError(() =>
+            claimedPath === null ? Effect.void : removeWorktree(claimedPath, input.branch),
+          ),
         );
         const worktreePath = worktree.worktree.path;
 
@@ -289,19 +314,7 @@ const make = Effect.gen(function* () {
             }).pipe(Effect.as({ status: "failed", detail } as const));
           });
 
-        const removeCreatedWorktree = Effect.suspend(() =>
-          gitWorkflow.removeWorktree({ cwd: projectCwd, path: worktreePath, force: true }).pipe(
-            Effect.andThen(
-              Effect.suspend(() =>
-                gitWorkflow.deleteLocalBranch({
-                  cwd: projectCwd,
-                  refName: worktree.worktree.refName,
-                  force: true,
-                }),
-              ),
-            ),
-          ),
-        ).pipe(Effect.ignoreCause({ log: true }));
+        const removeCreatedWorktree = removeWorktree(worktreePath, worktree.worktree.refName);
 
         const recheckAndBind = Effect.gen(function* () {
           // A concurrent UI binding may have landed during git work; do not orphan a second worktree.
