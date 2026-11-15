@@ -769,7 +769,7 @@ const make = Effect.gen(function* () {
       let command = input;
       if (
         command.type === "thread.create" &&
-        command.createdBy === "user" &&
+        (command.createdBy === "user" || command.createdBy === "agent") &&
         command.delegatedFrom === undefined &&
         command.modelSelection.profileId === undefined &&
         Option.isSome(profiles) &&
@@ -789,11 +789,16 @@ const make = Effect.gen(function* () {
           id ? loaded.catalog.profiles[id] : undefined,
           available,
         );
+        // Agents chose or inherited their model, so they only take the profile, not its model.
+        const selection =
+          command.createdBy === "agent" && picked.selection.profileId !== undefined
+            ? { ...command.modelSelection, profileId: picked.selection.profileId }
+            : picked.selection;
         const driver = available.find(
-          (provider) => provider.instanceId === picked.selection.instanceId,
+          (provider) => provider.instanceId === selection.instanceId,
         )?.driver;
         if (!id || (driver && supportsProfiles(driver)))
-          command = { ...command, modelSelection: picked.selection };
+          command = { ...command, modelSelection: selection };
       }
       if (
         (command.type === "message.dispatch" ||

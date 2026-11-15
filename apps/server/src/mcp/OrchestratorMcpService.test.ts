@@ -2148,7 +2148,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               threadId: parentThreadId,
               projectId,
               title: "MCP parent",
-              modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4" },
+              modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4", profileId: "dulli" },
               runtimeMode: "full-access",
               interactionMode: "default",
               branch: null,
@@ -2171,9 +2171,10 @@ describe("OrchestratorMcpService provider resolution", () => {
             };
             const first = yield* service.createThreads(scope, request);
             const child = first.threads[0]!;
+            // A new thread keeps its parent's profile, also on another instance.
             const selection = parentEnabled
-              ? { instanceId: codexInstanceId, model: "gpt-5.4" }
-              : { instanceId: altInstanceId, model: "gpt-5.5" };
+              ? { instanceId: codexInstanceId, model: "gpt-5.4", profileId: "dulli" }
+              : { instanceId: altInstanceId, model: "gpt-5.5", profileId: "dulli" };
             assert.equal(first.threads.length, 1);
             assert.equal(child.providerInstanceId, selection.instanceId);
             assert.equal(child.model, selection.model);

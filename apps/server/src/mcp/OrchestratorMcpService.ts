@@ -2853,7 +2853,13 @@ const make = Effect.gen(function* () {
                   threadId,
                   projectId: parent.thread.projectId,
                   title,
-                  modelSelection: target.modelSelection,
+                  modelSelection:
+                    parent.thread.modelSelection.profileId === undefined
+                      ? target.modelSelection
+                      : {
+                          ...target.modelSelection,
+                          profileId: parent.thread.modelSelection.profileId,
+                        },
                   runtimeMode,
                   interactionMode,
                   branch: parent.thread.branch,

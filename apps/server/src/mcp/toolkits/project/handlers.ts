@@ -187,8 +187,13 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 ),
               )
             : undefined;
+        const inheritedProfileId = caller?.modelSelection.profileId;
         const modelSelection =
-          input.modelSelection ??
+          (input.modelSelection === undefined ||
+          input.modelSelection.profileId !== undefined ||
+          inheritedProfileId === undefined
+            ? input.modelSelection
+            : { ...input.modelSelection, profileId: inheritedProfileId }) ??
           launchedModel ??
           caller?.modelSelection ??
           (projectDefaults
