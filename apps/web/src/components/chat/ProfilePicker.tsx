@@ -10,6 +10,7 @@ import { Select, SelectValue, SelectPopup, SelectItem } from "../ui/select";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { ComposerSelectControl, type ComposerControlSize } from "./ComposerControl";
+import { useComposerMenuProps } from "./composerEventScope";
 import { useApplyThreadModelPick } from "./useApplyThreadModelPick";
 
 /** A menu entry, not a profile: profile names cannot start with "_". */
@@ -25,6 +26,7 @@ export function ProfilePicker(props: {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const apply = useApplyThreadModelPick();
   const navigate = useNavigate();
+  const composerMenuProps = useComposerMenuProps();
   const freshAtom = serverEnvironment.profileConfig({
     environmentId: props.environmentId,
     input: {},
@@ -46,8 +48,9 @@ export function ProfilePicker(props: {
   return (
     <Tooltip>
       {/* A wrapper keeps the tooltip on a disabled trigger; flex keeps it centred in the row. */}
-      <TooltipTrigger render={<div className="flex shrink-0" />}>
+      <TooltipTrigger render={<div className="flex shrink-0" data-composer-profile-picker />}>
         <Select
+          modal={false}
           value={props.selection.profileId ?? ""}
           disabled={props.disabled || !supported}
           onOpenChange={(open) => {
@@ -90,7 +93,7 @@ export function ProfilePicker(props: {
             </span>
             <ChevronDownIcon data-composer-control-chevron className="size-3.5 opacity-70" />
           </ComposerSelectControl>
-          <SelectPopup>
+          <SelectPopup alignItemWithTrigger={false} {...composerMenuProps}>
             <p className="max-w-72 px-3 py-2 text-xs text-muted-foreground">
               Changes apply at the next session start. Stop and restart the thread to apply
               immediately.
