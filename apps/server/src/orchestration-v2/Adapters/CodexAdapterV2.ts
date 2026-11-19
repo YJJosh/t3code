@@ -1413,6 +1413,20 @@ interface CodexSubagentThreadContext {
   task: OrchestrationV2Subagent;
 }
 
+/**
+ * True when the turn runs on the full-access defaults this adapter picks itself. Their granular
+ * policy lets Codex still ask about commands it rates as dangerous, such as `rm -rf`, and full
+ * access never waits for the user. A turn with its own approval or sandbox policy keeps its prompts.
+ */
+const answersCodexApprovalsItself = (context: ActiveCodexTurnContext): boolean => {
+  const policy = context.input.runtimePolicy;
+  return (
+    policy.runtimeMode === "full-access" &&
+    policy.approvalPolicy === undefined &&
+    policy.sandboxPolicy === undefined
+  );
+};
+
 const approvalOwnerCodexTurn = (
   context: ActiveCodexTurnContext,
 ): {
@@ -5904,9 +5918,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
-            // The granular policy for full access lets Codex still ask about commands it
-            // rates as dangerous, such as `rm -rf`. Full access never waits for the user.
-            if (context.input.runtimePolicy.runtimeMode === "full-access") {
+            if (answersCodexApprovalsItself(context)) {
               return {
                 decision: "accept",
               } satisfies CodexSchema.CommandExecutionRequestApprovalResponse;
@@ -5982,7 +5994,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
-            if (context.input.runtimePolicy.runtimeMode === "full-access") {
+            if (answersCodexApprovalsItself(context)) {
               return {
                 decision: "accept",
               } satisfies CodexSchema.FileChangeRequestApprovalResponse;
@@ -6204,7 +6216,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
-            if (context.input.runtimePolicy.runtimeMode === "full-access") {
+            if (answersCodexApprovalsItself(context)) {
               return {
                 decision: "approved",
               } satisfies CodexSchema.ExecCommandApprovalResponse;
@@ -6278,7 +6290,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
-            if (context.input.runtimePolicy.runtimeMode === "full-access") {
+            if (answersCodexApprovalsItself(context)) {
               return {
                 decision: "approved",
               } satisfies CodexSchema.ApplyPatchApprovalResponse;

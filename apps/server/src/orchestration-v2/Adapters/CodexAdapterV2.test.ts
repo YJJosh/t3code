@@ -1813,6 +1813,34 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             {
               type: "emit_inbound",
               frame: {
+                id: 2,
+                method: "execCommandApproval",
+                params: {
+                  conversationId: nativeThreadId,
+                  callId: "legacy-command",
+                  command: ["rm", "-rf", "/tmp/review-scratch"],
+                  cwd: "/workspace",
+                  parsedCmd: [],
+                },
+              },
+            },
+            { type: "expect_outbound", frame: { id: 2, result: { decision: "approved" } } },
+            {
+              type: "emit_inbound",
+              frame: {
+                id: 3,
+                method: "applyPatchApproval",
+                params: {
+                  conversationId: nativeThreadId,
+                  callId: "legacy-patch",
+                  fileChanges: {},
+                },
+              },
+            },
+            { type: "expect_outbound", frame: { id: 3, result: { decision: "approved" } } },
+            {
+              type: "emit_inbound",
+              frame: {
                 method: "turn/completed",
                 params: {
                   threadId: nativeThreadId,
