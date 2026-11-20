@@ -1418,6 +1418,20 @@ interface CodexSubagentThreadContext {
   task: OrchestrationV2Subagent;
 }
 
+/**
+ * True when the turn runs on the full-access defaults this adapter picks itself. Their granular
+ * policy lets Codex still ask about commands it rates as dangerous, such as `rm -rf`, and full
+ * access never waits for the user. A turn with its own approval or sandbox policy keeps its prompts.
+ */
+const answersCodexApprovalsItself = (context: ActiveCodexTurnContext): boolean => {
+  const policy = context.input.runtimePolicy;
+  return (
+    policy.runtimeMode === "full-access" &&
+    policy.approvalPolicy === undefined &&
+    policy.sandboxPolicy === undefined
+  );
+};
+
 const approvalOwnerCodexTurn = (
   context: ActiveCodexTurnContext,
 ): {
@@ -5988,6 +6002,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            if (answersCodexApprovalsItself(context)) {
+              return {
+                decision: "accept",
+              } satisfies CodexSchema.CommandExecutionRequestApprovalResponse;
+            }
             const allowance = sessionAllowance(payload.threadId, context);
             if (allowance.has("command")) {
               return {
@@ -6058,6 +6077,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 `No active Codex turn context for file change approval turn ${payload.turnId}.`,
                 payload,
               );
+            }
+            if (answersCodexApprovalsItself(context)) {
+              return {
+                decision: "accept",
+              } satisfies CodexSchema.FileChangeRequestApprovalResponse;
             }
             const allowance = sessionAllowance(payload.threadId, context);
             if (allowance.has("file-change")) {
@@ -6276,6 +6300,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 payload,
               );
             }
+            if (answersCodexApprovalsItself(context)) {
+              return {
+                decision: "approved",
+              } satisfies CodexSchema.ExecCommandApprovalResponse;
+            }
             const allowance = sessionAllowance(payload.conversationId, context);
             if (allowance.has("command")) {
               return {
@@ -6344,6 +6373,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 `No active Codex turn context for apply patch approval thread ${payload.conversationId}.`,
                 payload,
               );
+            }
+            if (answersCodexApprovalsItself(context)) {
+              return {
+                decision: "approved",
+              } satisfies CodexSchema.ApplyPatchApprovalResponse;
             }
             const allowance = sessionAllowance(payload.conversationId, context);
             if (allowance.has("file-change")) {
