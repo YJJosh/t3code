@@ -88,4 +88,11 @@ it("sets effort through an ACP model's own reasoning option, when the model offe
     selectProfile(current, "p", { ...profile, effort: "xhigh" }, providers).selection.options,
     current.options,
   );
+  const plain = [
+    {
+      ...providers[0]!,
+      models: [{ ...providers[0]!.models[0]!, capabilities: { optionDescriptors: [] } }],
+    },
+  ];
+  assert.deepEqual(selectProfile(current, "p", profile, plain).selection.options, current.options);
 });

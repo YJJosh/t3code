@@ -5,6 +5,13 @@ import type {
   ServerProvider,
 } from "@t3tools/contracts";
 
+const EFFORT_OPTION_IDS: Partial<Record<string, string>> = {
+  claudeAgent: "effort",
+  codex: "reasoningEffort",
+  muse: "reasoningEffort",
+  pi: "thinking",
+};
+
 export function supportsProfiles(driver: string): boolean {
   return ["claudeAgent", "codex", "muse", "pi", "acpRegistry", "antigravity"].includes(driver);
 }
@@ -47,13 +54,7 @@ export function selectProfile(
     reasoning === undefined || reasoning.options.some((choice) => choice.id === profile.effort)
       ? profile.effort
       : undefined;
-  const effortId =
-    reasoning?.id ??
-    (target?.driver === "claudeAgent"
-      ? "effort"
-      : target?.driver === "pi"
-        ? "thinking"
-        : "reasoningEffort");
+  const effortId = reasoning?.id ?? (target ? EFFORT_OPTION_IDS[target.driver] : undefined);
   const options = instanceId === current.instanceId ? (current.options ?? []) : [];
   return {
     selection: {
@@ -62,7 +63,7 @@ export function selectProfile(
       instanceId,
       model,
       options,
-      ...(effort
+      ...(effort && effortId
         ? {
             options: [
               ...options.filter((option) => option.id !== effortId),

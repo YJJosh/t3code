@@ -1,3 +1,4 @@
+import * as NodePath from "node:path";
 import * as ServerConfig from "../config.ts";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -5892,7 +5893,7 @@ it.effect("loads profiles only when opening a session and rereads them after clo
         undefined,
         undefined,
         undefined,
-        [`${root}/profiles/.agents/skills/review`],
+        [NodePath.join(root, "profiles", ".agents", "skills", "review")],
       ]);
     }).pipe(
       Effect.provide(
