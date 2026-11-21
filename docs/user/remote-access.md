@@ -5,7 +5,7 @@ machine. That machine must stay running and reachable while you work.
 
 ## T3 Connect
 
-In T3 Dulli, T3 Connect serves only [guest links](./guest-links.md) and webhooks: it does not let your own
+In T3 Dulli, T3 Connect serves only [guest links](./guest-links.md): it does not let your own
 devices in, and the rest of this T3 Connect section does not apply to it. Reach your machines over
 the [local network or your tailnet](#pair-over-a-lan-or-private-network) instead.
 

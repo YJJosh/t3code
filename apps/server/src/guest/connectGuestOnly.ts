@@ -2,8 +2,6 @@ import { GUEST_PAGE_PATH, GUEST_ROUTE_PREFIX } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
-import { WEBHOOK_ROUTE_PREFIX } from "../scheduledTasks/ScheduledTaskService.ts";
-
 // T3 Dulli uses T3 Connect only to let guests in. Cloudflare sets these headers on requests that
 // come through the tunnel, and a client cannot remove them, so such a request reaches only the
 // guest page and its routes. Local, LAN and tailnet requests never carry them. Either one counts,
@@ -12,10 +10,6 @@ const CONNECT_REQUEST_HEADERS = ["cf-connecting-ip", "cf-ray"];
 
 // The relay checks a linked environment over the tunnel; its request is signed.
 const RELAY_HEALTH_PATH = "/api/t3-connect/health";
-// The relay forwards scheduled task webhooks here; each URL carries its task's token. The task id
-// is percent-encoded, and the route has exactly these two segments.
-const WEBHOOK_SEGMENT = String.raw`(?!\.\.?(?:/|$))[^/\\;#]+`;
-const WEBHOOK_PATH = new RegExp(`^${WEBHOOK_ROUTE_PREFIX}/${WEBHOOK_SEGMENT}/${WEBHOOK_SEGMENT}$`);
 // The web build's hashed files, and the icons and manifest at the root of its public folder.
 const BUILD_ASSET_PREFIX = "/assets/";
 const PUBLIC_FILE = /^\/[\w-]+\.(?:ico|png|svg|webmanifest)$/;
@@ -23,7 +17,6 @@ const PUBLIC_FILE = /^\/[\w-]+\.(?:ico|png|svg|webmanifest)$/;
 /** Whether a request that came through T3 Connect may reach this path. */
 export function allowsConnectRequest(method: string, url: string): boolean {
   const path = url.split("?", 1)[0] ?? "";
-  if (WEBHOOK_PATH.test(path)) return true;
   // Other routes match the raw path, so a path a router could resolve elsewhere is refused.
   if (/\/\.|%|\\|\/\//.test(path)) return false;
   const read = method === "GET" || method === "HEAD";

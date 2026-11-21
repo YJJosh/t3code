@@ -33,9 +33,6 @@ it.effect("serves only the guest page and its routes to requests through T3 Conn
       ["GET", "/api/guest/stream?share=abc", 200],
       ["POST", "/api/guest/messages?share=abc", 200],
       ["POST", "/api/t3-connect/health", 200],
-      ["POST", "/api/hooks/hook-1/token", 200],
-      ["POST", "/api/hooks/task%3Aabc/token", 200],
-      ["POST", "/api/hooks/hook-1/token/extra", 404],
       ["GET", "/", 404],
       ["GET", "/ws", 404],
       ["GET", "/pair", 404],
@@ -43,6 +40,7 @@ it.effect("serves only the guest page and its routes to requests through T3 Conn
       ["GET", "/.well-known/t3/environment", 404],
       ["POST", "/oauth/token", 404],
       ["POST", "/api/t3-connect/mint-credential", 404],
+      ["POST", "/api/hooks/hook-1/token", 404],
       ["GET", "/api/assets/thread/file.png", 404],
       ["POST", "/guest", 404],
     ];
@@ -67,9 +65,6 @@ it("refuses a raw path another route could resolve outside the guest routes", ()
     "/api/guest/./x",
     "//api/guest/x",
     "/assets\\..\\index.html",
-    "/api/hooks/../ws",
-    "/api/hooks/a;b/c",
-    "/api/hooks/hook-1/..",
   ]) {
     assert.isFalse(ConnectGuestOnly.allowsConnectRequest("GET", path), path);
   }
