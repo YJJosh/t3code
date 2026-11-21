@@ -1,4 +1,4 @@
-import * as NodePath from "node:path";
+import * as Path from "effect/Path";
 import * as ServerConfig from "../config.ts";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -5785,6 +5785,7 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
 it.effect("loads profiles only when opening a session and rereads them after close", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const root = yield* fs.makeTempDirectoryScoped();
     yield* fs.makeDirectory(`${root}/profiles/prompts`, { recursive: true });
     yield* fs.writeFileString(
@@ -5893,7 +5894,7 @@ it.effect("loads profiles only when opening a session and rereads them after clo
         undefined,
         undefined,
         undefined,
-        [NodePath.join(root, "profiles", ".agents", "skills", "review")],
+        [path.join(root, "profiles", ".agents", "skills", "review")],
       ]);
     }).pipe(
       Effect.provide(
