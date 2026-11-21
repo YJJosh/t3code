@@ -1,7 +1,12 @@
-import type { ModelSelection, ProfileCatalog, ServerProvider } from "@t3tools/contracts";
+import type {
+  ModelSelection,
+  ProfileCatalog,
+  SelectProviderOptionDescriptor,
+  ServerProvider,
+} from "@t3tools/contracts";
 
 export function supportsProfiles(driver: string): boolean {
-  return ["claudeAgent", "codex", "muse", "pi", "acpRegistry"].includes(driver);
+  return ["claudeAgent", "codex", "muse", "pi", "acpRegistry", "antigravity"].includes(driver);
 }
 
 export function selectProfile(
@@ -30,10 +35,25 @@ export function selectProfile(
     (instanceId === current.instanceId
       ? current.model
       : (provider?.models[0]?.slug ?? current.model));
-  const driver =
-    provider?.driver ?? providers.find((entry) => entry.instanceId === instanceId)?.driver;
+  const target = provider ?? providers.find((entry) => entry.instanceId === instanceId);
+  // ACP agents name their reasoning control themselves, such as Antigravity's `thinking_level`.
+  const reasoning = target?.models
+    .find((entry) => entry.slug === model)
+    ?.capabilities?.optionDescriptors?.find(
+      (descriptor): descriptor is SelectProviderOptionDescriptor =>
+        descriptor.type === "select" && descriptor.role === "reasoning",
+    );
+  const effort =
+    reasoning === undefined || reasoning.options.some((choice) => choice.id === profile.effort)
+      ? profile.effort
+      : undefined;
   const effortId =
-    driver === "claudeAgent" ? "effort" : driver === "pi" ? "thinking" : "reasoningEffort";
+    reasoning?.id ??
+    (target?.driver === "claudeAgent"
+      ? "effort"
+      : target?.driver === "pi"
+        ? "thinking"
+        : "reasoningEffort");
   const options = instanceId === current.instanceId ? (current.options ?? []) : [];
   return {
     selection: {
@@ -42,11 +62,11 @@ export function selectProfile(
       instanceId,
       model,
       options,
-      ...(profile.effort
+      ...(effort
         ? {
             options: [
               ...options.filter((option) => option.id !== effortId),
-              { id: effortId, value: profile.effort },
+              { id: effortId, value: effort },
             ],
           }
         : {}),
