@@ -1,11 +1,13 @@
 import {
   type ModelSelection,
-  ORCHESTRATION_V2_PROFILE_UNAVAILABLE_FAILURE_CODE,
+  ORCHESTRATION_V2_SESSION_OPEN_FAILURE_TITLE,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
+  type OrchestrationV2RunAttempt,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadHistoryPage,
   type OrchestrationV2ThreadProjection,
@@ -15,7 +17,7 @@ import {
 
 // What the guest stream leaves out of the owner's thread: the profile, local paths, links to
 // other work, and records the guest page never reads. The timeline itself is sent as is.
-const GUEST_PROFILE_FAILURE_MESSAGE = "The agent could not start with this thread's settings.";
+const GUEST_SESSION_OPEN_FAILURE_MESSAGE = "The agent could not start with this thread's settings.";
 // The schema needs a path; the session's real one is the owner's checkout.
 const GUEST_SESSION_CWD = ".";
 
@@ -63,18 +65,32 @@ function guestProviderSession(
   return { ...rest, cwd: GUEST_SESSION_CWD };
 }
 
-// Native metadata holds the provider's own model selection and paths.
+// Native references and metadata can hold local paths, such as Pi's session file, and the
+// provider's own model selection.
 function guestProviderThread(thread: OrchestrationV2ProviderThread): OrchestrationV2ProviderThread {
-  return thread.nativeMetadata == null ? thread : { ...thread, nativeMetadata: null };
+  return {
+    ...thread,
+    nativeThreadRef: null,
+    nativeConversationHeadRef: null,
+    nativeMetadata: null,
+  };
+}
+
+function guestProviderTurn(turn: OrchestrationV2ProviderTurn): OrchestrationV2ProviderTurn {
+  const { nativeThreadRef: _nativeThreadRef, ...rest } = turn;
+  return { ...rest, nativeTurnRef: null };
+}
+
+function guestAttempt(attempt: OrchestrationV2RunAttempt): OrchestrationV2RunAttempt {
+  const { nativeThreadId: _nativeThreadId, ...rest } = attempt;
+  return rest;
 }
 
 export function guestTurnItem<I extends OrchestrationV2TurnItem>(item: I): I {
-  if (
-    item.type !== "error" ||
-    item.failure.code !== ORCHESTRATION_V2_PROFILE_UNAVAILABLE_FAILURE_CODE
-  )
+  if (item.type !== "error" || item.title !== ORCHESTRATION_V2_SESSION_OPEN_FAILURE_TITLE) {
     return item;
-  return { ...item, failure: { ...item.failure, message: GUEST_PROFILE_FAILURE_MESSAGE } };
+  }
+  return { ...item, failure: { ...item.failure, message: GUEST_SESSION_OPEN_FAILURE_MESSAGE } };
 }
 
 function guestProjection(
@@ -84,9 +100,11 @@ function guestProjection(
     ...projection,
     thread: guestThread(projection.thread),
     runs: projection.runs.map(guestRun),
+    attempts: projection.attempts.map(guestAttempt),
     subagents: projection.subagents.map(guestSubagent),
     providerSessions: projection.providerSessions.map(guestProviderSession),
     providerThreads: projection.providerThreads.map(guestProviderThread),
+    providerTurns: projection.providerTurns.map(guestProviderTurn),
     turnItems: projection.turnItems.map(guestTurnItem),
     visibleTurnItems: projection.visibleTurnItems.map((row) => ({
       ...row,
@@ -123,12 +141,14 @@ function guestEvent(event: OrchestrationV2DomainEvent): OrchestrationV2DomainEve
       return { ...event, payload: guestProviderThread(event.payload) };
     case "turn-item.updated":
       return { ...event, payload: guestTurnItem(event.payload) };
-    case "run.background-work-cancelled":
     case "run-attempt.created":
     case "run-attempt.updated":
+      return { ...event, payload: guestAttempt(event.payload) };
+    case "provider-turn.updated":
+      return { ...event, payload: guestProviderTurn(event.payload) };
+    case "run.background-work-cancelled":
     case "node.updated":
     case "provider-session.detached":
-    case "provider-turn.updated":
     case "runtime-request.updated":
     case "message.updated":
     case "plan.updated":

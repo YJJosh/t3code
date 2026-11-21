@@ -6,8 +6,8 @@ machine. That machine must stay running and reachable while you work.
 ## T3 Connect
 
 In T3 Dulli, T3 Connect serves only [guest links](./guest-links.md): it does not let your own
-devices in. Reach your machines over the local network or your tailnet instead, as described
-below.
+devices in, and the rest of this T3 Connect section does not apply to it. Reach your machines over
+the [local network or your tailnet](#pair-over-a-lan-or-private-network) instead.
 
 T3 Connect makes an environment available to your other devices without setting
 up router forwarding. In the desktop app on the host, open **Settings →
