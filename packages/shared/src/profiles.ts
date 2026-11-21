@@ -1,9 +1,4 @@
-import type {
-  ModelSelection,
-  ProfileCatalog,
-  SelectProviderOptionDescriptor,
-  ServerProvider,
-} from "@t3tools/contracts";
+import type { ModelSelection, ProfileCatalog, ServerProvider } from "@t3tools/contracts";
 
 const EFFORT_OPTION_IDS: Partial<Record<string, string>> = {
   claudeAgent: "effort",
@@ -45,15 +40,11 @@ export function selectProfile(
   const target = provider ?? providers.find((entry) => entry.instanceId === instanceId);
   // ACP agents name their reasoning control themselves, such as Antigravity's `thinking_level`.
   const reasoning = target?.models
-    .find((entry) => entry.slug === model)
+    .find((entry) => entry.slug === model || entry.aliases?.includes(model))
     ?.capabilities?.optionDescriptors?.find(
-      (descriptor): descriptor is SelectProviderOptionDescriptor =>
-        descriptor.type === "select" && descriptor.role === "reasoning",
+      (descriptor) => descriptor.type === "select" && descriptor.role === "reasoning",
     );
-  const effort =
-    reasoning === undefined || reasoning.options.some((choice) => choice.id === profile.effort)
-      ? profile.effort
-      : undefined;
+  const effort = profile.effort;
   const effortId = reasoning?.id ?? (target ? EFFORT_OPTION_IDS[target.driver] : undefined);
   const options = instanceId === current.instanceId ? (current.options ?? []) : [];
   return {

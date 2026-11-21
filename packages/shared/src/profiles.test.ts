@@ -50,7 +50,7 @@ it("applies portable provider instances, warns on fallback, and keeps explicit o
   assert.isFalse(supportsProfiles("cursor"));
 });
 
-it("sets effort through an ACP model's own reasoning option, when the model offers it", () => {
+it("sets effort through an ACP model's own reasoning option, and skips it without one", () => {
   const thinking = {
     id: "thinking_level",
     label: "Thinking Level",
@@ -69,6 +69,7 @@ it("sets effort through an ACP model's own reasoning option, when the model offe
         {
           slug: "flash",
           name: "Flash",
+          aliases: ["antigravity-default"],
           isCustom: false,
           capabilities: { optionDescriptors: [thinking] },
         },
@@ -85,8 +86,9 @@ it("sets effort through an ACP model's own reasoning option, when the model offe
     { id: "thinking_level", value: "low" },
   ]);
   assert.deepEqual(
-    selectProfile(current, "p", { ...profile, effort: "xhigh" }, providers).selection.options,
-    current.options,
+    selectProfile({ ...current, model: "antigravity-default" }, "p", profile, providers).selection
+      .options,
+    [{ id: "thinking_level", value: "low" }],
   );
   const plain = [
     {
