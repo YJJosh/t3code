@@ -234,7 +234,7 @@ function formatCloudStatus(
           : status.reachability.status === "reachable"
             ? [
                 "",
-                `✓ Other devices can reach this machine · ${formatConnectReachable(status.reachability)}`,
+                `✓ Guest links can reach this machine · ${formatConnectReachable(status.reachability)}`,
               ]
             : ["", formatReachabilityFailure(status.reachability)]),
     ...(nextStep ? ["", `Next: ${nextStep}`] : []),
