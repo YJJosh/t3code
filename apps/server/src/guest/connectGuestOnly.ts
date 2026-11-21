@@ -1,4 +1,4 @@
-import { GUEST_ROUTE_PREFIX } from "@t3tools/contracts";
+import { GUEST_PAGE_PATH, GUEST_ROUTE_PREFIX } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
@@ -10,7 +10,6 @@ import { WEBHOOK_ROUTE_PREFIX } from "../scheduledTasks/ScheduledTaskService.ts"
 // in case a Cloudflare setting drops the visitor IP header.
 const CONNECT_REQUEST_HEADERS = ["cf-connecting-ip", "cf-ray"];
 
-export const GUEST_PAGE_PATH = "/guest";
 // The relay checks a linked environment over the tunnel; its request is signed.
 const RELAY_HEALTH_PATH = "/api/t3-connect/health";
 // The relay forwards scheduled task webhooks here; each URL carries its task's token.

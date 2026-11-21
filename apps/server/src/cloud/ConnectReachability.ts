@@ -2,6 +2,7 @@ import * as NodeNet from "node:net";
 
 import {
   connectReachabilityHelpUrl,
+  GUEST_PAGE_PATH,
   type EnvironmentConnectReachability,
   formatConnectReachable,
 } from "@t3tools/contracts";
@@ -22,7 +23,6 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import { GUEST_PAGE_PATH } from "../guest/connectGuestOnly.ts";
 import { CLOUD_ENDPOINT_RUNTIME_CONFIG } from "./config.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 

@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   ChatAttachmentId,
   CommandId,
+  GUEST_PAGE_PATH,
   GUEST_SHARE_TTL_MS,
   GuestMessageId,
   GuestShareCreateError,
@@ -59,7 +60,6 @@ import * as DocumentText from "../provider/DocumentText.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
-import { GUEST_PAGE_PATH } from "./connectGuestOnly.ts";
 import { guestShareView, guestThreadModel } from "./guestView.ts";
 import {
   guestHistoryPage,
