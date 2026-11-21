@@ -14,7 +14,8 @@ const CONNECT_REQUEST_HEADERS = ["cf-connecting-ip", "cf-ray"];
 const RELAY_HEALTH_PATH = "/api/t3-connect/health";
 // The relay forwards scheduled task webhooks here; each URL carries its task's token. The task id
 // is percent-encoded, and the route has exactly these two segments.
-const WEBHOOK_PATH = new RegExp(`^${WEBHOOK_ROUTE_PREFIX}/[^/\\\\]+/[^/\\\\]+$`);
+const WEBHOOK_SEGMENT = String.raw`(?!\.\.?(?:/|$))[^/\\;#]+`;
+const WEBHOOK_PATH = new RegExp(`^${WEBHOOK_ROUTE_PREFIX}/${WEBHOOK_SEGMENT}/${WEBHOOK_SEGMENT}$`);
 // The web build's hashed files, and the icons and manifest at the root of its public folder.
 const BUILD_ASSET_PREFIX = "/assets/";
 const PUBLIC_FILE = /^\/[\w-]+\.(?:ico|png|svg|webmanifest)$/;

@@ -67,6 +67,9 @@ it("refuses a raw path another route could resolve outside the guest routes", ()
     "/api/guest/./x",
     "//api/guest/x",
     "/assets\\..\\index.html",
+    "/api/hooks/../ws",
+    "/api/hooks/a;b/c",
+    "/api/hooks/hook-1/..",
   ]) {
     assert.isFalse(ConnectGuestOnly.allowsConnectRequest("GET", path), path);
   }
