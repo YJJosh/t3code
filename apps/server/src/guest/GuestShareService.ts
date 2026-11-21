@@ -59,6 +59,7 @@ import * as DocumentText from "../provider/DocumentText.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
+import { GUEST_PAGE_PATH } from "./connectGuestOnly.ts";
 import { guestShareView, guestThreadModel } from "./guestView.ts";
 import {
   guestHistoryPage,
@@ -371,7 +372,7 @@ const make = Effect.gen(function* () {
       return yield* new GuestShareCreateError({ reason: "changed" });
     }
     const credential = yield* signInvite(shareId);
-    return { url: `https://${host}/guest#${credential}`, share: thread.guestShare };
+    return { url: `https://${host}${GUEST_PAGE_PATH}#${credential}`, share: thread.guestShare };
   });
 
   const redeem = Effect.fn("GuestShareService.redeem")(function* (request: GuestRedeemRequest) {
