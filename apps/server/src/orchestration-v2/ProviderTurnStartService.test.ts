@@ -7,6 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
+  ORCHESTRATION_V2_PROFILE_UNAVAILABLE_FAILURE_CODE,
   CheckpointScopeId,
   CommandId,
   ContextHandoffId,
@@ -534,6 +535,7 @@ function makeLocalCommandHarness(input: {
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly logoutFailure?: string;
   readonly openFailure?: unknown;
+  readonly openProfileWarning?: string;
   readonly ensureThreadFailure?: unknown;
   readonly historyReadFailureAfterFallback?: unknown;
   readonly resumeFailure?: ProviderAdapter.ProviderAdapterV2Error;
@@ -1250,6 +1252,9 @@ function makeLocalCommandHarness(input: {
                         instanceId: newInstanceId,
                         providerSessionId,
                         cause: input.openFailure,
+                        ...(input.openProfileWarning === undefined
+                          ? {}
+                          : { profileWarning: input.openProfileWarning }),
                       }),
                     ),
                   ),
@@ -3183,6 +3188,28 @@ effectIt.effect("terminalizes a starting run when its provider session cannot op
         failure: {
           class: "provider_error",
           message: "DESCRIPTION is not valid ACP JSON",
+        },
+      },
+    ]);
+  }),
+);
+
+effectIt.effect("marks a session a profile kept from opening, so guests can hide the profile", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      openFailure: undefined,
+      openProfileWarning: "Profile work no longer exists. Select another profile or No profile.",
+    });
+
+    yield* harness.start;
+
+    expect(harness.projection().turnItems).toMatchObject([
+      {
+        type: "error",
+        failure: {
+          message: "Profile work no longer exists. Select another profile or No profile.",
+          code: ORCHESTRATION_V2_PROFILE_UNAVAILABLE_FAILURE_CODE,
         },
       },
     ]);

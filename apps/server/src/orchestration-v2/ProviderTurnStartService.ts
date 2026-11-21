@@ -3,6 +3,7 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import {
   CommandId,
+  ORCHESTRATION_V2_PROFILE_UNAVAILABLE_FAILURE_CODE,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   latestProviderTurnForAttempt,
   withMessageSenderNote,
@@ -654,6 +655,7 @@ export const layer: Layer.Layer<
           readonly title: string;
           readonly error: Error;
           readonly message?: string;
+          readonly code?: string;
         }) {
           yield* settleRunBeforeStart({
             run,
@@ -671,6 +673,7 @@ export const layer: Layer.Layer<
               failure: makeProviderFailure({
                 cause: failed.error,
                 message: failed.message ?? startFailureMessage(failed.error),
+                code: failed.code,
                 class: "provider_error",
               }),
             },
@@ -966,6 +969,9 @@ export const layer: Layer.Layer<
           signal: "provider-session-open-failure",
           title: "Provider session failed to open",
           error: sessionResult.failure,
+          ...(failure._tag === "ProviderSessionOpenError" && failure.profileWarning !== undefined
+            ? { code: ORCHESTRATION_V2_PROFILE_UNAVAILABLE_FAILURE_CODE }
+            : {}),
         });
         return;
       }

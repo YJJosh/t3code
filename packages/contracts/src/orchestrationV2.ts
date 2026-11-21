@@ -784,6 +784,8 @@ export const OrchestrationV2WorkspacePreparation = Schema.Union([
 export type OrchestrationV2WorkspacePreparation = typeof OrchestrationV2WorkspacePreparation.Type;
 
 export const ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed";
+/** A profile kept the provider session from opening; the message can name the profile. */
+export const ORCHESTRATION_V2_PROFILE_UNAVAILABLE_FAILURE_CODE = "profile_unavailable";
 
 export const OrchestrationV2Run = Schema.Struct({
   id: RunId,
