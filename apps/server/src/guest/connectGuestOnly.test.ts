@@ -34,6 +34,8 @@ it.effect("serves only the guest page and its routes to requests through T3 Conn
       ["POST", "/api/guest/messages?share=abc", 200],
       ["POST", "/api/t3-connect/health", 200],
       ["POST", "/api/hooks/hook-1/token", 200],
+      ["POST", "/api/hooks/task%3Aabc/token", 200],
+      ["POST", "/api/hooks/hook-1/token/extra", 404],
       ["GET", "/", 404],
       ["GET", "/ws", 404],
       ["GET", "/pair", 404],

@@ -12,8 +12,9 @@ const CONNECT_REQUEST_HEADERS = ["cf-connecting-ip", "cf-ray"];
 
 // The relay checks a linked environment over the tunnel; its request is signed.
 const RELAY_HEALTH_PATH = "/api/t3-connect/health";
-// The relay forwards scheduled task webhooks here; each URL carries its task's token.
-const WEBHOOK_PREFIX = `${WEBHOOK_ROUTE_PREFIX}/`;
+// The relay forwards scheduled task webhooks here; each URL carries its task's token. The task id
+// is percent-encoded, and the route has exactly these two segments.
+const WEBHOOK_PATH = new RegExp(`^${WEBHOOK_ROUTE_PREFIX}/[^/\\\\]+/[^/\\\\]+$`);
 // The web build's hashed files, and the icons and manifest at the root of its public folder.
 const BUILD_ASSET_PREFIX = "/assets/";
 const PUBLIC_FILE = /^\/[\w-]+\.(?:ico|png|svg|webmanifest)$/;
@@ -21,12 +22,12 @@ const PUBLIC_FILE = /^\/[\w-]+\.(?:ico|png|svg|webmanifest)$/;
 /** Whether a request that came through T3 Connect may reach this path. */
 export function allowsConnectRequest(method: string, url: string): boolean {
   const path = url.split("?", 1)[0] ?? "";
+  if (WEBHOOK_PATH.test(path)) return true;
   // Other routes match the raw path, so a path a router could resolve elsewhere is refused.
   if (/\/\.|%|\\|\/\//.test(path)) return false;
   const read = method === "GET" || method === "HEAD";
   if (path.startsWith(`${GUEST_ROUTE_PREFIX}/`)) return true;
   if (path === RELAY_HEALTH_PATH) return method === "POST";
-  if (path.startsWith(WEBHOOK_PREFIX)) return true;
   return (
     read &&
     (path === GUEST_PAGE_PATH || path.startsWith(BUILD_ASSET_PREFIX) || PUBLIC_FILE.test(path))
