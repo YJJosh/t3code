@@ -53,9 +53,16 @@ function guestRun(run: OrchestrationV2Run): OrchestrationV2Run {
 }
 
 function guestSubagent(subagent: OrchestrationV2Subagent): OrchestrationV2Subagent {
-  return subagent.modelSelection === undefined
-    ? subagent
-    : { ...subagent, modelSelection: withoutProfile(subagent.modelSelection) };
+  const { modelSelection, workflow } = subagent;
+  // Workflow run handles name the owner's transcript folder and script file.
+  const runId = workflow?.runHandles?.runId;
+  return {
+    ...subagent,
+    ...(modelSelection === undefined ? {} : { modelSelection: withoutProfile(modelSelection) }),
+    ...(workflow?.runHandles === undefined
+      ? {}
+      : { workflow: { ...workflow, runHandles: runId === undefined ? {} : { runId } } }),
+  };
 }
 
 function guestProviderSession(
@@ -87,10 +94,28 @@ function guestAttempt(attempt: OrchestrationV2RunAttempt): OrchestrationV2RunAtt
 }
 
 export function guestTurnItem<I extends OrchestrationV2TurnItem>(item: I): I {
-  if (item.type !== "error" || item.title !== ORCHESTRATION_V2_SESSION_OPEN_FAILURE_TITLE) {
-    return item;
+  switch (item.type) {
+    case "error":
+      return item.title === ORCHESTRATION_V2_SESSION_OPEN_FAILURE_TITLE
+        ? { ...item, failure: { ...item.failure, message: GUEST_SESSION_OPEN_FAILURE_MESSAGE } }
+        : item;
+    case "user_message":
+      return item.modelSwitch === undefined
+        ? item
+        : {
+            ...item,
+            modelSwitch: {
+              from: withoutProfile(item.modelSwitch.from),
+              to: withoutProfile(item.modelSwitch.to),
+            },
+          };
+    case "handoff":
+      return item.fromModelSelections === undefined
+        ? item
+        : { ...item, fromModelSelections: item.fromModelSelections.map(withoutProfile) };
+    default:
+      return item;
   }
-  return { ...item, failure: { ...item.failure, message: GUEST_SESSION_OPEN_FAILURE_MESSAGE } };
 }
 
 function guestProjection(

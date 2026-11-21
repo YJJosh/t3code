@@ -10,6 +10,22 @@ import { guestHistoryPage, guestStreamItem } from "./guestRedaction.ts";
 const SESSION_FILE = "/home/owner/.pi/agent/sessions/owner-session.jsonl";
 const PROFILE_WARNING = "Profile owner-private-profile no longer exists.";
 const nativeRef = { driver: "pi", nativeId: SESSION_FILE, strength: "strong" };
+const WORKFLOW_SCRIPT = "/home/owner/.claude/workflows/owner-script.js";
+const withProfile = { instanceId: "pi", model: "m", profileId: "owner-private-profile" };
+const modelSwitch = {
+  type: "user_message",
+  modelSwitch: { from: withProfile, to: withProfile },
+};
+const handoff = { type: "handoff", fromModelSelections: [withProfile] };
+const subagent = {
+  id: "subagent-1",
+  modelSelection: withProfile,
+  workflow: {
+    runHandles: { runId: "run-1", scriptPath: WORKFLOW_SCRIPT, transcriptDir: "/home/owner/t" },
+    phases: [],
+    agents: [],
+  },
+};
 const profileError = {
   type: "error",
   title: ORCHESTRATION_V2_SESSION_OPEN_FAILURE_TITLE,
@@ -21,14 +37,14 @@ const projection = {
   thread: { modelSelection: { instanceId: "pi", model: "m" }, branch: null, worktreePath: null },
   runs: [],
   attempts: [{ id: "attempt-1", nativeThreadId: SESSION_FILE }],
-  subagents: [],
+  subagents: [subagent],
   providerSessions: [],
   providerThreads: [
     { id: "pt-1", nativeThreadRef: nativeRef, nativeConversationHeadRef: nativeRef },
   ],
   providerTurns: [{ id: "turn-1", nativeTurnRef: nativeRef, nativeThreadRef: nativeRef }],
-  turnItems: [profileError],
-  visibleTurnItems: [{ item: profileError }],
+  turnItems: [profileError, modelSwitch, handoff],
+  visibleTurnItems: [{ item: profileError }, { item: modelSwitch }, { item: handoff }],
   checkpointScopes: [],
   checkpoints: [],
   contextHandoffs: [],
@@ -38,22 +54,28 @@ const projection = {
 const event = (type: string, payload: unknown) =>
   ({ kind: "event", sequence: 1, event: { type, payload } }) as OrchestrationV2ThreadStreamItem;
 
-it("keeps native session paths and session-open failure text away from the guest", () => {
+it("keeps profiles, native session paths and workflow files away from the guest", () => {
   const sent = [
     guestStreamItem({ kind: "snapshot", snapshotSequence: 1, projection }),
     guestStreamItem(event("provider-thread.updated", projection.providerThreads[0])),
     guestStreamItem(event("provider-turn.updated", projection.providerTurns[0])),
     guestStreamItem(event("run-attempt.updated", projection.attempts[0])),
     guestStreamItem(event("turn-item.updated", profileError)),
+    guestStreamItem(event("turn-item.updated", modelSwitch)),
+    guestStreamItem(event("subagent.updated", subagent)),
     guestHistoryPage({
       snapshotSequence: 1,
-      items: [{ item: profileError }],
+      items: [{ item: profileError }, { item: handoff }],
       nextCursor: null,
       hasMoreHistory: false,
+      subagents: [subagent],
     } as never),
   ];
   const wire = JSON.stringify(sent);
   assert.notInclude(wire, SESSION_FILE);
   assert.notInclude(wire, "owner-private-profile");
+  assert.notInclude(wire, WORKFLOW_SCRIPT);
+  assert.notInclude(wire, "/home/owner/t");
+  assert.include(wire, "run-1");
   assert.include(wire, ORCHESTRATION_V2_SESSION_OPEN_FAILURE_TITLE);
 });
