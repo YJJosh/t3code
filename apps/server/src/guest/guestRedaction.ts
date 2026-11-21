@@ -3,6 +3,7 @@ import {
   ORCHESTRATION_V2_SESSION_OPEN_FAILURE_TITLE,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ProviderRef,
   type OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderTurn,
@@ -72,20 +73,31 @@ function guestProviderSession(
   return { ...rest, cwd: GUEST_SESSION_CWD };
 }
 
-// Native references and metadata can hold local paths, such as Pi's session file, and the
-// provider's own model selection.
+// A native id can be a local path, such as Pi's session file. The reference stays, since the
+// reducer reads whether one exists.
+function withoutNativeId<R extends OrchestrationV2ProviderRef | null | undefined>(ref: R): R {
+  if (ref == null) return ref;
+  const { fingerprint: _fingerprint, ...rest } = ref;
+  return { ...rest, nativeId: null } as R;
+}
+
+// Native metadata holds the provider's own model selection and paths.
 function guestProviderThread(thread: OrchestrationV2ProviderThread): OrchestrationV2ProviderThread {
   return {
     ...thread,
-    nativeThreadRef: null,
-    nativeConversationHeadRef: null,
+    nativeThreadRef: withoutNativeId(thread.nativeThreadRef),
+    nativeConversationHeadRef: withoutNativeId(thread.nativeConversationHeadRef),
     nativeMetadata: null,
   };
 }
 
 function guestProviderTurn(turn: OrchestrationV2ProviderTurn): OrchestrationV2ProviderTurn {
-  const { nativeThreadRef: _nativeThreadRef, ...rest } = turn;
-  return { ...rest, nativeTurnRef: null };
+  const { nativeThreadRef, ...rest } = turn;
+  return {
+    ...rest,
+    nativeTurnRef: withoutNativeId(turn.nativeTurnRef),
+    ...(nativeThreadRef === undefined ? {} : { nativeThreadRef: withoutNativeId(nativeThreadRef) }),
+  };
 }
 
 function guestAttempt(attempt: OrchestrationV2RunAttempt): OrchestrationV2RunAttempt {

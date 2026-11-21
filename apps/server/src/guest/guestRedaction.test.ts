@@ -55,8 +55,9 @@ const event = (type: string, payload: unknown) =>
   ({ kind: "event", sequence: 1, event: { type, payload } }) as OrchestrationV2ThreadStreamItem;
 
 it("keeps profiles, native session paths and workflow files away from the guest", () => {
+  const snapshot = guestStreamItem({ kind: "snapshot", snapshotSequence: 1, projection });
   const sent = [
-    guestStreamItem({ kind: "snapshot", snapshotSequence: 1, projection }),
+    snapshot,
     guestStreamItem(event("provider-thread.updated", projection.providerThreads[0])),
     guestStreamItem(event("provider-turn.updated", projection.providerTurns[0])),
     guestStreamItem(event("run-attempt.updated", projection.attempts[0])),
@@ -77,5 +78,10 @@ it("keeps profiles, native session paths and workflow files away from the guest"
   assert.notInclude(wire, WORKFLOW_SCRIPT);
   assert.notInclude(wire, "/home/owner/t");
   assert.include(wire, "run-1");
+  // The reference itself stays: the reducer reads whether a provider thread has one.
+  const ref =
+    snapshot?.kind === "snapshot" ? snapshot.projection.providerThreads[0]?.nativeThreadRef : null;
+  assert.strictEqual(ref?.driver, "pi");
+  assert.isNull(ref?.nativeId);
   assert.include(wire, ORCHESTRATION_V2_SESSION_OPEN_FAILURE_TITLE);
 });
