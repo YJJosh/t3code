@@ -23,8 +23,9 @@ t3 connect status            # shows whether the tunnel is up
 On a Mac or PC running the desktop app, use the `t3` command the app installs, then restart the app.
 On a server, restart it afterwards with `t3 service restart`, or start it with `t3 serve`.
 
-In T3 Dulli the T3 Connect address serves only guest links. It does not serve the app, pairing, or
-sign-in, so your own devices keep reaching the machine over your network or tailnet. To turn it off
+In T3 Dulli the T3 Connect address serves only guest links and scheduled task webhooks. It does not
+serve the app, pairing, or sign-in, so your own devices keep reaching the machine over your network
+or tailnet. To turn it off
 again, run `t3 connect unlink` (or `t3 connect logout`, which also forgets the sign-in) and restart.
 
 1. Right-click the thread in the sidebar and choose **Share with guest**. It is also in the thread

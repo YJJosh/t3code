@@ -33,6 +33,7 @@ it.effect("serves only the guest page and its routes to requests through T3 Conn
       ["GET", "/api/guest/stream?share=abc", 200],
       ["POST", "/api/guest/messages?share=abc", 200],
       ["POST", "/api/t3-connect/health", 200],
+      ["POST", "/api/hooks/hook-1/token", 200],
       ["GET", "/", 404],
       ["GET", "/ws", 404],
       ["GET", "/pair", 404],
@@ -40,7 +41,6 @@ it.effect("serves only the guest page and its routes to requests through T3 Conn
       ["GET", "/.well-known/t3/environment", 404],
       ["POST", "/oauth/token", 404],
       ["POST", "/api/t3-connect/mint-credential", 404],
-      ["POST", "/api/hooks/hook-1/token", 404],
       ["GET", "/api/assets/thread/file.png", 404],
       ["POST", "/guest", 404],
     ];
@@ -51,6 +51,8 @@ it.effect("serves only the guest page and its routes to requests through T3 Conn
         `${method} ${path}`,
       );
     }
+    // Without the visitor IP header, Cloudflare's request id still marks the tunnel.
+    assert.strictEqual(yield* status("GET", "/ws", { "cf-ray": "8f0c1d2e3f4a5b6c-FRA" }), 404);
     // Local, LAN and tailnet requests reach everything, as before.
     assert.strictEqual(yield* status("GET", "/ws", {}), 200);
   }).pipe(Effect.scoped),
