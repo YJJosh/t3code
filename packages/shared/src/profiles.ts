@@ -44,7 +44,6 @@ export function selectProfile(
     ?.capabilities?.optionDescriptors?.find(
       (descriptor) => descriptor.type === "select" && descriptor.role === "reasoning",
     );
-  const effort = profile.effort;
   const effortId = reasoning?.id ?? (target ? EFFORT_OPTION_IDS[target.driver] : undefined);
   const options = instanceId === current.instanceId ? (current.options ?? []) : [];
   return {
@@ -54,11 +53,11 @@ export function selectProfile(
       instanceId,
       model,
       options,
-      ...(effort && effortId
+      ...(profile.effort && effortId
         ? {
             options: [
               ...options.filter((option) => option.id !== effortId),
-              { id: effortId, value: effort },
+              { id: effortId, value: profile.effort },
             ],
           }
         : {}),
